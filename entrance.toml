@@ -1,0 +1,8 @@
+# Entrance Configuration
+# See specs/backend.md Section 2.5 for schema
+
+[core]
+theme = "dark"
+
+[plugins]
+# Plugin configurations will be added as plugins are implemented
