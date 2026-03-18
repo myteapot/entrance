@@ -1,6 +1,0 @@
-node_modules
-dist
-.vscode
-src-tauri/target
-pnpm-debug.log*
-*.tsbuildinfo
