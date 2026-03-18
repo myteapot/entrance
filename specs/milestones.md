@@ -42,6 +42,7 @@ Linear 集成 + Kanban UI
 | Sync | Git 配置同步 |
 | WASM | 插件动态加载 |
 | Zapier | Connector 内的编排引擎 |
+| **Duet 迁移** | **control.py / db.py → Entrance MCP tools。Entrance 成为 Duet 唯一基础设施，AI 通过 MCP 读写 skills/specs/config/worktree，不再需要本地脚本** |
 
 ## 总估算
 
