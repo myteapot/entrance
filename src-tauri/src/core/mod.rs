@@ -1,0 +1,11 @@
+pub mod config_store;
+pub mod data_store;
+pub mod event_bus;
+pub mod hotkey;
+pub mod logging;
+pub mod mcp_server;
+pub mod permission;
+pub mod plugin_manager;
+pub mod theme;
+pub mod updater;
+pub mod window;
