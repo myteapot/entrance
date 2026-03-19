@@ -1,18 +1,44 @@
 use std::{
-    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::plugins::launcher::scanner::DiscoveredApp;
 
-const LAUNCHER_MIGRATION: &str =
-    include_str!("../../migrations/0001_create_plugin_launcher_apps.sql");
+const CORE_MIGRATION: MigrationStep = MigrationStep {
+    name: "0000_create_core_tables",
+    sql: include_str!("../../migrations/0000_create_core_tables.sql"),
+};
+
+#[derive(Debug, Clone, Copy)]
+pub struct MigrationStep {
+    pub name: &'static str,
+    pub sql: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MigrationPlan<'a> {
+    pub core: &'a [MigrationStep],
+    pub plugins: &'a [MigrationStep],
+}
+
+impl<'a> MigrationPlan<'a> {
+    pub fn new(plugins: &'a [MigrationStep]) -> Self {
+        Self {
+            core: core_migrations(),
+            plugins,
+        }
+    }
+}
+
+pub fn core_migrations() -> &'static [MigrationStep] {
+    &[CORE_MIGRATION]
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredLauncherApp {
@@ -47,46 +73,36 @@ impl std::fmt::Debug for DataStore {
 }
 
 impl DataStore {
-    pub fn open_default() -> Result<Self> {
-        let base_dir = dirs::data_local_dir()
-            .or_else(dirs::data_dir)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Entrance");
-
-        fs::create_dir_all(&base_dir).with_context(|| {
-            format!(
-                "failed to create Entrance data directory at {}",
-                base_dir.display()
-            )
-        })?;
-
-        Self::open(base_dir.join("entrance.db"))
-    }
-
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn open(path: impl AsRef<Path>, migration_plan: MigrationPlan<'_>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let connection = Connection::open(&path)
-            .with_context(|| format!("failed to open sqlite database at {}", path.display()))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let connection = Connection::open(&path)?;
 
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(path),
         };
-        store.migrate()?;
+        store.migrate(migration_plan)?;
         Ok(store)
     }
 
     #[cfg(test)]
     #[allow(dead_code)]
-    pub fn in_memory() -> Result<Self> {
-        let connection =
-            Connection::open_in_memory().context("failed to open in-memory database")?;
+    pub fn in_memory(migration_plan: MigrationPlan<'_>) -> Result<Self> {
+        let connection = Connection::open_in_memory()?;
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(PathBuf::from(":memory:")),
         };
-        store.migrate()?;
+        store.migrate(migration_plan)?;
         Ok(store)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn launcher_app_count(&self) -> Result<i64> {
@@ -277,9 +293,16 @@ impl DataStore {
         Ok(())
     }
 
-    fn migrate(&self) -> Result<()> {
+    fn migrate(&self, migration_plan: MigrationPlan<'_>) -> Result<()> {
         self.with_connection(|connection| {
-            connection.execute_batch(LAUNCHER_MIGRATION)?;
+            for migration in migration_plan
+                .core
+                .iter()
+                .chain(migration_plan.plugins.iter())
+            {
+                let _ = migration.name;
+                connection.execute_batch(migration.sql)?;
+            }
             Ok(())
         })
     }

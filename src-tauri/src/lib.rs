@@ -1,31 +1,55 @@
-mod core;
+pub mod core;
 mod plugins;
 
 use std::sync::Arc;
 
+use serde::Serialize;
 use tauri::Manager;
 
-use core::{data_store::DataStore, hotkey, plugin_manager::PluginManager};
+use core::{bootstrap_for_paths, hotkey, plugin_manager::PluginManager, AppPaths};
 use plugins::{
     launcher::{launcher_launch, launcher_pin, launcher_search, LauncherPlugin},
     AppContext,
 };
 
+#[derive(Clone, Serialize)]
+struct LauncherUiState {
+    hotkey: Option<String>,
+}
+
 fn setup_application<R: tauri::Runtime>(
     app: &mut tauri::App<R>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let data_store = DataStore::open_default()?;
+    let app_paths = AppPaths::new(app.path().app_data_dir()?);
+    let startup = bootstrap_for_paths(app_paths)?;
+    let launcher_hotkey = startup.launcher_hotkey().map(str::to_owned);
+    app.manage(LauncherUiState {
+        hotkey: launcher_hotkey.clone(),
+    });
+
+    let data_store = startup.data_store();
     let app_context = AppContext::new(data_store.clone());
 
-    let launcher_plugin = LauncherPlugin::new(data_store);
     let mut plugin_manager = PluginManager::default();
-    plugin_manager.register(Arc::new(launcher_plugin.clone()));
-    plugin_manager.init_all(&app_context)?;
+    if startup.launcher_enabled() {
+        let launcher_plugin = LauncherPlugin::new(data_store);
+        plugin_manager.register(Arc::new(launcher_plugin.clone()));
+        app.manage(launcher_plugin);
+    }
 
+    plugin_manager.init_all(&app_context)?;
     app.manage(plugin_manager);
-    app.manage(launcher_plugin);
+
+    if let Some(shortcut) = launcher_hotkey.as_deref() {
+        hotkey::register_launcher_shortcut(app, shortcut)?;
+    }
 
     Ok(())
+}
+
+#[tauri::command]
+fn launcher_hotkey(state: tauri::State<'_, LauncherUiState>) -> Option<String> {
+    state.hotkey.clone()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,6 +59,7 @@ pub fn run() {
         .plugin(hotkey::plugin::<tauri::Wry>().expect("failed to initialize global hotkey plugin"))
         .setup(setup_application)
         .invoke_handler(tauri::generate_handler![
+            launcher_hotkey,
             launcher_search,
             launcher_launch,
             launcher_pin

@@ -8,7 +8,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::{
-    core::data_store::{DataStore, StoredLauncherApp},
+    core::data_store::{DataStore, MigrationStep, StoredLauncherApp},
     plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
 };
 
@@ -17,16 +17,21 @@ use self::{
     search::{normalize_text, score_launcher_app},
 };
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 #[cfg(not(target_os = "windows"))]
 use self::scanner::split_command_line_words;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 const MANIFEST: Manifest = Manifest {
     name: "launcher",
     version: env!("CARGO_PKG_VERSION"),
     description: "Indexes local applications, performs fuzzy search, and launches desktop apps.",
 };
+
+const MIGRATIONS: [MigrationStep; 1] = [MigrationStep {
+    name: "0001_create_plugin_launcher_apps",
+    sql: include_str!("../../../migrations/0001_create_plugin_launcher_apps.sql"),
+}];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LauncherSearchResult {
@@ -123,6 +128,10 @@ impl LauncherPlugin {
     pub fn pin(&self, path: &str, pinned: bool) -> Result<()> {
         self.data_store.set_launcher_pinned(path, pinned)
     }
+}
+
+pub fn migrations() -> &'static [MigrationStep] {
+    &MIGRATIONS
 }
 
 impl Plugin for LauncherPlugin {
