@@ -12,11 +12,29 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Entrance",
         "width": 1120,
         "height": 720,
         "minWidth": 960,
         "minHeight": 640
+      },
+      {
+        "label": "launcher",
+        "title": "Entrance Launcher",
+        "url": "launcher.html",
+        "width": 720,
+        "height": 520,
+        "minWidth": 640,
+        "minHeight": 420,
+        "resizable": false,
+        "visible": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "center": true,
+        "shadow": true
       }
     ],
     "security": {
