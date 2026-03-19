@@ -1,9 +1,9 @@
+#[cfg(any(target_os = "linux", test))]
+use std::ffi::OsStr;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-#[cfg(any(target_os = "linux", test))]
-use std::ffi::OsStr;
 
 use anyhow::Result;
 use serde::Serialize;
@@ -569,9 +569,7 @@ fn registry_app_name(key_name: &str, path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        parse_desktop_exec, split_command_line_words, strip_desktop_field_codes,
-    };
+    use super::{parse_desktop_exec, split_command_line_words, strip_desktop_field_codes};
     use std::{
         fs,
         path::PathBuf,
@@ -588,7 +586,8 @@ mod tests {
 
     #[test]
     fn command_line_parser_preserves_quoted_words() {
-        let words = split_command_line_words(r#""/opt/Visual Studio Code/code" --profile "My User""#);
+        let words =
+            split_command_line_words(r#""/opt/Visual Studio Code/code" --profile "My User""#);
 
         assert_eq!(
             words,

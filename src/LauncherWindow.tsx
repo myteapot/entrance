@@ -28,6 +28,10 @@ const launcherWindow = getCurrentWindow();
 const SEARCH_LIMIT = 8;
 const HIDE_DELAY_MS = 140;
 
+function formatHotkeyLabel(shortcut: string | null | undefined) {
+  return shortcut?.split("+").join(" + ") ?? "No shortcut";
+}
+
 function sourceLabel(source: string) {
   if (source === "windows_start_menu") {
     return "Start Menu";
@@ -48,6 +52,8 @@ function LauncherWindow() {
   const [isSearching, setIsSearching] = createSignal(false);
   const [isLaunching, setIsLaunching] = createSignal(false);
   const [errorMessage, setErrorMessage] = createSignal<string>();
+  const [launcherHotkeyLabel, setLauncherHotkeyLabel] =
+    createSignal("Loading shortcut...");
 
   let inputRef: HTMLInputElement | undefined;
   let searchRunId = 0;
@@ -162,6 +168,12 @@ function LauncherWindow() {
 
   onMount(async () => {
     setIsVisible(await launcherWindow.isVisible());
+    try {
+      const shortcut = await invoke<string | null>("launcher_hotkey");
+      setLauncherHotkeyLabel(formatHotkeyLabel(shortcut));
+    } catch {
+      setLauncherHotkeyLabel("No shortcut");
+    }
 
     const unlistenToggle = await launcherWindow.listen("launcher:toggle", async () => {
       if (await launcherWindow.isVisible()) {
@@ -222,7 +234,7 @@ function LauncherWindow() {
       <section class="launcher-panel" aria-label="Launcher search window">
         <header class="launcher-header">
           <div>
-            <p class="launcher-eyebrow">Alt + Space</p>
+            <p class="launcher-eyebrow">{launcherHotkeyLabel()}</p>
             <h1>Launcher</h1>
           </div>
           <p class="launcher-tip">Enter 启动 · Esc 收起</p>
