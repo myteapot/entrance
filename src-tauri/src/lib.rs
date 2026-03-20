@@ -4,7 +4,7 @@ mod plugins;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 
 use core::{
     bootstrap_for_paths, event_bus::EventBus, hotkey, logging::LoggingSystem,
@@ -53,6 +53,16 @@ fn setup_application<R: tauri::Runtime>(
     let data_store = startup.data_store();
     let event_bus = EventBus::new();
     app.manage(event_bus.clone());
+
+    let app_handle_for_events = app.handle().clone();
+    let mut rx = event_bus.subscribe();
+    tauri::async_runtime::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            if core::event_bus::match_topic("forge:*", &event.topic) {
+                let _ = app_handle_for_events.emit(&event.topic, event.payload);
+            }
+        }
+    });
 
     let app_context = AppContext::new(data_store.clone(), event_bus.clone());
 
