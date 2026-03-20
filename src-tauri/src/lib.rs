@@ -1,14 +1,25 @@
 pub mod core;
 mod plugins;
 
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
 use core::{
-    bootstrap_for_paths, event_bus::EventBus, hotkey, logging::LoggingSystem,
-    plugin_manager::PluginManager, theme::ThemeSystem, AppPaths,
+    bootstrap_for_paths,
+    event_bus::EventBus,
+    hotkey,
+    logging::LoggingSystem,
+    mcp_server::{McpPluginSet, McpServer, McpTransport},
+    plugin_manager::PluginManager,
+    resolve_app_data_dir,
+    theme::ThemeSystem,
+    AppPaths, StartupState,
 };
 use plugins::{
     forge::commands::{
@@ -144,13 +155,132 @@ fn launcher_hotkey(state: tauri::State<'_, LauncherUiState>) -> Option<String> {
     state.hotkey.clone()
 }
 
+pub fn dispatch_cli_or_run() -> Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    match args.as_slice() {
+        [command, transport] if command == "mcp" && transport == "stdio" => run_mcp_stdio(),
+        [command, transport, rest @ ..] if command == "mcp" && transport == "http" => {
+            run_mcp_http(rest)
+        }
+        [command, ..] if command == "mcp" => {
+            bail!("unsupported MCP transport, expected `entrance mcp stdio` or `entrance mcp http`")
+        }
+        _ => {
+            run();
+            Ok(())
+        }
+    }
+}
+
+fn run_mcp_stdio() -> Result<()> {
+    let startup = bootstrap_headless()?;
+    let server = build_mcp_server(&startup, McpTransport::Stdio)?;
+    server.serve_stdio()
+}
+
+fn run_mcp_http(args: &[String]) -> Result<()> {
+    let mut port = 9720u16;
+    let mut endpoint = "/mcp".to_string();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--port" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance mcp http --port` requires a value")?;
+                port = value
+                    .parse::<u16>()
+                    .with_context(|| format!("invalid MCP HTTP port `{value}`"))?;
+                index += 2;
+            }
+            "--endpoint" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance mcp http --endpoint` requires a value")?;
+                endpoint = normalize_http_endpoint(value)?;
+                index += 2;
+            }
+            other => bail!("unsupported MCP HTTP argument `{other}`"),
+        }
+    }
+
+    let startup = bootstrap_headless()?;
+    let server = build_mcp_server(
+        &startup,
+        McpTransport::Http {
+            endpoint: endpoint.clone(),
+        },
+    )?;
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to build Tokio runtime for MCP HTTP transport")?;
+
+    runtime.block_on(server.serve_http(address))
+}
+
+fn bootstrap_headless() -> Result<StartupState> {
+    let app_paths = AppPaths::new(resolve_app_data_dir()?);
+    let startup = bootstrap_for_paths(app_paths)?;
+    if !startup.mcp_enabled() {
+        bail!("MCP server is disabled in entrance.toml");
+    }
+
+    let _logging_system = LoggingSystem::init(
+        startup.paths().log_dir(),
+        startup.log_level(),
+        Some(startup.data_store()),
+    )?;
+
+    Ok(startup)
+}
+
+fn build_mcp_server(startup: &StartupState, transport: McpTransport) -> Result<McpServer> {
+    let data_store = startup.data_store();
+    let event_bus = EventBus::new();
+
+    Ok(McpServer::new(
+        transport,
+        McpPluginSet {
+            forge: startup
+                .forge_enabled()
+                .then(|| plugins::forge::ForgePlugin::new(data_store.clone(), event_bus.clone())),
+            launcher: startup
+                .launcher_enabled()
+                .then(|| LauncherPlugin::new(data_store.clone())),
+            vault: if startup.vault_enabled() {
+                Some(VaultPlugin::new(data_store)?)
+            } else {
+                None
+            },
+        },
+    ))
+}
+
+fn normalize_http_endpoint(raw: &str) -> Result<String> {
+    let endpoint = raw.trim();
+    if endpoint.is_empty() {
+        bail!("MCP HTTP endpoint must not be empty");
+    }
+
+    if endpoint.starts_with('/') {
+        Ok(endpoint.to_string())
+    } else {
+        Ok(format!("/{endpoint}"))
+    }
+}
+
 #[tauri::command]
 fn dashboard_summary(
     dashboard: tauri::State<'_, DashboardUiState>,
     data_store: tauri::State<'_, core::data_store::DataStore>,
 ) -> Result<DashboardSummary, String> {
     let tasks = if dashboard.forge_enabled {
-        data_store.list_forge_tasks().map_err(|error| error.to_string())?
+        data_store
+            .list_forge_tasks()
+            .map_err(|error| error.to_string())?
     } else {
         Vec::new()
     };

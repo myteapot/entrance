@@ -48,3 +48,6 @@ winreg = "0.56"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
+
+[dev-dependencies]
+ureq = { version = "2.10", features = ["json"] }

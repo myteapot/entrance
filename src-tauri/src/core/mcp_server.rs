@@ -1,9 +1,18 @@
 use std::{
     io::{self, BufRead, Write},
+    net::SocketAddr,
     sync::Arc,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+use axum::{
+    body::Bytes,
+    extract::State,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    routing::post,
+    Router,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -90,6 +99,24 @@ impl McpServer {
         let mut reader = stdin.lock();
         let mut writer = stdout.lock();
         self.serve_stdio_stream(&mut reader, &mut writer)
+    }
+
+    pub async fn serve_http(&self, address: SocketAddr) -> Result<()> {
+        let endpoint = match self.transport() {
+            McpTransport::Http { endpoint } => endpoint.clone(),
+            _ => bail!("MCP transport is not configured for HTTP"),
+        };
+        let listener = tokio::net::TcpListener::bind(address)
+            .await
+            .with_context(|| format!("failed to bind MCP HTTP listener on {address}"))?;
+        let app = Router::new()
+            .route(endpoint.as_str(), post(handle_http_request))
+            .with_state(self.clone());
+
+        tracing::info!("MCP HTTP API listening on http://{address}{endpoint}");
+        axum::serve(listener, app)
+            .await
+            .context("MCP HTTP server stopped unexpectedly")
     }
 
     pub fn handle_json_rpc_value(&self, request: Value) -> Result<Option<Value>> {
@@ -340,6 +367,41 @@ impl McpServer {
             Err(error) => Some(json_rpc_error(Value::Null, -32600, &error.to_string())),
         }
     }
+}
+
+#[derive(Debug)]
+struct McpHttpError(anyhow::Error);
+
+impl IntoResponse for McpHttpError {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": Value::Null,
+                "error": {
+                    "code": -32600,
+                    "message": self.0.to_string(),
+                }
+            }))
+            .unwrap_or_else(|_| b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"failed to encode MCP error\"}}".to_vec()),
+        )
+            .into_response()
+    }
+}
+
+async fn handle_http_request(
+    State(server): State<McpServer>,
+    body: Bytes,
+) -> Result<Response, McpHttpError> {
+    let payload = server.handle_http_json(&body).map_err(McpHttpError)?;
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        payload,
+    )
+        .into_response())
 }
 
 fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
