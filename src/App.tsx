@@ -1,52 +1,68 @@
+import { For, onCleanup, onMount, type Component } from "solid-js";
+import { Route, Router, type RouteSectionProps, useNavigate } from "@solidjs/router";
 import "./App.css";
+import MainPanel from "./components/MainPanel";
+import Sidebar from "./components/Sidebar";
+import { appRoutes, shortcutRoutes } from "./router";
 
-const workspaceLayers = [
-  {
-    label: "Frontend",
-    path: "src/",
-    detail: "SolidJS application shell and future dashboard surface.",
-  },
-  {
-    label: "Native",
-    path: "src-tauri/",
-    detail: "Tauri 2 runtime, Rust host process, and bundle configuration.",
-  },
-  {
-    label: "Specs",
-    path: "specs/",
-    detail: "Living architecture notes that drive the next implementation slices.",
-  },
-  {
-    label: "Config",
-    path: "entrance.toml",
-    detail: "Placeholder runtime configuration that will expand with later milestones.",
-  },
-] as const;
+const isEditableTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+
+  return (
+    tagName === "input" ||
+    tagName === "textarea" ||
+    tagName === "select" ||
+    target.isContentEditable
+  );
+};
+
+const AppShell: Component<RouteSectionProps> = (props) => {
+  const navigate = useNavigate();
+
+  onMount(() => {
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+
+      const shortcutIndex = Number(event.key) - 1;
+      const route = shortcutRoutes[shortcutIndex];
+
+      if (!route) {
+        return;
+      }
+
+      event.preventDefault();
+      navigate(route.path);
+    };
+
+    window.addEventListener("keydown", handleKeydown);
+    onCleanup(() => window.removeEventListener("keydown", handleKeydown));
+  });
+
+  return (
+    <div class="app-shell">
+      <Sidebar />
+      <MainPanel>{props.children}</MainPanel>
+    </div>
+  );
+};
 
 function App() {
   return (
-    <main class="app-shell">
-      <section class="hero">
-        <p class="eyebrow">Desktop Foundation</p>
-        <h1>Entrance</h1>
-        <p class="summary">
-          Tauri 2.0 and SolidJS are wired up and ready for the backend slices
-          described in <code>specs/backend.md</code>.
-        </p>
-      </section>
-
-      <section class="layer-grid" aria-label="Workspace structure overview">
-        {workspaceLayers.map((layer) => (
-          <article class="layer-card">
-            <div class="layer-header">
-              <span>{layer.label}</span>
-              <code>{layer.path}</code>
-            </div>
-            <p>{layer.detail}</p>
-          </article>
-        ))}
-      </section>
-    </main>
+    <Router root={AppShell}>
+      <For each={appRoutes}>
+        {(route) => <Route path={route.path} component={route.component} />}
+      </For>
+    </Router>
   );
 }
 
