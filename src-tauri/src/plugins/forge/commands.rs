@@ -1,6 +1,8 @@
+use crate::core::data_store::DataStore;
 use crate::core::data_store::StoredForgeTask;
 use crate::plugins::forge::{
-    build_agent_task_request, CreateTaskRequest, ForgePlugin, ForgeTaskDetails,
+    build_agent_task_request, prepare_agent_dispatch, CreateTaskRequest, ForgePlugin,
+    ForgeTaskDetails, PreparedAgentDispatch,
 };
 use tauri::State;
 
@@ -48,6 +50,13 @@ pub fn forge_dispatch_agent(
     let id = forge.create_task(request).map_err(|e| e.to_string())?;
     forge.engine().spawn_task(id).map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+#[tauri::command]
+pub async fn forge_prepare_agent_dispatch(
+    data_store: State<'_, DataStore>,
+) -> Result<PreparedAgentDispatch, String> {
+    prepare_agent_dispatch(data_store.inner().clone()).await
 }
 
 #[tauri::command]

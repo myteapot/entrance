@@ -24,7 +24,7 @@ use core::{
 use plugins::{
     forge::commands::{
         forge_cancel_task, forge_create_task, forge_dispatch_agent, forge_get_task,
-        forge_get_task_details, forge_list_tasks,
+        forge_get_task_details, forge_list_tasks, forge_prepare_agent_dispatch,
     },
     launcher::{launcher_launch, launcher_pin, launcher_search, LauncherPlugin},
     vault::{
@@ -367,6 +367,7 @@ pub fn run() {
             launcher_pin,
             forge_create_task,
             forge_dispatch_agent,
+            forge_prepare_agent_dispatch,
             forge_list_tasks,
             forge_get_task,
             forge_get_task_details,

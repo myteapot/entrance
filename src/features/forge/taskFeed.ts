@@ -47,10 +47,23 @@ export interface ForgeTaskMetadata {
   model?: string | null;
 }
 
+export interface PreparedAgentDispatch {
+  issue_id: string;
+  issue_status: string;
+  issue_status_source: string;
+  issue_title: string | null;
+  project_root: string;
+  worktree_path: string;
+  prompt: string;
+}
+
 export const fetchForgeTasks = () => invoke<ForgeTask[]>("forge_list_tasks");
 
 export const fetchForgeTaskDetails = (id: number) =>
   invoke<ForgeTaskDetails | null>("forge_get_task_details", { id });
+
+export const prepareForgeAgentDispatch = () =>
+  invoke<PreparedAgentDispatch>("forge_prepare_agent_dispatch");
 
 export const dispatchForgeAgent = (
   issueId: string,

@@ -9,10 +9,14 @@ import {
   listenToForgeTaskOutput,
   listenToForgeTaskStatus,
   mergeForgeTask,
-  type ForgeTask,
   parseForgeTaskMetadata,
+  prepareForgeAgentDispatch,
+  type ForgeTask,
   type LogLine,
+  type PreparedAgentDispatch,
 } from "../features/forge/taskFeed";
+
+const AUTO_DISPATCH_MODEL = "codex";
 
 export default function Forge() {
   const [tasks, setTasks] = createSignal<ForgeTask[]>([]);
@@ -21,18 +25,16 @@ export default function Forge() {
   const [isLoadingTaskDetails, setIsLoadingTaskDetails] = createSignal(false);
   const [taskDetailsError, setTaskDetailsError] = createSignal<string | null>(null);
   const [restartingTaskId, setRestartingTaskId] = createSignal<number | null>(null);
+  const [dispatchContext, setDispatchContext] = createSignal<PreparedAgentDispatch | null>(null);
+  const [dispatchContextError, setDispatchContextError] = createSignal<string | null>(null);
+  const [isLoadingDispatchContext, setIsLoadingDispatchContext] = createSignal(false);
+  const [isLaunchingAgent, setIsLaunchingAgent] = createSignal(false);
 
   const [showNewTaskModal, setShowNewTaskModal] = createSignal(false);
-  const [showAgentDispatchModal, setShowAgentDispatchModal] = createSignal(false);
   const [newTaskName, setNewTaskName] = createSignal("");
   const [newTaskCommand, setNewTaskCommand] = createSignal("");
   const [newTaskArgs, setNewTaskArgs] = createSignal("");
   const [newTaskRequiredTokens, setNewTaskRequiredTokens] = createSignal("");
-  const [agentIssueId, setAgentIssueId] = createSignal("");
-  const [agentWorktreePath, setAgentWorktreePath] = createSignal("");
-  const [agentModel, setAgentModel] = createSignal("codex");
-  const [agentPrompt, setAgentPrompt] = createSignal("");
-  const [agentRequiredTokens, setAgentRequiredTokens] = createSignal("");
   let activeTaskDetailsRequest = 0;
 
   const parseArgsInput = (value: string) => {
@@ -199,8 +201,47 @@ export default function Forge() {
     return id;
   };
 
+  const loadDispatchContext = async () => {
+    setIsLoadingDispatchContext(true);
+    setDispatchContextError(null);
+
+    try {
+      setDispatchContext(await prepareForgeAgentDispatch());
+    } catch (error) {
+      console.error("Failed to prepare Agent dispatch", error);
+      setDispatchContext(null);
+      setDispatchContextError(String(error));
+    } finally {
+      setIsLoadingDispatchContext(false);
+    }
+  };
+
+  const handleLaunchPreparedAgent = async () => {
+    setIsLaunchingAgent(true);
+    setDispatchContextError(null);
+
+    try {
+      const context = await prepareForgeAgentDispatch();
+      setDispatchContext(context);
+      await dispatchAgent(
+        context.issue_id,
+        context.worktree_path,
+        AUTO_DISPATCH_MODEL,
+        context.prompt,
+        "",
+      );
+    } catch (error) {
+      console.error("Failed to auto-dispatch Agent", error);
+      setDispatchContextError(String(error));
+      alert("Error dispatching agent: " + error);
+    } finally {
+      setIsLaunchingAgent(false);
+    }
+  };
+
   onMount(() => {
     void fetchTasks();
+    void loadDispatchContext();
 
     void (async () => {
       const unlistenStatus = await listenToForgeTaskStatus((payload) => {
@@ -324,9 +365,88 @@ export default function Forge() {
           <p class="forge-subtitle">Task runner and real-time execution engine logs.</p>
         </div>
         <div style={{ display: "flex", gap: "0.75rem" }}>
-          <button class="btn btn-primary" onClick={() => setShowAgentDispatchModal(true)}>Dispatch Agent</button>
+          <button
+            class="btn btn-primary"
+            disabled={isLaunchingAgent() || isLoadingDispatchContext() || !dispatchContext()}
+            onClick={() => void handleLaunchPreparedAgent()}
+          >
+            {isLaunchingAgent()
+              ? "Launching Codex..."
+              : isLoadingDispatchContext()
+                ? "Preparing Context..."
+                : "Launch Codex Agent"}
+          </button>
           <button class="btn" onClick={() => setShowNewTaskModal(true)}>+ New Task</button>
         </div>
+      </div>
+
+      <div class="auto-dispatch-card">
+        <div class="auto-dispatch-card__header">
+          <div>
+            <p class="auto-dispatch-card__eyebrow">Auto Dispatch</p>
+            <h2 class="auto-dispatch-card__title">Zero-copy Agent handoff from the current worktree</h2>
+          </div>
+          <button
+            class="btn"
+            disabled={isLoadingDispatchContext()}
+            onClick={() => void loadDispatchContext()}
+          >
+            {isLoadingDispatchContext() ? "Refreshing..." : "Refresh Context"}
+          </button>
+        </div>
+
+        <Show
+          when={dispatchContext()}
+          fallback={
+            <div class="task-callout callout-failed">
+              {dispatchContextError() ?? "Forge could not resolve an issue worktree for auto-dispatch."}
+            </div>
+          }
+        >
+          {(context) => (
+            <>
+              <p class="auto-dispatch-card__body">
+                Forge now derives the issue, worktree, and Agent prompt automatically from the
+                current `feat-*` branch. Launching dispatches a Codex Agent without copying any
+                prompt text.
+              </p>
+              <div class="token-chip-list">
+                <span class="token-chip">{context().issue_id}</span>
+                <span class="token-chip">{context().issue_status}</span>
+                <span class="token-chip">{AUTO_DISPATCH_MODEL}</span>
+              </div>
+              <div class="auto-dispatch-grid">
+                <div class="auto-dispatch-field">
+                  <span class="auto-dispatch-field__label">Issue</span>
+                  <span class="auto-dispatch-field__value">
+                    {context().issue_title ?? "Current worktree issue"}
+                  </span>
+                </div>
+                <div class="auto-dispatch-field">
+                  <span class="auto-dispatch-field__label">Project Root</span>
+                  <span class="auto-dispatch-field__value">{context().project_root}</span>
+                </div>
+                <div class="auto-dispatch-field">
+                  <span class="auto-dispatch-field__label">Worktree</span>
+                  <span class="auto-dispatch-field__value">{context().worktree_path}</span>
+                </div>
+                <div class="auto-dispatch-field">
+                  <span class="auto-dispatch-field__label">Prompt Source</span>
+                  <span class="auto-dispatch-field__value">`control.py prompt`</span>
+                </div>
+              </div>
+              <Show when={context().issue_status_source === "fallback"}>
+                <div class="task-callout callout-blocked">
+                  Linear issue status was unavailable, so Forge used a generic `Todo` prompt
+                  fallback. Dispatch still works, but Request-specific auto-sync was skipped.
+                </div>
+              </Show>
+              <Show when={dispatchContextError()}>
+                <div class="task-callout callout-failed">{dispatchContextError()}</div>
+              </Show>
+            </>
+          )}
+        </Show>
       </div>
 
       <div class="forge-layout">
@@ -477,72 +597,6 @@ export default function Forge() {
             <div class="modal-actions">
               <button class="btn" onClick={() => setShowNewTaskModal(false)}>Cancel</button>
               <button class="btn btn-primary" onClick={() => void handleCreateTask()}>Spawn Task</button>
-            </div>
-          </div>
-        </div>
-      </Show>
-
-      <Show when={showAgentDispatchModal()}>
-        <div class="modal-backdrop">
-          <div class="modal">
-            <h2 style={{ "margin-bottom": "var(--space-4)", "font-size": "var(--text-xl)" }}>Dispatch Agent</h2>
-            <div class="form-group">
-              <label class="form-label">Issue ID</label>
-              <input class="form-input" type="text" value={agentIssueId()} onInput={(event) => setAgentIssueId(event.currentTarget.value)} placeholder="e.g. MYT-48" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Worktree Path</label>
-              <input class="form-input" type="text" value={agentWorktreePath()} onInput={(event) => setAgentWorktreePath(event.currentTarget.value)} placeholder="e.g. A:/.agents/.worktrees/Entrance/feat-MYT-48" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Model</label>
-              <input class="form-input" type="text" value={agentModel()} onInput={(event) => setAgentModel(event.currentTarget.value)} placeholder="e.g. codex or codex:gpt-5-codex" />
-              <p class="form-hint">Use `codex`, `claude`, `gemini`, or `runner:model` for an explicit variant.</p>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Prompt</label>
-              <textarea
-                class="form-input"
-                rows={8}
-                value={agentPrompt()}
-                onInput={(event) => setAgentPrompt(event.currentTarget.value)}
-                placeholder="Paste the generated Agent prompt here"
-              />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Extra Required Tokens</label>
-              <input class="form-input" type="text" value={agentRequiredTokens()} onInput={(event) => setAgentRequiredTokens(event.currentTarget.value)} placeholder='Optional. e.g. minimax or ["minimax"]' />
-              <p class="form-hint">Forge automatically adds provider credentials for the selected runner and `linear` for issue sync.</p>
-            </div>
-            <div class="modal-actions">
-              <button class="btn" onClick={() => setShowAgentDispatchModal(false)}>Cancel</button>
-              <button
-                class="btn btn-primary"
-                onClick={() => {
-                  void (async () => {
-                    try {
-                      await dispatchAgent(
-                        agentIssueId(),
-                        agentWorktreePath(),
-                        agentModel(),
-                        agentPrompt(),
-                        agentRequiredTokens(),
-                      );
-                      setShowAgentDispatchModal(false);
-                      setAgentIssueId("");
-                      setAgentWorktreePath("");
-                      setAgentModel("codex");
-                      setAgentPrompt("");
-                      setAgentRequiredTokens("");
-                    } catch (error) {
-                      console.error(error);
-                      alert("Error dispatching agent: " + error);
-                    }
-                  })();
-                }}
-              >
-                Launch Agent
-              </button>
             </div>
           </div>
         </div>

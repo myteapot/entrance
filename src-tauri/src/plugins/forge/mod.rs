@@ -3,7 +3,10 @@ pub mod engine;
 pub mod http;
 
 use std::{
+    env,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
+    path::{Path, PathBuf},
+    process::Command,
     sync::{Arc, Mutex},
 };
 
@@ -12,11 +15,13 @@ use crate::{
         data_store::{DataStore, MigrationStep, StoredForgeTask, StoredForgeTaskLog},
         event_bus::EventBus,
     },
+    plugins::vault::VaultCipher,
     plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
 };
 use anyhow::Result;
 use engine::TaskEngine;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::async_runtime::JoinHandle;
 
 const MANIFEST: Manifest = Manifest {
@@ -77,6 +82,62 @@ pub struct ForgeTaskMetadata {
     pub worktree_path: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreparedAgentDispatch {
+    pub issue_id: String,
+    pub issue_status: String,
+    pub issue_status_source: String,
+    pub issue_title: Option<String>,
+    pub project_root: String,
+    pub worktree_path: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone)]
+struct DispatchPaths {
+    issue_id: String,
+    project_root: String,
+    worktree_path: String,
+}
+
+#[derive(Debug, Clone)]
+struct LinearIssueSummary {
+    issue_status: String,
+    issue_title: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinearIssueEnvelope {
+    data: Option<LinearIssueData>,
+    errors: Option<Vec<LinearGraphQlError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinearIssueData {
+    issues: LinearIssueConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinearIssueConnection {
+    nodes: Vec<LinearIssueNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinearIssueNode {
+    title: String,
+    state: LinearIssueState,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinearIssueState {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinearGraphQlError {
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,6 +268,39 @@ impl ForgePlugin {
     }
 }
 
+pub async fn prepare_agent_dispatch(
+    data_store: DataStore,
+) -> Result<PreparedAgentDispatch, String> {
+    let paths = tauri::async_runtime::spawn_blocking(resolve_dispatch_paths)
+        .await
+        .map_err(|error| error.to_string())??;
+
+    let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
+    let (issue_status, issue_status_source) = match issue_summary.as_ref() {
+        Some(summary) => (summary.issue_status.clone(), "linear".to_string()),
+        None => ("Todo".to_string(), "fallback".to_string()),
+    };
+    let task = build_agent_task_text(&paths.issue_id, issue_summary.as_ref());
+    let project_root = paths.project_root.clone();
+    let issue_id = paths.issue_id.clone();
+    let issue_status_for_prompt = issue_status.clone();
+    let prompt = tauri::async_runtime::spawn_blocking(move || {
+        generate_agent_prompt(&project_root, &issue_id, &issue_status_for_prompt, &task)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    Ok(PreparedAgentDispatch {
+        issue_id: paths.issue_id,
+        issue_status,
+        issue_status_source,
+        issue_title: issue_summary.map(|summary| summary.issue_title),
+        project_root: paths.project_root,
+        worktree_path: paths.worktree_path,
+        prompt,
+    })
+}
+
 pub(crate) fn build_agent_task_request(
     issue_id: String,
     worktree_path: String,
@@ -323,6 +417,229 @@ fn split_runner_and_variant(model: &str) -> (&str, Option<&str>) {
     }
 }
 
+fn resolve_dispatch_paths() -> Result<DispatchPaths, String> {
+    let cwd = env::current_dir().map_err(|error| error.to_string())?;
+    let worktree_root = run_git_command(&cwd, ["rev-parse", "--show-toplevel"])?;
+    let git_common_dir = run_git_command(&cwd, ["rev-parse", "--git-common-dir"])?;
+    let branch = run_git_command(&cwd, ["branch", "--show-current"])?;
+    let worktree_path = normalize_command_path(&cwd, &worktree_root);
+    let common_dir = normalize_command_path(&cwd, &git_common_dir);
+    let project_root = common_dir.parent().ok_or_else(|| {
+        format!(
+            "Unable to resolve project root from `{}`",
+            common_dir.display()
+        )
+    })?;
+    let issue_id = parse_issue_id_from_branch(&branch)?;
+
+    Ok(DispatchPaths {
+        issue_id,
+        project_root: project_root.to_string_lossy().replace('\\', "/"),
+        worktree_path: worktree_path.to_string_lossy().replace('\\', "/"),
+    })
+}
+
+fn run_git_command<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|error| error.to_string())?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let command = format!("git {}", args.join(" "));
+        return Err(if stderr.is_empty() {
+            format!("`{command}` failed")
+        } else {
+            format!("`{command}` failed: {stderr}")
+        });
+    }
+
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn normalize_command_path(cwd: &Path, raw: &str) -> PathBuf {
+    let candidate = PathBuf::from(raw.trim());
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        cwd.join(candidate)
+    }
+}
+
+fn parse_issue_id_from_branch(branch: &str) -> Result<String, String> {
+    let candidate = branch.trim().rsplit('/').next().unwrap_or(branch.trim());
+    match candidate.strip_prefix("feat-") {
+        Some(issue_id) if !issue_id.trim().is_empty() => Ok(issue_id.trim().to_string()),
+        _ => Err(format!(
+            "Current branch `{}` is not an issue worktree branch. Open Entrance from a `feat-<ISSUE>` worktree to use auto-dispatch.",
+            branch.trim()
+        )),
+    }
+}
+
+async fn fetch_linear_issue_summary(
+    data_store: DataStore,
+    issue_id: &str,
+) -> Result<Option<LinearIssueSummary>, String> {
+    let Some(token) = resolve_linear_token(&data_store)? else {
+        return Ok(None);
+    };
+
+    let response = reqwest::Client::new()
+        .post("https://api.linear.app/graphql")
+        .header("Authorization", token)
+        .json(&json!({
+            "query": "query AutoDispatchIssue($identifier: String!) { issues(filter: { identifier: { eq: $identifier } }, first: 1) { nodes { title state { name } } } }",
+            "variables": {
+                "identifier": issue_id,
+            },
+        }))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let payload = response
+        .json::<LinearIssueEnvelope>()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if let Some(errors) = payload.errors {
+        let summary = errors
+            .into_iter()
+            .map(|error| error.message)
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!("Linear issue lookup failed: {summary}"));
+    }
+
+    let issue = payload
+        .data
+        .and_then(|data| data.issues.nodes.into_iter().next())
+        .map(|issue| LinearIssueSummary {
+            issue_status: issue.state.name,
+            issue_title: issue.title,
+        });
+
+    Ok(issue)
+}
+
+fn resolve_linear_token(data_store: &DataStore) -> Result<Option<String>, String> {
+    for key in ["LINEAR_API_KEY", "LINEAR_TOKEN"] {
+        if let Ok(value) = env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(Some(trimmed.to_string()));
+            }
+        }
+    }
+
+    let Some(token) = data_store
+        .get_vault_token_by_provider("linear")
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    let cipher = VaultCipher::from_device().map_err(|error| error.to_string())?;
+    let value = cipher
+        .decrypt(&token.encrypted_value)
+        .map_err(|error| error.to_string())?;
+    let trimmed = value.trim();
+
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+fn build_agent_task_text(issue_id: &str, issue_summary: Option<&LinearIssueSummary>) -> String {
+    match issue_summary {
+        Some(summary) if summary.issue_status.eq_ignore_ascii_case("Request") => format!(
+            "按 Dev 审核意见返工 Linear issue {issue_id}: {}",
+            summary.issue_title
+        ),
+        Some(summary) => format!("完成 Linear issue {issue_id}: {}", summary.issue_title),
+        None => {
+            format!("完成 Linear issue {issue_id}，以 issue description、验收标准和最新评论为准")
+        }
+    }
+}
+
+fn generate_agent_prompt(
+    project_root: &str,
+    issue_id: &str,
+    issue_status: &str,
+    task: &str,
+) -> Result<String, String> {
+    let output = Command::new("python")
+        .arg("A:/.agents/nota/scripts/control.py")
+        .arg("prompt")
+        .arg(project_root)
+        .arg(issue_id)
+        .arg(issue_status)
+        .arg(task)
+        .output()
+        .map_err(|error| error.to_string())?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Failed to generate Agent prompt with control.py".to_string()
+        } else {
+            format!("Failed to generate Agent prompt with control.py: {stderr}")
+        });
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+    extract_generated_prompt(&stdout)
+}
+
+fn extract_generated_prompt(output: &str) -> Result<String, String> {
+    const MARKER: &str = "GENERATED AGENT PROMPT";
+
+    let mut marker_seen = false;
+    let mut collecting = false;
+    let mut buffer = Vec::new();
+
+    for line in output.lines() {
+        if !marker_seen {
+            if line.contains(MARKER) {
+                marker_seen = true;
+            }
+            continue;
+        }
+
+        if !collecting {
+            if line.starts_with('=') {
+                collecting = true;
+            }
+            continue;
+        }
+
+        if line.starts_with('=') {
+            break;
+        }
+
+        if buffer.is_empty() && line.trim().is_empty() {
+            continue;
+        }
+
+        buffer.push(line);
+    }
+
+    let prompt = buffer.join("\n").trim().to_string();
+    if prompt.is_empty() {
+        Err("control.py did not return a generated Agent prompt".to_string())
+    } else {
+        Ok(prompt)
+    }
+}
+
 impl Plugin for ForgePlugin {
     fn manifest(&self) -> &Manifest {
         &self.manifest
@@ -345,6 +662,10 @@ impl Plugin for ForgePlugin {
             TauriCommandDefinition {
                 name: "forge_dispatch_agent",
                 description: "Launch an Agent task from structured issue metadata",
+            },
+            TauriCommandDefinition {
+                name: "forge_prepare_agent_dispatch",
+                description: "Prepare a one-click Agent dispatch from the current worktree context",
             },
             TauriCommandDefinition {
                 name: "forge_list_tasks",
@@ -406,7 +727,7 @@ impl Plugin for ForgePlugin {
 
 #[cfg(test)]
 mod tests {
-    use super::build_agent_task_request;
+    use super::{build_agent_task_request, extract_generated_prompt, parse_issue_id_from_branch};
 
     #[test]
     fn codex_agent_requests_are_translated_into_cli_tasks() {
@@ -431,5 +752,28 @@ mod tests {
         assert!(request.required_tokens.contains("openai"));
         assert!(request.required_tokens.contains("linear"));
         assert!(request.metadata.contains("\"issue_id\":\"MYT-48\""));
+    }
+
+    #[test]
+    fn issue_ids_are_parsed_from_feature_branches() {
+        assert_eq!(
+            parse_issue_id_from_branch("feat-MYT-48").expect("feature branch should parse"),
+            "MYT-48"
+        );
+        assert_eq!(
+            parse_issue_id_from_branch("codex/feat-MYT-99")
+                .expect("scoped feature branch should parse"),
+            "MYT-99"
+        );
+    }
+
+    #[test]
+    fn generated_prompt_is_extracted_from_control_output() {
+        let prompt = extract_generated_prompt(
+            "============================================================\nGENERATED AGENT PROMPT\n============================================================\n\nprompt line 1\nprompt line 2\n============================================================\n\nCopy the prompt above into a new Agent window.\n",
+        )
+        .expect("prompt should be extracted");
+
+        assert_eq!(prompt, "prompt line 1\nprompt line 2");
     }
 }
