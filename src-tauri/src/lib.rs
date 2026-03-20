@@ -7,8 +7,14 @@ use serde::Serialize;
 use tauri::Manager;
 
 use core::{
-    bootstrap_for_paths, event_bus::EventBus, hotkey, logging::LoggingSystem,
-    plugin_manager::PluginManager, theme::ThemeSystem, AppPaths,
+    bootstrap_for_paths,
+    event_bus::EventBus,
+    hotkey,
+    logging::LoggingSystem,
+    mcp_server::{McpPluginSet, McpServer, McpTransport},
+    plugin_manager::PluginManager,
+    theme::ThemeSystem,
+    AppPaths,
 };
 use plugins::{
     forge::commands::{forge_cancel_task, forge_create_task, forge_get_task, forge_list_tasks},
@@ -57,26 +63,43 @@ fn setup_application<R: tauri::Runtime>(
     let app_context = AppContext::new(data_store.clone(), event_bus.clone());
 
     let mut plugin_manager = PluginManager::default();
+    let mut launcher_plugin_state = None;
     if startup.launcher_enabled() {
         let launcher_plugin = LauncherPlugin::new(data_store.clone());
         plugin_manager.register(Arc::new(launcher_plugin.clone()));
-        app.manage(launcher_plugin);
+        app.manage(launcher_plugin.clone());
+        launcher_plugin_state = Some(launcher_plugin);
     }
 
+    let mut forge_plugin_state = None;
     if startup.forge_enabled() {
         let forge_plugin = plugins::forge::ForgePlugin::new(data_store.clone(), event_bus.clone());
         plugin_manager.register(Arc::new(forge_plugin.clone()));
-        app.manage(forge_plugin);
+        app.manage(forge_plugin.clone());
+        forge_plugin_state = Some(forge_plugin);
     }
 
+    let mut vault_plugin_state = None;
     if startup.vault_enabled() {
         let vault_plugin = VaultPlugin::new(data_store.clone())?;
         plugin_manager.register(Arc::new(vault_plugin.clone()));
-        app.manage(vault_plugin);
+        app.manage(vault_plugin.clone());
+        vault_plugin_state = Some(vault_plugin);
     }
 
     plugin_manager.init_all(&app_context)?;
     app.manage(plugin_manager);
+
+    if startup.mcp_enabled() {
+        app.manage(McpServer::new(
+            McpTransport::InProcess,
+            McpPluginSet {
+                forge: forge_plugin_state,
+                launcher: launcher_plugin_state,
+                vault: vault_plugin_state,
+            },
+        ));
+    }
 
     if let Some(shortcut) = launcher_hotkey.as_deref() {
         hotkey::register_launcher_shortcut(app, shortcut)?;

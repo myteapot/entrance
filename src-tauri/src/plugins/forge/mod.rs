@@ -1,14 +1,14 @@
 pub mod commands;
 pub mod engine;
 
-use std::sync::Arc;
-use anyhow::Result;
 use crate::{
     core::data_store::{DataStore, MigrationStep, StoredForgeTask},
     core::event_bus::EventBus,
     plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
 };
+use anyhow::Result;
 use engine::TaskEngine;
+use std::sync::Arc;
 
 const MANIFEST: Manifest = Manifest {
     name: "forge",
@@ -99,20 +99,16 @@ impl Plugin for ForgePlugin {
     fn mcp_tools(&self) -> Vec<McpToolDefinition> {
         vec![
             McpToolDefinition {
-                name: "forge.create_task",
-                description: "Create a new forge task",
+                name: "forge_run",
+                description: "Create and start a Forge task.",
             },
             McpToolDefinition {
-                name: "forge.list_tasks",
-                description: "List all forge tasks",
+                name: "forge_status",
+                description: "Fetch the current status of a Forge task.",
             },
             McpToolDefinition {
-                name: "forge.get_task",
-                description: "Get a forge task by ID",
-            },
-            McpToolDefinition {
-                name: "forge.cancel_task",
-                description: "Cancel a running forge task",
+                name: "forge_cancel",
+                description: "Cancel a running Forge task.",
             },
         ]
     }

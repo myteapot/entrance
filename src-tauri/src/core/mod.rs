@@ -86,6 +86,10 @@ impl StartupState {
         &self.config.core.log_level
     }
 
+    pub fn mcp_enabled(&self) -> bool {
+        self.config.core.mcp_enabled
+    }
+
     pub fn launcher_enabled(&self) -> bool {
         self.config.plugins.launcher.enabled
     }

@@ -1,6 +1,7 @@
 [core]
 theme = "dark"
 log_level = "info"
+mcp_enabled = true
 
 [plugins.launcher]
 enabled = true

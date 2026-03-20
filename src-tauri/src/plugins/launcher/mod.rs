@@ -169,11 +169,11 @@ impl Plugin for LauncherPlugin {
     fn mcp_tools(&self) -> Vec<McpToolDefinition> {
         vec![
             McpToolDefinition {
-                name: "launcher.search",
+                name: "launcher_search",
                 description: "Search indexed local applications.",
             },
             McpToolDefinition {
-                name: "launcher.launch",
+                name: "launcher_launch",
                 description: "Launch an indexed local application.",
             },
         ]

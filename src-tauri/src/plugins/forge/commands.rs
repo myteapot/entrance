@@ -1,6 +1,6 @@
-use tauri::State;
-use crate::plugins::forge::ForgePlugin;
 use crate::core::data_store::StoredForgeTask;
+use crate::plugins::forge::ForgePlugin;
+use tauri::State;
 
 #[tauri::command]
 pub fn forge_create_task(
@@ -9,7 +9,9 @@ pub fn forge_create_task(
     args: String, // Expected JSON array string
     forge: State<'_, ForgePlugin>,
 ) -> Result<i64, String> {
-    let id = forge.create_task(&name, &command, &args).map_err(|e| e.to_string())?;
+    let id = forge
+        .create_task(&name, &command, &args)
+        .map_err(|e| e.to_string())?;
     forge.engine().spawn_task(id).map_err(|e| e.to_string())?;
     Ok(id)
 }
@@ -20,7 +22,10 @@ pub fn forge_list_tasks(forge: State<'_, ForgePlugin>) -> Result<Vec<StoredForge
 }
 
 #[tauri::command]
-pub fn forge_get_task(id: i64, forge: State<'_, ForgePlugin>) -> Result<Option<StoredForgeTask>, String> {
+pub fn forge_get_task(
+    id: i64,
+    forge: State<'_, ForgePlugin>,
+) -> Result<Option<StoredForgeTask>, String> {
     forge.get_task(id).map_err(|e| e.to_string())
 }
 

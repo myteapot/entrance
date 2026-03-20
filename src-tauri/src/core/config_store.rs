@@ -31,6 +31,8 @@ pub struct CoreConfig {
     pub theme: String,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    #[serde(default = "default_true")]
+    pub mcp_enabled: bool,
 }
 
 impl Default for CoreConfig {
@@ -38,6 +40,7 @@ impl Default for CoreConfig {
         Self {
             theme: default_theme(),
             log_level: default_log_level(),
+            mcp_enabled: default_true(),
         }
     }
 }
@@ -143,6 +146,10 @@ impl ConfigStore {
 
     pub fn log_level(&self) -> &str {
         &self.config.core.log_level
+    }
+
+    pub fn mcp_enabled(&self) -> bool {
+        self.config.core.mcp_enabled
     }
 
     pub fn set_theme(&mut self, theme: impl Into<String>) -> Result<()> {
