@@ -148,28 +148,12 @@ impl Plugin for VaultPlugin {
     fn mcp_tools(&self) -> Vec<McpToolDefinition> {
         vec![
             McpToolDefinition {
-                name: "vault.list_tokens",
-                description: "List stored token metadata.",
-            },
-            McpToolDefinition {
-                name: "vault.add_token",
-                description: "Store an encrypted provider token.",
-            },
-            McpToolDefinition {
-                name: "vault.delete_token",
-                description: "Delete an encrypted provider token.",
-            },
-            McpToolDefinition {
-                name: "vault.get_token",
+                name: "vault_get_token",
                 description: "Decrypt and return a provider token.",
             },
             McpToolDefinition {
-                name: "vault.list_mcp",
+                name: "vault_list_mcp",
                 description: "List configured MCP endpoints.",
-            },
-            McpToolDefinition {
-                name: "vault.update_mcp",
-                description: "Create or update an MCP endpoint configuration.",
             },
         ]
     }

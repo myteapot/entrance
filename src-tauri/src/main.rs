@@ -2,5 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    entrance_lib::run()
+    if let Err(error) = entrance_lib::dispatch_cli_or_run() {
+        eprintln!("{error:?}");
+        std::process::exit(1);
+    }
 }

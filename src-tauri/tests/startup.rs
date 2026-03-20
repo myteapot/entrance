@@ -50,6 +50,7 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
     assert!(paths.db_path().exists());
     assert_eq!(startup.theme(), "dark");
     assert_eq!(startup.log_level(), "info");
+    assert!(startup.mcp_enabled());
     assert!(startup.launcher_enabled());
     assert_eq!(startup.launcher_hotkey(), Some("Alt+Space"));
     assert_eq!(startup.forge_http_port(), 9721);
@@ -93,6 +94,7 @@ fn startup_only_runs_enabled_plugin_migrations() -> Result<()> {
         r#"[core]
 theme = "dark"
 log_level = "info"
+mcp_enabled = false
 
 [plugins.launcher]
 enabled = false
@@ -110,6 +112,7 @@ enabled = false
 
     let startup = bootstrap_for_paths(paths.clone())?;
 
+    assert!(!startup.mcp_enabled());
     assert!(!startup.launcher_enabled());
     assert_eq!(startup.launcher_hotkey(), None);
     assert_tables_exist(
@@ -131,6 +134,7 @@ fn config_changes_take_effect_after_restart() -> Result<()> {
         r#"[core]
 theme = "dark"
 log_level = "info"
+mcp_enabled = false
 
 [plugins.launcher]
 enabled = false
@@ -148,6 +152,7 @@ enabled = false
 
     let first_start = bootstrap_for_paths(paths.clone())?;
     assert_eq!(first_start.theme(), "dark");
+    assert!(!first_start.mcp_enabled());
     assert!(!first_start.launcher_enabled());
     assert!(!table_exists(paths.db_path(), "plugin_launcher_apps")?);
 
@@ -156,6 +161,7 @@ enabled = false
         r#"[core]
 theme = "light"
 log_level = "debug"
+mcp_enabled = true
 
 [plugins.launcher]
 enabled = true
@@ -175,6 +181,7 @@ enabled = false
 
     assert_eq!(second_start.theme(), "light");
     assert_eq!(second_start.log_level(), "debug");
+    assert!(second_start.mcp_enabled());
     assert!(second_start.launcher_enabled());
     assert_eq!(second_start.launcher_hotkey(), Some("Ctrl+Space"));
     assert!(second_start.forge_enabled());
@@ -196,6 +203,7 @@ fn vault_migrations_run_when_plugin_is_enabled() -> Result<()> {
         r#"[core]
 theme = "dark"
 log_level = "info"
+mcp_enabled = true
 
 [plugins.launcher]
 enabled = false
