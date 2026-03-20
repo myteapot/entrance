@@ -1,14 +1,23 @@
 pub mod commands;
 pub mod engine;
+pub mod http;
 
-use std::sync::Arc;
-use anyhow::Result;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
+    sync::{Arc, Mutex},
+};
+
 use crate::{
-    core::data_store::{DataStore, MigrationStep, StoredForgeTask},
-    core::event_bus::EventBus,
+    core::{
+        data_store::{DataStore, MigrationStep, StoredForgeTask, StoredForgeTaskLog},
+        event_bus::EventBus,
+    },
     plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
 };
+use anyhow::Result;
 use engine::TaskEngine;
+use serde::Serialize;
+use tauri::async_runtime::JoinHandle;
 
 const MANIFEST: Manifest = Manifest {
     name: "forge",
@@ -16,10 +25,16 @@ const MANIFEST: Manifest = Manifest {
     description: "Agent task management and execution engine.",
 };
 
-const MIGRATIONS: [MigrationStep; 1] = [MigrationStep {
-    name: "0002_create_plugin_forge_tasks",
-    sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
-}];
+const MIGRATIONS: [MigrationStep; 2] = [
+    MigrationStep {
+        name: "0002_create_plugin_forge_tasks",
+        sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
+    },
+    MigrationStep {
+        name: "0004_create_plugin_forge_task_logs",
+        sql: include_str!("../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+    },
+];
 
 pub fn migrations() -> &'static [MigrationStep] {
     &MIGRATIONS
@@ -29,7 +44,16 @@ pub fn migrations() -> &'static [MigrationStep] {
 pub struct ForgePlugin {
     manifest: Manifest,
     data_store: DataStore,
+    event_bus: EventBus,
     engine: Arc<TaskEngine>,
+    http_server: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForgeTaskDetails {
+    #[serde(flatten)]
+    pub task: StoredForgeTask,
+    pub logs: Vec<StoredForgeTaskLog>,
 }
 
 impl ForgePlugin {
@@ -37,7 +61,9 @@ impl ForgePlugin {
         Self {
             manifest: MANIFEST,
             data_store: data_store.clone(),
+            event_bus: event_bus.clone(),
             engine: Arc::new(TaskEngine::new(data_store, event_bus)),
+            http_server: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -53,12 +79,58 @@ impl ForgePlugin {
         self.data_store.get_forge_task(id)
     }
 
+    pub fn list_task_logs(&self, id: i64) -> Result<Vec<StoredForgeTaskLog>> {
+        self.data_store.list_forge_task_logs(id)
+    }
+
+    pub fn get_task_details(&self, id: i64) -> Result<Option<ForgeTaskDetails>> {
+        let Some(task) = self.get_task(id)? else {
+            return Ok(None);
+        };
+
+        let logs = self.list_task_logs(id)?;
+        Ok(Some(ForgeTaskDetails { task, logs }))
+    }
+
     pub fn cancel_task(&self, id: i64) -> Result<()> {
         self.engine.cancel_task(id)
     }
 
     pub fn engine(&self) -> Arc<TaskEngine> {
         self.engine.clone()
+    }
+
+    pub fn subscribe_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::core::event_bus::EventPayload> {
+        self.event_bus.subscribe()
+    }
+
+    pub fn start_http_server(&self, port: u16) -> Result<()> {
+        let mut server = self
+            .http_server
+            .lock()
+            .map_err(|_| anyhow::anyhow!("forge HTTP server lock poisoned"))?;
+
+        if server.is_some() {
+            return Ok(());
+        }
+
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        let listener = StdTcpListener::bind(address)?;
+        listener.set_nonblocking(true)?;
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let app = http::router(self.clone());
+
+        let handle = tauri::async_runtime::spawn(async move {
+            if let Err(error) = axum::serve(listener, app).await {
+                tracing::error!(?error, "forge HTTP server stopped unexpectedly");
+            }
+        });
+
+        *server = Some(handle);
+        tracing::info!("forge HTTP API listening on http://127.0.0.1:{port}");
+        Ok(())
     }
 }
 
@@ -118,6 +190,11 @@ impl Plugin for ForgePlugin {
     }
 
     fn shutdown(&self) -> Result<()> {
+        if let Ok(mut server) = self.http_server.lock() {
+            if let Some(handle) = server.take() {
+                handle.abort();
+            }
+        }
         Ok(())
     }
 }
