@@ -14,7 +14,8 @@ pub fn register_launcher_shortcut<R: Runtime, M: Manager<R>>(
     manager: &M,
     shortcut: &str,
 ) -> Result<()> {
-    let event_bus = EventBus;
+
+    let event_bus = EventBus::new();
 
     Ok(manager
         .global_shortcut()

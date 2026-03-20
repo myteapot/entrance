@@ -7,11 +7,12 @@ use serde::Serialize;
 use tauri::Manager;
 
 use core::{
-    bootstrap_for_paths, hotkey, logging::LoggingSystem, plugin_manager::PluginManager,
-    theme::ThemeSystem, AppPaths,
+    bootstrap_for_paths, hotkey, event_bus::EventBus, logging::LoggingSystem,
+    plugin_manager::PluginManager, theme::ThemeSystem, AppPaths,
 };
 use plugins::{
     launcher::{launcher_launch, launcher_pin, launcher_search, LauncherPlugin},
+    forge::commands::{forge_create_task, forge_cancel_task, forge_get_task, forge_list_tasks},
     AppContext,
 };
 
@@ -43,13 +44,22 @@ fn setup_application<R: tauri::Runtime>(
     app.manage(theme_system);
 
     let data_store = startup.data_store();
-    let app_context = AppContext::new(data_store.clone());
+    let event_bus = EventBus::new();
+    app.manage(event_bus.clone());
+
+    let app_context = AppContext::new(data_store.clone(), event_bus.clone());
 
     let mut plugin_manager = PluginManager::default();
     if startup.launcher_enabled() {
-        let launcher_plugin = LauncherPlugin::new(data_store);
+        let launcher_plugin = LauncherPlugin::new(data_store.clone());
         plugin_manager.register(Arc::new(launcher_plugin.clone()));
         app.manage(launcher_plugin);
+    }
+    
+    if startup.forge_enabled() {
+        let forge_plugin = plugins::forge::ForgePlugin::new(data_store.clone(), event_bus.clone());
+        plugin_manager.register(Arc::new(forge_plugin.clone()));
+        app.manage(forge_plugin);
     }
 
     plugin_manager.init_all(&app_context)?;
@@ -79,7 +89,11 @@ pub fn run() {
             core::theme::set_theme,
             launcher_search,
             launcher_launch,
-            launcher_pin
+            launcher_pin,
+            forge_create_task,
+            forge_list_tasks,
+            forge_get_task,
+            forge_cancel_task
         ])
         .run(tauri::generate_context!())
         .expect("error while running Entrance application");

@@ -1,18 +1,21 @@
+pub mod forge;
 pub mod launcher;
 
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::core::data_store::DataStore;
+use crate::core::event_bus::EventBus;
 
 #[derive(Debug, Clone)]
 pub struct AppContext {
     pub data_store: DataStore,
+    pub event_bus: EventBus,
 }
 
 impl AppContext {
-    pub fn new(data_store: DataStore) -> Self {
-        Self { data_store }
+    pub fn new(data_store: DataStore, event_bus: EventBus) -> Self {
+        Self { data_store, event_bus }
     }
 }
 

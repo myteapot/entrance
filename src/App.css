@@ -1,61 +1,7 @@
-:root {
-  color-scheme: dark;
-  font-family: "Segoe UI Variable", "PingFang SC", "Noto Sans SC", sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-  font-weight: 400;
-  color: #f7efe6;
-  background:
-    radial-gradient(circle at top left, rgba(216, 127, 61, 0.18), transparent 30%),
-    radial-gradient(circle at bottom right, rgba(73, 110, 154, 0.22), transparent 28%),
-    linear-gradient(140deg, #0f161d 0%, #16212e 48%, #0c131a 100%);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-  --border-soft: rgba(247, 239, 230, 0.12);
-  --border-strong: rgba(216, 127, 61, 0.32);
-  --surface: rgba(14, 22, 31, 0.74);
-  --surface-strong: rgba(19, 30, 43, 0.92);
-  --surface-panel: rgba(24, 34, 46, 0.88);
-  --text-muted: rgba(247, 239, 230, 0.72);
-  --text-soft: rgba(247, 239, 230, 0.52);
-  --accent: #d87f3d;
-  --accent-soft: rgba(216, 127, 61, 0.16);
-  --shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
-}
-
-* {
-  box-sizing: border-box;
-}
-
-html,
-body,
-#root {
-  min-height: 100vh;
-}
-
-body {
-  margin: 0;
-  min-width: 320px;
-}
-
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-code {
-  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-}
+/* ═══════════════════════════════════════════════════════════════
+   Entrance — App Shell & Component Styles
+   Design tokens & reset: see styles/theme.css + styles/global.css
+   ═══════════════════════════════════════════════════════════════ */
 
 .app-shell {
   min-height: 100vh;
@@ -72,7 +18,7 @@ code {
   border-radius: 28px;
   background: var(--surface);
   backdrop-filter: blur(20px);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-lg);
 }
 
 .sidebar {
@@ -97,7 +43,7 @@ code {
 .sidebar::before {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 22%),
-    radial-gradient(circle at top, rgba(216, 127, 61, 0.11), transparent 38%);
+    radial-gradient(circle at top, var(--accent-glow), transparent 38%);
 }
 
 .sidebar__brand {
@@ -139,7 +85,7 @@ code {
 .page__eyebrow,
 .dashboard-panel__eyebrow,
 .dashboard-card__caption {
-  color: #f0b07f;
+  color: var(--accent-text);
 }
 
 .sidebar__title {
@@ -150,7 +96,7 @@ code {
 
 .sidebar__summary {
   margin: 0;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 0.95rem;
 }
 
@@ -169,12 +115,8 @@ code {
   grid-template-columns: auto 1fr auto;
   gap: 14px;
   align-items: center;
-  color: var(--text-muted);
-  transition:
-    transform 140ms ease,
-    border-color 140ms ease,
-    background-color 140ms ease,
-    color 140ms ease;
+  color: var(--text-secondary);
+  transition: var(--transition-interactive);
 }
 
 .sidebar__link:hover {
@@ -188,7 +130,7 @@ code {
   background:
     linear-gradient(135deg, rgba(216, 127, 61, 0.16), rgba(216, 127, 61, 0.04)),
     rgba(255, 255, 255, 0.02);
-  color: #fff6ef;
+  color: var(--text-primary);
 }
 
 .sidebar__glyph {
@@ -206,7 +148,7 @@ code {
 
 .sidebar__link.is-active .sidebar__glyph {
   background: linear-gradient(180deg, rgba(216, 127, 61, 0.92), rgba(194, 90, 36, 0.92));
-  color: #160f0a;
+  color: var(--text-inverse);
 }
 
 .sidebar__copy {
@@ -220,7 +162,7 @@ code {
 }
 
 .sidebar__detail {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   font-size: 0.84rem;
 }
 
@@ -228,7 +170,7 @@ code {
   padding: 4px 8px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.04);
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   font-size: 0.72rem;
   letter-spacing: 0.04em;
 }
@@ -247,7 +189,7 @@ code {
 
 .sidebar__hint {
   margin: 0;
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   font-size: 0.82rem;
 }
 
@@ -286,7 +228,7 @@ code {
 .page__summary {
   margin: 0;
   max-width: 720px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 1.02rem;
 }
 
@@ -302,7 +244,7 @@ code {
   border-radius: 24px;
   border: 1px solid rgba(247, 239, 230, 0.08);
   background: var(--surface-panel);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  box-shadow: var(--shadow-inner);
 }
 
 .dashboard-card {
@@ -321,7 +263,7 @@ code {
 .dashboard-panel p,
 .placeholder-panel p {
   margin: 0;
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .dashboard-panel {
@@ -343,7 +285,7 @@ code {
   padding: 8px 12px;
   border-radius: 12px;
   background: var(--accent-soft);
-  color: #ffd5b7;
+  color: var(--code-text);
 }
 
 @media (max-width: 1100px) {

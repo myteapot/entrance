@@ -57,6 +57,18 @@ pub struct StoredLauncherApp {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredForgeTask {
+    pub id: i64,
+    pub name: String,
+    pub command: String,
+    pub args: String, // JSON
+    pub status: String,
+    pub exit_code: Option<i64>,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct DataStore {
     connection: Arc<Mutex<Connection>>,
@@ -306,6 +318,74 @@ impl DataStore {
         Ok(())
     }
 
+    pub fn insert_forge_task(&self, name: &str, command: &str, args: &str) -> Result<i64> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO plugin_forge_tasks (
+                    name, command, args, status, exit_code, created_at, finished_at
+                ) VALUES (?1, ?2, ?3, 'Pending', NULL, ?4, NULL)
+                "#,
+                params![name, command, args, now],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    pub fn update_forge_task_status(&self, id: i64, status: &str, exit_code: Option<i32>) -> Result<()> {
+        let now = if matches!(status, "Done" | "Failed" | "Cancelled") {
+            Some(Utc::now().to_rfc3339())
+        } else {
+            None
+        };
+        self.with_connection(|conn| {
+            if let Some(finished_at) = now {
+                conn.execute(
+                    r#"
+                    UPDATE plugin_forge_tasks
+                    SET status = ?2, exit_code = ?3, finished_at = ?4
+                    WHERE id = ?1
+                    "#,
+                    params![id, status, exit_code, finished_at],
+                )?;
+            } else {
+                conn.execute(
+                    r#"
+                    UPDATE plugin_forge_tasks
+                    SET status = ?2, exit_code = ?3
+                    WHERE id = ?1
+                    "#,
+                    params![id, status, exit_code],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn list_forge_tasks(&self) -> Result<Vec<StoredForgeTask>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, command, args, status, exit_code, created_at, finished_at FROM plugin_forge_tasks ORDER BY created_at DESC"
+            )?;
+            let rows = stmt.query_map([], map_forge_row)?;
+            let tasks = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(tasks)
+        })
+    }
+
+    pub fn get_forge_task(&self, id: i64) -> Result<Option<StoredForgeTask>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT id, name, command, args, status, exit_code, created_at, finished_at FROM plugin_forge_tasks WHERE id = ?1",
+                [id],
+                map_forge_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
     fn migrate(&self, migration_plan: MigrationPlan<'_>) -> Result<()> {
         self.with_connection(|connection| {
             for migration in migration_plan
@@ -350,6 +430,19 @@ fn map_launcher_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredLauncherA
         pinned: row.get::<_, i64>(10)? != 0,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
+    })
+}
+
+fn map_forge_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTask> {
+    Ok(StoredForgeTask {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        command: row.get(2)?,
+        args: row.get(3)?,
+        status: row.get(4)?,
+        exit_code: row.get(5)?,
+        created_at: row.get(6)?,
+        finished_at: row.get(7)?,
     })
 }
 
