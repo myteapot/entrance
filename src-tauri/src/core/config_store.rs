@@ -136,6 +136,19 @@ impl ConfigStore {
     pub fn config(&self) -> &EntranceConfig {
         &self.config
     }
+
+    pub fn theme(&self) -> &str {
+        &self.config.core.theme
+    }
+
+    pub fn log_level(&self) -> &str {
+        &self.config.core.log_level
+    }
+
+    pub fn set_theme(&mut self, theme: impl Into<String>) -> Result<()> {
+        self.config.core.theme = theme.into();
+        write_config_file(&self.path, &self.config)
+    }
 }
 
 fn write_config_file(path: &Path, config: &EntranceConfig) -> Result<()> {

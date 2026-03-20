@@ -26,6 +26,7 @@ pub struct AppPaths {
     app_data_dir: PathBuf,
     config_path: PathBuf,
     db_path: PathBuf,
+    log_dir: PathBuf,
 }
 
 impl AppPaths {
@@ -34,6 +35,7 @@ impl AppPaths {
         Self {
             config_path: app_data_dir.join("entrance.toml"),
             db_path: app_data_dir.join("entrance.db"),
+            log_dir: app_data_dir.join("logs"),
             app_data_dir,
         }
     }
@@ -49,12 +51,17 @@ impl AppPaths {
     pub fn db_path(&self) -> &Path {
         &self.db_path
     }
+
+    pub fn log_dir(&self) -> &Path {
+        &self.log_dir
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct StartupState {
     paths: AppPaths,
     config: EntranceConfig,
+    config_store: ConfigStore,
     data_store: DataStore,
 }
 
@@ -65,6 +72,10 @@ impl StartupState {
 
     pub fn data_store(&self) -> DataStore {
         self.data_store.clone()
+    }
+
+    pub fn config_store(&self) -> ConfigStore {
+        self.config_store.clone()
     }
 
     pub fn theme(&self) -> &str {
@@ -101,6 +112,7 @@ pub fn bootstrap_for_paths(paths: AppPaths) -> Result<StartupState> {
     Ok(StartupState {
         paths,
         config,
+        config_store,
         data_store,
     })
 }

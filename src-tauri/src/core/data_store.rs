@@ -115,6 +115,19 @@ impl DataStore {
         })
     }
 
+    pub fn append_core_event_log(&self, topic: &str, payload: Option<&str>) -> Result<()> {
+        self.with_connection(|connection| {
+            connection.execute(
+                r#"
+                INSERT INTO core_event_log (topic, payload)
+                VALUES (?1, ?2)
+                "#,
+                params![topic, payload],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn upsert_launcher_apps(&self, apps: &[DiscoveredApp]) -> Result<()> {
         if apps.is_empty() {
             return Ok(());

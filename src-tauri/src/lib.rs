@@ -6,7 +6,10 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::Manager;
 
-use core::{bootstrap_for_paths, hotkey, plugin_manager::PluginManager, AppPaths};
+use core::{
+    bootstrap_for_paths, hotkey, logging::LoggingSystem, plugin_manager::PluginManager,
+    theme::ThemeSystem, AppPaths,
+};
 use plugins::{
     launcher::{launcher_launch, launcher_pin, launcher_search, LauncherPlugin},
     AppContext,
@@ -26,6 +29,18 @@ fn setup_application<R: tauri::Runtime>(
     app.manage(LauncherUiState {
         hotkey: launcher_hotkey.clone(),
     });
+
+    let logging_system = LoggingSystem::init(
+        startup.paths().log_dir(),
+        startup.log_level(),
+        Some(startup.data_store()),
+    )?;
+    app.manage(logging_system);
+
+    let theme_system = ThemeSystem::new(startup.config_store());
+    let app_handle = app.handle().clone();
+    theme_system.emit_current_theme(&app_handle)?;
+    app.manage(theme_system);
 
     let data_store = startup.data_store();
     let app_context = AppContext::new(data_store.clone());
@@ -60,6 +75,8 @@ pub fn run() {
         .setup(setup_application)
         .invoke_handler(tauri::generate_handler![
             launcher_hotkey,
+            core::theme::get_theme,
+            core::theme::set_theme,
             launcher_search,
             launcher_launch,
             launcher_pin
