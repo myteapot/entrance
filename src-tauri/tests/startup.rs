@@ -53,8 +53,8 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
     assert!(startup.launcher_enabled());
     assert_eq!(startup.launcher_hotkey(), Some("Alt+Space"));
 
-    let config = fs::read_to_string(paths.config_path())?;
-    assert_eq!(config, render_config(&EntranceConfig::default())?);
+    let config = fs::read_to_string(paths.config_path())?.replace("\r\n", "\n");
+    assert_eq!(config, render_config(&EntranceConfig::default())?.replace("\r\n", "\n"));
 
     assert_tables_exist(
         paths.db_path(),
@@ -71,10 +71,10 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
 
 #[test]
 fn repository_default_template_matches_generated_default_config() -> Result<()> {
-    let committed_template = include_str!("../../entrance.toml");
+    let committed_template = include_str!("../../entrance.toml").replace("\r\n", "\n");
     assert_eq!(
         committed_template,
-        render_config(&EntranceConfig::default())?
+        render_config(&EntranceConfig::default())?.replace("\r\n", "\n")
     );
     Ok(())
 }

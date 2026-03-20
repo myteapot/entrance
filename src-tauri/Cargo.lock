@@ -918,6 +918,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
+ "tokio",
  "toml 0.8.2",
  "walkdir",
  "winreg 0.56.0",
