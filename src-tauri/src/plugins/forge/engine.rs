@@ -236,10 +236,6 @@ impl TaskEngine {
             return Ok(HashMap::new());
         }
 
-        let Some(cipher) = self.vault_cipher.as_ref() else {
-            return Err("Vault 当前不可用，无法注入所需凭证".to_string());
-        };
-
         let mut envs = HashMap::new();
         let mut missing = Vec::new();
 
@@ -248,6 +244,22 @@ impl TaskEngine {
             .map(|provider| provider.trim())
             .filter(|provider| !provider.is_empty())
         {
+            let env_key = provider_env_var(provider);
+
+            // 1. Check system environment variable first
+            if let Ok(value) = std::env::var(&env_key) {
+                if !value.is_empty() {
+                    envs.insert(env_key, value);
+                    continue;
+                }
+            }
+
+            // 2. Fall back to Vault
+            let Some(cipher) = self.vault_cipher.as_ref() else {
+                missing.push(provider.to_string());
+                continue;
+            };
+
             let token = self
                 .data_store
                 .get_vault_token_by_provider(provider)
@@ -261,7 +273,7 @@ impl TaskEngine {
             let value = cipher
                 .decrypt(&token.encrypted_value)
                 .map_err(|error| format!("解密 Vault 凭证 `{provider}` 失败: {error}"))?;
-            envs.insert(provider_env_var(provider), value);
+            envs.insert(env_key, value);
         }
 
         if missing.is_empty() {
