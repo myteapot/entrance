@@ -1,4 +1,4 @@
-import { createSignal, For, onMount, Show } from "solid-js";
+import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import "./Vault.css";
 import {
   addVaultToken,
@@ -14,6 +14,142 @@ import {
   type VaultMcpConfig,
   type VaultToken,
 } from "../features/vault/client";
+
+type McpSnippet = {
+  client: string;
+  path: string;
+  content: string;
+};
+
+type McpGuide = {
+  id: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+  launchLabel: string;
+  launchValue: string;
+  launchHint: string;
+  steps: string[];
+  snippets: McpSnippet[];
+};
+
+const MCP_STDIO_COMMAND = "entrance mcp stdio";
+const MCP_HTTP_COMMAND = "entrance mcp http --port 9720 --endpoint /mcp";
+const MCP_HTTP_URL = "http://127.0.0.1:9720/mcp";
+
+const renderJson = (value: unknown) => JSON.stringify(value, null, 2);
+
+const mcpSetupGuides: McpGuide[] = [
+  {
+    id: "stdio",
+    eyebrow: "Local child process",
+    title: "stdio transport",
+    description:
+      "Use stdio when Cursor, Claude, or Gemini can launch Entrance directly on the same machine. This is the lowest-friction setup for local development.",
+    launchLabel: "Launch command",
+    launchValue: MCP_STDIO_COMMAND,
+    launchHint:
+      "If `entrance` is not on PATH yet, replace it with the full executable path before saving the client config.",
+    steps: [
+      "Best for a single local machine where the MCP client can spawn Entrance on demand.",
+      "Keep the command exactly as shown unless you need an absolute executable path.",
+      "After editing the config file, reload or restart your client so the new MCP server is discovered.",
+    ],
+    snippets: [
+      {
+        client: "Cursor",
+        path: "~/.cursor/mcp.json",
+        content: renderJson({
+          mcpServers: {
+            entrance: {
+              type: "stdio",
+              command: "entrance",
+              args: ["mcp", "stdio"],
+            },
+          },
+        }),
+      },
+      {
+        client: "Claude Code",
+        path: "~/.claude.json or project .mcp.json",
+        content: renderJson({
+          mcpServers: {
+            entrance: {
+              type: "stdio",
+              command: "entrance",
+              args: ["mcp", "stdio"],
+              env: {},
+            },
+          },
+        }),
+      },
+      {
+        client: "Gemini CLI",
+        path: "~/.gemini/settings.json",
+        content: renderJson({
+          mcpServers: {
+            entrance: {
+              command: "entrance",
+              args: ["mcp", "stdio"],
+            },
+          },
+        }),
+      },
+    ],
+  },
+  {
+    id: "http",
+    eyebrow: "Shared localhost endpoint",
+    title: "HTTP transport",
+    description:
+      "Use HTTP when you want one long-running Entrance MCP endpoint on localhost and multiple clients can attach to it with a URL-based config.",
+    launchLabel: "Start server",
+    launchValue: MCP_HTTP_COMMAND,
+    launchHint:
+      "Entrance defaults to port `9720` and endpoint `/mcp`. The resulting local URL is shown below in each client snippet.",
+    steps: [
+      "Start the MCP HTTP server once in a terminal before opening your AI client.",
+      "The default streamable HTTP endpoint is `http://127.0.0.1:9720/mcp`.",
+      "If you change the port or endpoint with CLI flags, update the copied JSON snippet to match.",
+    ],
+    snippets: [
+      {
+        client: "Cursor",
+        path: "~/.cursor/mcp.json",
+        content: renderJson({
+          mcpServers: {
+            entrance: {
+              url: MCP_HTTP_URL,
+            },
+          },
+        }),
+      },
+      {
+        client: "Claude Code",
+        path: "~/.claude.json or project .mcp.json",
+        content: renderJson({
+          mcpServers: {
+            entrance: {
+              type: "http",
+              url: MCP_HTTP_URL,
+            },
+          },
+        }),
+      },
+      {
+        client: "Gemini CLI",
+        path: "~/.gemini/settings.json",
+        content: renderJson({
+          mcpServers: {
+            entrance: {
+              httpUrl: MCP_HTTP_URL,
+            },
+          },
+        }),
+      },
+    ],
+  },
+];
 
 export default function Vault() {
   const [tokens, setTokens] = createSignal<VaultToken[]>([]);
@@ -33,10 +169,12 @@ export default function Vault() {
   const [gitlabTokenValue, setGitlabTokenValue] = createSignal("");
   const [gitlabPreviewValue, setGitlabPreviewValue] = createSignal<string | null>(null);
   const [showGitlabPreview, setShowGitlabPreview] = createSignal(false);
+  const [showCopyToast, setShowCopyToast] = createSignal(false);
 
   const [newMcpName, setNewMcpName] = createSignal("");
   const [newMcpEndpoint, setNewMcpEndpoint] = createSignal("");
   const [newMcpTransport, setNewMcpTransport] = createSignal("stdio");
+  let copyToastTimer: number | undefined;
 
   const setFeedback = (message: string, tone: "success" | "error") => {
     setFeedbackTone(tone);
@@ -86,6 +224,48 @@ export default function Vault() {
   onMount(() => {
     void refreshVaultData();
   });
+
+  onCleanup(() => {
+    if (copyToastTimer !== undefined) {
+      window.clearTimeout(copyToastTimer);
+    }
+  });
+
+  const flashCopyToast = () => {
+    setShowCopyToast(true);
+    if (copyToastTimer !== undefined) {
+      window.clearTimeout(copyToastTimer);
+    }
+    copyToastTimer = window.setTimeout(() => {
+      setShowCopyToast(false);
+    }, 1600);
+  };
+
+  const copyToClipboard = async (value: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = value;
+        input.setAttribute("readonly", "");
+        input.style.position = "absolute";
+        input.style.left = "-9999px";
+        document.body.append(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+
+      flashCopyToast();
+    } catch (error) {
+      console.error("Failed to copy MCP configuration", error);
+      setFeedback(
+        error instanceof Error ? error.message : "Failed to copy to the clipboard.",
+        "error",
+      );
+    }
+  };
 
   const toggleTokenVisibility = async (id: number) => {
     const nextVisibleIds = new Set(visibleTokenIds());
@@ -286,6 +466,12 @@ export default function Vault() {
         <p class="vault-subtitle">Manage encrypted tokens and configure Model Context Protocol (MCP) servers safely.</p>
       </div>
 
+      <Show when={showCopyToast()}>
+        <div class="vault-toast" role="status" aria-live="polite">
+          Copied!
+        </div>
+      </Show>
+
       <Show when={feedbackMessage()}>
         {(message) => (
           <div class={`vault-callout vault-callout--${feedbackTone() ?? "success"}`}>
@@ -297,6 +483,76 @@ export default function Vault() {
       <Show when={isLoading()}>
         <div class="vault-loading">Loading encrypted Vault data...</div>
       </Show>
+
+      <section class="vault-section vault-section--guide">
+        <div class="vault-section-header vault-section-header--stack">
+          <div>
+            <h2 class="vault-section-title">Connect Entrance as an MCP server</h2>
+            <p class="vault-section-copy">
+              Entrance already exposes MCP over both local stdio and localhost HTTP. Copy the
+              snippet that matches your AI client, paste it into that client&apos;s config, and
+              reload the client.
+            </p>
+          </div>
+          <span class="vault-status-pill is-configured">MCP ready</span>
+        </div>
+
+        <div class="vault-mcp-guides">
+          <For each={mcpSetupGuides}>
+            {(guide) => (
+              <article class="vault-mcp-guide">
+                <div class="vault-mcp-guide__header">
+                  <div>
+                    <span class="vault-label">{guide.eyebrow}</span>
+                    <h3 class="vault-mcp-guide__title">{guide.title}</h3>
+                  </div>
+                  <button class="btn btn-primary" onClick={() => void copyToClipboard(guide.launchValue)}>
+                    Copy command
+                  </button>
+                </div>
+
+                <p class="vault-section-copy vault-section-copy--tight">{guide.description}</p>
+
+                <div class="vault-mcp-command">
+                  <div>
+                    <span class="vault-label">{guide.launchLabel}</span>
+                    <code class="vault-command-code">{guide.launchValue}</code>
+                  </div>
+                </div>
+
+                <p class="vault-form-note">{guide.launchHint}</p>
+
+                <ul class="vault-mcp-steps">
+                  <For each={guide.steps}>
+                    {(step) => <li>{step}</li>}
+                  </For>
+                </ul>
+
+                <div class="vault-mcp-snippets">
+                  <For each={guide.snippets}>
+                    {(snippet) => (
+                      <section class="vault-snippet-card">
+                        <div class="vault-snippet-card__header">
+                          <div>
+                            <span class="vault-label">{snippet.client}</span>
+                            <strong>{snippet.path}</strong>
+                          </div>
+                          <button class="btn-icon" onClick={() => void copyToClipboard(snippet.content)}>
+                            Copy JSON
+                          </button>
+                        </div>
+                        <pre class="vault-snippet-card__body">
+                          <code>{snippet.content}</code>
+                        </pre>
+                      </section>
+                    )}
+                  </For>
+                </div>
+              </article>
+            )}
+          </For>
+        </div>
+      </section>
 
       <section class="vault-section vault-section--feature">
         <div class="vault-section-header vault-section-header--stack">
