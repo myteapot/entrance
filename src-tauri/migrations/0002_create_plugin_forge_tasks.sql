@@ -1,4 +1,4 @@
-CREATE TABLE plugin_forge_tasks (
+CREATE TABLE IF NOT EXISTS plugin_forge_tasks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
     command     TEXT NOT NULL,

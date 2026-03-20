@@ -253,10 +253,17 @@ impl ForgePlugin {
         let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
         let listener = StdTcpListener::bind(address)?;
         listener.set_nonblocking(true)?;
-        let listener = tokio::net::TcpListener::from_std(listener)?;
-        let app = http::router(self.clone());
+        let plugin = self.clone();
 
         let handle = tauri::async_runtime::spawn(async move {
+            let listener = match tokio::net::TcpListener::from_std(listener) {
+                Ok(l) => l,
+                Err(error) => {
+                    tracing::error!(?error, "failed to create async TCP listener for forge HTTP");
+                    return;
+                }
+            };
+            let app = http::router(plugin);
             if let Err(error) = axum::serve(listener, app).await {
                 tracing::error!(?error, "forge HTTP server stopped unexpectedly");
             }
