@@ -18,20 +18,94 @@ interface ForgeTask {
 
 interface LogLine {
   id: number;
+  task_id: number;
   stream: "stdout" | "stderr";
   line: string;
+  created_at: string | null;
+}
+
+interface ForgeTaskDetails {
+  id: number;
+  name: string;
+  command: string;
+  args: string;
+  status: TaskStatus;
+  exit_code: number | null;
+  created_at: string;
+  finished_at: string | null;
+  logs: LogLine[];
 }
 
 export default function Forge() {
   const [tasks, setTasks] = createSignal<ForgeTask[]>([]);
   const [selectedTaskId, setSelectedTaskId] = createSignal<number | null>(null);
-  const [logs, setLogs] = createSignal<{ [taskId: number]: string[] }>({});
+  const [logs, setLogs] = createSignal<Record<number, LogLine[]>>({});
+  const [isLoadingTaskDetails, setIsLoadingTaskDetails] = createSignal(false);
+  const [taskDetailsError, setTaskDetailsError] = createSignal<string | null>(null);
+  const [restartingTaskId, setRestartingTaskId] = createSignal<number | null>(null);
   
   // New task form
   const [showNewTaskModal, setShowNewTaskModal] = createSignal(false);
   const [newTaskName, setNewTaskName] = createSignal("");
   const [newTaskCommand, setNewTaskCommand] = createSignal("");
   const [newTaskArgs, setNewTaskArgs] = createSignal("");
+  let activeTaskDetailsRequest = 0;
+
+  const parseArgsInput = (value: string) => {
+    if (!value.trim()) {
+      return [] as string[];
+    }
+
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item));
+      }
+    } catch (error) {
+      // Fall through to shell-style splitting for legacy task rows.
+    }
+
+    return value.split(" ").filter(Boolean);
+  };
+
+  const normalizeLogLine = (value: string) => {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") {
+        return parsed;
+      }
+    } catch (error) {
+      // Stored log lines are usually plain text already.
+    }
+
+    return value;
+  };
+
+  const mergeLogLines = (existing: LogLine[], incoming: LogLine[]) => {
+    const merged = [...existing];
+    const seen = new Set(existing.map((entry) => entry.id));
+
+    for (const entry of incoming) {
+      if (!seen.has(entry.id)) {
+        merged.push(entry);
+        seen.add(entry.id);
+      }
+    }
+
+    merged.sort((left, right) => left.id - right.id);
+    return merged;
+  };
+
+  const upsertTask = (task: ForgeTask) => {
+    setTasks((prev) => {
+      const exists = prev.some((entry) => entry.id === task.id);
+      if (!exists) {
+        return [task, ...prev];
+      }
+
+      return prev.map((entry) => (entry.id === task.id ? task : entry));
+    });
+  };
   
   const fetchTasks = async () => {
     try {
@@ -40,6 +114,50 @@ export default function Forge() {
     } catch (e) {
       console.error("Failed to fetch tasks", e);
     }
+  };
+
+  const loadTaskDetails = async (taskId: number) => {
+    const requestId = ++activeTaskDetailsRequest;
+    setIsLoadingTaskDetails(true);
+    setTaskDetailsError(null);
+
+    try {
+      const details = await invoke<ForgeTaskDetails | null>("forge_get_task_details", { id: taskId });
+      if (requestId !== activeTaskDetailsRequest || !details) {
+        return;
+      }
+
+      upsertTask(details);
+      setLogs((prev) => ({
+        ...prev,
+        [taskId]: mergeLogLines(details.logs, prev[taskId] ?? []),
+      }));
+    } catch (error) {
+      if (requestId !== activeTaskDetailsRequest) {
+        return;
+      }
+
+      console.error("Failed to load task details", error);
+      setTaskDetailsError(String(error));
+    } finally {
+      if (requestId === activeTaskDetailsRequest) {
+        setIsLoadingTaskDetails(false);
+      }
+    }
+  };
+
+  const createTask = async (name: string, command: string, rawArgs: string) => {
+    const argsArray = parseArgsInput(rawArgs);
+    const id = await invoke<number>("forge_create_task", {
+      name,
+      command,
+      args: JSON.stringify(argsArray),
+    });
+
+    await fetchTasks();
+    setSelectedTaskId(id);
+    await loadTaskDetails(id);
+    return id;
   };
 
   onMount(async () => {
@@ -63,14 +181,9 @@ export default function Forge() {
       try {
         const payload = JSON.parse(event.payload) as LogLine;
         setLogs((prev) => {
-          const currentLogs = prev[payload.id] || [];
-          // Some backend lines are stringified strings, let's parse if it's JSON string
-          let rawLine = payload.line;
-          try {
-             let parsed = JSON.parse(rawLine);
-             if (typeof parsed === 'string') rawLine = parsed;
-          } catch(e){}
-          return { ...prev, [payload.id]: [...currentLogs, `[${payload.stream}] ${rawLine}`] };
+          const taskId = payload.task_id;
+          const currentLogs = prev[taskId] ?? [];
+          return { ...prev, [taskId]: mergeLogLines(currentLogs, [payload]) };
         });
       } catch(e) {}
     });
@@ -81,31 +194,26 @@ export default function Forge() {
     });
   });
 
-  const handleCreateTask = async () => {
-    if (!newTaskName() || !newTaskCommand()) return;
-    
-    let argsArray: string[] = [];
-    try {
-        if (newTaskArgs().trim()) {
-            argsArray = JSON.parse(newTaskArgs());
-            if (!Array.isArray(argsArray)) throw new Error("Args must be an array");
-        }
-    } catch (e) {
-       // fallback to split by space if json parse fails
-       argsArray = newTaskArgs().split(' ').filter(Boolean);
+  createEffect(() => {
+    const taskId = selectedTaskId();
+    if (taskId == null) {
+      setIsLoadingTaskDetails(false);
+      setTaskDetailsError(null);
+      return;
     }
 
+    void loadTaskDetails(taskId);
+  });
+
+  const handleCreateTask = async () => {
+    if (!newTaskName() || !newTaskCommand()) return;
+
     try {
-      await invoke("forge_create_task", {
-        name: newTaskName(),
-        command: newTaskCommand(),
-        args: JSON.stringify(argsArray),
-      });
+      await createTask(newTaskName(), newTaskCommand(), newTaskArgs());
       setShowNewTaskModal(false);
       setNewTaskName("");
       setNewTaskCommand("");
       setNewTaskArgs("");
-      await fetchTasks(); // Refresh
     } catch (e) {
       console.error(e);
       alert("Error: " + e);
@@ -122,18 +230,26 @@ export default function Forge() {
   };
   
   const handleRestartTask = async (task: ForgeTask) => {
-      setNewTaskName(task.name + " (Restart)");
-      setNewTaskCommand(task.command);
-      setNewTaskArgs(task.args);
-      setShowNewTaskModal(true);
+      setRestartingTaskId(task.id);
+      try {
+        await createTask(task.name, task.command, task.args);
+      } catch (e) {
+        console.error("Failed to restart task", e);
+        alert("Error restarting: " + e);
+      } finally {
+        setRestartingTaskId(null);
+      }
   };
 
   let logContainerRef: HTMLDivElement | undefined;
   createEffect(() => {
-    // Read the evaluated property to trigger tracking
-    void logs()[selectedTaskId() as number];
+    const taskId = selectedTaskId();
+    if (taskId == null) {
+      return;
+    }
+
+    void logs()[taskId];
     if (logContainerRef) {
-      // scroll to bottom smoothly
       logContainerRef.scrollTo({
         top: logContainerRef.scrollHeight,
         behavior: "smooth"
@@ -169,7 +285,13 @@ export default function Forge() {
                         <button class="btn-icon" onClick={(e) => { e.stopPropagation(); handleCancelTask(task.id); }}>Stop</button>
                      </Show>
                      <Show when={task.status === "Failed" || task.status === "Cancelled" || task.status === "Done"}>
-                        <button class="btn-icon" onClick={(e) => { e.stopPropagation(); handleRestartTask(task); }}>Restart</button>
+                        <button
+                          class="btn-icon"
+                          disabled={restartingTaskId() === task.id}
+                          onClick={(e) => { e.stopPropagation(); void handleRestartTask(task); }}
+                        >
+                          {restartingTaskId() === task.id ? "Restarting..." : "Restart"}
+                        </button>
                      </Show>
                   </div>
                 </li>
@@ -188,14 +310,20 @@ export default function Forge() {
                 <h3>Execution Logs (Task ID: {selectedTaskId()})</h3>
               </div>
               <div class="log-stream" ref={logContainerRef}>
+                <Show when={taskDetailsError()}>
+                  <div class="log-empty log-error">{taskDetailsError()}</div>
+                </Show>
+                <Show when={isLoadingTaskDetails() && (logs()[selectedTaskId() as number] || []).length === 0}>
+                  <div class="log-empty">Loading stored logs...</div>
+                </Show>
                 <For each={logs()[selectedTaskId() as number] || []}>
-                  {(line) => {
-                     const isErr = line.startsWith("[stderr]");
-                     return <div class={`log-line ${isErr ? "log-err" : ""}`}>{line}</div>
+                  {(entry) => {
+                     const isErr = entry.stream === "stderr";
+                     return <div class={`log-line ${isErr ? "log-err" : ""}`}>[{entry.stream}] {normalizeLogLine(entry.line)}</div>
                   }}
                 </For>
-                <Show when={(logs()[selectedTaskId() as number] || []).length === 0}>
-                   <div class="log-empty">Waiting for logs...</div>
+                <Show when={!isLoadingTaskDetails() && !taskDetailsError() && (logs()[selectedTaskId() as number] || []).length === 0}>
+                   <div class="log-empty">No logs captured for this task yet.</div>
                 </Show>
               </div>
             </div>

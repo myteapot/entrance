@@ -11,7 +11,10 @@ use core::{
     plugin_manager::PluginManager, theme::ThemeSystem, AppPaths,
 };
 use plugins::{
-    forge::commands::{forge_cancel_task, forge_create_task, forge_get_task, forge_list_tasks},
+    forge::commands::{
+        forge_cancel_task, forge_create_task, forge_get_task, forge_get_task_details,
+        forge_list_tasks,
+    },
     launcher::{launcher_launch, launcher_pin, launcher_search, LauncherPlugin},
     vault::{
         commands::{
@@ -120,6 +123,7 @@ pub fn run() {
             forge_create_task,
             forge_list_tasks,
             forge_get_task,
+            forge_get_task_details,
             forge_cancel_task,
             vault_list_tokens,
             vault_add_token,
