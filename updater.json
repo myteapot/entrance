@@ -1,11 +1,11 @@
 {
-  "version": "0.1.0",
-  "notes": "Release notes go here.",
-  "pub_date": "2026-03-20T00:00:00Z",
+  "version": "v0.2.0",
+  "notes": "Added Vault UI and Tauri Auto-Update capabilities",
+  "pub_date": "2026-03-20T11:45:00Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "PASTE_WINDOWS_SIGNATURE_HERE",
-      "url": "http://server:9311/pub/entrance/-/raw/main/bundles/Entrance_0.1.0_x64_en-US.msi.zip"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUVUw5M25NYXdQN3pYRGkyWndkUFdNQ1NUNHJyOTZRNVFOZFJzSEJ6eEF6MnlVd0FYNndqTzh0ZG1OdHVZSS9COTdiQlQrY0cvSDFtcWZXNFd3RG1TVWVvaHZMM2hSbWc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0MDA3MzA4CWZpbGU6RW50cmFuY2VfMC4yLjBfeDY0LXNldHVwLmV4ZQozNXpsdmZRdVU4cnJuTXpXdWluOStzZVNRRmhUd0hHa2huVklNM1pLNExJZHlBMWI2V3RTWXJiNDJNNXduWVFUUEJnbit5N1JmdXVVTll3RVoyWWpBdz09Cg==",
+      "url": "http://server:9311/pub/entrance/-/raw/main/releases/Entrance_0.2.0_x64-setup.exe"
     }
   }
 }
