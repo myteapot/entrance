@@ -14,7 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ForgePlugin, ForgeTaskDetails};
+use super::{ForgePlugin, ForgeTaskDetails, ForgeTaskStatusEvent};
 
 #[derive(Clone)]
 struct ForgeHttpState {
@@ -28,11 +28,15 @@ struct RunTaskRequest {
     command: String,
     #[serde(default)]
     args: Vec<String>,
+    #[serde(default)]
+    required_tokens: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct CreatedTaskResponse {
     id: i64,
+    status: String,
+    message: Option<String>,
 }
 
 #[derive(Debug)]
@@ -110,17 +114,35 @@ async fn run_task(
         .unwrap_or_else(|| command.to_string());
     let args = serde_json::to_string(&payload.args)
         .map_err(|error| ApiError::internal(error.to_string()))?;
+    let required_tokens = serde_json::to_string(&payload.required_tokens)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
 
     let id = state
         .forge
-        .create_task(&name, command, &args)
-        .and_then(|id| {
-            state.forge.engine().spawn_task(id)?;
-            Ok(id)
-        })
+        .create_task(&name, command, &args, &required_tokens)
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    state
+        .forge
+        .engine()
+        .spawn_task(id)
         .map_err(|error| ApiError::internal(error.to_string()))?;
 
-    Ok((StatusCode::CREATED, Json(CreatedTaskResponse { id })))
+    let task = state
+        .forge
+        .get_task(id)
+        .map_err(|error| ApiError::internal(error.to_string()))?
+        .ok_or_else(|| {
+            ApiError::internal(format!("forge task `{id}` disappeared after creation"))
+        })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedTaskResponse {
+            id,
+            status: task.status,
+            message: task.status_message,
+        }),
+    ))
 }
 
 async fn list_tasks(
@@ -202,12 +224,9 @@ async fn stream_task(
             yield Ok(SseEvent::default().event("log").data(serde_json::to_string(&log).unwrap_or_default()));
         }
 
-        yield Ok(SseEvent::default().event("status").data(serde_json::json!({
-            "id": task.id,
-            "status": task.status,
-            "exit_code": task.exit_code,
-            "finished_at": task.finished_at,
-        }).to_string()));
+        yield Ok(SseEvent::default().event("status").data(
+            serde_json::to_string(&ForgeTaskStatusEvent::from(&task)).unwrap_or_default(),
+        ));
 
         if is_terminal_status(&task.status) {
             return;
@@ -268,7 +287,7 @@ fn sse_event_for_task(task_id: i64, topic: &str, payload: &str) -> Option<(SseEv
 }
 
 fn is_terminal_status(status: &str) -> bool {
-    matches!(status, "Done" | "Failed" | "Cancelled")
+    matches!(status, "Done" | "Failed" | "Cancelled" | "Blocked")
 }
 
 #[cfg(test)]
@@ -280,6 +299,7 @@ mod tests {
         assert!(is_terminal_status("Done"));
         assert!(is_terminal_status("Failed"));
         assert!(is_terminal_status("Cancelled"));
+        assert!(is_terminal_status("Blocked"));
         assert!(!is_terminal_status("Running"));
     }
 

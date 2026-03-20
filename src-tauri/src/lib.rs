@@ -4,7 +4,7 @@ mod plugins;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::{Manager, Emitter};
+use tauri::{Emitter, Manager};
 
 use core::{
     bootstrap_for_paths, event_bus::EventBus, hotkey, logging::LoggingSystem,
