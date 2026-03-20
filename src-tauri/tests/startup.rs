@@ -54,7 +54,10 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
     assert_eq!(startup.launcher_hotkey(), Some("Alt+Space"));
 
     let config = fs::read_to_string(paths.config_path())?.replace("\r\n", "\n");
-    assert_eq!(config, render_config(&EntranceConfig::default())?.replace("\r\n", "\n"));
+    assert_eq!(
+        config,
+        render_config(&EntranceConfig::default())?.replace("\r\n", "\n")
+    );
 
     assert_tables_exist(
         paths.db_path(),
@@ -171,6 +174,47 @@ enabled = false
     assert!(second_start.launcher_enabled());
     assert_eq!(second_start.launcher_hotkey(), Some("Ctrl+Space"));
     assert!(table_exists(paths.db_path(), "plugin_launcher_apps")?);
+
+    Ok(())
+}
+
+#[test]
+fn vault_migrations_run_when_plugin_is_enabled() -> Result<()> {
+    let temp_dir = TempAppDir::new("vault-enabled")?;
+    let paths = temp_dir.paths();
+
+    fs::write(
+        paths.config_path(),
+        r#"[core]
+theme = "dark"
+log_level = "info"
+
+[plugins.launcher]
+enabled = false
+hotkey = "Alt+Space"
+scan_paths = []
+
+[plugins.forge]
+enabled = false
+
+[plugins.vault]
+enabled = true
+"#,
+    )?;
+
+    let startup = bootstrap_for_paths(paths.clone())?;
+
+    assert!(startup.vault_enabled());
+    assert_tables_exist(
+        paths.db_path(),
+        &[
+            "core_plugins",
+            "core_hotkeys",
+            "core_event_log",
+            "plugin_vault_tokens",
+            "plugin_vault_mcp_configs",
+        ],
+    )?;
 
     Ok(())
 }
