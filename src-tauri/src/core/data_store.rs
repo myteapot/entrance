@@ -70,6 +70,15 @@ pub struct StoredForgeTask {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StoredForgeTaskLog {
+    pub id: i64,
+    pub task_id: i64,
+    pub stream: String,
+    pub line: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredVaultToken {
     pub id: i64,
     pub name: String,
@@ -431,6 +440,37 @@ impl DataStore {
         })
     }
 
+    pub fn append_forge_task_log(&self, task_id: i64, stream: &str, line: &str) -> Result<i64> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO plugin_forge_task_logs (
+                    task_id, stream, line, created_at
+                ) VALUES (?1, ?2, ?3, ?4)
+                "#,
+                params![task_id, stream, line, now],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    pub fn list_forge_task_logs(&self, task_id: i64) -> Result<Vec<StoredForgeTaskLog>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, task_id, stream, line, created_at
+                FROM plugin_forge_task_logs
+                WHERE task_id = ?1
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([task_id], map_forge_log_row)?;
+            let logs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(logs)
+        })
+    }
+
     pub fn insert_vault_token(
         &self,
         name: &str,
@@ -622,6 +662,16 @@ fn map_forge_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTask> {
     })
 }
 
+fn map_forge_log_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTaskLog> {
+    Ok(StoredForgeTaskLog {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        stream: row.get(2)?,
+        line: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
+
 fn map_vault_token_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultToken> {
     Ok(StoredVaultToken {
         id: row.get(0)?,
@@ -679,4 +729,37 @@ fn fallback_app_name(path: &str) -> String {
         .and_then(|value| value.to_str())
         .unwrap_or(path)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forge_task_logs_round_trip() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+
+        let task_id = store.insert_forge_task("Echo", "echo", r#"["hello"]"#)?;
+        store.append_forge_task_log(task_id, "stdout", "hello")?;
+        store.append_forge_task_log(task_id, "stderr", "warn")?;
+
+        let logs = store.list_forge_task_logs(task_id)?;
+
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].stream, "stdout");
+        assert_eq!(logs[0].line, "hello");
+        assert_eq!(logs[1].stream, "stderr");
+        assert_eq!(logs[1].line, "warn");
+
+        Ok(())
+    }
 }

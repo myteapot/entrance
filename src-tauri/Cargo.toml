@@ -20,8 +20,11 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 aes-gcm = "0.10"
 anyhow = "1"
+async-stream = "0.3"
+axum = { version = "0.7", features = ["http1", "json", "tokio"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
+futures-core = "0.3"
 rusqlite = { version = "0.39", features = ["bundled"] }
 sha2 = "0.10"
 strsim = "0.11"
@@ -34,7 +37,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 walkdir = "2"
-tokio = { version = "1.50.0", features = ["io-util", "process", "sync"] }
+tokio = { version = "1.50.0", features = ["io-util", "net", "process", "sync"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 

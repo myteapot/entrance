@@ -65,6 +65,7 @@ fn setup_application<R: tauri::Runtime>(
 
     if startup.forge_enabled() {
         let forge_plugin = plugins::forge::ForgePlugin::new(data_store.clone(), event_bus.clone());
+        forge_plugin.start_http_server(startup.forge_http_port())?;
         plugin_manager.register(Arc::new(forge_plugin.clone()));
         app.manage(forge_plugin);
     }
