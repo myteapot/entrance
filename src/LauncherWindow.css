@@ -1,28 +1,7 @@
-:root {
-  color: #f3f6fb;
-  background:
-    radial-gradient(circle at top, rgba(112, 180, 255, 0.18), transparent 34%),
-    radial-gradient(circle at bottom, rgba(17, 56, 109, 0.42), transparent 42%),
-    rgba(4, 6, 11, 0.12);
-}
-
-html,
-body,
-#root {
-  margin: 0;
-  min-height: 100%;
-  min-width: 100%;
-}
-
-body {
-  overflow: hidden;
-  font-family: "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
-}
-
-button,
-input {
-  font: inherit;
-}
+/* ═══════════════════════════════════════════════════════════════
+   Entrance — Launcher Window Styles
+   Tokens & reset: see styles/theme.css + styles/global.css
+   ═══════════════════════════════════════════════════════════════ */
 
 .launcher-shell {
   box-sizing: border-box;

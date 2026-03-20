@@ -1,0 +1,130 @@
+/* ═══════════════════════════════════════════════════════════════
+   Entrance — Global Reset & Base Styles
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Google Fonts ────────────────────────────────────────────── */
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap");
+
+/* ── Reset ───────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  /* Prevent iOS text size inflation */
+  -webkit-text-size-adjust: 100%;
+  /* Smooth scrolling */
+  scroll-behavior: smooth;
+  /* Use font smoothing for crisper text */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Optimized text rendering */
+  text-rendering: optimizeLegibility;
+  font-synthesis: none;
+}
+
+body {
+  min-height: 100vh;
+  min-width: 320px;
+  line-height: 1.5;
+}
+
+html,
+body,
+#root {
+  min-height: 100vh;
+}
+
+/* ── Typography reset ────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+p {
+  margin: 0;
+}
+
+/* ── Interactive elements ────────────────────────────────────── */
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ── Lists ───────────────────────────────────────────────────── */
+ul, ol {
+  list-style: none;
+}
+
+/* ── Media ───────────────────────────────────────────────────── */
+img, picture, video, canvas, svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* ── Table ───────────────────────────────────────────────────── */
+table {
+  border-collapse: collapse;
+}
+
+/* ── Base font stacks ────────────────────────────────────────── */
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: 400;
+  color: var(--text-primary);
+  background: var(--bg-base);
+}
+
+code, pre, kbd, samp {
+  font-family: var(--font-mono);
+}
+
+/* ── Selection ───────────────────────────────────────────────── */
+::selection {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/* ── Focus visible ───────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Scrollbar (WebKit — Tauri uses WebView) ─────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
