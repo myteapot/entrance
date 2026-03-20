@@ -3,20 +3,12 @@ mod plugins;
 
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
 use core::{
-    bootstrap_for_paths,
-    event_bus::EventBus,
-    hotkey,
-    logging::LoggingSystem,
-    mcp_server::{McpPluginSet, McpServer, McpTransport},
-    plugin_manager::PluginManager,
-    resolve_app_data_dir,
-    theme::ThemeSystem,
-    AppPaths,
+    bootstrap_for_paths, event_bus::EventBus, hotkey, logging::LoggingSystem,
+    plugin_manager::PluginManager, theme::ThemeSystem, AppPaths,
 };
 use plugins::{
     forge::commands::{
@@ -37,6 +29,28 @@ use plugins::{
 #[derive(Clone, Serialize)]
 struct LauncherUiState {
     hotkey: Option<String>,
+}
+
+#[derive(Clone)]
+struct DashboardUiState {
+    app_version: String,
+    launcher_hotkey: Option<String>,
+    enabled_plugin_count: usize,
+    launcher_enabled: bool,
+    forge_enabled: bool,
+    vault_enabled: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct DashboardSummary {
+    app_version: String,
+    launcher_hotkey: Option<String>,
+    enabled_plugin_count: usize,
+    running_task_count: usize,
+    last_activity_at: Option<String>,
+    token_count: usize,
+    mcp_config_count: usize,
+    enabled_mcp_count: usize,
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -63,7 +77,25 @@ fn setup_application<R: tauri::Runtime>(
 
     let data_store = startup.data_store();
     let event_bus = EventBus::new();
+    let enabled_plugin_count = [
+        startup.launcher_enabled(),
+        startup.forge_enabled(),
+        startup.vault_enabled(),
+    ]
+    .into_iter()
+    .filter(|enabled| *enabled)
+    .count();
+
     app.manage(event_bus.clone());
+    app.manage(data_store.clone());
+    app.manage(DashboardUiState {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        launcher_hotkey: launcher_hotkey.clone(),
+        enabled_plugin_count,
+        launcher_enabled: startup.launcher_enabled(),
+        forge_enabled: startup.forge_enabled(),
+        vault_enabled: startup.vault_enabled(),
+    });
 
     let app_handle_for_events = app.handle().clone();
     let mut rx = event_bus.subscribe();
@@ -78,44 +110,27 @@ fn setup_application<R: tauri::Runtime>(
     let app_context = AppContext::new(data_store.clone(), event_bus.clone());
 
     let mut plugin_manager = PluginManager::default();
-    let mut launcher_plugin_state = None;
     if startup.launcher_enabled() {
         let launcher_plugin = LauncherPlugin::new(data_store.clone());
         plugin_manager.register(Arc::new(launcher_plugin.clone()));
-        app.manage(launcher_plugin.clone());
-        launcher_plugin_state = Some(launcher_plugin);
+        app.manage(launcher_plugin);
     }
 
-    let mut forge_plugin_state = None;
     if startup.forge_enabled() {
         let forge_plugin = plugins::forge::ForgePlugin::new(data_store.clone(), event_bus.clone());
         forge_plugin.start_http_server(startup.forge_http_port())?;
         plugin_manager.register(Arc::new(forge_plugin.clone()));
-        app.manage(forge_plugin.clone());
-        forge_plugin_state = Some(forge_plugin);
+        app.manage(forge_plugin);
     }
 
-    let mut vault_plugin_state = None;
     if startup.vault_enabled() {
         let vault_plugin = VaultPlugin::new(data_store.clone())?;
         plugin_manager.register(Arc::new(vault_plugin.clone()));
-        app.manage(vault_plugin.clone());
-        vault_plugin_state = Some(vault_plugin);
+        app.manage(vault_plugin);
     }
 
     plugin_manager.init_all(&app_context)?;
     app.manage(plugin_manager);
-
-    if startup.mcp_enabled() {
-        app.manage(McpServer::new(
-            McpTransport::InProcess,
-            McpPluginSet {
-                forge: forge_plugin_state,
-                launcher: launcher_plugin_state,
-                vault: vault_plugin_state,
-            },
-        ));
-    }
 
     if let Some(shortcut) = launcher_hotkey.as_deref() {
         hotkey::register_launcher_shortcut(app, shortcut)?;
@@ -129,17 +144,78 @@ fn launcher_hotkey(state: tauri::State<'_, LauncherUiState>) -> Option<String> {
     state.hotkey.clone()
 }
 
-pub fn dispatch_cli_or_run() -> Result<()> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if matches!(args.as_slice(), [command, transport] if command == "mcp" && transport == "stdio") {
-        return run_mcp_stdio();
+#[tauri::command]
+fn dashboard_summary(
+    dashboard: tauri::State<'_, DashboardUiState>,
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<DashboardSummary, String> {
+    let tasks = if dashboard.forge_enabled {
+        data_store.list_forge_tasks().map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    let tokens = if dashboard.vault_enabled {
+        data_store
+            .list_vault_tokens()
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    let mcp_configs = if dashboard.vault_enabled {
+        data_store
+            .list_vault_mcp_configs()
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    let launcher_apps = if dashboard.launcher_enabled {
+        data_store
+            .list_launcher_apps()
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+
+    let mut last_activity_at = None;
+    for task in &tasks {
+        update_latest_timestamp(&mut last_activity_at, Some(task.created_at.as_str()));
+        update_latest_timestamp(&mut last_activity_at, task.finished_at.as_deref());
     }
-    if matches!(args.first().map(String::as_str), Some("mcp")) {
-        bail!("unsupported MCP transport, expected `entrance mcp stdio`");
+    for token in &tokens {
+        update_latest_timestamp(&mut last_activity_at, Some(token.updated_at.as_str()));
+    }
+    for config in &mcp_configs {
+        update_latest_timestamp(&mut last_activity_at, Some(config.updated_at.as_str()));
+    }
+    for app in &launcher_apps {
+        update_latest_timestamp(&mut last_activity_at, app.last_used.as_deref());
+        update_latest_timestamp(&mut last_activity_at, Some(app.updated_at.as_str()));
     }
 
-    run();
-    Ok(())
+    Ok(DashboardSummary {
+        app_version: dashboard.app_version.clone(),
+        launcher_hotkey: dashboard.launcher_hotkey.clone(),
+        enabled_plugin_count: dashboard.enabled_plugin_count,
+        running_task_count: tasks.iter().filter(|task| task.status == "Running").count(),
+        last_activity_at,
+        token_count: tokens.len(),
+        mcp_config_count: mcp_configs.len(),
+        enabled_mcp_count: mcp_configs.iter().filter(|config| config.enabled).count(),
+    })
+}
+
+fn update_latest_timestamp(current: &mut Option<String>, candidate: Option<&str>) {
+    let Some(candidate) = candidate.filter(|value| !value.is_empty()) else {
+        return;
+    };
+
+    let should_replace = current
+        .as_deref()
+        .map(|value| candidate > value)
+        .unwrap_or(true);
+    if should_replace {
+        *current = Some(candidate.to_string());
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -153,6 +229,7 @@ pub fn run() {
         .setup(setup_application)
         .invoke_handler(tauri::generate_handler![
             launcher_hotkey,
+            dashboard_summary,
             core::theme::get_theme,
             core::theme::set_theme,
             launcher_search,
@@ -172,38 +249,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Entrance application");
-}
-
-fn run_mcp_stdio() -> Result<()> {
-    let startup = bootstrap_for_paths(AppPaths::new(resolve_app_data_dir()?))?;
-    if !startup.mcp_enabled() {
-        bail!("MCP server is disabled in entrance.toml");
-    }
-
-    let _logging_system = LoggingSystem::init(
-        startup.paths().log_dir(),
-        startup.log_level(),
-        Some(startup.data_store()),
-    )?;
-    let data_store = startup.data_store();
-    let event_bus = EventBus::new();
-
-    let server = McpServer::new(
-        McpTransport::Stdio,
-        McpPluginSet {
-            forge: startup
-                .forge_enabled()
-                .then(|| plugins::forge::ForgePlugin::new(data_store.clone(), event_bus.clone())),
-            launcher: startup
-                .launcher_enabled()
-                .then(|| LauncherPlugin::new(data_store.clone())),
-            vault: if startup.vault_enabled() {
-                Some(VaultPlugin::new(data_store)?)
-            } else {
-                None
-            },
-        },
-    );
-
-    server.serve_stdio()
 }
