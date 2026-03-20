@@ -62,7 +62,7 @@ pub struct StoredForgeTask {
     pub id: i64,
     pub name: String,
     pub command: String,
-    pub args: String, // JSON
+    pub args: String,            // JSON
     pub required_tokens: String, // JSON
     pub status: String,
     pub status_message: Option<String>,
@@ -449,7 +449,12 @@ impl DataStore {
         })
     }
 
-    pub fn append_forge_task_log(&self, task_id: i64, stream: &str, line: &str) -> Result<i64> {
+    pub fn append_forge_task_log(
+        &self,
+        task_id: i64,
+        stream: &str,
+        line: &str,
+    ) -> Result<StoredForgeTaskLog> {
         let now = Utc::now().to_rfc3339();
         self.with_connection(|conn| {
             conn.execute(
@@ -460,7 +465,13 @@ impl DataStore {
                 "#,
                 params![task_id, stream, line, now],
             )?;
-            Ok(conn.last_insert_rowid())
+            Ok(StoredForgeTaskLog {
+                id: conn.last_insert_rowid(),
+                task_id,
+                stream: stream.to_string(),
+                line: line.to_string(),
+                created_at: now,
+            })
         })
     }
 
@@ -531,7 +542,10 @@ impl DataStore {
         })
     }
 
-    pub fn get_vault_token_by_provider(&self, provider: &str) -> Result<Option<EncryptedVaultToken>> {
+    pub fn get_vault_token_by_provider(
+        &self,
+        provider: &str,
+    ) -> Result<Option<EncryptedVaultToken>> {
         self.with_connection(|conn| {
             conn.query_row(
                 r#"

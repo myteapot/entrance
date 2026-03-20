@@ -14,7 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ForgePlugin, ForgeTaskDetails};
+use super::{ForgePlugin, ForgeTaskDetails, ForgeTaskStatusEvent};
 
 #[derive(Clone)]
 struct ForgeHttpState {
@@ -131,7 +131,9 @@ async fn run_task(
         .forge
         .get_task(id)
         .map_err(|error| ApiError::internal(error.to_string()))?
-        .ok_or_else(|| ApiError::internal(format!("forge task `{id}` disappeared after creation")))?;
+        .ok_or_else(|| {
+            ApiError::internal(format!("forge task `{id}` disappeared after creation"))
+        })?;
 
     Ok((
         StatusCode::CREATED,
@@ -222,13 +224,9 @@ async fn stream_task(
             yield Ok(SseEvent::default().event("log").data(serde_json::to_string(&log).unwrap_or_default()));
         }
 
-        yield Ok(SseEvent::default().event("status").data(serde_json::json!({
-            "id": task.id,
-            "status": task.status,
-            "message": task.status_message,
-            "exit_code": task.exit_code,
-            "finished_at": task.finished_at,
-        }).to_string()));
+        yield Ok(SseEvent::default().event("status").data(
+            serde_json::to_string(&ForgeTaskStatusEvent::from(&task)).unwrap_or_default(),
+        ));
 
         if is_terminal_status(&task.status) {
             return;

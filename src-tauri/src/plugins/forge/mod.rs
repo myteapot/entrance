@@ -56,6 +56,48 @@ pub struct ForgeTaskDetails {
     pub logs: Vec<StoredForgeTaskLog>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ForgeTaskStatusEvent {
+    pub id: i64,
+    pub status: String,
+    pub status_message: Option<String>,
+    pub exit_code: Option<i64>,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForgeTaskLogEvent {
+    pub id: i64,
+    pub task_id: i64,
+    pub stream: String,
+    pub line: String,
+    pub created_at: String,
+}
+
+impl From<&StoredForgeTask> for ForgeTaskStatusEvent {
+    fn from(task: &StoredForgeTask) -> Self {
+        Self {
+            id: task.id,
+            status: task.status.clone(),
+            status_message: task.status_message.clone(),
+            exit_code: task.exit_code,
+            finished_at: task.finished_at.clone(),
+        }
+    }
+}
+
+impl From<&StoredForgeTaskLog> for ForgeTaskLogEvent {
+    fn from(log: &StoredForgeTaskLog) -> Self {
+        Self {
+            id: log.id,
+            task_id: log.task_id,
+            stream: log.stream.clone(),
+            line: log.line.clone(),
+            created_at: log.created_at.clone(),
+        }
+    }
+}
+
 impl ForgePlugin {
     pub fn new(data_store: DataStore, event_bus: EventBus) -> Self {
         Self {

@@ -8,7 +8,10 @@ use tokio::task::JoinHandle;
 
 use crate::core::data_store::DataStore;
 use crate::core::event_bus::EventBus;
-use crate::plugins::vault::VaultCipher;
+use crate::plugins::{
+    forge::{ForgeTaskLogEvent, ForgeTaskStatusEvent},
+    vault::VaultCipher,
+};
 
 pub struct TaskEngine {
     data_store: DataStore,
@@ -46,25 +49,20 @@ impl TaskEngine {
             Err(message) => {
                 self.data_store
                     .update_forge_task_status(id, "Blocked", None, Some(&message))?;
-                let _ = self.data_store.append_forge_task_log(id, "system", &message);
-                let encoded_message = serde_json::to_string(&message).unwrap_or_default();
-                let _ = self.event_bus.publish(
-                    "forge:task_status",
-                    format!(
-                        r#"{{"id":{},"status":"Blocked","message":{}}}"#,
-                        id, encoded_message
-                    ),
-                );
+                if let Ok(log) = self
+                    .data_store
+                    .append_forge_task_log(id, "system", &message)
+                {
+                    self.publish_task_log(&log);
+                }
+                self.publish_task_status(id);
                 return Ok(());
             }
         };
 
         self.data_store
             .update_forge_task_status(id, "Running", None, None)?;
-        let _ = self.event_bus.publish(
-            "forge:task_status",
-            format!(r#"{{"id":{},"status":"Running"}}"#, id),
-        );
+        self.publish_task_status(id);
 
         let engine_clone = self.clone();
 
@@ -83,10 +81,7 @@ impl TaskEngine {
             handle.abort();
             self.data_store
                 .update_forge_task_status(id, "Cancelled", None, None)?;
-            let _ = self.event_bus.publish(
-                "forge:task_status",
-                format!(r#"{{"id":{},"status":"Cancelled"}}"#, id),
-            );
+            self.publish_task_status(id);
             Ok(())
         } else {
             Err(anyhow!("Task {id} is not running or doesn't exist"))
@@ -111,13 +106,13 @@ impl TaskEngine {
             Ok(c) => c,
             Err(e) => {
                 let message = format!("Failed to spawn process: {e}");
-                let _ = self
-                    .data_store
-                    .update_forge_task_status(id, "Failed", Some(-1), Some(&message));
-                let _ = self.event_bus.publish(
-                    "forge:task_status",
-                    format!(r#"{{"id":{},"status":"Failed","error":"{}"}}"#, id, e),
+                let _ = self.data_store.update_forge_task_status(
+                    id,
+                    "Failed",
+                    Some(-1),
+                    Some(&message),
                 );
+                self.publish_task_status(id);
                 self.active_tasks.lock().unwrap().remove(&id);
                 return;
             }
@@ -131,18 +126,13 @@ impl TaskEngine {
         let stdout_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                let log_id = match store_out.append_forge_task_log(id, "stdout", &line) {
-                    Ok(log_id) => log_id,
+                let log = match store_out.append_forge_task_log(id, "stdout", &line) {
+                    Ok(log) => log,
                     Err(_) => continue,
                 };
-                let encoded_line = serde_json::to_string(&line).unwrap_or_default();
-                let _ = bus_out.publish(
-                    "forge:task_output",
-                    format!(
-                        r#"{{"id":{},"task_id":{},"stream":"stdout","line":{},"created_at":null}}"#,
-                        log_id, id, encoded_line
-                    ),
-                );
+                let payload =
+                    serde_json::to_string(&ForgeTaskLogEvent::from(&log)).unwrap_or_default();
+                let _ = bus_out.publish("forge:task_output", payload);
             }
         });
 
@@ -151,18 +141,13 @@ impl TaskEngine {
         let stderr_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                let log_id = match store_err.append_forge_task_log(id, "stderr", &line) {
-                    Ok(log_id) => log_id,
+                let log = match store_err.append_forge_task_log(id, "stderr", &line) {
+                    Ok(log) => log,
                     Err(_) => continue,
                 };
-                let encoded_line = serde_json::to_string(&line).unwrap_or_default();
-                let _ = bus_err.publish(
-                    "forge:task_output",
-                    format!(
-                        r#"{{"id":{},"task_id":{},"stream":"stderr","line":{},"created_at":null}}"#,
-                        log_id, id, encoded_line
-                    ),
-                );
+                let payload =
+                    serde_json::to_string(&ForgeTaskLogEvent::from(&log)).unwrap_or_default();
+                let _ = bus_err.publish("forge:task_output", payload);
             }
         });
 
@@ -181,33 +166,46 @@ impl TaskEngine {
                 } else {
                     "Failed"
                 };
-                let status_message = (!exit_status.success())
-                    .then(|| format!("Process exited with code {code}"));
-                let _ = self
-                    .data_store
-                    .update_forge_task_status(id, text_status, Some(code), status_message.as_deref());
-                let _ = self.event_bus.publish(
-                    "forge:task_status",
-                    format!(
-                        r#"{{"id":{},"status":"{}","exit_code":{}}}"#,
-                        id, text_status, code
-                    ),
+                let status_message =
+                    (!exit_status.success()).then(|| format!("Process exited with code {code}"));
+                let _ = self.data_store.update_forge_task_status(
+                    id,
+                    text_status,
+                    Some(code),
+                    status_message.as_deref(),
                 );
+                self.publish_task_status(id);
             }
             Err(e) => {
                 let message = format!("Failed while waiting for process completion: {e}");
-                let _ = self
-                    .data_store
-                    .update_forge_task_status(id, "Failed", Some(-1), Some(&message));
-                let _ = self.event_bus.publish(
-                    "forge:task_status",
-                    format!(r#"{{"id":{},"status":"Failed","error":"{}"}}"#, id, e),
+                let _ = self.data_store.update_forge_task_status(
+                    id,
+                    "Failed",
+                    Some(-1),
+                    Some(&message),
                 );
+                self.publish_task_status(id);
             }
         }
     }
 
-    fn resolve_env_bindings(&self, required_tokens: &[String]) -> std::result::Result<HashMap<String, String>, String> {
+    fn publish_task_status(&self, id: i64) {
+        let Ok(Some(task)) = self.data_store.get_forge_task(id) else {
+            return;
+        };
+        let payload = serde_json::to_string(&ForgeTaskStatusEvent::from(&task)).unwrap_or_default();
+        let _ = self.event_bus.publish("forge:task_status", payload);
+    }
+
+    fn publish_task_log(&self, log: &crate::core::data_store::StoredForgeTaskLog) {
+        let payload = serde_json::to_string(&ForgeTaskLogEvent::from(log)).unwrap_or_default();
+        let _ = self.event_bus.publish("forge:task_output", payload);
+    }
+
+    fn resolve_env_bindings(
+        &self,
+        required_tokens: &[String],
+    ) -> std::result::Result<HashMap<String, String>, String> {
         if required_tokens.is_empty() {
             return Ok(HashMap::new());
         }
@@ -261,7 +259,13 @@ fn provider_env_var(provider: &str) -> String {
         other => {
             let normalized = other
                 .chars()
-                .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_uppercase() } else { '_' })
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() {
+                        ch.to_ascii_uppercase()
+                    } else {
+                        '_'
+                    }
+                })
                 .collect::<String>();
             format!("{normalized}_API_KEY")
         }
@@ -270,7 +274,11 @@ fn provider_env_var(provider: &str) -> String {
 
 #[cfg(test)]
 impl TaskEngine {
-    fn with_vault_cipher(data_store: DataStore, event_bus: EventBus, vault_cipher: VaultCipher) -> Self {
+    fn with_vault_cipher(
+        data_store: DataStore,
+        event_bus: EventBus,
+        vault_cipher: VaultCipher,
+    ) -> Self {
         Self {
             data_store,
             event_bus,
@@ -318,7 +326,10 @@ mod tests {
             .get_forge_task(task_id)?
             .expect("task should remain queryable");
         assert_eq!(task.status, "Blocked");
-        assert_eq!(task.status_message.as_deref(), Some("请先在 Vault 添加 openai"));
+        assert_eq!(
+            task.status_message.as_deref(),
+            Some("请先在 Vault 添加 openai")
+        );
 
         let logs = store.list_forge_task_logs(task_id)?;
         assert_eq!(logs.len(), 1);
@@ -373,7 +384,9 @@ mod tests {
         assert_eq!(task.status_message, None);
 
         let logs = store.list_forge_task_logs(task_id)?;
-        assert!(logs.iter().any(|log| log.line.contains("secret-from-vault")));
+        assert!(logs
+            .iter()
+            .any(|log| log.line.contains("secret-from-vault")));
 
         Ok(())
     }
@@ -383,14 +396,19 @@ mod tests {
             let task = store
                 .get_forge_task(task_id)?
                 .expect("task should remain queryable");
-            if matches!(task.status.as_str(), "Done" | "Failed" | "Cancelled" | "Blocked") {
+            if matches!(
+                task.status.as_str(),
+                "Done" | "Failed" | "Cancelled" | "Blocked"
+            ) {
                 return Ok(());
             }
             tokio::task::yield_now().await;
             thread::sleep(Duration::from_millis(5));
         }
 
-        Err(anyhow!("task {task_id} did not reach a terminal status in time"))
+        Err(anyhow!(
+            "task {task_id} did not reach a terminal status in time"
+        ))
     }
 
     #[cfg(target_os = "windows")]
@@ -418,7 +436,7 @@ mod tests {
         "echo %OPENAI_API_KEY%"
     }
 
-#[cfg(not(target_os = "windows"))]
+    #[cfg(not(target_os = "windows"))]
     fn env_echo_expression() -> &'static str {
         "printf '%s\\n' \"$OPENAI_API_KEY\""
     }
