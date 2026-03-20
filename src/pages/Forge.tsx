@@ -3,14 +3,20 @@ import { invoke } from "@tauri-apps/api/core";
 import "./Forge.css";
 import {
   applyForgeTaskStatusEvent,
+  dispatchForgeAgent,
   fetchForgeTaskDetails,
   fetchForgeTasks,
   listenToForgeTaskOutput,
   listenToForgeTaskStatus,
   mergeForgeTask,
+  parseForgeTaskMetadata,
+  prepareForgeAgentDispatch,
   type ForgeTask,
   type LogLine,
+  type PreparedAgentDispatch,
 } from "../features/forge/taskFeed";
+
+const AUTO_DISPATCH_MODEL = "codex";
 
 export default function Forge() {
   const [tasks, setTasks] = createSignal<ForgeTask[]>([]);
@@ -19,6 +25,10 @@ export default function Forge() {
   const [isLoadingTaskDetails, setIsLoadingTaskDetails] = createSignal(false);
   const [taskDetailsError, setTaskDetailsError] = createSignal<string | null>(null);
   const [restartingTaskId, setRestartingTaskId] = createSignal<number | null>(null);
+  const [dispatchContext, setDispatchContext] = createSignal<PreparedAgentDispatch | null>(null);
+  const [dispatchContextError, setDispatchContextError] = createSignal<string | null>(null);
+  const [isLoadingDispatchContext, setIsLoadingDispatchContext] = createSignal(false);
+  const [isLaunchingAgent, setIsLaunchingAgent] = createSignal(false);
 
   const [showNewTaskModal, setShowNewTaskModal] = createSignal(false);
   const [newTaskName, setNewTaskName] = createSignal("");
@@ -175,8 +185,63 @@ export default function Forge() {
     return id;
   };
 
+  const dispatchAgent = async (
+    issueId: string,
+    worktreePath: string,
+    model: string,
+    prompt: string,
+    rawRequiredTokens: string,
+  ) => {
+    const requiredTokens = parseRequiredTokensInput(rawRequiredTokens);
+    const id = await dispatchForgeAgent(issueId, worktreePath, model, prompt, requiredTokens);
+
+    await fetchTasks();
+    setSelectedTaskId(id);
+    await loadTaskDetails(id);
+    return id;
+  };
+
+  const loadDispatchContext = async () => {
+    setIsLoadingDispatchContext(true);
+    setDispatchContextError(null);
+
+    try {
+      setDispatchContext(await prepareForgeAgentDispatch());
+    } catch (error) {
+      console.error("Failed to prepare Agent dispatch", error);
+      setDispatchContext(null);
+      setDispatchContextError(String(error));
+    } finally {
+      setIsLoadingDispatchContext(false);
+    }
+  };
+
+  const handleLaunchPreparedAgent = async () => {
+    setIsLaunchingAgent(true);
+    setDispatchContextError(null);
+
+    try {
+      const context = await prepareForgeAgentDispatch();
+      setDispatchContext(context);
+      await dispatchAgent(
+        context.issue_id,
+        context.worktree_path,
+        AUTO_DISPATCH_MODEL,
+        context.prompt,
+        "",
+      );
+    } catch (error) {
+      console.error("Failed to auto-dispatch Agent", error);
+      setDispatchContextError(String(error));
+      alert("Error dispatching agent: " + error);
+    } finally {
+      setIsLaunchingAgent(false);
+    }
+  };
+
   onMount(() => {
     void fetchTasks();
+    void loadDispatchContext();
 
     void (async () => {
       const unlistenStatus = await listenToForgeTaskStatus((payload) => {
@@ -250,7 +315,24 @@ export default function Forge() {
   const handleRestartTask = async (task: ForgeTask) => {
     setRestartingTaskId(task.id);
     try {
-      await createTask(task.name, task.command, task.args, task.required_tokens);
+      const metadata = parseForgeTaskMetadata(task.metadata);
+      if (
+        metadata.kind === "agent_dispatch" &&
+        metadata.issue_id &&
+        metadata.worktree_path &&
+        metadata.model &&
+        task.stdin_text
+      ) {
+        await dispatchAgent(
+          metadata.issue_id,
+          metadata.worktree_path,
+          metadata.model,
+          task.stdin_text,
+          task.required_tokens,
+        );
+      } else {
+        await createTask(task.name, task.command, task.args, task.required_tokens);
+      }
     } catch (error) {
       console.error("Failed to restart task", error);
       alert("Error restarting: " + error);
@@ -282,7 +364,89 @@ export default function Forge() {
           <h1 class="forge-title">Forge</h1>
           <p class="forge-subtitle">Task runner and real-time execution engine logs.</p>
         </div>
-        <button class="btn btn-primary" onClick={() => setShowNewTaskModal(true)}>+ New Task</button>
+        <div style={{ display: "flex", gap: "0.75rem" }}>
+          <button
+            class="btn btn-primary"
+            disabled={isLaunchingAgent() || isLoadingDispatchContext() || !dispatchContext()}
+            onClick={() => void handleLaunchPreparedAgent()}
+          >
+            {isLaunchingAgent()
+              ? "Launching Codex..."
+              : isLoadingDispatchContext()
+                ? "Preparing Context..."
+                : "Launch Codex Agent"}
+          </button>
+          <button class="btn" onClick={() => setShowNewTaskModal(true)}>+ New Task</button>
+        </div>
+      </div>
+
+      <div class="auto-dispatch-card">
+        <div class="auto-dispatch-card__header">
+          <div>
+            <p class="auto-dispatch-card__eyebrow">Auto Dispatch</p>
+            <h2 class="auto-dispatch-card__title">Zero-copy Agent handoff from the current worktree</h2>
+          </div>
+          <button
+            class="btn"
+            disabled={isLoadingDispatchContext()}
+            onClick={() => void loadDispatchContext()}
+          >
+            {isLoadingDispatchContext() ? "Refreshing..." : "Refresh Context"}
+          </button>
+        </div>
+
+        <Show
+          when={dispatchContext()}
+          fallback={
+            <div class="task-callout callout-failed">
+              {dispatchContextError() ?? "Forge could not resolve an issue worktree for auto-dispatch."}
+            </div>
+          }
+        >
+          {(context) => (
+            <>
+              <p class="auto-dispatch-card__body">
+                Forge now derives the issue, worktree, and Agent prompt automatically from the
+                current `feat-*` branch. Launching dispatches a Codex Agent without copying any
+                prompt text.
+              </p>
+              <div class="token-chip-list">
+                <span class="token-chip">{context().issue_id}</span>
+                <span class="token-chip">{context().issue_status}</span>
+                <span class="token-chip">{AUTO_DISPATCH_MODEL}</span>
+              </div>
+              <div class="auto-dispatch-grid">
+                <div class="auto-dispatch-field">
+                  <span class="auto-dispatch-field__label">Issue</span>
+                  <span class="auto-dispatch-field__value">
+                    {context().issue_title ?? "Current worktree issue"}
+                  </span>
+                </div>
+                <div class="auto-dispatch-field">
+                  <span class="auto-dispatch-field__label">Project Root</span>
+                  <span class="auto-dispatch-field__value">{context().project_root}</span>
+                </div>
+                <div class="auto-dispatch-field">
+                  <span class="auto-dispatch-field__label">Worktree</span>
+                  <span class="auto-dispatch-field__value">{context().worktree_path}</span>
+                </div>
+                <div class="auto-dispatch-field">
+                  <span class="auto-dispatch-field__label">Prompt Source</span>
+                  <span class="auto-dispatch-field__value">`control.py prompt`</span>
+                </div>
+              </div>
+              <Show when={context().issue_status_source === "fallback"}>
+                <div class="task-callout callout-blocked">
+                  Linear issue status was unavailable, so Forge used a generic `Todo` prompt
+                  fallback. Dispatch still works, but Request-specific auto-sync was skipped.
+                </div>
+              </Show>
+              <Show when={dispatchContextError()}>
+                <div class="task-callout callout-failed">{dispatchContextError()}</div>
+              </Show>
+            </>
+          )}
+        </Show>
       </div>
 
       <div class="forge-layout">
@@ -328,6 +492,7 @@ export default function Forge() {
           <Show when={selectedTask()} fallback={<div class="empty-selection">Select a task to view details and logs.</div>}>
             {(task) => {
               const requiredTokens = () => parseStoredRequiredTokens(task().required_tokens);
+              const metadata = () => parseForgeTaskMetadata(task().metadata);
 
               return (
                 <div class="log-panel">
@@ -345,10 +510,26 @@ export default function Forge() {
                     <div class="log-task-meta">
                       <span>Task ID: {task().id}</span>
                       <span>Created: {new Date(task().created_at).toLocaleString()}</span>
+                      <Show when={task().working_dir}>
+                        <span>Worktree: {task().working_dir as string}</span>
+                      </Show>
                       <Show when={task().finished_at}>
                         <span>Finished: {new Date(task().finished_at as string).toLocaleString()}</span>
                       </Show>
                     </div>
+                    <Show when={metadata().kind === "agent_dispatch"}>
+                      <div class="task-required-tokens">
+                        <span class="task-required-label">Agent Dispatch</span>
+                        <div class="token-chip-list">
+                          <Show when={metadata().issue_id}>
+                            <span class="token-chip">{metadata().issue_id}</span>
+                          </Show>
+                          <Show when={metadata().model}>
+                            <span class="token-chip">{metadata().model}</span>
+                          </Show>
+                        </div>
+                      </div>
+                    </Show>
                     <Show when={requiredTokens().length > 0}>
                       <div class="task-required-tokens">
                         <span class="task-required-label">Required tokens</span>

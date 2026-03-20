@@ -16,7 +16,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::plugins::{forge::ForgePlugin, launcher::LauncherPlugin, vault::VaultPlugin};
+use crate::plugins::{
+    forge::{CreateTaskRequest, ForgePlugin},
+    launcher::LauncherPlugin,
+    vault::VaultPlugin,
+};
 
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -204,7 +208,15 @@ impl McpServer {
         let args = serialize_forge_args(arguments.get("args"))?;
         let required_tokens = serialize_forge_args(arguments.get("required_tokens"))?;
 
-        let task_id = forge.create_task(name, command, &args, &required_tokens)?;
+        let task_id = forge.create_task(CreateTaskRequest {
+            name: name.to_string(),
+            command: command.to_string(),
+            args,
+            working_dir: None,
+            stdin_text: None,
+            required_tokens,
+            metadata: "{}".to_string(),
+        })?;
         forge
             .engine()
             .spawn_task(task_id)

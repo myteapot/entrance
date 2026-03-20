@@ -33,6 +33,80 @@
   min-height: 0;
 }
 
+.auto-dispatch-card {
+  margin-bottom: var(--space-6);
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(93, 173, 226, 0.22);
+  background:
+    linear-gradient(135deg, rgba(93, 173, 226, 0.14), rgba(93, 173, 226, 0.03)),
+    var(--surface-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.auto-dispatch-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.auto-dispatch-card__eyebrow {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-info, #5dade2);
+}
+
+.auto-dispatch-card__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  color: var(--text-primary);
+}
+
+.auto-dispatch-card__body {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  max-width: 72ch;
+}
+
+.auto-dispatch-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.auto-dispatch-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.auto-dispatch-field__label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.auto-dispatch-field__value {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
 .forge-sidebar {
   width: 320px;
   background-color: var(--surface-2);
@@ -374,6 +448,11 @@
   background: var(--surface-2);
 }
 
+.btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
 .btn-primary {
   background: var(--color-primary);
   color: white;
@@ -402,4 +481,27 @@
 .btn-icon:disabled {
   opacity: 0.6;
   cursor: wait;
+}
+
+@media (max-width: 960px) {
+  .forge-page {
+    padding: var(--space-5);
+  }
+
+  .forge-layout {
+    flex-direction: column;
+  }
+
+  .forge-sidebar {
+    width: 100%;
+    max-height: 320px;
+  }
+
+  .auto-dispatch-card__header {
+    flex-direction: column;
+  }
+
+  .auto-dispatch-grid {
+    grid-template-columns: 1fr;
+  }
 }

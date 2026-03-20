@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use tauri::async_runtime::JoinHandle;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::core::data_store::DataStore;
@@ -44,6 +44,8 @@ impl TaskEngine {
         let required_tokens: Vec<String> = serde_json::from_str(&task_record.required_tokens)
             .map_err(|error| anyhow!("Task {id} has invalid required_tokens JSON: {error}"))?;
         let command = task_record.command.clone();
+        let working_dir = task_record.working_dir.clone();
+        let stdin_text = task_record.stdin_text.clone();
         let envs = match self.resolve_env_bindings(&required_tokens) {
             Ok(envs) => envs,
             Err(message) => {
@@ -67,7 +69,9 @@ impl TaskEngine {
         let engine_clone = self.clone();
 
         let handle = tauri::async_runtime::spawn(async move {
-            engine_clone.run_process(id, command, args, envs).await;
+            engine_clone
+                .run_process(id, command, args, working_dir, stdin_text, envs)
+                .await;
         });
 
         self.active_tasks.lock().unwrap().insert(id, handle);
@@ -93,14 +97,25 @@ impl TaskEngine {
         id: i64,
         command: String,
         args: Vec<String>,
+        working_dir: Option<String>,
+        stdin_text: Option<String>,
         envs: HashMap<String, String>,
     ) {
         let mut cmd = Command::new(&command);
         cmd.args(&args)
             .envs(&envs)
             .kill_on_drop(true)
+            .stdin(if stdin_text.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        if let Some(working_dir) = working_dir.as_deref() {
+            cmd.current_dir(working_dir);
+        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -116,6 +131,14 @@ impl TaskEngine {
                 self.active_tasks.lock().unwrap().remove(&id);
                 return;
             }
+        };
+
+        let stdin_task = match (child.stdin.take(), stdin_text) {
+            (Some(mut stdin), Some(stdin_text)) => Some(tokio::spawn(async move {
+                let _ = stdin.write_all(stdin_text.as_bytes()).await;
+                let _ = stdin.shutdown().await;
+            })),
+            _ => None,
         };
 
         let stdout = child.stdout.take().expect("Failed to open stdout");
@@ -153,6 +176,9 @@ impl TaskEngine {
 
         let status: std::result::Result<std::process::ExitStatus, std::io::Error> =
             child.wait().await;
+        if let Some(stdin_task) = stdin_task {
+            let _ = stdin_task.await;
+        }
         let _ = stdout_task.await;
         let _ = stderr_task.await;
 
@@ -290,7 +316,12 @@ impl TaskEngine {
 
 #[cfg(test)]
 mod tests {
-    use std::{thread, time::Duration};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     use super::*;
     use crate::core::data_store::{MigrationPlan, MigrationStep};
@@ -317,8 +348,15 @@ mod tests {
             VaultCipher::from_device_identifier("test-device")?,
         ));
         let blocked_args = test_shell_args("hello")?;
-        let task_id =
-            store.insert_forge_task("Echo", test_shell(), &blocked_args, r#"["openai"]"#)?;
+        let task_id = store.insert_forge_task(
+            "Echo",
+            test_shell(),
+            &blocked_args,
+            None,
+            None,
+            r#"["openai"]"#,
+            "{}",
+        )?;
 
         engine.spawn_task(task_id)?;
 
@@ -366,8 +404,15 @@ mod tests {
         store.insert_vault_token("Primary", "openai", &encrypted)?;
 
         let injected_args = test_shell_args(env_echo_expression())?;
-        let task_id =
-            store.insert_forge_task("Echo", test_shell(), &injected_args, r#"["openai"]"#)?;
+        let task_id = store.insert_forge_task(
+            "Echo",
+            test_shell(),
+            &injected_args,
+            None,
+            None,
+            r#"["openai"]"#,
+            "{}",
+        )?;
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -387,6 +432,107 @@ mod tests {
         assert!(logs
             .iter()
             .any(|log| log.line.contains("secret-from-vault")));
+
+        Ok(())
+    }
+
+    #[test]
+    fn passes_stdin_text_to_spawned_process() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0003_create_plugin_vault_tables",
+                sql: include_str!("../../../migrations/0003_create_plugin_vault_tables.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+        let engine = Arc::new(TaskEngine::new(store.clone(), EventBus::new()));
+
+        let task_id = store.insert_forge_task(
+            "Echo stdin",
+            test_shell(),
+            &test_shell_args(stdin_echo_expression())?,
+            None,
+            Some("hello via stdin\n"),
+            r#"[]"#,
+            "{}",
+        )?;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            engine.spawn_task(task_id)?;
+            wait_for_terminal_status_async(&store, task_id).await
+        })?;
+
+        let task = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert_eq!(task.status, "Done");
+
+        let logs = store.list_forge_task_logs(task_id)?;
+        assert!(logs.iter().any(|log| log.line.contains("hello via stdin")));
+
+        Ok(())
+    }
+
+    #[test]
+    fn applies_working_dir_to_spawned_process() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0003_create_plugin_vault_tables",
+                sql: include_str!("../../../migrations/0003_create_plugin_vault_tables.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+        let engine = Arc::new(TaskEngine::new(store.clone(), EventBus::new()));
+        let working_dir = create_test_working_dir("forge-working-dir")?;
+        let working_dir_text = working_dir.to_string_lossy().to_string();
+
+        let task_id = store.insert_forge_task(
+            "Print cwd",
+            test_shell(),
+            &test_shell_args(current_dir_expression())?,
+            Some(&working_dir_text),
+            None,
+            r#"[]"#,
+            "{}",
+        )?;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            engine.spawn_task(task_id)?;
+            wait_for_terminal_status_async(&store, task_id).await
+        })?;
+
+        let task = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert_eq!(task.status, "Done");
+
+        let expected = normalize_logged_path(&working_dir);
+        let logs = store.list_forge_task_logs(task_id)?;
+        assert!(logs
+            .iter()
+            .any(|log| normalize_path_text(&log.line) == expected));
+
+        let _ = fs::remove_dir_all(&working_dir);
 
         Ok(())
     }
@@ -432,6 +578,26 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
+    fn stdin_echo_expression() -> &'static str {
+        "more"
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn stdin_echo_expression() -> &'static str {
+        "cat"
+    }
+
+    #[cfg(target_os = "windows")]
+    fn current_dir_expression() -> &'static str {
+        "cd"
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn current_dir_expression() -> &'static str {
+        "pwd"
+    }
+
+    #[cfg(target_os = "windows")]
     fn env_echo_expression() -> &'static str {
         "echo %OPENAI_API_KEY%"
     }
@@ -439,5 +605,35 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     fn env_echo_expression() -> &'static str {
         "printf '%s\\n' \"$OPENAI_API_KEY\""
+    }
+
+    fn create_test_working_dir(prefix: &str) -> Result<PathBuf> {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| anyhow!("system clock error: {error}"))?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{suffix}"));
+        fs::create_dir_all(&path)?;
+        Ok(path)
+    }
+
+    fn normalize_logged_path(path: &Path) -> String {
+        normalize_path_text(&path.to_string_lossy())
+    }
+
+    fn normalize_path_text(value: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            value
+                .trim()
+                .trim_start_matches("\\\\?\\")
+                .replace('/', "\\")
+                .to_ascii_lowercase()
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            value.trim().to_string()
+        }
     }
 }

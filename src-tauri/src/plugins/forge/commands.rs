@@ -1,5 +1,9 @@
+use crate::core::data_store::DataStore;
 use crate::core::data_store::StoredForgeTask;
-use crate::plugins::forge::{ForgePlugin, ForgeTaskDetails};
+use crate::plugins::forge::{
+    build_agent_task_request, prepare_agent_dispatch, CreateTaskRequest, ForgePlugin,
+    ForgeTaskDetails, PreparedAgentDispatch,
+};
 use tauri::State;
 
 #[tauri::command]
@@ -13,10 +17,46 @@ pub fn forge_create_task(
     let required_tokens =
         serde_json::to_string(&required_tokens.unwrap_or_default()).map_err(|e| e.to_string())?;
     let id = forge
-        .create_task(&name, &command, &args, &required_tokens)
+        .create_task(CreateTaskRequest {
+            name,
+            command,
+            args,
+            working_dir: None,
+            stdin_text: None,
+            required_tokens,
+            metadata: "{}".to_string(),
+        })
         .map_err(|e| e.to_string())?;
     forge.engine().spawn_task(id).map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+#[tauri::command]
+pub fn forge_dispatch_agent(
+    issue_id: String,
+    worktree_path: String,
+    model: String,
+    prompt: String,
+    required_tokens: Option<Vec<String>>,
+    forge: State<'_, ForgePlugin>,
+) -> Result<i64, String> {
+    let request = build_agent_task_request(
+        issue_id,
+        worktree_path,
+        model,
+        prompt,
+        required_tokens.unwrap_or_default(),
+    )?;
+    let id = forge.create_task(request).map_err(|e| e.to_string())?;
+    forge.engine().spawn_task(id).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn forge_prepare_agent_dispatch(
+    data_store: State<'_, DataStore>,
+) -> Result<PreparedAgentDispatch, String> {
+    prepare_agent_dispatch(data_store.inner().clone()).await
 }
 
 #[tauri::command]
