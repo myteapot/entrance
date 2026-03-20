@@ -1,5 +1,5 @@
 use crate::core::data_store::StoredForgeTask;
-use crate::plugins::forge::ForgePlugin;
+use crate::plugins::forge::{ForgePlugin, ForgeTaskDetails};
 use tauri::State;
 
 #[tauri::command]
@@ -30,6 +30,14 @@ pub fn forge_get_task(
     forge: State<'_, ForgePlugin>,
 ) -> Result<Option<StoredForgeTask>, String> {
     forge.get_task(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn forge_get_task_details(
+    id: i64,
+    forge: State<'_, ForgePlugin>,
+) -> Result<Option<ForgeTaskDetails>, String> {
+    forge.get_task_details(id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

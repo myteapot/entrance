@@ -131,13 +131,16 @@ impl TaskEngine {
         let stdout_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                let _ = store_out.append_forge_task_log(id, "stdout", &line);
+                let log_id = match store_out.append_forge_task_log(id, "stdout", &line) {
+                    Ok(log_id) => log_id,
+                    Err(_) => continue,
+                };
                 let encoded_line = serde_json::to_string(&line).unwrap_or_default();
                 let _ = bus_out.publish(
                     "forge:task_output",
                     format!(
-                        r#"{{"id":{},"stream":"stdout","line":{}}}"#,
-                        id, encoded_line
+                        r#"{{"id":{},"task_id":{},"stream":"stdout","line":{},"created_at":null}}"#,
+                        log_id, id, encoded_line
                     ),
                 );
             }
@@ -148,13 +151,16 @@ impl TaskEngine {
         let stderr_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                let _ = store_err.append_forge_task_log(id, "stderr", &line);
+                let log_id = match store_err.append_forge_task_log(id, "stderr", &line) {
+                    Ok(log_id) => log_id,
+                    Err(_) => continue,
+                };
                 let encoded_line = serde_json::to_string(&line).unwrap_or_default();
                 let _ = bus_err.publish(
                     "forge:task_output",
                     format!(
-                        r#"{{"id":{},"stream":"stderr","line":{}}}"#,
-                        id, encoded_line
+                        r#"{{"id":{},"task_id":{},"stream":"stderr","line":{},"created_at":null}}"#,
+                        log_id, id, encoded_line
                     ),
                 );
             }

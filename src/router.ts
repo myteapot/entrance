@@ -2,6 +2,7 @@ import type { Component } from "solid-js";
 import Dashboard from "./pages/Dashboard";
 import RoutePlaceholder from "./pages/RoutePlaceholder";
 import Vault from "./pages/Vault";
+import Forge from "./pages/Forge";
 
 type AppRoute = {
   path: string;
@@ -48,13 +49,9 @@ export const primaryRoutes: AppRoute[] = [
     path: "/forge",
     label: "Forge",
     glyph: "FG",
-    description: "Creation workspace placeholder",
+    description: "Task runner and execution engine",
     hotkey: "Ctrl+3",
-    component: createPlaceholderPage(
-      "Forge",
-      "Forge will own the maker workflow later on. For now it proves the router, panel shell, and sidebar navigation.",
-      "/forge",
-    ),
+    component: Forge,
   },
   {
     path: "/vault",

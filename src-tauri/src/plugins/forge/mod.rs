@@ -169,6 +169,10 @@ impl Plugin for ForgePlugin {
                 description: "Get details and status of a specific task",
             },
             TauriCommandDefinition {
+                name: "forge_get_task_details",
+                description: "Get a forge task together with stored logs",
+            },
+            TauriCommandDefinition {
                 name: "forge_cancel_task",
                 description: "Cancel a running task",
             },
@@ -188,6 +192,10 @@ impl Plugin for ForgePlugin {
             McpToolDefinition {
                 name: "forge.get_task",
                 description: "Get a forge task by ID",
+            },
+            McpToolDefinition {
+                name: "forge.get_task_details",
+                description: "Get a forge task and its stored logs",
             },
             McpToolDefinition {
                 name: "forge.cancel_task",
