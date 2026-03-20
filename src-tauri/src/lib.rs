@@ -31,6 +31,28 @@ struct LauncherUiState {
     hotkey: Option<String>,
 }
 
+#[derive(Clone)]
+struct DashboardUiState {
+    app_version: String,
+    launcher_hotkey: Option<String>,
+    enabled_plugin_count: usize,
+    launcher_enabled: bool,
+    forge_enabled: bool,
+    vault_enabled: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct DashboardSummary {
+    app_version: String,
+    launcher_hotkey: Option<String>,
+    enabled_plugin_count: usize,
+    running_task_count: usize,
+    last_activity_at: Option<String>,
+    token_count: usize,
+    mcp_config_count: usize,
+    enabled_mcp_count: usize,
+}
+
 fn setup_application<R: tauri::Runtime>(
     app: &mut tauri::App<R>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -55,7 +77,25 @@ fn setup_application<R: tauri::Runtime>(
 
     let data_store = startup.data_store();
     let event_bus = EventBus::new();
+    let enabled_plugin_count = [
+        startup.launcher_enabled(),
+        startup.forge_enabled(),
+        startup.vault_enabled(),
+    ]
+    .into_iter()
+    .filter(|enabled| *enabled)
+    .count();
+
     app.manage(event_bus.clone());
+    app.manage(data_store.clone());
+    app.manage(DashboardUiState {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        launcher_hotkey: launcher_hotkey.clone(),
+        enabled_plugin_count,
+        launcher_enabled: startup.launcher_enabled(),
+        forge_enabled: startup.forge_enabled(),
+        vault_enabled: startup.vault_enabled(),
+    });
 
     let app_handle_for_events = app.handle().clone();
     let mut rx = event_bus.subscribe();
@@ -104,6 +144,80 @@ fn launcher_hotkey(state: tauri::State<'_, LauncherUiState>) -> Option<String> {
     state.hotkey.clone()
 }
 
+#[tauri::command]
+fn dashboard_summary(
+    dashboard: tauri::State<'_, DashboardUiState>,
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<DashboardSummary, String> {
+    let tasks = if dashboard.forge_enabled {
+        data_store.list_forge_tasks().map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    let tokens = if dashboard.vault_enabled {
+        data_store
+            .list_vault_tokens()
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    let mcp_configs = if dashboard.vault_enabled {
+        data_store
+            .list_vault_mcp_configs()
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    let launcher_apps = if dashboard.launcher_enabled {
+        data_store
+            .list_launcher_apps()
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+
+    let mut last_activity_at = None;
+    for task in &tasks {
+        update_latest_timestamp(&mut last_activity_at, Some(task.created_at.as_str()));
+        update_latest_timestamp(&mut last_activity_at, task.finished_at.as_deref());
+    }
+    for token in &tokens {
+        update_latest_timestamp(&mut last_activity_at, Some(token.updated_at.as_str()));
+    }
+    for config in &mcp_configs {
+        update_latest_timestamp(&mut last_activity_at, Some(config.updated_at.as_str()));
+    }
+    for app in &launcher_apps {
+        update_latest_timestamp(&mut last_activity_at, app.last_used.as_deref());
+        update_latest_timestamp(&mut last_activity_at, Some(app.updated_at.as_str()));
+    }
+
+    Ok(DashboardSummary {
+        app_version: dashboard.app_version.clone(),
+        launcher_hotkey: dashboard.launcher_hotkey.clone(),
+        enabled_plugin_count: dashboard.enabled_plugin_count,
+        running_task_count: tasks.iter().filter(|task| task.status == "Running").count(),
+        last_activity_at,
+        token_count: tokens.len(),
+        mcp_config_count: mcp_configs.len(),
+        enabled_mcp_count: mcp_configs.iter().filter(|config| config.enabled).count(),
+    })
+}
+
+fn update_latest_timestamp(current: &mut Option<String>, candidate: Option<&str>) {
+    let Some(candidate) = candidate.filter(|value| !value.is_empty()) else {
+        return;
+    };
+
+    let should_replace = current
+        .as_deref()
+        .map(|value| candidate > value)
+        .unwrap_or(true);
+    if should_replace {
+        *current = Some(candidate.to_string());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -115,6 +229,7 @@ pub fn run() {
         .setup(setup_application)
         .invoke_handler(tauri::generate_handler![
             launcher_hotkey,
+            dashboard_summary,
             core::theme::get_theme,
             core::theme::set_theme,
             launcher_search,
