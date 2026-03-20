@@ -54,9 +54,10 @@ pub fn forge_dispatch_agent(
 
 #[tauri::command]
 pub async fn forge_prepare_agent_dispatch(
+    project_dir: Option<String>,
     data_store: State<'_, DataStore>,
 ) -> Result<PreparedAgentDispatch, String> {
-    prepare_agent_dispatch(data_store.inner().clone()).await
+    prepare_agent_dispatch(data_store.inner().clone(), project_dir).await
 }
 
 #[tauri::command]

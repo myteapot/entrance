@@ -270,8 +270,9 @@ impl ForgePlugin {
 
 pub async fn prepare_agent_dispatch(
     data_store: DataStore,
+    project_dir: Option<String>,
 ) -> Result<PreparedAgentDispatch, String> {
-    let paths = tauri::async_runtime::spawn_blocking(resolve_dispatch_paths)
+    let paths = tauri::async_runtime::spawn_blocking(move || resolve_dispatch_paths(project_dir.as_deref()))
         .await
         .map_err(|error| error.to_string())??;
 
@@ -417,7 +418,48 @@ fn split_runner_and_variant(model: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn resolve_dispatch_paths() -> Result<DispatchPaths, String> {
+fn resolve_dispatch_paths(project_dir: Option<&str>) -> Result<DispatchPaths, String> {
+    // If project_dir is given, scan for worktrees under the agents directory
+    if let Some(project_dir) = project_dir {
+        let project_root = PathBuf::from(project_dir);
+        if !project_root.exists() {
+            return Err(format!("Project directory `{}` does not exist", project_dir));
+        }
+
+        // Find the first feat-* worktree under .agents/.worktrees/<project_name>/
+        let project_name = project_root
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let worktrees_dir = PathBuf::from("A:/.agents/.worktrees").join(&project_name);
+
+        if worktrees_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&worktrees_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("feat-") && entry.path().is_dir() {
+                        let worktree_path = entry.path();
+                        let issue_id = parse_issue_id_from_branch(&name)?;
+                        // Verify it's a git worktree
+                        if run_git_command(&worktree_path, ["rev-parse", "--show-toplevel"]).is_ok() {
+                            return Ok(DispatchPaths {
+                                issue_id,
+                                project_root: project_dir.replace('\\', "/"),
+                                worktree_path: worktree_path.to_string_lossy().replace('\\', "/"),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        return Err(format!(
+            "No active worktree found for project `{}`. Create a worktree first with control.py.",
+            project_name
+        ));
+    }
+
+    // Fallback: detect from CWD
     let cwd = env::current_dir().map_err(|error| error.to_string())?;
     let worktree_root = run_git_command(&cwd, ["rev-parse", "--show-toplevel"])?;
     let git_common_dir = run_git_command(&cwd, ["rev-parse", "--git-common-dir"])?;

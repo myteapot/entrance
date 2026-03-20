@@ -62,8 +62,8 @@ export const fetchForgeTasks = () => invoke<ForgeTask[]>("forge_list_tasks");
 export const fetchForgeTaskDetails = (id: number) =>
   invoke<ForgeTaskDetails | null>("forge_get_task_details", { id });
 
-export const prepareForgeAgentDispatch = () =>
-  invoke<PreparedAgentDispatch>("forge_prepare_agent_dispatch");
+export const prepareForgeAgentDispatch = (projectDir?: string) =>
+  invoke<PreparedAgentDispatch>("forge_prepare_agent_dispatch", { projectDir });
 
 export const dispatchForgeAgent = (
   issueId: string,

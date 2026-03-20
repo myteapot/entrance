@@ -91,6 +91,8 @@ pub struct ForgeConfig {
     pub enabled: bool,
     #[serde(default = "default_forge_http_port")]
     pub http_port: u16,
+    #[serde(default)]
+    pub project_dir: Option<String>,
 }
 
 impl Default for ForgeConfig {
@@ -98,6 +100,7 @@ impl Default for ForgeConfig {
         Self {
             enabled: false,
             http_port: default_forge_http_port(),
+            project_dir: None,
         }
     }
 }

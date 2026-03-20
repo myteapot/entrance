@@ -1,5 +1,6 @@
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./Forge.css";
 import {
   applyForgeTaskStatusEvent,
@@ -29,6 +30,20 @@ export default function Forge() {
   const [dispatchContextError, setDispatchContextError] = createSignal<string | null>(null);
   const [isLoadingDispatchContext, setIsLoadingDispatchContext] = createSignal(false);
   const [isLaunchingAgent, setIsLaunchingAgent] = createSignal(false);
+  const [projectDir, setProjectDir] = createSignal(localStorage.getItem("forge_project_dir") || "");
+
+  const updateProjectDir = (dir: string) => {
+    setProjectDir(dir);
+    localStorage.setItem("forge_project_dir", dir);
+  };
+
+  const pickProjectDir = async () => {
+    const selected = await open({ directory: true, title: "Select Project Directory" });
+    if (selected && typeof selected === "string") {
+      updateProjectDir(selected);
+      void loadDispatchContext();
+    }
+  };
 
   const [showNewTaskModal, setShowNewTaskModal] = createSignal(false);
   const [newTaskName, setNewTaskName] = createSignal("");
@@ -206,7 +221,7 @@ export default function Forge() {
     setDispatchContextError(null);
 
     try {
-      setDispatchContext(await prepareForgeAgentDispatch());
+      setDispatchContext(await prepareForgeAgentDispatch(projectDir() || undefined));
     } catch (error) {
       console.error("Failed to prepare Agent dispatch", error);
       setDispatchContext(null);
@@ -221,7 +236,7 @@ export default function Forge() {
     setDispatchContextError(null);
 
     try {
-      const context = await prepareForgeAgentDispatch();
+      const context = await prepareForgeAgentDispatch(projectDir() || undefined);
       setDispatchContext(context);
       await dispatchAgent(
         context.issue_id,
@@ -386,13 +401,24 @@ export default function Forge() {
             <p class="auto-dispatch-card__eyebrow">Auto Dispatch</p>
             <h2 class="auto-dispatch-card__title">Zero-copy Agent handoff from the current worktree</h2>
           </div>
-          <button
-            class="btn"
-            disabled={isLoadingDispatchContext()}
-            onClick={() => void loadDispatchContext()}
-          >
-            {isLoadingDispatchContext() ? "Refreshing..." : "Refresh Context"}
-          </button>
+          <div style={{ display: "flex", gap: "0.5rem", "align-items": "center" }}>
+            <input
+              class="form-input"
+              type="text"
+              value={projectDir()}
+              onInput={(e) => updateProjectDir(e.currentTarget.value)}
+              placeholder="Project directory (e.g. A:/Agent/Entrance)"
+              style={{ width: "320px", "font-size": "0.8rem" }}
+            />
+            <button class="btn" onClick={() => void pickProjectDir()} style={{ "white-space": "nowrap" }}>Browse</button>
+            <button
+              class="btn"
+              disabled={isLoadingDispatchContext()}
+              onClick={() => void loadDispatchContext()}
+            >
+              {isLoadingDispatchContext() ? "Refreshing..." : "Refresh Context"}
+            </button>
+          </div>
         </div>
 
         <Show
