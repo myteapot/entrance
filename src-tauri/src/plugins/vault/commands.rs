@@ -23,6 +23,18 @@ pub fn vault_add_token(
 }
 
 #[tauri::command]
+pub fn vault_upsert_token(
+    name: String,
+    provider: String,
+    value: String,
+    vault: State<'_, VaultPlugin>,
+) -> Result<i64, String> {
+    vault
+        .upsert_token(&name, &provider, &value)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn vault_delete_token(id: i64, vault: State<'_, VaultPlugin>) -> Result<(), String> {
     vault.delete_token(id).map_err(|error| error.to_string())
 }
@@ -33,6 +45,16 @@ pub fn vault_get_token(
     vault: State<'_, VaultPlugin>,
 ) -> Result<Option<StoredVaultTokenSecret>, String> {
     vault.get_token(id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn vault_get_token_by_provider(
+    provider: String,
+    vault: State<'_, VaultPlugin>,
+) -> Result<Option<StoredVaultTokenSecret>, String> {
+    vault
+        .get_token_by_provider(&provider)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

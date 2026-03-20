@@ -65,12 +65,40 @@ impl VaultPlugin {
             .insert_vault_token(name, provider, &encrypted_value)
     }
 
+    pub fn upsert_token(&self, name: &str, provider: &str, value: &str) -> Result<i64> {
+        let encrypted_value = self.cipher.encrypt(value)?;
+        if let Some(existing) = self.data_store.get_vault_token_by_provider(provider)? {
+            self.data_store
+                .update_vault_token(existing.id, name, provider, &encrypted_value)?;
+            Ok(existing.id)
+        } else {
+            self.data_store
+                .insert_vault_token(name, provider, &encrypted_value)
+        }
+    }
+
     pub fn delete_token(&self, id: i64) -> Result<()> {
         self.data_store.delete_vault_token(id)
     }
 
     pub fn get_token(&self, id: i64) -> Result<Option<StoredVaultTokenSecret>> {
         let Some(token) = self.data_store.get_vault_token(id)? else {
+            return Ok(None);
+        };
+
+        let value = self.cipher.decrypt(&token.encrypted_value)?;
+        Ok(Some(StoredVaultTokenSecret {
+            id: token.id,
+            name: token.name,
+            provider: token.provider,
+            value,
+            created_at: token.created_at,
+            updated_at: token.updated_at,
+        }))
+    }
+
+    pub fn get_token_by_provider(&self, provider: &str) -> Result<Option<StoredVaultTokenSecret>> {
+        let Some(token) = self.data_store.get_vault_token_by_provider(provider)? else {
             return Ok(None);
         };
 
@@ -135,6 +163,14 @@ impl Plugin for VaultPlugin {
                 description: "Decrypt and return a stored provider token.",
             },
             TauriCommandDefinition {
+                name: "vault_get_token_by_provider",
+                description: "Decrypt and return the newest token for a provider.",
+            },
+            TauriCommandDefinition {
+                name: "vault_upsert_token",
+                description: "Insert or replace a provider token.",
+            },
+            TauriCommandDefinition {
                 name: "vault_list_mcp",
                 description: "List saved MCP endpoint configurations.",
             },
@@ -148,12 +184,36 @@ impl Plugin for VaultPlugin {
     fn mcp_tools(&self) -> Vec<McpToolDefinition> {
         vec![
             McpToolDefinition {
-                name: "vault_get_token",
+                name: "vault.list_tokens",
+                description: "List stored token metadata.",
+            },
+            McpToolDefinition {
+                name: "vault.add_token",
+                description: "Store an encrypted provider token.",
+            },
+            McpToolDefinition {
+                name: "vault.delete_token",
+                description: "Delete an encrypted provider token.",
+            },
+            McpToolDefinition {
+                name: "vault.get_token",
                 description: "Decrypt and return a provider token.",
             },
             McpToolDefinition {
-                name: "vault_list_mcp",
+                name: "vault.get_token_by_provider",
+                description: "Decrypt and return the newest token for a provider.",
+            },
+            McpToolDefinition {
+                name: "vault.upsert_token",
+                description: "Insert or replace a provider token.",
+            },
+            McpToolDefinition {
+                name: "vault.list_mcp",
                 description: "List configured MCP endpoints.",
+            },
+            McpToolDefinition {
+                name: "vault.update_mcp",
+                description: "Create or update an MCP endpoint configuration.",
             },
         ]
     }
@@ -186,6 +246,18 @@ mod tests {
 
         let token = plugin.get_token(token_id)?.expect("token should exist");
         assert_eq!(token.value, "secret-token");
+        let token_by_provider = plugin
+            .get_token_by_provider("openai")?
+            .expect("provider token should exist");
+        assert_eq!(token_by_provider.value, "secret-token");
+
+        let same_token_id = plugin.upsert_token("Primary", "openai", "new-secret-token")?;
+        assert_eq!(same_token_id, token_id);
+
+        let updated_token = plugin
+            .get_token_by_provider("openai")?
+            .expect("updated provider token should exist");
+        assert_eq!(updated_token.value, "new-secret-token");
 
         let created =
             plugin.update_mcp_config(None, "Local MCP", "stdio", "npx -y some-mcp", true)?;
