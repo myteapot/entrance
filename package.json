@@ -1,6 +1,6 @@
 {
   "name": "entrance",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Entrance desktop shell powered by Tauri 2 and SolidJS",
   "type": "module",
