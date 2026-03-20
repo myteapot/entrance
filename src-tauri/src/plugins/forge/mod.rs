@@ -67,8 +67,15 @@ impl ForgePlugin {
         }
     }
 
-    pub fn create_task(&self, name: &str, command: &str, args: &str) -> Result<i64> {
-        self.data_store.insert_forge_task(name, command, args)
+    pub fn create_task(
+        &self,
+        name: &str,
+        command: &str,
+        args: &str,
+        required_tokens: &str,
+    ) -> Result<i64> {
+        self.data_store
+            .insert_forge_task(name, command, args, required_tokens)
     }
 
     pub fn list_tasks(&self) -> Result<Vec<StoredForgeTask>> {

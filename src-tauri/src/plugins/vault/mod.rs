@@ -1,5 +1,5 @@
 pub mod commands;
-mod crypto;
+pub(crate) mod crypto;
 
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use crate::{
     plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
 };
 
-use self::crypto::VaultCipher;
+pub(crate) use self::crypto::VaultCipher;
 
 const MANIFEST: Manifest = Manifest {
     name: "vault",
