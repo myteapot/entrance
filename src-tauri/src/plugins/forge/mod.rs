@@ -40,23 +40,23 @@ impl ForgePlugin {
             engine: Arc::new(TaskEngine::new(data_store, event_bus)),
         }
     }
-    
+
     pub fn create_task(&self, name: &str, command: &str, args: &str) -> Result<i64> {
         self.data_store.insert_forge_task(name, command, args)
     }
-    
+
     pub fn list_tasks(&self) -> Result<Vec<StoredForgeTask>> {
         self.data_store.list_forge_tasks()
     }
-    
+
     pub fn get_task(&self, id: i64) -> Result<Option<StoredForgeTask>> {
         self.data_store.get_forge_task(id)
     }
-    
+
     pub fn cancel_task(&self, id: i64) -> Result<()> {
         self.engine.cancel_task(id)
     }
-    
+
     pub fn engine(&self) -> Arc<TaskEngine> {
         self.engine.clone()
     }

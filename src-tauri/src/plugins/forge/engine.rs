@@ -41,7 +41,7 @@ impl TaskEngine {
         let _ = self.event_bus.publish("forge:task_status", format!(r#"{{"id":{},"status":"Running"}}"#, id));
 
         let engine_clone = self.clone();
-        
+
         let handle = tokio::spawn(async move {
             engine_clone.run_process(id, command, args).await;
         });
@@ -101,7 +101,7 @@ impl TaskEngine {
         });
 
         let status: std::result::Result<std::process::ExitStatus, std::io::Error> = child.wait().await;
-        
+
         self.active_tasks.lock().unwrap().remove(&id);
 
         match status {

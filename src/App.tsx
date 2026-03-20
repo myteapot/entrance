@@ -1,5 +1,8 @@
 import { For, onCleanup, onMount, type Component } from "solid-js";
 import { Route, Router, type RouteSectionProps, useNavigate } from "@solidjs/router";
+import { ask, message } from "@tauri-apps/plugin-dialog";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 import "./App.css";
 import MainPanel from "./components/MainPanel";
 import Sidebar from "./components/Sidebar";
@@ -20,10 +23,55 @@ const isEditableTarget = (target: EventTarget | null) => {
   );
 };
 
+const checkForAppUpdates = async () => {
+  if (import.meta.env.DEV) {
+    return;
+  }
+
+  try {
+    const update = await check();
+
+    if (!update) {
+      return;
+    }
+
+    const details = update.body?.trim();
+    const shouldInstall = await ask(
+      details
+        ? `发现新版本 ${update.version}。\n\n更新说明:\n${details}\n\n是否现在下载并重启安装？`
+        : `发现新版本 ${update.version}，是否现在下载并重启安装？`,
+      {
+        title: "Entrance 有可用更新",
+        kind: "info",
+        okLabel: "立即更新",
+        cancelLabel: "稍后"
+      }
+    );
+
+    if (!shouldInstall) {
+      return;
+    }
+
+    await update.downloadAndInstall();
+    await relaunch();
+  } catch (error) {
+    const description =
+      error instanceof Error ? error.message : "未知错误，请检查 updater 配置与服务器可达性。";
+
+    await message(`检查或安装更新失败：${description}`, {
+      title: "更新失败",
+      kind: "error",
+      buttons: { ok: "知道了" }
+    });
+  }
+};
+
 const AppShell: Component<RouteSectionProps> = (props) => {
   const navigate = useNavigate();
 
   onMount(() => {
+    void checkForAppUpdates();
+
     const handleKeydown = (event: KeyboardEvent) => {
       if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
         return;

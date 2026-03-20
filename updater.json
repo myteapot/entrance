@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "notes": "Release notes go here.",
+  "pub_date": "2026-03-20T00:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "PASTE_WINDOWS_SIGNATURE_HERE",
+      "url": "http://server:9311/pub/entrance/-/raw/main/bundles/Entrance_0.1.0_x64_en-US.msi.zip"
+    }
+  }
+}
