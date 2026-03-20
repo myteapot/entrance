@@ -526,6 +526,35 @@ impl DataStore {
         })
     }
 
+    pub fn update_vault_token(
+        &self,
+        id: i64,
+        name: &str,
+        provider: &str,
+        encrypted_value: &str,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let changed = self.with_connection(|conn| {
+            Ok(conn.execute(
+                r#"
+                UPDATE plugin_vault_tokens
+                SET name = ?2,
+                    provider = ?3,
+                    encrypted_value = ?4,
+                    updated_at = ?5
+                WHERE id = ?1
+                "#,
+                params![id, name, provider, encrypted_value, now],
+            )?)
+        })?;
+
+        if changed == 0 {
+            return Err(anyhow!("vault token `{id}` does not exist"));
+        }
+
+        Ok(())
+    }
+
     pub fn list_vault_tokens(&self) -> Result<Vec<StoredVaultToken>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(

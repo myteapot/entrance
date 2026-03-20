@@ -1,120 +1,389 @@
-import { createSignal, For, Show } from "solid-js";
-import { createStore } from "solid-js/store";
+import { createSignal, For, onMount, Show } from "solid-js";
 import "./Vault.css";
-
-// --- Types ---
-type ApiToken = {
-  id: string;
-  name: string;
-  provider: string;
-  value: string;
-};
-
-type McpConfig = {
-  id: string;
-  name: string;
-  endpoint: string;
-  enabled: boolean;
-  transport?: string;
-  args?: string;
-};
-
-// --- Mock Data ---
-const initialTokens: ApiToken[] = [
-  { id: "1", name: "Default Gemini", provider: "Google", value: "AIzaSyB................" },
-  { id: "2", name: "Anthropic Claude", provider: "Anthropic", value: "sk-ant-................" },
-];
-
-const initialMcpConfigs: McpConfig[] = [
-  { id: "1", name: "Local Linear MCP", endpoint: "linear-mcp-server", transport: "stdio", enabled: true },
-  { id: "2", name: "Search Utility", endpoint: "http://localhost:8080/mcp", transport: "http", enabled: false },
-];
+import {
+  addVaultToken,
+  deleteVaultToken,
+  getVaultToken,
+  getVaultTokenByProvider,
+  GITLAB_UPDATER_NAME,
+  GITLAB_UPDATER_PROVIDER,
+  listVaultMcpConfigs,
+  listVaultTokens,
+  updateVaultMcpConfig,
+  upsertVaultToken,
+  type VaultMcpConfig,
+  type VaultToken,
+} from "../features/vault/client";
 
 export default function Vault() {
-  const [tokens, setTokens] = createStore<ApiToken[]>(initialTokens);
-  const [mcpConfigs, setMcpConfigs] = createStore<McpConfig[]>(initialMcpConfigs);
-
-  // UI States
+  const [tokens, setTokens] = createSignal<VaultToken[]>([]);
+  const [mcpConfigs, setMcpConfigs] = createSignal<VaultMcpConfig[]>([]);
+  const [tokenSecrets, setTokenSecrets] = createSignal<Record<number, string>>({});
+  const [visibleTokenIds, setVisibleTokenIds] = createSignal<Set<number>>(new Set());
+  const [isLoading, setIsLoading] = createSignal(true);
+  const [isSavingGitlabToken, setIsSavingGitlabToken] = createSignal(false);
+  const [feedbackTone, setFeedbackTone] = createSignal<"success" | "error" | null>(null);
+  const [feedbackMessage, setFeedbackMessage] = createSignal<string | null>(null);
   const [showTokenModal, setShowTokenModal] = createSignal(false);
   const [showMcpModal, setShowMcpModal] = createSignal(false);
 
-  // Add Token Modal State
   const [newTokenName, setNewTokenName] = createSignal("");
   const [newTokenProvider, setNewTokenProvider] = createSignal("");
   const [newTokenValue, setNewTokenValue] = createSignal("");
+  const [gitlabTokenValue, setGitlabTokenValue] = createSignal("");
+  const [gitlabPreviewValue, setGitlabPreviewValue] = createSignal<string | null>(null);
+  const [showGitlabPreview, setShowGitlabPreview] = createSignal(false);
 
-  // Add MCP Modal State
   const [newMcpName, setNewMcpName] = createSignal("");
   const [newMcpEndpoint, setNewMcpEndpoint] = createSignal("");
   const [newMcpTransport, setNewMcpTransport] = createSignal("stdio");
-  const [newMcpArgs, setNewMcpArgs] = createSignal("");
 
-  // Visible Passwords Set
-  const [visiblePasswords, setVisiblePasswords] = createSignal<Set<string>>(new Set());
-
-  const togglePasswordVisibility = (id: string) => {
-    const newSet = new Set(visiblePasswords());
-    if (newSet.has(id)) {
-      newSet.delete(id);
-    } else {
-      newSet.add(id);
-    }
-    setVisiblePasswords(newSet);
+  const setFeedback = (message: string, tone: "success" | "error") => {
+    setFeedbackTone(tone);
+    setFeedbackMessage(message);
   };
 
-  const handleAddToken = () => {
-    if (newTokenName() && newTokenProvider() && newTokenValue()) {
-      setTokens([...tokens, {
-        id: Date.now().toString(),
-        name: newTokenName(),
-        provider: newTokenProvider(),
-        value: newTokenValue(),
-      }]);
+  const formatTimestamp = (value: string) => new Date(value).toLocaleString();
+
+  const maskTokenValue = (value: string) => {
+    if (!value) {
+      return "Not configured";
+    }
+
+    if (value.length <= 8) {
+      return "*".repeat(Math.max(8, value.length));
+    }
+
+    return `${value.slice(0, 4)}${"*".repeat(Math.max(4, value.length - 8))}${value.slice(-4)}`;
+  };
+
+  const gitlabToken = () =>
+    tokens().find((token) => token.provider === GITLAB_UPDATER_PROVIDER) ?? null;
+
+  const apiTokens = () =>
+    tokens().filter((token) => token.provider !== GITLAB_UPDATER_PROVIDER);
+
+  const refreshVaultData = async () => {
+    setIsLoading(true);
+    try {
+      const [nextTokens, nextMcpConfigs] = await Promise.all([
+        listVaultTokens(),
+        listVaultMcpConfigs(),
+      ]);
+      setTokens(nextTokens);
+      setMcpConfigs(nextMcpConfigs);
+    } catch (error) {
+      console.error("Failed to load Vault data", error);
+      setFeedback(
+        error instanceof Error ? error.message : "Failed to load Vault data.",
+        "error",
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  onMount(() => {
+    void refreshVaultData();
+  });
+
+  const toggleTokenVisibility = async (id: number) => {
+    const nextVisibleIds = new Set(visibleTokenIds());
+    if (nextVisibleIds.has(id)) {
+      nextVisibleIds.delete(id);
+      setVisibleTokenIds(nextVisibleIds);
+      return;
+    }
+
+    const cachedSecret = tokenSecrets()[id];
+    if (!cachedSecret) {
+      try {
+        const token = await getVaultToken(id);
+        if (token?.value) {
+          setTokenSecrets((current) => ({
+            ...current,
+            [id]: token.value,
+          }));
+        }
+      } catch (error) {
+        console.error("Failed to reveal token", error);
+        setFeedback(
+          error instanceof Error ? error.message : "Failed to reveal token.",
+          "error",
+        );
+        return;
+      }
+    }
+
+    nextVisibleIds.add(id);
+    setVisibleTokenIds(nextVisibleIds);
+  };
+
+  const handleSaveGitlabToken = async () => {
+    const value = gitlabTokenValue().trim();
+    if (!value) {
+      setFeedback("Paste the GitLab Bot token before saving.", "error");
+      return;
+    }
+
+    setIsSavingGitlabToken(true);
+    try {
+      await upsertVaultToken(
+        GITLAB_UPDATER_NAME,
+        GITLAB_UPDATER_PROVIDER,
+        value,
+      );
+      setGitlabTokenValue("");
+      setGitlabPreviewValue(null);
+      setShowGitlabPreview(false);
+      await refreshVaultData();
+      setFeedback(
+        "GitLab Bot token saved. Future update checks will send PRIVATE-TOKEN.",
+        "success",
+      );
+    } catch (error) {
+      console.error("Failed to save GitLab updater token", error);
+      setFeedback(
+        error instanceof Error ? error.message : "Failed to save GitLab Bot token.",
+        "error",
+      );
+    } finally {
+      setIsSavingGitlabToken(false);
+    }
+  };
+
+  const handleRevealGitlabToken = async () => {
+    if (showGitlabPreview()) {
+      setShowGitlabPreview(false);
+      return;
+    }
+
+    try {
+      if (!gitlabPreviewValue()) {
+        const token = await getVaultTokenByProvider(GITLAB_UPDATER_PROVIDER);
+        setGitlabPreviewValue(token?.value ?? null);
+      }
+      setShowGitlabPreview(true);
+    } catch (error) {
+      console.error("Failed to reveal GitLab updater token", error);
+      setFeedback(
+        error instanceof Error ? error.message : "Failed to reveal GitLab Bot token.",
+        "error",
+      );
+    }
+  };
+
+  const handleDeleteToken = async (id: number) => {
+    try {
+      await deleteVaultToken(id);
+      setVisibleTokenIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+      setTokenSecrets((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+
+      if (gitlabToken()?.id === id) {
+        setGitlabPreviewValue(null);
+        setShowGitlabPreview(false);
+      }
+
+      await refreshVaultData();
+      setFeedback("Token deleted from Vault.", "success");
+    } catch (error) {
+      console.error("Failed to delete token", error);
+      setFeedback(
+        error instanceof Error ? error.message : "Failed to delete token.",
+        "error",
+      );
+    }
+  };
+
+  const handleAddToken = async () => {
+    const name = newTokenName().trim();
+    const provider = newTokenProvider().trim();
+    const value = newTokenValue().trim();
+    if (!name || !provider || !value) {
+      setFeedback("Name, provider, and token value are required.", "error");
+      return;
+    }
+
+    try {
+      await addVaultToken(name, provider, value);
       setShowTokenModal(false);
       setNewTokenName("");
       setNewTokenProvider("");
       setNewTokenValue("");
+      await refreshVaultData();
+      setFeedback("Token added to Vault.", "success");
+    } catch (error) {
+      console.error("Failed to add token", error);
+      setFeedback(
+        error instanceof Error ? error.message : "Failed to add token.",
+        "error",
+      );
     }
   };
 
-  const handleDeleteToken = (id: string) => {
-    setTokens(tokens.filter(t => t.id !== id));
-  };
+  const handleAddMcp = async () => {
+    const name = newMcpName().trim();
+    const endpoint = newMcpEndpoint().trim();
+    if (!name || !endpoint) {
+      setFeedback("MCP name and endpoint are required.", "error");
+      return;
+    }
 
-  const handleAddMcp = () => {
-    if (newMcpName() && newMcpEndpoint()) {
-      setMcpConfigs([...mcpConfigs, {
-        id: Date.now().toString(),
-        name: newMcpName(),
-        endpoint: newMcpEndpoint(),
-        transport: newMcpTransport(),
-        args: newMcpArgs(),
-        enabled: true,
-      }]);
+    try {
+      await updateVaultMcpConfig(
+        null,
+        name,
+        newMcpTransport(),
+        endpoint,
+        true,
+      );
       setShowMcpModal(false);
       setNewMcpName("");
       setNewMcpEndpoint("");
       setNewMcpTransport("stdio");
-      setNewMcpArgs("");
+      await refreshVaultData();
+      setFeedback("MCP configuration saved.", "success");
+    } catch (error) {
+      console.error("Failed to save MCP configuration", error);
+      setFeedback(
+        error instanceof Error ? error.message : "Failed to save MCP configuration.",
+        "error",
+      );
     }
   };
 
-  const handleToggleMcp = (id: string) => {
-    setMcpConfigs(c => c.id === id, "enabled", e => !e);
-  };
-
-  const handleDeleteMcp = (id: string) => {
-    setMcpConfigs(mcpConfigs.filter(m => m.id !== id));
+  const handleToggleMcp = async (config: VaultMcpConfig) => {
+    try {
+      await updateVaultMcpConfig(
+        config.id,
+        config.name,
+        config.transport,
+        config.endpoint,
+        !config.enabled,
+      );
+      await refreshVaultData();
+    } catch (error) {
+      console.error("Failed to update MCP configuration", error);
+      setFeedback(
+        error instanceof Error ? error.message : "Failed to update MCP configuration.",
+        "error",
+      );
+    }
   };
 
   return (
     <div class="vault-page">
       <div class="vault-header">
         <h1 class="vault-title">Vault</h1>
-        <p class="vault-subtitle">Manage API Tokens and configure Model Context Protocol (MCP) servers safely.</p>
+        <p class="vault-subtitle">Manage encrypted tokens and configure Model Context Protocol (MCP) servers safely.</p>
       </div>
 
-      {/* --- Tokens Section --- */}
+      <Show when={feedbackMessage()}>
+        {(message) => (
+          <div class={`vault-callout vault-callout--${feedbackTone() ?? "success"}`}>
+            {message()}
+          </div>
+        )}
+      </Show>
+
+      <Show when={isLoading()}>
+        <div class="vault-loading">Loading encrypted Vault data...</div>
+      </Show>
+
+      <section class="vault-section vault-section--feature">
+        <div class="vault-section-header vault-section-header--stack">
+          <div>
+            <h2 class="vault-section-title">Entrance Updater Token</h2>
+            <p class="vault-section-copy">
+              This GitLab Bot token is used only by Entrance itself when it checks for updates and downloads private release artifacts from GitLab.
+            </p>
+          </div>
+          <span class={`vault-status-pill ${gitlabToken() ? "is-configured" : "is-missing"}`}>
+            {gitlabToken() ? "Configured" : "Not configured"}
+          </span>
+        </div>
+
+        <div class="vault-updater-card">
+          <div class="vault-updater-meta">
+            <div>
+              <span class="vault-label">Display name</span>
+              <strong>{GITLAB_UPDATER_NAME}</strong>
+            </div>
+            <div>
+              <span class="vault-label">Provider key</span>
+              <strong>{GITLAB_UPDATER_PROVIDER}</strong>
+            </div>
+            <Show when={gitlabToken()}>
+              {(token) => (
+                <div>
+                  <span class="vault-label">Last updated</span>
+                  <strong>{formatTimestamp(token().updated_at)}</strong>
+                </div>
+              )}
+            </Show>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">GitLab Access Token</label>
+            <input
+              class="form-input"
+              type="password"
+              value={gitlabTokenValue()}
+              onInput={(event) => setGitlabTokenValue(event.currentTarget.value)}
+              placeholder={
+                gitlabToken()
+                  ? "Paste a new Bot token to replace the stored value"
+                  : "Paste the Bot token used for updater requests"
+              }
+            />
+            <p class="form-hint">
+              Entrance sends this as the <code>PRIVATE-TOKEN</code> header for updater metadata and package downloads.
+            </p>
+          </div>
+
+          <Show when={gitlabToken()}>
+            <div class="vault-secret-preview">
+              <span class="vault-label">Stored value</span>
+              <code class="password-text">
+                {showGitlabPreview()
+                  ? gitlabPreviewValue() ?? "Unavailable"
+                  : maskTokenValue(gitlabPreviewValue() ?? "configured")}
+              </code>
+            </div>
+          </Show>
+
+          <div class="modal-actions vault-actions">
+            <Show when={gitlabToken()}>
+              <button class="btn" onClick={() => void handleRevealGitlabToken()}>
+                {showGitlabPreview() ? "Hide Token" : "Reveal Token"}
+              </button>
+            </Show>
+            <Show when={gitlabToken()}>
+              {(token) => (
+                <button class="btn" onClick={() => void handleDeleteToken(token().id)}>
+                  Clear Token
+                </button>
+              )}
+            </Show>
+            <button
+              class="btn btn-primary"
+              disabled={isSavingGitlabToken()}
+              onClick={() => void handleSaveGitlabToken()}
+            >
+              {isSavingGitlabToken() ? "Saving..." : gitlabToken() ? "Replace Token" : "Save Token"}
+            </button>
+          </div>
+        </div>
+      </section>
+
       <section class="vault-section">
         <div class="vault-section-header">
           <h2 class="vault-section-title">API Tokens</h2>
@@ -125,42 +394,49 @@ export default function Vault() {
             <tr>
               <th>Name</th>
               <th>Provider</th>
+              <th>Updated</th>
               <th>Token Value</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            <For each={tokens}>
+            <For each={apiTokens()}>
               {(token) => (
                 <tr>
                   <td>{token.name}</td>
                   <td>{token.provider}</td>
+                  <td>{formatTimestamp(token.updated_at)}</td>
                   <td>
                     <div class="password-display">
-                      <span class="password-text">
-                        {visiblePasswords().has(token.id) ? token.value : "••••••••••••••••••••"}
-                      </span>
-                      <button class="btn-icon" onClick={() => togglePasswordVisibility(token.id)} title="Toggle Visibility">
-                        {visiblePasswords().has(token.id) ? "Hide" : "Show"}
+                      <code class="password-text">
+                        {visibleTokenIds().has(token.id)
+                          ? tokenSecrets()[token.id] ?? "Unavailable"
+                          : "************"}
+                      </code>
+                      <button
+                        class="btn-icon"
+                        onClick={() => void toggleTokenVisibility(token.id)}
+                        title="Toggle Visibility"
+                      >
+                        {visibleTokenIds().has(token.id) ? "Hide" : "Show"}
                       </button>
                     </div>
                   </td>
                   <td>
-                    <button class="btn-icon" onClick={() => handleDeleteToken(token.id)}>Delete</button>
+                    <button class="btn-icon" onClick={() => void handleDeleteToken(token.id)}>Delete</button>
                   </td>
                 </tr>
               )}
             </For>
-            <Show when={tokens.length === 0}>
+            <Show when={apiTokens().length === 0}>
               <tr>
-                <td colspan="4" style={{ "text-align": "center", color: "var(--text-tertiary)" }}>No tokens configured.</td>
+                <td colSpan={5} style={{ "text-align": "center", color: "var(--text-tertiary)" }}>No API tokens configured.</td>
               </tr>
             </Show>
           </tbody>
         </table>
       </section>
 
-      {/* --- MCP Configs Section --- */}
       <section class="vault-section">
         <div class="vault-section-header">
           <h2 class="vault-section-title">MCP Configurations</h2>
@@ -170,101 +446,88 @@ export default function Vault() {
           <thead>
             <tr>
               <th>Name</th>
-              <th>Endpoint / Transport</th>
+              <th>Transport</th>
+              <th>Endpoint / Command</th>
               <th>Status</th>
-              <th>Actions</th>
+              <th>Updated</th>
             </tr>
           </thead>
           <tbody>
-            <For each={mcpConfigs}>
+            <For each={mcpConfigs()}>
               {(mcp) => (
                 <tr>
                   <td>{mcp.name}</td>
                   <td>
-                    <div style={{ "margin-bottom": "4px" }}>{mcp.endpoint}</div>
-                    <span class="password-text">{mcp.transport}</span>
+                    <code class="password-text">{mcp.transport}</code>
                   </td>
+                  <td>{mcp.endpoint}</td>
                   <td>
                     <label class="toggle-switch">
-                      <input type="checkbox" checked={mcp.enabled} onChange={() => handleToggleMcp(mcp.id)} />
+                      <input type="checkbox" checked={mcp.enabled} onChange={() => void handleToggleMcp(mcp)} />
                       <span class="slider"></span>
                     </label>
                   </td>
-                  <td>
-                    <button class="btn-icon" onClick={() => handleDeleteMcp(mcp.id)}>Delete</button>
-                  </td>
+                  <td>{formatTimestamp(mcp.updated_at)}</td>
                 </tr>
               )}
             </For>
-            <Show when={mcpConfigs.length === 0}>
+            <Show when={mcpConfigs().length === 0}>
               <tr>
-                <td colspan="4" style={{ "text-align": "center", color: "var(--text-tertiary)" }}>No MCP servers configured.</td>
+                <td colSpan={5} style={{ "text-align": "center", color: "var(--text-tertiary)" }}>No MCP servers configured.</td>
               </tr>
             </Show>
           </tbody>
         </table>
       </section>
 
-      {/* Token Modal */}
       <Show when={showTokenModal()}>
         <div class="modal-backdrop">
           <div class="modal">
             <h2 class="vault-title" style={{ "margin-bottom": "var(--space-4)", "font-size": "var(--text-xl)" }}>Add New Token</h2>
             <div class="form-group">
               <label class="form-label">Name</label>
-              <input class="form-input" type="text" value={newTokenName()} onInput={(e) => setNewTokenName(e.currentTarget.value)} placeholder="e.g. My Prod Key" />
+              <input class="form-input" type="text" value={newTokenName()} onInput={(event) => setNewTokenName(event.currentTarget.value)} placeholder="e.g. Primary OpenAI Key" />
             </div>
             <div class="form-group">
               <label class="form-label">Provider</label>
-              <select class="form-select" value={newTokenProvider()} onChange={(e) => setNewTokenProvider(e.currentTarget.value)}>
-                <option value="">Select a provider...</option>
-                <option value="Google">Google (Gemini)</option>
-                <option value="Anthropic">Anthropic (Claude)</option>
-                <option value="OpenAI">OpenAI</option>
-                <option value="Custom">Custom</option>
-              </select>
+              <input class="form-input" type="text" value={newTokenProvider()} onInput={(event) => setNewTokenProvider(event.currentTarget.value)} placeholder="e.g. openai, anthropic, gemini" />
+              <p class="form-hint">Forge required tokens match this provider key.</p>
             </div>
             <div class="form-group">
               <label class="form-label">Token Value</label>
-              <input class="form-input" type="password" value={newTokenValue()} onInput={(e) => setNewTokenValue(e.currentTarget.value)} placeholder="Paste token here..." />
+              <input class="form-input" type="password" value={newTokenValue()} onInput={(event) => setNewTokenValue(event.currentTarget.value)} placeholder="Paste token here..." />
             </div>
             <div class="modal-actions">
               <button class="btn" onClick={() => setShowTokenModal(false)}>Cancel</button>
-              <button class="btn btn-primary" onClick={handleAddToken}>Save Token</button>
+              <button class="btn btn-primary" onClick={() => void handleAddToken()}>Save Token</button>
             </div>
           </div>
         </div>
       </Show>
 
-      {/* MCP Modal */}
       <Show when={showMcpModal()}>
         <div class="modal-backdrop">
           <div class="modal">
             <h2 class="vault-title" style={{ "margin-bottom": "var(--space-4)", "font-size": "var(--text-xl)" }}>Add MCP Configuration</h2>
             <div class="form-group">
               <label class="form-label">Name</label>
-              <input class="form-input" type="text" value={newMcpName()} onInput={(e) => setNewMcpName(e.currentTarget.value)} placeholder="e.g. Local Database" />
+              <input class="form-input" type="text" value={newMcpName()} onInput={(event) => setNewMcpName(event.currentTarget.value)} placeholder="e.g. Local Database" />
             </div>
             <div class="form-group">
               <label class="form-label">Transport</label>
-              <select class="form-select" value={newMcpTransport()} onChange={(e) => setNewMcpTransport(e.currentTarget.value)}>
+              <select class="form-select" value={newMcpTransport()} onChange={(event) => setNewMcpTransport(event.currentTarget.value)}>
                 <option value="stdio">stdio</option>
-                <option value="sse">sse (HTTP)</option>
+                <option value="http+sse">http+sse</option>
               </select>
             </div>
             <div class="form-group">
               <label class="form-label">Endpoint / Command</label>
-              <input class="form-input" type="text" value={newMcpEndpoint()} onInput={(e) => setNewMcpEndpoint(e.currentTarget.value)} placeholder={newMcpTransport() === 'stdio' ? "e.g. npx" : "e.g. http://localhost:8080/mcp"} />
+              <input class="form-input" type="text" value={newMcpEndpoint()} onInput={(event) => setNewMcpEndpoint(event.currentTarget.value)} placeholder={newMcpTransport() === "stdio" ? "e.g. npx -y @modelcontextprotocol/server-sqlite" : "e.g. http://localhost:8080/sse"} />
+              <p class="form-hint">For stdio, place the full command and arguments in the endpoint field.</p>
             </div>
-            <Show when={newMcpTransport() === 'stdio'}>
-              <div class="form-group">
-                <label class="form-label">Arguments (optional)</label>
-                <input class="form-input" type="text" value={newMcpArgs()} onInput={(e) => setNewMcpArgs(e.currentTarget.value)} placeholder="e.g. -y @modelcontextprotocol/server-sqlite" />
-              </div>
-            </Show>
             <div class="modal-actions">
               <button class="btn" onClick={() => setShowMcpModal(false)}>Cancel</button>
-              <button class="btn btn-primary" onClick={handleAddMcp}>Save Configuration</button>
+              <button class="btn btn-primary" onClick={() => void handleAddMcp()}>Save Configuration</button>
             </div>
           </div>
         </div>
