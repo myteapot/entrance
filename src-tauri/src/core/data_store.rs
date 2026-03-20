@@ -69,6 +69,46 @@ pub struct StoredForgeTask {
     pub finished_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredVaultToken {
+    pub id: i64,
+    pub name: String,
+    pub provider: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EncryptedVaultToken {
+    pub id: i64,
+    pub name: String,
+    pub provider: String,
+    pub encrypted_value: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredVaultTokenSecret {
+    pub id: i64,
+    pub name: String,
+    pub provider: String,
+    pub value: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredVaultMcpConfig {
+    pub id: i64,
+    pub name: String,
+    pub transport: String,
+    pub endpoint: String,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Clone)]
 pub struct DataStore {
     connection: Arc<Mutex<Connection>>,
@@ -333,7 +373,12 @@ impl DataStore {
         })
     }
 
-    pub fn update_forge_task_status(&self, id: i64, status: &str, exit_code: Option<i32>) -> Result<()> {
+    pub fn update_forge_task_status(
+        &self,
+        id: i64,
+        status: &str,
+        exit_code: Option<i32>,
+    ) -> Result<()> {
         let now = if matches!(status, "Done" | "Failed" | "Cancelled") {
             Some(Utc::now().to_rfc3339())
         } else {
@@ -383,6 +428,137 @@ impl DataStore {
             )
             .optional()
             .map_err(Into::into)
+        })
+    }
+
+    pub fn insert_vault_token(
+        &self,
+        name: &str,
+        provider: &str,
+        encrypted_value: &str,
+    ) -> Result<i64> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO plugin_vault_tokens (
+                    name, provider, encrypted_value, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?4)
+                "#,
+                params![name, provider, encrypted_value, now],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    pub fn list_vault_tokens(&self) -> Result<Vec<StoredVaultToken>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, name, provider, created_at, updated_at
+                FROM plugin_vault_tokens
+                ORDER BY provider ASC, name ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_vault_token_row)?;
+            let tokens = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(tokens)
+        })
+    }
+
+    pub fn get_vault_token(&self, id: i64) -> Result<Option<EncryptedVaultToken>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                r#"
+                SELECT id, name, provider, encrypted_value, created_at, updated_at
+                FROM plugin_vault_tokens
+                WHERE id = ?1
+                "#,
+                [id],
+                map_encrypted_vault_token_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn delete_vault_token(&self, id: i64) -> Result<()> {
+        let changed = self.with_connection(|conn| {
+            Ok(conn.execute("DELETE FROM plugin_vault_tokens WHERE id = ?1", [id])?)
+        })?;
+
+        if changed == 0 {
+            return Err(anyhow!("vault token `{id}` does not exist"));
+        }
+
+        Ok(())
+    }
+
+    pub fn list_vault_mcp_configs(&self) -> Result<Vec<StoredVaultMcpConfig>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, name, transport, endpoint, enabled, created_at, updated_at
+                FROM plugin_vault_mcp_configs
+                ORDER BY enabled DESC, name ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_vault_mcp_row)?;
+            let configs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(configs)
+        })
+    }
+
+    pub fn upsert_vault_mcp_config(
+        &self,
+        id: Option<i64>,
+        name: &str,
+        transport: &str,
+        endpoint: &str,
+        enabled: bool,
+    ) -> Result<StoredVaultMcpConfig> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            let id = if let Some(id) = id {
+                let changed = conn.execute(
+                    r#"
+                    UPDATE plugin_vault_mcp_configs
+                    SET name = ?2,
+                        transport = ?3,
+                        endpoint = ?4,
+                        enabled = ?5,
+                        updated_at = ?6
+                    WHERE id = ?1
+                    "#,
+                    params![
+                        id,
+                        name,
+                        transport,
+                        endpoint,
+                        if enabled { 1 } else { 0 },
+                        now
+                    ],
+                )?;
+
+                if changed == 0 {
+                    return Err(anyhow!("vault MCP config `{id}` does not exist"));
+                }
+
+                id
+            } else {
+                conn.execute(
+                    r#"
+                    INSERT INTO plugin_vault_mcp_configs (
+                        name, transport, endpoint, enabled, created_at, updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                    "#,
+                    params![name, transport, endpoint, if enabled { 1 } else { 0 }, now],
+                )?;
+                conn.last_insert_rowid()
+            };
+
+            fetch_vault_mcp_config(conn, id)?
+                .ok_or_else(|| anyhow!("vault MCP config `{id}` could not be reloaded"))
         })
     }
 
@@ -444,6 +620,57 @@ fn map_forge_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTask> {
         created_at: row.get(6)?,
         finished_at: row.get(7)?,
     })
+}
+
+fn map_vault_token_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultToken> {
+    Ok(StoredVaultToken {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        provider: row.get(2)?,
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
+}
+
+fn map_encrypted_vault_token_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EncryptedVaultToken> {
+    Ok(EncryptedVaultToken {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        provider: row.get(2)?,
+        encrypted_value: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
+fn map_vault_mcp_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultMcpConfig> {
+    Ok(StoredVaultMcpConfig {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        transport: row.get(2)?,
+        endpoint: row.get(3)?,
+        enabled: row.get::<_, i64>(4)? != 0,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
+fn fetch_vault_mcp_config(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredVaultMcpConfig>> {
+    connection
+        .query_row(
+            r#"
+            SELECT id, name, transport, endpoint, enabled, created_at, updated_at
+            FROM plugin_vault_mcp_configs
+            WHERE id = ?1
+            "#,
+            [id],
+            map_vault_mcp_row,
+        )
+        .optional()
+        .map_err(Into::into)
 }
 
 fn fallback_app_name(path: &str) -> String {

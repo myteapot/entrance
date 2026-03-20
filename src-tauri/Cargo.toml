@@ -18,9 +18,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+aes-gcm = "0.10"
 anyhow = "1"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
+sha2 = "0.10"
 strsim = "0.11"
 tauri = { version = "2", features = [] }
 tauri-plugin-global-shortcut = "2"

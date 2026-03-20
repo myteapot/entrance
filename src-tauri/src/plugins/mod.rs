@@ -1,5 +1,6 @@
 pub mod forge;
 pub mod launcher;
+pub mod vault;
 
 use anyhow::Result;
 use serde::Serialize;
@@ -15,7 +16,10 @@ pub struct AppContext {
 
 impl AppContext {
     pub fn new(data_store: DataStore, event_bus: EventBus) -> Self {
-        Self { data_store, event_bus }
+        Self {
+            data_store,
+            event_bus,
+        }
     }
 }
 

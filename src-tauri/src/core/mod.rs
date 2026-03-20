@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::plugins::{forge, launcher};
+use crate::plugins::{forge, launcher, vault};
 
 use self::{
     config_store::{ConfigStore, EntranceConfig},
@@ -94,6 +94,10 @@ impl StartupState {
         self.config.plugins.forge.enabled
     }
 
+    pub fn vault_enabled(&self) -> bool {
+        self.config.plugins.vault.enabled
+    }
+
     pub fn launcher_hotkey(&self) -> Option<&str> {
         self.config
             .plugins
@@ -130,6 +134,10 @@ fn enabled_plugin_migrations(config: &EntranceConfig) -> Vec<MigrationStep> {
 
     if config.plugins.forge.enabled {
         migrations.extend_from_slice(forge::migrations());
+    }
+
+    if config.plugins.vault.enabled {
+        migrations.extend_from_slice(vault::migrations());
     }
 
     migrations
