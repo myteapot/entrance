@@ -1,0 +1,291 @@
+.forge-page {
+  padding: var(--space-6) var(--space-8);
+  height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.forge-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-6);
+  flex-shrink: 0;
+}
+
+.forge-title {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: var(--space-1);
+}
+
+.forge-subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.forge-layout {
+  display: flex;
+  flex: 1;
+  gap: var(--space-6);
+  min-height: 0; /* Important for scrollable children */
+}
+
+/* Sidebar List */
+.forge-sidebar {
+  width: 320px;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.task-list {
+  list-style: none;
+  padding: var(--space-2);
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.task-item {
+  padding: var(--space-3) var(--space-4);
+  background-color: transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.task-item:hover {
+  background-color: rgba(255, 255, 255, 0.05); /* Assuming dark theme mostly */
+}
+
+.task-item.active {
+  background-color: var(--bg-hover, rgba(255, 255, 255, 0.1));
+  box-shadow: inset 2px 0 0 var(--color-primary);
+}
+
+.task-item-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.task-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  word-break: break-all;
+}
+
+.task-status {
+  font-size: var(--text-xs);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-pending { background-color: var(--color-warning-muted, #4A3C1C); color: var(--color-warning, #F5B041); }
+.status-running { background-color: var(--color-info-muted, #1F3B5B); color: var(--color-info, #5DADE2); }
+.status-done { background-color: var(--color-success-muted, #1C4431); color: var(--color-success, #58D68D); }
+.status-failed { background-color: var(--color-error-muted, #562025); color: var(--color-error, #EC7063); }
+.status-cancelled { background-color: var(--border-color); color: var(--text-tertiary); }
+
+.task-item-meta {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.task-item-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.empty-state {
+  text-align: center;
+  padding: var(--space-6);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+/* Main Area (Logs) */
+.forge-main {
+  flex: 1;
+  background-color: var(--surface-1);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  display: flex; /* For empty state centering */
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.empty-selection {
+  margin: auto;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.log-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.log-header {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--surface-2);
+}
+
+.log-header h3 {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+}
+
+.log-stream {
+  flex: 1;
+  padding: var(--space-4);
+  overflow-y: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background-color: #0d0f12; /* Terminal feel */
+}
+
+.log-line {
+  margin-bottom: 2px;
+  word-wrap: break-word;
+}
+
+.log-err {
+  color: var(--color-error, #EC7063);
+}
+
+.log-empty {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.log-error {
+  color: var(--color-error, #EC7063);
+}
+
+/* Modal Form Overrides */
+.form-input {
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    background-color: var(--surface-2);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    box-sizing: border-box;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+}
+
+.modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+}
+
+.modal {
+    background-color: var(--surface-1);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--space-6);
+    width: 420px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+}
+
+.form-group {
+    margin-bottom: var(--space-4);
+}
+
+.form-label {
+    display: block;
+    margin-bottom: var(--space-2);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    margin-top: var(--space-6);
+}
+
+.btn {
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    transition: all 0.2s ease;
+}
+
+.btn:hover {
+    background: var(--surface-2);
+}
+
+.btn-primary {
+    background: var(--color-primary);
+    color: white;
+    border: 1px solid var(--color-primary);
+}
+
+.btn-primary:hover {
+    filter: brightness(1.1);
+}
+
+.btn-icon {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+}
+
+.btn-icon:hover {
+    background: var(--surface-1);
+    color: var(--text-primary);
+}
+
+.btn-icon:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}

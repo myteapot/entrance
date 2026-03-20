@@ -234,17 +234,24 @@ async fn stream_task(
 
 fn sse_event_for_task(task_id: i64, topic: &str, payload: &str) -> Option<(SseEvent, bool)> {
     let value: Value = serde_json::from_str(payload).ok()?;
-    let payload_task_id = value.get("id")?.as_i64()?;
-    if payload_task_id != task_id {
-        return None;
-    }
-
     match topic {
-        "forge:task_output" => Some((
-            SseEvent::default().event("log").data(payload.to_string()),
-            false,
-        )),
+        "forge:task_output" => {
+            let payload_task_id = value.get("task_id")?.as_i64()?;
+            if payload_task_id != task_id {
+                return None;
+            }
+
+            Some((
+                SseEvent::default().event("log").data(payload.to_string()),
+                false,
+            ))
+        }
         "forge:task_status" => {
+            let payload_task_id = value.get("id")?.as_i64()?;
+            if payload_task_id != task_id {
+                return None;
+            }
+
             let status = value
                 .get("status")
                 .and_then(Value::as_str)

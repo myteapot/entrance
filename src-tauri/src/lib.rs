@@ -4,14 +4,17 @@ mod plugins;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 
 use core::{
     bootstrap_for_paths, event_bus::EventBus, hotkey, logging::LoggingSystem,
     plugin_manager::PluginManager, theme::ThemeSystem, AppPaths,
 };
 use plugins::{
-    forge::commands::{forge_cancel_task, forge_create_task, forge_get_task, forge_list_tasks},
+    forge::commands::{
+        forge_cancel_task, forge_create_task, forge_get_task, forge_get_task_details,
+        forge_list_tasks,
+    },
     launcher::{launcher_launch, launcher_pin, launcher_search, LauncherPlugin},
     vault::{
         commands::{
@@ -53,6 +56,16 @@ fn setup_application<R: tauri::Runtime>(
     let data_store = startup.data_store();
     let event_bus = EventBus::new();
     app.manage(event_bus.clone());
+
+    let app_handle_for_events = app.handle().clone();
+    let mut rx = event_bus.subscribe();
+    tauri::async_runtime::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            if core::event_bus::match_topic("forge:*", &event.topic) {
+                let _ = app_handle_for_events.emit(&event.topic, event.payload);
+            }
+        }
+    });
 
     let app_context = AppContext::new(data_store.clone(), event_bus.clone());
 
@@ -110,6 +123,7 @@ pub fn run() {
             forge_create_task,
             forge_list_tasks,
             forge_get_task,
+            forge_get_task_details,
             forge_cancel_task,
             vault_list_tokens,
             vault_add_token,
