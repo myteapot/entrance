@@ -3,6 +3,7 @@ mod plugins;
 
 use std::sync::Arc;
 
+use anyhow::{bail, Result};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
@@ -13,6 +14,7 @@ use core::{
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     plugin_manager::PluginManager,
+    resolve_app_data_dir,
     theme::ThemeSystem,
     AppPaths,
 };
@@ -127,6 +129,19 @@ fn launcher_hotkey(state: tauri::State<'_, LauncherUiState>) -> Option<String> {
     state.hotkey.clone()
 }
 
+pub fn dispatch_cli_or_run() -> Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if matches!(args.as_slice(), [command, transport] if command == "mcp" && transport == "stdio") {
+        return run_mcp_stdio();
+    }
+    if matches!(args.first().map(String::as_str), Some("mcp")) {
+        bail!("unsupported MCP transport, expected `entrance mcp stdio`");
+    }
+
+    run();
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -157,4 +172,38 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Entrance application");
+}
+
+fn run_mcp_stdio() -> Result<()> {
+    let startup = bootstrap_for_paths(AppPaths::new(resolve_app_data_dir()?))?;
+    if !startup.mcp_enabled() {
+        bail!("MCP server is disabled in entrance.toml");
+    }
+
+    let _logging_system = LoggingSystem::init(
+        startup.paths().log_dir(),
+        startup.log_level(),
+        Some(startup.data_store()),
+    )?;
+    let data_store = startup.data_store();
+    let event_bus = EventBus::new();
+
+    let server = McpServer::new(
+        McpTransport::Stdio,
+        McpPluginSet {
+            forge: startup
+                .forge_enabled()
+                .then(|| plugins::forge::ForgePlugin::new(data_store.clone(), event_bus.clone())),
+            launcher: startup
+                .launcher_enabled()
+                .then(|| LauncherPlugin::new(data_store.clone())),
+            vault: if startup.vault_enabled() {
+                Some(VaultPlugin::new(data_store)?)
+            } else {
+                None
+            },
+        },
+    );
+
+    server.serve_stdio()
 }

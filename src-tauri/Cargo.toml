@@ -24,6 +24,7 @@ async-stream = "0.3"
 axum = { version = "0.7", features = ["http1", "json", "tokio"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
+dirs = "5"
 futures-core = "0.3"
 rusqlite = { version = "0.39", features = ["bundled"] }
 sha2 = "0.10"

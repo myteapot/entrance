@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::plugins::{forge, launcher, vault};
 
@@ -55,6 +55,18 @@ impl AppPaths {
     pub fn log_dir(&self) -> &Path {
         &self.log_dir
     }
+}
+
+pub fn resolve_app_data_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("ENTRANCE_APP_DATA_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+
+    let base_dir = dirs::data_local_dir()
+        .or_else(dirs::data_dir)
+        .context("failed to resolve a default app data directory")?;
+
+    Ok(base_dir.join("Entrance"))
 }
 
 #[derive(Debug, Clone)]

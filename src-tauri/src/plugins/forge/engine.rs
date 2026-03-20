@@ -2,9 +2,9 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use tauri::async_runtime::JoinHandle;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::task::JoinHandle;
 
 use crate::core::data_store::DataStore;
 use crate::core::event_bus::EventBus;
@@ -66,7 +66,7 @@ impl TaskEngine {
 
         let engine_clone = self.clone();
 
-        let handle = tokio::spawn(async move {
+        let handle = tauri::async_runtime::spawn(async move {
             engine_clone.run_process(id, command, args, envs).await;
         });
 

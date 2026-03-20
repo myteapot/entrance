@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    io::{self, BufRead, Write},
+    sync::Arc,
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -79,6 +82,14 @@ impl McpServer {
             .handle_json_rpc_bytes(request)?
             .unwrap_or_else(|| b"{\"jsonrpc\":\"2.0\",\"result\":{},\"id\":null}".to_vec());
         Ok(response)
+    }
+
+    pub fn serve_stdio(&self) -> Result<()> {
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        let mut reader = stdin.lock();
+        let mut writer = stdout.lock();
+        self.serve_stdio_stream(&mut reader, &mut writer)
     }
 
     pub fn handle_json_rpc_value(&self, request: Value) -> Result<Option<Value>> {
@@ -164,8 +175,9 @@ impl McpServer {
         let name = require_string(arguments, "name")?;
         let command = require_string(arguments, "command")?;
         let args = serialize_forge_args(arguments.get("args"))?;
+        let required_tokens = serialize_forge_args(arguments.get("required_tokens"))?;
 
-        let task_id = forge.create_task(name, command, &args)?;
+        let task_id = forge.create_task(name, command, &args, &required_tokens)?;
         forge
             .engine()
             .spawn_task(task_id)
@@ -272,6 +284,61 @@ impl McpServer {
             "launched": true,
             "path": path,
         }))
+    }
+
+    fn serve_stdio_stream<R: BufRead, W: Write>(
+        &self,
+        reader: &mut R,
+        writer: &mut W,
+    ) -> Result<()> {
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+            let read = reader
+                .read_line(&mut line)
+                .context("failed to read MCP stdio request")?;
+            if read == 0 {
+                break;
+            }
+
+            let request = line.trim();
+            if request.is_empty() {
+                continue;
+            }
+
+            let response = self.handle_stdio_request(request);
+            if let Some(response) = response {
+                serde_json::to_writer(&mut *writer, &response)
+                    .context("failed to encode MCP stdio response")?;
+                writer
+                    .write_all(b"\n")
+                    .context("failed to write MCP stdio response delimiter")?;
+                writer
+                    .flush()
+                    .context("failed to flush MCP stdio response")?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_stdio_request(&self, request: &str) -> Option<Value> {
+        let request = match serde_json::from_str::<Value>(request) {
+            Ok(request) => request,
+            Err(error) => {
+                return Some(json_rpc_error(
+                    Value::Null,
+                    -32700,
+                    &format!("failed to parse JSON-RPC request: {error}"),
+                ));
+            }
+        };
+
+        match self.handle_json_rpc_value(request) {
+            Ok(response) => response,
+            Err(error) => Some(json_rpc_error(Value::Null, -32600, &error.to_string())),
+        }
     }
 }
 
@@ -473,6 +540,8 @@ fn to_pretty_json(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use anyhow::Result;
     use serde_json::{json, Value};
 
@@ -488,7 +557,7 @@ mod tests {
         },
     };
 
-    use super::{McpPluginSet, McpServer, McpTransport};
+    use super::{McpPluginSet, McpServer, McpTransport, MCP_PROTOCOL_VERSION};
 
     #[test]
     fn tools_list_contains_registered_plugin_tools() -> Result<()> {
@@ -610,6 +679,36 @@ mod tests {
                 .unwrap()
                 > 0
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn stdio_transport_uses_line_delimited_json() -> Result<()> {
+        let server = build_test_server()?;
+        let request = concat!(
+            "{\"jsonrpc\":\"2.0\",\"id\":\"init\",\"method\":\"initialize\",\"params\":{}}\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":\"tools\",\"method\":\"tools/list\"}\n"
+        );
+        let mut reader = Cursor::new(request.as_bytes());
+        let mut writer = Vec::new();
+
+        server.serve_stdio_stream(&mut reader, &mut writer)?;
+
+        let responses = String::from_utf8(writer)?
+            .lines()
+            .map(serde_json::from_str::<Value>)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], "init");
+        assert_eq!(
+            responses[0]["result"]["protocolVersion"],
+            MCP_PROTOCOL_VERSION
+        );
+        assert_eq!(responses[1]["id"], "tools");
+        assert_eq!(responses[1]["result"]["tools"][0]["name"], "forge_run");
 
         Ok(())
     }
