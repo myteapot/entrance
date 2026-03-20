@@ -53,6 +53,7 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
     assert!(startup.mcp_enabled());
     assert!(startup.launcher_enabled());
     assert_eq!(startup.launcher_hotkey(), Some("Alt+Space"));
+    assert_eq!(startup.forge_http_port(), 9721);
 
     let config = fs::read_to_string(paths.config_path())?.replace("\r\n", "\n");
     assert_eq!(
@@ -102,6 +103,7 @@ scan_paths = []
 
 [plugins.forge]
 enabled = false
+http_port = 9721
 
 [plugins.vault]
 enabled = false
@@ -141,6 +143,7 @@ scan_paths = []
 
 [plugins.forge]
 enabled = false
+http_port = 9721
 
 [plugins.vault]
 enabled = false
@@ -166,7 +169,8 @@ hotkey = "Ctrl+Space"
 scan_paths = ["C:\\Tools"]
 
 [plugins.forge]
-enabled = false
+enabled = true
+http_port = 9833
 
 [plugins.vault]
 enabled = false
@@ -180,7 +184,11 @@ enabled = false
     assert!(second_start.mcp_enabled());
     assert!(second_start.launcher_enabled());
     assert_eq!(second_start.launcher_hotkey(), Some("Ctrl+Space"));
+    assert!(second_start.forge_enabled());
+    assert_eq!(second_start.forge_http_port(), 9833);
     assert!(table_exists(paths.db_path(), "plugin_launcher_apps")?);
+    assert!(table_exists(paths.db_path(), "plugin_forge_tasks")?);
+    assert!(table_exists(paths.db_path(), "plugin_forge_task_logs")?);
 
     Ok(())
 }
@@ -204,6 +212,7 @@ scan_paths = []
 
 [plugins.forge]
 enabled = false
+http_port = 9721
 
 [plugins.vault]
 enabled = true

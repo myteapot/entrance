@@ -1,9 +1,13 @@
-const widgetPlaceholders = [
-  {
-    title: "Launch queue",
-    caption: "Pending entry points",
-    detail: "Launcher hooks will surface recent commands, pinned flows, and execution status here.",
-  },
+import { A } from "@solidjs/router";
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  applyForgeTaskStatusEvent,
+  fetchForgeTasks,
+  listenToForgeTaskStatus,
+  type ForgeTask,
+} from "../features/forge/taskFeed";
+
+const placeholderWidgets = [
   {
     title: "Forge pulse",
     caption: "Draft workspace widgets",
@@ -16,7 +20,51 @@ const widgetPlaceholders = [
   },
 ] as const;
 
+const formatTaskTimestamp = (value: string) =>
+  new Date(value).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
 const Dashboard = () => {
+  const [forgeTasks, setForgeTasks] = createSignal<ForgeTask[]>([]);
+  const [isLoadingForgeTasks, setIsLoadingForgeTasks] = createSignal(true);
+
+  const loadForgeTasks = async () => {
+    try {
+      setForgeTasks(await fetchForgeTasks());
+    } catch (error) {
+      console.error("Failed to fetch dashboard forge tasks", error);
+    } finally {
+      setIsLoadingForgeTasks(false);
+    }
+  };
+
+  onMount(() => {
+    void loadForgeTasks();
+
+    void (async () => {
+      const unlistenStatus = await listenToForgeTaskStatus((payload) => {
+        const nextTasks = applyForgeTaskStatusEvent(forgeTasks(), payload);
+        if (nextTasks) {
+          setForgeTasks(nextTasks);
+          return;
+        }
+
+        void loadForgeTasks();
+      });
+
+      onCleanup(() => unlistenStatus());
+    })();
+  });
+
+  const recentForgeTasks = createMemo(() => forgeTasks().slice(0, 5));
+  const runningTaskCount = createMemo(
+    () => recentForgeTasks().filter((task) => task.status === "Running").length,
+  );
+
   return (
     <section class="page page--dashboard">
       <header class="page__hero">
@@ -28,14 +76,71 @@ const Dashboard = () => {
         </p>
       </header>
 
-      <section class="dashboard-grid" aria-label="Dashboard widget placeholders">
-        {widgetPlaceholders.map((widget) => (
-          <article class="dashboard-card">
-            <p class="dashboard-card__caption">{widget.caption}</p>
-            <h3>{widget.title}</h3>
-            <p>{widget.detail}</p>
-          </article>
-        ))}
+      <section class="dashboard-grid" aria-label="Dashboard widgets">
+        <A class="dashboard-card dashboard-card--forge-widget" href="/forge" aria-label="Open Forge dashboard">
+          <div class="dashboard-card__topline">
+            <p class="dashboard-card__caption">Forge dashboard widget</p>
+            <span class="dashboard-card__link">Open Forge</span>
+          </div>
+
+          <div class="dashboard-card__headline">
+            <div>
+              <h3>Recent Forge tasks</h3>
+              <p>Latest 5 tasks with live status updates from the Forge queue.</p>
+            </div>
+            <div class="dashboard-card__badges">
+              <span class="dashboard-card__badge">{forgeTasks().length} total</span>
+              <Show when={runningTaskCount() > 0}>
+                <span class="dashboard-card__badge dashboard-card__badge--running">
+                  {runningTaskCount()} running
+                </span>
+              </Show>
+            </div>
+          </div>
+
+          <Show
+            when={recentForgeTasks().length > 0}
+            fallback={
+              <p class="dashboard-card__empty">
+                {isLoadingForgeTasks() ? "Loading Forge tasks..." : "No Forge tasks yet. Open Forge to start one."}
+              </p>
+            }
+          >
+            <ul class="forge-widget-list">
+              <For each={recentForgeTasks()}>
+                {(task) => (
+                  <li class={`forge-widget-task forge-widget-task--${task.status.toLowerCase()}`}>
+                    <div class="forge-widget-task__row">
+                      <span class="forge-widget-task__name">{task.name}</span>
+                      <span class={`task-status status-${task.status.toLowerCase()}`}>{task.status}</span>
+                    </div>
+                    <div class="forge-widget-task__meta">
+                      <span>{formatTaskTimestamp(task.created_at)}</span>
+                      <Show when={task.status_message}>
+                        <span class="forge-widget-task__message">{task.status_message}</span>
+                      </Show>
+                    </div>
+                    <Show when={task.status === "Running"}>
+                      <div class="forge-widget-task__progress" aria-hidden="true">
+                        <span />
+                      </div>
+                    </Show>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </Show>
+        </A>
+
+        <For each={placeholderWidgets}>
+          {(widget) => (
+            <article class="dashboard-card">
+              <p class="dashboard-card__caption">{widget.caption}</p>
+              <h3>{widget.title}</h3>
+              <p>{widget.detail}</p>
+            </article>
+          )}
+        </For>
       </section>
 
       <section class="dashboard-panel">

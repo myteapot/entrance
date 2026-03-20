@@ -10,6 +10,7 @@ scan_paths = []
 
 [plugins.forge]
 enabled = false
+http_port = 9721
 
 [plugins.vault]
 enabled = false

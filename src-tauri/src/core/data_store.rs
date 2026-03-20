@@ -62,11 +62,22 @@ pub struct StoredForgeTask {
     pub id: i64,
     pub name: String,
     pub command: String,
-    pub args: String, // JSON
+    pub args: String,            // JSON
+    pub required_tokens: String, // JSON
     pub status: String,
+    pub status_message: Option<String>,
     pub exit_code: Option<i64>,
     pub created_at: String,
     pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredForgeTaskLog {
+    pub id: i64,
+    pub task_id: i64,
+    pub stream: String,
+    pub line: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -358,16 +369,22 @@ impl DataStore {
         Ok(())
     }
 
-    pub fn insert_forge_task(&self, name: &str, command: &str, args: &str) -> Result<i64> {
+    pub fn insert_forge_task(
+        &self,
+        name: &str,
+        command: &str,
+        args: &str,
+        required_tokens: &str,
+    ) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
         self.with_connection(|conn| {
             conn.execute(
                 r#"
                 INSERT INTO plugin_forge_tasks (
-                    name, command, args, status, exit_code, created_at, finished_at
-                ) VALUES (?1, ?2, ?3, 'Pending', NULL, ?4, NULL)
+                    name, command, args, required_tokens, status, status_message, exit_code, created_at, finished_at
+                ) VALUES (?1, ?2, ?3, ?4, 'Pending', NULL, NULL, ?5, NULL)
                 "#,
-                params![name, command, args, now],
+                params![name, command, args, required_tokens, now],
             )?;
             Ok(conn.last_insert_rowid())
         })
@@ -378,8 +395,9 @@ impl DataStore {
         id: i64,
         status: &str,
         exit_code: Option<i32>,
+        status_message: Option<&str>,
     ) -> Result<()> {
-        let now = if matches!(status, "Done" | "Failed" | "Cancelled") {
+        let now = if matches!(status, "Done" | "Failed" | "Cancelled" | "Blocked") {
             Some(Utc::now().to_rfc3339())
         } else {
             None
@@ -389,19 +407,19 @@ impl DataStore {
                 conn.execute(
                     r#"
                     UPDATE plugin_forge_tasks
-                    SET status = ?2, exit_code = ?3, finished_at = ?4
+                    SET status = ?2, exit_code = ?3, status_message = ?4, finished_at = ?5
                     WHERE id = ?1
                     "#,
-                    params![id, status, exit_code, finished_at],
+                    params![id, status, exit_code, status_message, finished_at],
                 )?;
             } else {
                 conn.execute(
                     r#"
                     UPDATE plugin_forge_tasks
-                    SET status = ?2, exit_code = ?3
+                    SET status = ?2, exit_code = ?3, status_message = ?4
                     WHERE id = ?1
                     "#,
-                    params![id, status, exit_code],
+                    params![id, status, exit_code, status_message],
                 )?;
             }
             Ok(())
@@ -411,7 +429,7 @@ impl DataStore {
     pub fn list_forge_tasks(&self) -> Result<Vec<StoredForgeTask>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, command, args, status, exit_code, created_at, finished_at FROM plugin_forge_tasks ORDER BY created_at DESC"
+                "SELECT id, name, command, args, required_tokens, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks ORDER BY created_at DESC"
             )?;
             let rows = stmt.query_map([], map_forge_row)?;
             let tasks = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -422,12 +440,54 @@ impl DataStore {
     pub fn get_forge_task(&self, id: i64) -> Result<Option<StoredForgeTask>> {
         self.with_connection(|conn| {
             conn.query_row(
-                "SELECT id, name, command, args, status, exit_code, created_at, finished_at FROM plugin_forge_tasks WHERE id = ?1",
+                "SELECT id, name, command, args, required_tokens, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks WHERE id = ?1",
                 [id],
                 map_forge_row,
             )
             .optional()
             .map_err(Into::into)
+        })
+    }
+
+    pub fn append_forge_task_log(
+        &self,
+        task_id: i64,
+        stream: &str,
+        line: &str,
+    ) -> Result<StoredForgeTaskLog> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO plugin_forge_task_logs (
+                    task_id, stream, line, created_at
+                ) VALUES (?1, ?2, ?3, ?4)
+                "#,
+                params![task_id, stream, line, now],
+            )?;
+            Ok(StoredForgeTaskLog {
+                id: conn.last_insert_rowid(),
+                task_id,
+                stream: stream.to_string(),
+                line: line.to_string(),
+                created_at: now,
+            })
+        })
+    }
+
+    pub fn list_forge_task_logs(&self, task_id: i64) -> Result<Vec<StoredForgeTaskLog>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, task_id, stream, line, created_at
+                FROM plugin_forge_task_logs
+                WHERE task_id = ?1
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([task_id], map_forge_log_row)?;
+            let logs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(logs)
         })
     }
 
@@ -475,6 +535,27 @@ impl DataStore {
                 WHERE id = ?1
                 "#,
                 [id],
+                map_encrypted_vault_token_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn get_vault_token_by_provider(
+        &self,
+        provider: &str,
+    ) -> Result<Option<EncryptedVaultToken>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                r#"
+                SELECT id, name, provider, encrypted_value, created_at, updated_at
+                FROM plugin_vault_tokens
+                WHERE LOWER(provider) = LOWER(?1)
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                "#,
+                [provider],
                 map_encrypted_vault_token_row,
             )
             .optional()
@@ -572,6 +653,7 @@ impl DataStore {
                 let _ = migration.name;
                 connection.execute_batch(migration.sql)?;
             }
+            ensure_forge_task_columns(connection)?;
             Ok(())
         })
     }
@@ -615,10 +697,22 @@ fn map_forge_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTask> {
         name: row.get(1)?,
         command: row.get(2)?,
         args: row.get(3)?,
-        status: row.get(4)?,
-        exit_code: row.get(5)?,
-        created_at: row.get(6)?,
-        finished_at: row.get(7)?,
+        required_tokens: row.get(4)?,
+        status: row.get(5)?,
+        status_message: row.get(6)?,
+        exit_code: row.get(7)?,
+        created_at: row.get(8)?,
+        finished_at: row.get(9)?,
+    })
+}
+
+fn map_forge_log_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTaskLog> {
+    Ok(StoredForgeTaskLog {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        stream: row.get(2)?,
+        line: row.get(3)?,
+        created_at: row.get(4)?,
     })
 }
 
@@ -673,10 +767,79 @@ fn fetch_vault_mcp_config(
         .map_err(Into::into)
 }
 
+fn ensure_forge_task_columns(connection: &Connection) -> Result<()> {
+    if !table_exists(connection, "plugin_forge_tasks")? {
+        return Ok(());
+    }
+
+    let mut statement = connection.prepare("PRAGMA table_info(plugin_forge_tasks)")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let columns = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+
+    if !columns.iter().any(|column| column == "required_tokens") {
+        connection.execute(
+            "ALTER TABLE plugin_forge_tasks ADD COLUMN required_tokens TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
+
+    if !columns.iter().any(|column| column == "status_message") {
+        connection.execute(
+            "ALTER TABLE plugin_forge_tasks ADD COLUMN status_message TEXT",
+            [],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
+    let exists = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    Ok(exists != 0)
+}
+
 fn fallback_app_name(path: &str) -> String {
     Path::new(path)
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or(path)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forge_task_logs_round_trip() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+
+        let task_id = store.insert_forge_task("Echo", "echo", r#"["hello"]"#, "[]")?;
+        store.append_forge_task_log(task_id, "stdout", "hello")?;
+        store.append_forge_task_log(task_id, "stderr", "warn")?;
+
+        let logs = store.list_forge_task_logs(task_id)?;
+
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].stream, "stdout");
+        assert_eq!(logs[0].line, "hello");
+        assert_eq!(logs[1].stream, "stderr");
+        assert_eq!(logs[1].line, "warn");
+
+        Ok(())
+    }
 }

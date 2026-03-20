@@ -98,6 +98,10 @@ impl StartupState {
         self.config.plugins.forge.enabled
     }
 
+    pub fn forge_http_port(&self) -> u16 {
+        self.config.plugins.forge.http_port
+    }
+
     pub fn vault_enabled(&self) -> bool {
         self.config.plugins.vault.enabled
     }
