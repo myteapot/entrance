@@ -47,7 +47,7 @@ pub struct PluginsConfig {
     #[serde(default)]
     pub launcher: LauncherConfig,
     #[serde(default)]
-    pub forge: TogglePluginConfig,
+    pub forge: ForgeConfig,
     #[serde(default)]
     pub vault: TogglePluginConfig,
 }
@@ -56,7 +56,7 @@ impl Default for PluginsConfig {
     fn default() -> Self {
         Self {
             launcher: LauncherConfig::default(),
-            forge: TogglePluginConfig::default_disabled(),
+            forge: ForgeConfig::default(),
             vault: TogglePluginConfig::default_disabled(),
         }
     }
@@ -78,6 +78,23 @@ impl Default for LauncherConfig {
             enabled: true,
             hotkey: default_launcher_hotkey(),
             scan_paths: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForgeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_forge_http_port")]
+    pub http_port: u16,
+}
+
+impl Default for ForgeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            http_port: default_forge_http_port(),
         }
     }
 }
@@ -176,4 +193,8 @@ fn default_true() -> bool {
 
 fn default_launcher_hotkey() -> String {
     DEFAULT_LAUNCHER_HOTKEY.to_string()
+}
+
+fn default_forge_http_port() -> u16 {
+    9721
 }
