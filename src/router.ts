@@ -1,6 +1,7 @@
 import type { Component } from "solid-js";
 import Dashboard from "./pages/Dashboard";
 import RoutePlaceholder from "./pages/RoutePlaceholder";
+import Vault from "./pages/Vault";
 
 type AppRoute = {
   path: string;
@@ -59,13 +60,9 @@ export const primaryRoutes: AppRoute[] = [
     path: "/vault",
     label: "Vault",
     glyph: "VT",
-    description: "Library and archive placeholder",
+    description: "API Tokens and MCP Configurations",
     hotkey: "Ctrl+4",
-    component: createPlaceholderPage(
-      "Vault",
-      "Vault is staged as an empty module page so data browsing can be added without disturbing the base application frame.",
-      "/vault",
-    ),
+    component: Vault,
   },
   {
     path: "/board",
