@@ -383,7 +383,6 @@ pub(crate) fn build_agent_task_request(
     };
 
     push_required_token(&mut required_tokens, provider_token);
-    push_required_token(&mut required_tokens, "linear");
 
     let metadata = serde_json::to_string(&ForgeTaskMetadata {
         kind: Some("agent_dispatch".to_string()),
@@ -799,7 +798,7 @@ mod tests {
         assert!(request.args.contains("\"--model\""));
         assert!(request.args.contains("\"gpt-5-codex\""));
         assert!(request.required_tokens.contains("openai"));
-        assert!(request.required_tokens.contains("linear"));
+        assert!(!request.required_tokens.contains("linear"));
         assert!(request.metadata.contains("\"issue_id\":\"MYT-48\""));
     }
 
