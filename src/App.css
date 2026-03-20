@@ -232,6 +232,38 @@
   font-size: 1.02rem;
 }
 
+.page__hero--dashboard {
+  position: relative;
+  overflow: hidden;
+}
+
+.page__hero--dashboard::after {
+  content: "";
+  position: absolute;
+  inset: auto -12% -36% 22%;
+  height: 220px;
+  background: radial-gradient(circle, rgba(93, 173, 226, 0.16), transparent 68%);
+  pointer-events: none;
+}
+
+.dashboard-hero__meta {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.dashboard-pill {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(247, 239, 230, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  backdrop-filter: blur(18px);
+}
+
 .dashboard-grid {
   display: grid;
   gap: 18px;
@@ -251,6 +283,34 @@
   padding: 22px;
   display: grid;
   gap: 12px;
+  position: relative;
+  overflow: hidden;
+  animation: dashboard-card-enter 0.55s ease-out both;
+}
+
+.dashboard-card:nth-child(2) {
+  animation-delay: 0.06s;
+}
+
+.dashboard-card:nth-child(3) {
+  animation-delay: 0.12s;
+}
+
+.dashboard-card:nth-child(4) {
+  animation-delay: 0.18s;
+}
+
+.dashboard-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05), transparent 34%);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.dashboard-card--wide {
+  grid-column: span 2;
 }
 
 .dashboard-card--forge-widget {
@@ -273,6 +333,27 @@
   box-shadow:
     var(--shadow-inner),
     0 18px 36px rgba(6, 15, 24, 0.22);
+}
+
+.dashboard-card--status {
+  background:
+    radial-gradient(circle at top left, rgba(88, 214, 141, 0.14), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 28%),
+    var(--surface-panel);
+}
+
+.dashboard-card--vault {
+  background:
+    radial-gradient(circle at top right, rgba(216, 127, 61, 0.14), transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 28%),
+    var(--surface-panel);
+}
+
+.dashboard-card--actions {
+  background:
+    radial-gradient(circle at bottom right, rgba(154, 210, 255, 0.14), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 28%),
+    var(--surface-panel);
 }
 
 .dashboard-card__topline,
@@ -328,6 +409,90 @@
   text-align: center;
 }
 
+.dashboard-live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.dashboard-live-indicator__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #58d68d;
+  box-shadow: 0 0 0 0 rgba(88, 214, 141, 0.5);
+  animation: dashboard-pulse 1.8s ease-out infinite;
+}
+
+.dashboard-stat-list {
+  margin: 8px 0 0;
+  display: grid;
+  gap: 12px;
+}
+
+.dashboard-stat {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(247, 239, 230, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  display: grid;
+  gap: 6px;
+}
+
+.dashboard-stat dt {
+  color: var(--text-tertiary);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.dashboard-stat dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.dashboard-action-list {
+  display: grid;
+  gap: 12px;
+}
+
+.dashboard-action {
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(247, 239, 230, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  text-decoration: none;
+  display: grid;
+  gap: 6px;
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+
+.dashboard-action:hover {
+  transform: translateY(-2px);
+  border-color: rgba(93, 173, 226, 0.34);
+  background: rgba(93, 173, 226, 0.08);
+}
+
+.dashboard-action__title {
+  color: var(--text-primary);
+  font-size: 0.98rem;
+  font-weight: 600;
+}
+
+.dashboard-action__detail {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+}
+
 .forge-widget-list {
   list-style: none;
   margin: 0;
@@ -372,6 +537,46 @@
   white-space: nowrap;
 }
 
+.dashboard-status {
+  font-size: 0.72rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.dashboard-status--pending {
+  background-color: #4a3c1c;
+  color: #f5b041;
+}
+
+.dashboard-status--running {
+  background-color: #1f3b5b;
+  color: #5dade2;
+}
+
+.dashboard-status--done {
+  background-color: #1c4431;
+  color: #58d68d;
+}
+
+.dashboard-status--failed {
+  background-color: #562025;
+  color: #ec7063;
+}
+
+.dashboard-status--cancelled {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-tertiary);
+}
+
+.dashboard-status--blocked {
+  background-color: rgba(227, 147, 52, 0.18);
+  color: #ffb454;
+}
+
 .forge-widget-task__progress {
   height: 6px;
   border-radius: 999px;
@@ -398,6 +603,32 @@
   }
 }
 
+@keyframes dashboard-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes dashboard-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(88, 214, 141, 0.42);
+  }
+
+  70% {
+    box-shadow: 0 0 0 10px rgba(88, 214, 141, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(88, 214, 141, 0);
+  }
+}
+
 .dashboard-card h3,
 .dashboard-panel h3 {
   margin: 0;
@@ -417,6 +648,30 @@
   grid-template-columns: minmax(0, 280px) 1fr;
   gap: 24px;
   align-items: center;
+}
+
+.dashboard-panel__body {
+  display: grid;
+  gap: 14px;
+}
+
+.dashboard-inline-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.dashboard-inline-stat {
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(247, 239, 230, 0.08);
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+}
+
+.dashboard-inline-stat strong {
+  color: var(--text-primary);
 }
 
 .placeholder-panel {
@@ -450,6 +705,10 @@
 
   .dashboard-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-card--wide {
+    grid-column: span 2;
   }
 
   .dashboard-panel {
@@ -510,5 +769,9 @@
 
   .dashboard-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-card--wide {
+    grid-column: auto;
   }
 }
