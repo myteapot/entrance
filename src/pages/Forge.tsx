@@ -31,10 +31,16 @@ export default function Forge() {
   const [isLoadingDispatchContext, setIsLoadingDispatchContext] = createSignal(false);
   const [isLaunchingAgent, setIsLaunchingAgent] = createSignal(false);
   const [projectDir, setProjectDir] = createSignal(localStorage.getItem("forge_project_dir") || "");
+  const [agentCommand, setAgentCommand] = createSignal(localStorage.getItem("forge_agent_command") || "");
 
   const updateProjectDir = (dir: string) => {
     setProjectDir(dir);
     localStorage.setItem("forge_project_dir", dir);
+  };
+
+  const updateAgentCommand = (cmd: string) => {
+    setAgentCommand(cmd);
+    localStorage.setItem("forge_agent_command", cmd);
   };
 
   const pickProjectDir = async () => {
@@ -208,7 +214,8 @@ export default function Forge() {
     rawRequiredTokens: string,
   ) => {
     const requiredTokens = parseRequiredTokensInput(rawRequiredTokens);
-    const id = await dispatchForgeAgent(issueId, worktreePath, model, prompt, requiredTokens);
+    const cmdOverride = agentCommand() || undefined;
+    const id = await dispatchForgeAgent(issueId, worktreePath, model, prompt, requiredTokens, cmdOverride);
 
     await fetchTasks();
     setSelectedTaskId(id);
@@ -418,6 +425,19 @@ export default function Forge() {
             >
               {isLoadingDispatchContext() ? "Refreshing..." : "Refresh Context"}
             </button>
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem", "align-items": "center", "margin-top": "0.5rem" }}>
+            <input
+              class="form-input"
+              type="text"
+              value={agentCommand()}
+              onInput={(e) => updateAgentCommand(e.currentTarget.value)}
+              placeholder="Agent command (leave empty for default, e.g. codex)"
+              style={{ width: "320px", "font-size": "0.8rem" }}
+            />
+            <span style={{ "font-size": "0.75rem", color: "var(--color-text-tertiary)" }}>
+              {agentCommand() ? `Using: ${agentCommand()}` : "Using default CLI"}
+            </span>
           </div>
         </div>
 

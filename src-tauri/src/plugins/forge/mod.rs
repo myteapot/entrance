@@ -315,6 +315,7 @@ pub(crate) fn build_agent_task_request(
     model: String,
     prompt: String,
     mut required_tokens: Vec<String>,
+    agent_command: Option<String>,
 ) -> Result<CreateTaskRequest, String> {
     let issue_id = issue_id.trim().to_string();
     if issue_id.is_empty() {
@@ -338,7 +339,7 @@ pub(crate) fn build_agent_task_request(
 
     let (runner, model_variant) = split_runner_and_variant(&raw_model);
 
-    let (command, args, stdin_text, provider_token) = match runner {
+    let (default_command, args, stdin_text, provider_token) = match runner {
         "codex" | "codex-cli" => {
             let mut args = vec![
                 "exec".to_string(),
@@ -381,6 +382,9 @@ pub(crate) fn build_agent_task_request(
             ));
         }
     };
+
+    // Use custom agent_command if provided, otherwise use the default CLI name
+    let command = agent_command.unwrap_or(default_command);
 
     push_required_token(&mut required_tokens, provider_token);
 
@@ -785,6 +789,7 @@ mod tests {
             "codex:gpt-5-codex".to_string(),
             "implement the task".to_string(),
             vec!["openai".to_string()],
+            None,
         )
         .expect("agent request should be valid");
 

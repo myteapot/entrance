@@ -71,6 +71,7 @@ export const dispatchForgeAgent = (
   model: string,
   prompt: string,
   requiredTokens?: string[],
+  agentCommand?: string,
 ) =>
   invoke<number>("forge_dispatch_agent", {
     issueId,
@@ -78,6 +79,7 @@ export const dispatchForgeAgent = (
     model,
     prompt,
     requiredTokens,
+    agentCommand,
   });
 
 export const listenToForgeTaskStatus = (

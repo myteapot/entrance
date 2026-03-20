@@ -133,6 +133,7 @@ async fn run_task(
             model,
             prompt,
             payload.required_tokens,
+            None,
         )
         .map_err(ApiError::bad_request)?
     } else {

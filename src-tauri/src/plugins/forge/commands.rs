@@ -38,6 +38,7 @@ pub fn forge_dispatch_agent(
     model: String,
     prompt: String,
     required_tokens: Option<Vec<String>>,
+    agent_command: Option<String>,
     forge: State<'_, ForgePlugin>,
 ) -> Result<i64, String> {
     let request = build_agent_task_request(
@@ -46,6 +47,7 @@ pub fn forge_dispatch_agent(
         model,
         prompt,
         required_tokens.unwrap_or_default(),
+        agent_command,
     )?;
     let id = forge.create_task(request).map_err(|e| e.to_string())?;
     forge.engine().spawn_task(id).map_err(|e| e.to_string())?;

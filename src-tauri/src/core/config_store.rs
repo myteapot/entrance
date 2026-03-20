@@ -93,6 +93,10 @@ pub struct ForgeConfig {
     pub http_port: u16,
     #[serde(default)]
     pub project_dir: Option<String>,
+    /// Custom agent command path. When set, overrides the default CLI name.
+    /// e.g. "C:\\Scoop\\apps\\nodejs\\current\\bin\\codex.cmd"
+    #[serde(default)]
+    pub agent_command: Option<String>,
 }
 
 impl Default for ForgeConfig {
@@ -101,6 +105,7 @@ impl Default for ForgeConfig {
             enabled: false,
             http_port: default_forge_http_port(),
             project_dir: None,
+            agent_command: None,
         }
     }
 }
