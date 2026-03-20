@@ -5,6 +5,10 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import "./App.css";
 import MainPanel from "./components/MainPanel";
+import {
+  getVaultTokenByProvider,
+  GITLAB_UPDATER_PROVIDER,
+} from "./features/vault/client";
 import Sidebar from "./components/Sidebar";
 import { appRoutes, shortcutRoutes } from "./router";
 
@@ -29,7 +33,25 @@ const checkForAppUpdates = async () => {
   }
 
   try {
-    const update = await check();
+    let updaterHeaders: Record<string, string> | undefined;
+    try {
+      const gitlabToken = await getVaultTokenByProvider(GITLAB_UPDATER_PROVIDER);
+      if (gitlabToken?.value) {
+        updaterHeaders = {
+          "PRIVATE-TOKEN": gitlabToken.value,
+        };
+      }
+    } catch (error) {
+      console.warn("Failed to load GitLab updater token from Vault", error);
+    }
+
+    const update = await check(
+      updaterHeaders
+        ? {
+            headers: updaterHeaders,
+          }
+        : undefined,
+    );
 
     if (!update) {
       return;
@@ -52,7 +74,9 @@ const checkForAppUpdates = async () => {
       return;
     }
 
-    await update.downloadAndInstall();
+    await update.downloadAndInstall(undefined, {
+      headers: updaterHeaders,
+    });
     await relaunch();
   } catch (error) {
     const description =

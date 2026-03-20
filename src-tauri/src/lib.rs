@@ -18,8 +18,8 @@ use plugins::{
     launcher::{launcher_launch, launcher_pin, launcher_search, LauncherPlugin},
     vault::{
         commands::{
-            vault_add_token, vault_delete_token, vault_get_token, vault_list_mcp,
-            vault_list_tokens, vault_update_mcp,
+            vault_add_token, vault_delete_token, vault_get_token, vault_get_token_by_provider,
+            vault_list_mcp, vault_list_tokens, vault_update_mcp, vault_upsert_token,
         },
         VaultPlugin,
     },
@@ -242,8 +242,10 @@ pub fn run() {
             forge_cancel_task,
             vault_list_tokens,
             vault_add_token,
+            vault_upsert_token,
             vault_delete_token,
             vault_get_token,
+            vault_get_token_by_provider,
             vault_list_mcp,
             vault_update_mcp
         ])
