@@ -16,7 +16,7 @@ use crate::{
 };
 use anyhow::Result;
 use engine::TaskEngine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::async_runtime::JoinHandle;
 
 const MANIFEST: Manifest = Manifest {
@@ -54,6 +54,29 @@ pub struct ForgeTaskDetails {
     #[serde(flatten)]
     pub task: StoredForgeTask,
     pub logs: Vec<StoredForgeTaskLog>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateTaskRequest {
+    pub name: String,
+    pub command: String,
+    pub args: String,
+    pub working_dir: Option<String>,
+    pub stdin_text: Option<String>,
+    pub required_tokens: String,
+    pub metadata: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ForgeTaskMetadata {
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub issue_id: Option<String>,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,15 +132,16 @@ impl ForgePlugin {
         }
     }
 
-    pub fn create_task(
-        &self,
-        name: &str,
-        command: &str,
-        args: &str,
-        required_tokens: &str,
-    ) -> Result<i64> {
-        self.data_store
-            .insert_forge_task(name, command, args, required_tokens)
+    pub fn create_task(&self, request: CreateTaskRequest) -> Result<i64> {
+        self.data_store.insert_forge_task(
+            &request.name,
+            &request.command,
+            &request.args,
+            request.working_dir.as_deref(),
+            request.stdin_text.as_deref(),
+            &request.required_tokens,
+            &request.metadata,
+        )
     }
 
     pub fn list_tasks(&self) -> Result<Vec<StoredForgeTask>> {
@@ -183,6 +207,122 @@ impl ForgePlugin {
     }
 }
 
+pub(crate) fn build_agent_task_request(
+    issue_id: String,
+    worktree_path: String,
+    model: String,
+    prompt: String,
+    mut required_tokens: Vec<String>,
+) -> Result<CreateTaskRequest, String> {
+    let issue_id = issue_id.trim().to_string();
+    if issue_id.is_empty() {
+        return Err("`issueId` must not be empty".to_string());
+    }
+
+    let worktree_path = worktree_path.trim().to_string();
+    if worktree_path.is_empty() {
+        return Err("`worktreePath` must not be empty".to_string());
+    }
+
+    let prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err("`prompt` must not be empty".to_string());
+    }
+
+    let raw_model = model.trim().to_string();
+    if raw_model.is_empty() {
+        return Err("`model` must not be empty".to_string());
+    }
+
+    let (runner, model_variant) = split_runner_and_variant(&raw_model);
+
+    let (command, args, stdin_text, provider_token) = match runner {
+        "codex" | "codex-cli" => {
+            let mut args = vec![
+                "exec".to_string(),
+                "--dangerously-bypass-approvals-and-sandbox".to_string(),
+                "--skip-git-repo-check".to_string(),
+                "--cd".to_string(),
+                worktree_path.clone(),
+            ];
+            if let Some(model_variant) = model_variant {
+                args.push("--model".to_string());
+                args.push(model_variant.to_string());
+            }
+            args.push("-".to_string());
+
+            ("codex".to_string(), args, Some(prompt.clone()), "openai")
+        }
+        "claude" => {
+            let mut args = Vec::new();
+            if let Some(model_variant) = model_variant {
+                args.push("--model".to_string());
+                args.push(model_variant.to_string());
+            }
+            args.push("-p".to_string());
+            args.push(prompt.clone());
+            ("claude".to_string(), args, None, "anthropic")
+        }
+        "gemini" => {
+            let mut args = Vec::new();
+            if let Some(model_variant) = model_variant {
+                args.push("--model".to_string());
+                args.push(model_variant.to_string());
+            }
+            args.push("-p".to_string());
+            args.push(prompt.clone());
+            ("gemini".to_string(), args, None, "google")
+        }
+        other => {
+            return Err(format!(
+                "Unsupported agent model `{other}`. Use `codex`, `claude`, `gemini`, or `runner:model`."
+            ));
+        }
+    };
+
+    push_required_token(&mut required_tokens, provider_token);
+    push_required_token(&mut required_tokens, "linear");
+
+    let metadata = serde_json::to_string(&ForgeTaskMetadata {
+        kind: Some("agent_dispatch".to_string()),
+        issue_id: Some(issue_id.clone()),
+        worktree_path: Some(worktree_path.clone()),
+        model: Some(raw_model.clone()),
+    })
+    .map_err(|error| error.to_string())?;
+
+    Ok(CreateTaskRequest {
+        name: format!("Agent {issue_id}"),
+        command,
+        args: serde_json::to_string(&args).map_err(|error| error.to_string())?,
+        working_dir: Some(worktree_path),
+        stdin_text,
+        required_tokens: serde_json::to_string(&required_tokens)
+            .map_err(|error| error.to_string())?,
+        metadata,
+    })
+}
+
+fn push_required_token(required_tokens: &mut Vec<String>, token: &str) {
+    if required_tokens
+        .iter()
+        .any(|current| current.eq_ignore_ascii_case(token))
+    {
+        return;
+    }
+
+    required_tokens.push(token.to_string());
+}
+
+fn split_runner_and_variant(model: &str) -> (&str, Option<&str>) {
+    match model.split_once(':') {
+        Some((runner, variant)) if !runner.trim().is_empty() && !variant.trim().is_empty() => {
+            (runner.trim(), Some(variant.trim()))
+        }
+        _ => (model, None),
+    }
+}
+
 impl Plugin for ForgePlugin {
     fn manifest(&self) -> &Manifest {
         &self.manifest
@@ -201,6 +341,10 @@ impl Plugin for ForgePlugin {
             TauriCommandDefinition {
                 name: "forge_create_task",
                 description: "Create a new agent task",
+            },
+            TauriCommandDefinition {
+                name: "forge_dispatch_agent",
+                description: "Launch an Agent task from structured issue metadata",
             },
             TauriCommandDefinition {
                 name: "forge_list_tasks",
@@ -228,6 +372,10 @@ impl Plugin for ForgePlugin {
                 description: "Create a new forge task",
             },
             McpToolDefinition {
+                name: "forge.run_agent",
+                description: "Launch an Agent task from issue, worktree and prompt",
+            },
+            McpToolDefinition {
                 name: "forge.list_tasks",
                 description: "List all forge tasks",
             },
@@ -253,5 +401,35 @@ impl Plugin for ForgePlugin {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_agent_task_request;
+
+    #[test]
+    fn codex_agent_requests_are_translated_into_cli_tasks() {
+        let request = build_agent_task_request(
+            "MYT-48".to_string(),
+            "A:/.agents/.worktrees/Entrance/feat-MYT-48".to_string(),
+            "codex:gpt-5-codex".to_string(),
+            "implement the task".to_string(),
+            vec!["openai".to_string()],
+        )
+        .expect("agent request should be valid");
+
+        assert_eq!(request.command, "codex");
+        assert_eq!(
+            request.working_dir.as_deref(),
+            Some("A:/.agents/.worktrees/Entrance/feat-MYT-48")
+        );
+        assert_eq!(request.stdin_text.as_deref(), Some("implement the task"));
+        assert!(request.args.contains("\"exec\""));
+        assert!(request.args.contains("\"--model\""));
+        assert!(request.args.contains("\"gpt-5-codex\""));
+        assert!(request.required_tokens.contains("openai"));
+        assert!(request.required_tokens.contains("linear"));
+        assert!(request.metadata.contains("\"issue_id\":\"MYT-48\""));
     }
 }

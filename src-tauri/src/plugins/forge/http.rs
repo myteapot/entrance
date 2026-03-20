@@ -14,7 +14,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ForgePlugin, ForgeTaskDetails, ForgeTaskStatusEvent};
+use super::{
+    build_agent_task_request, CreateTaskRequest, ForgePlugin, ForgeTaskDetails,
+    ForgeTaskStatusEvent,
+};
 
 #[derive(Clone)]
 struct ForgeHttpState {
@@ -25,11 +28,26 @@ struct ForgeHttpState {
 struct RunTaskRequest {
     #[serde(default)]
     name: Option<String>,
-    command: String,
+    #[serde(default)]
+    command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
+    #[serde(default, alias = "workingDir")]
+    working_dir: Option<String>,
+    #[serde(default)]
+    stdin: Option<String>,
     #[serde(default)]
     required_tokens: Vec<String>,
+    #[serde(default)]
+    metadata: Option<Value>,
+    #[serde(default, alias = "issueId")]
+    issue_id: Option<String>,
+    #[serde(default, alias = "worktreePath")]
+    worktree_path: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,23 +121,61 @@ async fn run_task(
     State(state): State<ForgeHttpState>,
     Json(payload): Json<RunTaskRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let command = payload.command.trim();
-    if command.is_empty() {
-        return Err(ApiError::bad_request("`command` must not be empty"));
-    }
+    let request = if let (Some(issue_id), Some(worktree_path), Some(model), Some(prompt)) = (
+        payload.issue_id,
+        payload.worktree_path,
+        payload.model,
+        payload.prompt,
+    ) {
+        build_agent_task_request(
+            issue_id,
+            worktree_path,
+            model,
+            prompt,
+            payload.required_tokens,
+        )
+        .map_err(ApiError::bad_request)?
+    } else {
+        let command = payload
+            .command
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        if command.is_empty() {
+            return Err(ApiError::bad_request(
+                "`command` must not be empty when agent dispatch fields are omitted",
+            ));
+        }
 
-    let name = payload
-        .name
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| command.to_string());
-    let args = serde_json::to_string(&payload.args)
+        let name = payload
+            .name
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| command.to_string());
+        let args = serde_json::to_string(&payload.args)
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        let required_tokens = serde_json::to_string(&payload.required_tokens)
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        let metadata = serde_json::to_string(
+            &payload
+                .metadata
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+        )
         .map_err(|error| ApiError::internal(error.to_string()))?;
-    let required_tokens = serde_json::to_string(&payload.required_tokens)
-        .map_err(|error| ApiError::internal(error.to_string()))?;
+
+        CreateTaskRequest {
+            name,
+            command: command.to_string(),
+            args,
+            working_dir: payload.working_dir.filter(|value| !value.trim().is_empty()),
+            stdin_text: payload.stdin.filter(|value| !value.trim().is_empty()),
+            required_tokens,
+            metadata,
+        }
+    };
 
     let id = state
         .forge
-        .create_task(&name, command, &args, &required_tokens)
+        .create_task(request)
         .map_err(|error| ApiError::internal(error.to_string()))?;
     state
         .forge

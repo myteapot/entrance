@@ -62,8 +62,11 @@ pub struct StoredForgeTask {
     pub id: i64,
     pub name: String,
     pub command: String,
-    pub args: String,            // JSON
+    pub args: String, // JSON
+    pub working_dir: Option<String>,
+    pub stdin_text: Option<String>,
     pub required_tokens: String, // JSON
+    pub metadata: String,        // JSON
     pub status: String,
     pub status_message: Option<String>,
     pub exit_code: Option<i64>,
@@ -374,17 +377,29 @@ impl DataStore {
         name: &str,
         command: &str,
         args: &str,
+        working_dir: Option<&str>,
+        stdin_text: Option<&str>,
         required_tokens: &str,
+        metadata: &str,
     ) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
         self.with_connection(|conn| {
             conn.execute(
                 r#"
                 INSERT INTO plugin_forge_tasks (
-                    name, command, args, required_tokens, status, status_message, exit_code, created_at, finished_at
-                ) VALUES (?1, ?2, ?3, ?4, 'Pending', NULL, NULL, ?5, NULL)
+                    name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL)
                 "#,
-                params![name, command, args, required_tokens, now],
+                params![
+                    name,
+                    command,
+                    args,
+                    working_dir,
+                    stdin_text,
+                    required_tokens,
+                    metadata,
+                    now
+                ],
             )?;
             Ok(conn.last_insert_rowid())
         })
@@ -429,7 +444,7 @@ impl DataStore {
     pub fn list_forge_tasks(&self) -> Result<Vec<StoredForgeTask>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, command, args, required_tokens, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks ORDER BY created_at DESC"
+                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks ORDER BY created_at DESC"
             )?;
             let rows = stmt.query_map([], map_forge_row)?;
             let tasks = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -440,7 +455,7 @@ impl DataStore {
     pub fn get_forge_task(&self, id: i64) -> Result<Option<StoredForgeTask>> {
         self.with_connection(|conn| {
             conn.query_row(
-                "SELECT id, name, command, args, required_tokens, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks WHERE id = ?1",
+                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks WHERE id = ?1",
                 [id],
                 map_forge_row,
             )
@@ -697,12 +712,15 @@ fn map_forge_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTask> {
         name: row.get(1)?,
         command: row.get(2)?,
         args: row.get(3)?,
-        required_tokens: row.get(4)?,
-        status: row.get(5)?,
-        status_message: row.get(6)?,
-        exit_code: row.get(7)?,
-        created_at: row.get(8)?,
-        finished_at: row.get(9)?,
+        working_dir: row.get(4)?,
+        stdin_text: row.get(5)?,
+        required_tokens: row.get(6)?,
+        metadata: row.get(7)?,
+        status: row.get(8)?,
+        status_message: row.get(9)?,
+        exit_code: row.get(10)?,
+        created_at: row.get(11)?,
+        finished_at: row.get(12)?,
     })
 }
 
@@ -790,6 +808,27 @@ fn ensure_forge_task_columns(connection: &Connection) -> Result<()> {
         )?;
     }
 
+    if !columns.iter().any(|column| column == "working_dir") {
+        connection.execute(
+            "ALTER TABLE plugin_forge_tasks ADD COLUMN working_dir TEXT",
+            [],
+        )?;
+    }
+
+    if !columns.iter().any(|column| column == "stdin_text") {
+        connection.execute(
+            "ALTER TABLE plugin_forge_tasks ADD COLUMN stdin_text TEXT",
+            [],
+        )?;
+    }
+
+    if !columns.iter().any(|column| column == "metadata") {
+        connection.execute(
+            "ALTER TABLE plugin_forge_tasks ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'",
+            [],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -828,7 +867,8 @@ mod tests {
             },
         ]))?;
 
-        let task_id = store.insert_forge_task("Echo", "echo", r#"["hello"]"#, "[]")?;
+        let task_id =
+            store.insert_forge_task("Echo", "echo", r#"["hello"]"#, None, None, "[]", "{}")?;
         store.append_forge_task_log(task_id, "stdout", "hello")?;
         store.append_forge_task_log(task_id, "stderr", "warn")?;
 

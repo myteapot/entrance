@@ -3,12 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import "./Forge.css";
 import {
   applyForgeTaskStatusEvent,
+  dispatchForgeAgent,
   fetchForgeTaskDetails,
   fetchForgeTasks,
   listenToForgeTaskOutput,
   listenToForgeTaskStatus,
   mergeForgeTask,
   type ForgeTask,
+  parseForgeTaskMetadata,
   type LogLine,
 } from "../features/forge/taskFeed";
 
@@ -21,10 +23,16 @@ export default function Forge() {
   const [restartingTaskId, setRestartingTaskId] = createSignal<number | null>(null);
 
   const [showNewTaskModal, setShowNewTaskModal] = createSignal(false);
+  const [showAgentDispatchModal, setShowAgentDispatchModal] = createSignal(false);
   const [newTaskName, setNewTaskName] = createSignal("");
   const [newTaskCommand, setNewTaskCommand] = createSignal("");
   const [newTaskArgs, setNewTaskArgs] = createSignal("");
   const [newTaskRequiredTokens, setNewTaskRequiredTokens] = createSignal("");
+  const [agentIssueId, setAgentIssueId] = createSignal("");
+  const [agentWorktreePath, setAgentWorktreePath] = createSignal("");
+  const [agentModel, setAgentModel] = createSignal("codex");
+  const [agentPrompt, setAgentPrompt] = createSignal("");
+  const [agentRequiredTokens, setAgentRequiredTokens] = createSignal("");
   let activeTaskDetailsRequest = 0;
 
   const parseArgsInput = (value: string) => {
@@ -175,6 +183,22 @@ export default function Forge() {
     return id;
   };
 
+  const dispatchAgent = async (
+    issueId: string,
+    worktreePath: string,
+    model: string,
+    prompt: string,
+    rawRequiredTokens: string,
+  ) => {
+    const requiredTokens = parseRequiredTokensInput(rawRequiredTokens);
+    const id = await dispatchForgeAgent(issueId, worktreePath, model, prompt, requiredTokens);
+
+    await fetchTasks();
+    setSelectedTaskId(id);
+    await loadTaskDetails(id);
+    return id;
+  };
+
   onMount(() => {
     void fetchTasks();
 
@@ -250,7 +274,24 @@ export default function Forge() {
   const handleRestartTask = async (task: ForgeTask) => {
     setRestartingTaskId(task.id);
     try {
-      await createTask(task.name, task.command, task.args, task.required_tokens);
+      const metadata = parseForgeTaskMetadata(task.metadata);
+      if (
+        metadata.kind === "agent_dispatch" &&
+        metadata.issue_id &&
+        metadata.worktree_path &&
+        metadata.model &&
+        task.stdin_text
+      ) {
+        await dispatchAgent(
+          metadata.issue_id,
+          metadata.worktree_path,
+          metadata.model,
+          task.stdin_text,
+          task.required_tokens,
+        );
+      } else {
+        await createTask(task.name, task.command, task.args, task.required_tokens);
+      }
     } catch (error) {
       console.error("Failed to restart task", error);
       alert("Error restarting: " + error);
@@ -282,7 +323,10 @@ export default function Forge() {
           <h1 class="forge-title">Forge</h1>
           <p class="forge-subtitle">Task runner and real-time execution engine logs.</p>
         </div>
-        <button class="btn btn-primary" onClick={() => setShowNewTaskModal(true)}>+ New Task</button>
+        <div style={{ display: "flex", gap: "0.75rem" }}>
+          <button class="btn btn-primary" onClick={() => setShowAgentDispatchModal(true)}>Dispatch Agent</button>
+          <button class="btn" onClick={() => setShowNewTaskModal(true)}>+ New Task</button>
+        </div>
       </div>
 
       <div class="forge-layout">
@@ -328,6 +372,7 @@ export default function Forge() {
           <Show when={selectedTask()} fallback={<div class="empty-selection">Select a task to view details and logs.</div>}>
             {(task) => {
               const requiredTokens = () => parseStoredRequiredTokens(task().required_tokens);
+              const metadata = () => parseForgeTaskMetadata(task().metadata);
 
               return (
                 <div class="log-panel">
@@ -345,10 +390,26 @@ export default function Forge() {
                     <div class="log-task-meta">
                       <span>Task ID: {task().id}</span>
                       <span>Created: {new Date(task().created_at).toLocaleString()}</span>
+                      <Show when={task().working_dir}>
+                        <span>Worktree: {task().working_dir as string}</span>
+                      </Show>
                       <Show when={task().finished_at}>
                         <span>Finished: {new Date(task().finished_at as string).toLocaleString()}</span>
                       </Show>
                     </div>
+                    <Show when={metadata().kind === "agent_dispatch"}>
+                      <div class="task-required-tokens">
+                        <span class="task-required-label">Agent Dispatch</span>
+                        <div class="token-chip-list">
+                          <Show when={metadata().issue_id}>
+                            <span class="token-chip">{metadata().issue_id}</span>
+                          </Show>
+                          <Show when={metadata().model}>
+                            <span class="token-chip">{metadata().model}</span>
+                          </Show>
+                        </div>
+                      </div>
+                    </Show>
                     <Show when={requiredTokens().length > 0}>
                       <div class="task-required-tokens">
                         <span class="task-required-label">Required tokens</span>
@@ -416,6 +477,72 @@ export default function Forge() {
             <div class="modal-actions">
               <button class="btn" onClick={() => setShowNewTaskModal(false)}>Cancel</button>
               <button class="btn btn-primary" onClick={() => void handleCreateTask()}>Spawn Task</button>
+            </div>
+          </div>
+        </div>
+      </Show>
+
+      <Show when={showAgentDispatchModal()}>
+        <div class="modal-backdrop">
+          <div class="modal">
+            <h2 style={{ "margin-bottom": "var(--space-4)", "font-size": "var(--text-xl)" }}>Dispatch Agent</h2>
+            <div class="form-group">
+              <label class="form-label">Issue ID</label>
+              <input class="form-input" type="text" value={agentIssueId()} onInput={(event) => setAgentIssueId(event.currentTarget.value)} placeholder="e.g. MYT-48" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Worktree Path</label>
+              <input class="form-input" type="text" value={agentWorktreePath()} onInput={(event) => setAgentWorktreePath(event.currentTarget.value)} placeholder="e.g. A:/.agents/.worktrees/Entrance/feat-MYT-48" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Model</label>
+              <input class="form-input" type="text" value={agentModel()} onInput={(event) => setAgentModel(event.currentTarget.value)} placeholder="e.g. codex or codex:gpt-5-codex" />
+              <p class="form-hint">Use `codex`, `claude`, `gemini`, or `runner:model` for an explicit variant.</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Prompt</label>
+              <textarea
+                class="form-input"
+                rows={8}
+                value={agentPrompt()}
+                onInput={(event) => setAgentPrompt(event.currentTarget.value)}
+                placeholder="Paste the generated Agent prompt here"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Extra Required Tokens</label>
+              <input class="form-input" type="text" value={agentRequiredTokens()} onInput={(event) => setAgentRequiredTokens(event.currentTarget.value)} placeholder='Optional. e.g. minimax or ["minimax"]' />
+              <p class="form-hint">Forge automatically adds provider credentials for the selected runner and `linear` for issue sync.</p>
+            </div>
+            <div class="modal-actions">
+              <button class="btn" onClick={() => setShowAgentDispatchModal(false)}>Cancel</button>
+              <button
+                class="btn btn-primary"
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      await dispatchAgent(
+                        agentIssueId(),
+                        agentWorktreePath(),
+                        agentModel(),
+                        agentPrompt(),
+                        agentRequiredTokens(),
+                      );
+                      setShowAgentDispatchModal(false);
+                      setAgentIssueId("");
+                      setAgentWorktreePath("");
+                      setAgentModel("codex");
+                      setAgentPrompt("");
+                      setAgentRequiredTokens("");
+                    } catch (error) {
+                      console.error(error);
+                      alert("Error dispatching agent: " + error);
+                    }
+                  })();
+                }}
+              >
+                Launch Agent
+              </button>
             </div>
           </div>
         </div>

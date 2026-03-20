@@ -12,8 +12,8 @@ use core::{
 };
 use plugins::{
     forge::commands::{
-        forge_cancel_task, forge_create_task, forge_get_task, forge_get_task_details,
-        forge_list_tasks,
+        forge_cancel_task, forge_create_task, forge_dispatch_agent, forge_get_task,
+        forge_get_task_details, forge_list_tasks,
     },
     launcher::{launcher_launch, launcher_pin, launcher_search, LauncherPlugin},
     vault::{
@@ -150,7 +150,9 @@ fn dashboard_summary(
     data_store: tauri::State<'_, core::data_store::DataStore>,
 ) -> Result<DashboardSummary, String> {
     let tasks = if dashboard.forge_enabled {
-        data_store.list_forge_tasks().map_err(|error| error.to_string())?
+        data_store
+            .list_forge_tasks()
+            .map_err(|error| error.to_string())?
     } else {
         Vec::new()
     };
@@ -236,6 +238,7 @@ pub fn run() {
             launcher_launch,
             launcher_pin,
             forge_create_task,
+            forge_dispatch_agent,
             forge_list_tasks,
             forge_get_task,
             forge_get_task_details,

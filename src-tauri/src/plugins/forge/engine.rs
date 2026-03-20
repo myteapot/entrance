@@ -2,14 +2,14 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
-use crate::core::data_store::DataStore;
+use crate::core::data_store::{DataStore, StoredForgeTask};
 use crate::core::event_bus::EventBus;
 use crate::plugins::{
-    forge::{ForgeTaskLogEvent, ForgeTaskStatusEvent},
+    forge::{ForgeTaskLogEvent, ForgeTaskMetadata, ForgeTaskStatusEvent},
     vault::VaultCipher,
 };
 
@@ -67,7 +67,9 @@ impl TaskEngine {
         let engine_clone = self.clone();
 
         let handle = tokio::spawn(async move {
-            engine_clone.run_process(id, command, args, envs).await;
+            engine_clone
+                .run_process(task_record, command, args, envs)
+                .await;
         });
 
         self.active_tasks.lock().unwrap().insert(id, handle);
@@ -90,33 +92,46 @@ impl TaskEngine {
 
     async fn run_process(
         &self,
-        id: i64,
+        task: StoredForgeTask,
         command: String,
         args: Vec<String>,
         envs: HashMap<String, String>,
     ) {
+        let id = task.id;
         let mut cmd = Command::new(&command);
         cmd.args(&args)
             .envs(&envs)
             .kill_on_drop(true)
+            .stdin(if task.stdin_text.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(working_dir) = task.working_dir.as_deref() {
+            cmd.current_dir(working_dir);
+        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
                 let message = format!("Failed to spawn process: {e}");
-                let _ = self.data_store.update_forge_task_status(
-                    id,
-                    "Failed",
-                    Some(-1),
-                    Some(&message),
-                );
-                self.publish_task_status(id);
-                self.active_tasks.lock().unwrap().remove(&id);
+                self.finalize_task(&task, "Failed", Some(-1), Some(message), &envs)
+                    .await;
                 return;
             }
         };
+
+        if let Some(stdin_text) = task.stdin_text.as_deref() {
+            if let Some(mut stdin) = child.stdin.take() {
+                if let Err(error) = stdin.write_all(stdin_text.as_bytes()).await {
+                    self.append_system_log(id, &format!("Failed to write task stdin: {error}"));
+                } else if let Err(error) = stdin.shutdown().await {
+                    self.append_system_log(id, &format!("Failed to close task stdin: {error}"));
+                }
+            }
+        }
 
         let stdout = child.stdout.take().expect("Failed to open stdout");
         let stderr = child.stderr.take().expect("Failed to open stderr");
@@ -156,8 +171,6 @@ impl TaskEngine {
         let _ = stdout_task.await;
         let _ = stderr_task.await;
 
-        self.active_tasks.lock().unwrap().remove(&id);
-
         match status {
             Ok(exit_status) => {
                 let code = exit_status.code().unwrap_or(0);
@@ -168,23 +181,13 @@ impl TaskEngine {
                 };
                 let status_message =
                     (!exit_status.success()).then(|| format!("Process exited with code {code}"));
-                let _ = self.data_store.update_forge_task_status(
-                    id,
-                    text_status,
-                    Some(code),
-                    status_message.as_deref(),
-                );
-                self.publish_task_status(id);
+                self.finalize_task(&task, text_status, Some(code), status_message, &envs)
+                    .await;
             }
             Err(e) => {
                 let message = format!("Failed while waiting for process completion: {e}");
-                let _ = self.data_store.update_forge_task_status(
-                    id,
-                    "Failed",
-                    Some(-1),
-                    Some(&message),
-                );
-                self.publish_task_status(id);
+                self.finalize_task(&task, "Failed", Some(-1), Some(message), &envs)
+                    .await;
             }
         }
     }
@@ -200,6 +203,116 @@ impl TaskEngine {
     fn publish_task_log(&self, log: &crate::core::data_store::StoredForgeTaskLog) {
         let payload = serde_json::to_string(&ForgeTaskLogEvent::from(log)).unwrap_or_default();
         let _ = self.event_bus.publish("forge:task_output", payload);
+    }
+
+    fn append_system_log(&self, task_id: i64, line: &str) {
+        if let Ok(log) = self
+            .data_store
+            .append_forge_task_log(task_id, "system", line)
+        {
+            self.publish_task_log(&log);
+        }
+    }
+
+    async fn finalize_task(
+        &self,
+        task: &StoredForgeTask,
+        status: &str,
+        exit_code: Option<i32>,
+        status_message: Option<String>,
+        envs: &HashMap<String, String>,
+    ) {
+        let _ = self.data_store.update_forge_task_status(
+            task.id,
+            status,
+            exit_code,
+            status_message.as_deref(),
+        );
+        self.publish_task_status(task.id);
+        self.active_tasks.lock().unwrap().remove(&task.id);
+
+        if let Err(error) = self
+            .sync_linear_completion(task, status, exit_code, envs)
+            .await
+        {
+            self.append_system_log(task.id, &format!("Linear sync failed: {error}"));
+        }
+    }
+
+    async fn sync_linear_completion(
+        &self,
+        task: &StoredForgeTask,
+        status: &str,
+        exit_code: Option<i32>,
+        envs: &HashMap<String, String>,
+    ) -> Result<()> {
+        let metadata: ForgeTaskMetadata = serde_json::from_str(&task.metadata).unwrap_or_default();
+        let Some(kind) = metadata.kind.as_deref() else {
+            return Ok(());
+        };
+        if kind != "agent_dispatch" {
+            return Ok(());
+        }
+
+        let issue_identifier = metadata
+            .issue_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("agent dispatch task is missing issue_id metadata"))?;
+        let Some(linear_api_key) = envs.get("LINEAR_API_KEY") else {
+            self.append_system_log(
+                task.id,
+                "Skipping Linear sync because LINEAR_API_KEY is unavailable.",
+            );
+            return Ok(());
+        };
+
+        let linear_issue = fetch_linear_issue(linear_api_key, issue_identifier).await?;
+
+        let next_state = match status {
+            "Done" => Some("In Review"),
+            "Failed" | "Blocked" => Some("Request"),
+            _ => None,
+        };
+
+        if let Some(next_state) = next_state {
+            let workflow_state_id =
+                find_linear_workflow_state_id(linear_api_key, &linear_issue.team_key, next_state)
+                    .await?;
+            update_linear_issue_state(linear_api_key, &linear_issue.id, &workflow_state_id).await?;
+            self.append_system_log(
+                task.id,
+                &format!(
+                    "Linear issue {issue_identifier} moved to {next_state} after task completion."
+                ),
+            );
+        }
+
+        let comment_body = match status {
+            "Done" => Some(format!(
+                "> 🤖 **Forge | From Entrance**\n\nAgent 任务已完成，进程退出码 `{}`，Forge 已自动转为 `In Review`。",
+                exit_code.unwrap_or(0)
+            )),
+            "Failed" => Some(format!(
+                "> 🤖 **Forge | From Entrance**\n\nAgent 任务执行失败，退出码 `{}`。Forge 已自动转为 `Request`，请 Dev 检查日志。",
+                exit_code.unwrap_or(-1)
+            )),
+            "Blocked" => Some(
+                "> 🤖 **Forge | From Entrance**\n\nAgent 任务被阻塞，Forge 已自动转为 `Request`，请检查 Vault 凭证或执行环境。"
+                    .to_string(),
+            ),
+            "Cancelled" => Some(
+                "> 🤖 **Forge | From Entrance**\n\nAgent 任务已取消，Forge 保留当前任务日志供继续排查。"
+                    .to_string(),
+            ),
+            _ => None,
+        };
+
+        if let Some(comment_body) = comment_body {
+            create_linear_comment(linear_api_key, &linear_issue.id, &comment_body).await?;
+        }
+
+        Ok(())
     }
 
     fn resolve_env_bindings(
@@ -272,6 +385,183 @@ fn provider_env_var(provider: &str) -> String {
     }
 }
 
+#[derive(Debug)]
+struct LinearIssueContext {
+    id: String,
+    team_key: String,
+}
+
+async fn fetch_linear_issue(api_key: &str, issue_identifier: &str) -> Result<LinearIssueContext> {
+    let response = run_linear_graphql(
+        api_key,
+        r#"
+        query ForgeIssue($id: String!) {
+          issue(id: $id) {
+            id
+            team {
+              key
+              name
+            }
+          }
+        }
+        "#,
+        serde_json::json!({ "id": issue_identifier }),
+    )
+    .await?;
+
+    let issue = response
+        .get("issue")
+        .ok_or_else(|| anyhow!("Linear issue `{issue_identifier}` was not found"))?;
+    let id = issue
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("Linear issue `{issue_identifier}` is missing an id"))?;
+    let team = issue
+        .get("team")
+        .ok_or_else(|| anyhow!("Linear issue `{issue_identifier}` is missing a team"))?;
+    let team_key = team
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| team.get("name").and_then(serde_json::Value::as_str))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("Linear issue `{issue_identifier}` is missing a team key"))?;
+
+    Ok(LinearIssueContext {
+        id: id.to_string(),
+        team_key: team_key.to_string(),
+    })
+}
+
+async fn find_linear_workflow_state_id(
+    api_key: &str,
+    team_key: &str,
+    target_state_name: &str,
+) -> Result<String> {
+    let response = run_linear_graphql(
+        api_key,
+        r#"
+        query ForgeWorkflowStates {
+          workflowStates {
+            nodes {
+              id
+              name
+              team {
+                key
+                name
+              }
+            }
+          }
+        }
+        "#,
+        serde_json::json!({}),
+    )
+    .await?;
+
+    let nodes = response
+        .get("workflowStates")
+        .and_then(|value| value.get("nodes"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow!("Linear workflowStates query returned no nodes"))?;
+
+    let workflow_state_id = nodes.iter().find_map(|node| {
+        let name = node.get("name")?.as_str()?;
+        if name != target_state_name {
+            return None;
+        }
+
+        let node_team = node.get("team")?;
+        let node_team_key = node_team
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| node_team.get("name").and_then(serde_json::Value::as_str))?;
+        if node_team_key != team_key {
+            return None;
+        }
+
+        node.get("id")?.as_str().map(ToOwned::to_owned)
+    });
+
+    workflow_state_id.ok_or_else(|| {
+        anyhow!(
+            "Unable to resolve Linear workflow state `{target_state_name}` for team `{team_key}`"
+        )
+    })
+}
+
+async fn update_linear_issue_state(api_key: &str, issue_id: &str, state_id: &str) -> Result<()> {
+    run_linear_graphql(
+        api_key,
+        r#"
+        mutation ForgeUpdateIssue($id: String!, $stateId: String!) {
+          issueUpdate(id: $id, input: { stateId: $stateId }) {
+            success
+          }
+        }
+        "#,
+        serde_json::json!({
+            "id": issue_id,
+            "stateId": state_id,
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn create_linear_comment(api_key: &str, issue_id: &str, body: &str) -> Result<()> {
+    run_linear_graphql(
+        api_key,
+        r#"
+        mutation ForgeCommentCreate($issueId: String!, $body: String!) {
+          commentCreate(input: { issueId: $issueId, body: $body }) {
+            success
+          }
+        }
+        "#,
+        serde_json::json!({
+            "issueId": issue_id,
+            "body": body,
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn run_linear_graphql(
+    api_key: &str,
+    query: &str,
+    variables: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.linear.app/graphql")
+        .header("Authorization", api_key)
+        .json(&serde_json::json!({
+            "query": query,
+            "variables": variables,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let payload: serde_json::Value = response.json().await?;
+    if let Some(errors) = payload.get("errors").and_then(serde_json::Value::as_array) {
+        if !errors.is_empty() {
+            let message = errors
+                .iter()
+                .filter_map(|error| error.get("message").and_then(serde_json::Value::as_str))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(anyhow!("Linear GraphQL error: {message}"));
+        }
+    }
+
+    payload
+        .get("data")
+        .cloned()
+        .ok_or_else(|| anyhow!("Linear GraphQL response did not contain a data field"))
+}
+
 #[cfg(test)]
 impl TaskEngine {
     fn with_vault_cipher(
@@ -317,8 +607,15 @@ mod tests {
             VaultCipher::from_device_identifier("test-device")?,
         ));
         let blocked_args = test_shell_args("hello")?;
-        let task_id =
-            store.insert_forge_task("Echo", test_shell(), &blocked_args, r#"["openai"]"#)?;
+        let task_id = store.insert_forge_task(
+            "Echo",
+            test_shell(),
+            &blocked_args,
+            None,
+            None,
+            r#"["openai"]"#,
+            "{}",
+        )?;
 
         engine.spawn_task(task_id)?;
 
@@ -366,8 +663,15 @@ mod tests {
         store.insert_vault_token("Primary", "openai", &encrypted)?;
 
         let injected_args = test_shell_args(env_echo_expression())?;
-        let task_id =
-            store.insert_forge_task("Echo", test_shell(), &injected_args, r#"["openai"]"#)?;
+        let task_id = store.insert_forge_task(
+            "Echo",
+            test_shell(),
+            &injected_args,
+            None,
+            None,
+            r#"["openai"]"#,
+            "{}",
+        )?;
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

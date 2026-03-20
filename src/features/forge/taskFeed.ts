@@ -9,7 +9,10 @@ export interface ForgeTask {
   name: string;
   command: string;
   args: string;
+  working_dir: string | null;
+  stdin_text: string | null;
   required_tokens: string;
+  metadata: string;
   status: TaskStatus;
   status_message: string | null;
   exit_code: number | null;
@@ -37,10 +40,32 @@ export interface ForgeTaskStatusEvent {
   finished_at: string | null;
 }
 
+export interface ForgeTaskMetadata {
+  kind?: string | null;
+  issue_id?: string | null;
+  worktree_path?: string | null;
+  model?: string | null;
+}
+
 export const fetchForgeTasks = () => invoke<ForgeTask[]>("forge_list_tasks");
 
 export const fetchForgeTaskDetails = (id: number) =>
   invoke<ForgeTaskDetails | null>("forge_get_task_details", { id });
+
+export const dispatchForgeAgent = (
+  issueId: string,
+  worktreePath: string,
+  model: string,
+  prompt: string,
+  requiredTokens?: string[],
+) =>
+  invoke<number>("forge_dispatch_agent", {
+    issueId,
+    worktreePath,
+    model,
+    prompt,
+    requiredTokens,
+  });
 
 export const listenToForgeTaskStatus = (
   handler: (payload: ForgeTaskStatusEvent) => void,
@@ -94,4 +119,17 @@ export const applyForgeTaskStatusEvent = (
   });
 
   return seen ? nextTasks : null;
+};
+
+export const parseForgeTaskMetadata = (metadata: string): ForgeTaskMetadata => {
+  try {
+    const parsed = JSON.parse(metadata) as ForgeTaskMetadata;
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch (error) {
+    console.error("Failed to parse forge task metadata", error);
+  }
+
+  return {};
 };
