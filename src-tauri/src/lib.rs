@@ -144,7 +144,9 @@ fn setup_application<R: tauri::Runtime>(
     app.manage(plugin_manager);
 
     if let Some(shortcut) = launcher_hotkey.as_deref() {
-        hotkey::register_launcher_shortcut(app, shortcut)?;
+        if let Err(err) = hotkey::register_launcher_shortcut(app, shortcut) {
+            tracing::warn!("Failed to register launcher hotkey '{}': {}. Launcher shortcut disabled.", shortcut, err);
+        }
     }
 
     Ok(())
