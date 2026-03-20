@@ -1,43 +1,16 @@
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import "./Forge.css";
-
-type TaskStatus = "Pending" | "Running" | "Done" | "Failed" | "Cancelled" | "Blocked";
-type LogStream = "stdout" | "stderr" | "system";
-
-interface ForgeTask {
-  id: number;
-  name: string;
-  command: string;
-  args: string;
-  required_tokens: string;
-  status: TaskStatus;
-  status_message: string | null;
-  exit_code: number | null;
-  created_at: string;
-  finished_at: string | null;
-}
-
-interface LogLine {
-  id: number;
-  task_id: number;
-  stream: LogStream;
-  line: string;
-  created_at: string | null;
-}
-
-interface ForgeTaskDetails extends ForgeTask {
-  logs: LogLine[];
-}
-
-interface ForgeTaskStatusEvent {
-  id: number;
-  status: TaskStatus;
-  status_message: string | null;
-  exit_code: number | null;
-  finished_at: string | null;
-}
+import {
+  applyForgeTaskStatusEvent,
+  fetchForgeTaskDetails,
+  fetchForgeTasks,
+  listenToForgeTaskOutput,
+  listenToForgeTaskStatus,
+  mergeForgeTask,
+  type ForgeTask,
+  type LogLine,
+} from "../features/forge/taskFeed";
 
 export default function Forge() {
   const [tasks, setTasks] = createSignal<ForgeTask[]>([]);
@@ -137,14 +110,7 @@ export default function Forge() {
   };
 
   const upsertTask = (task: ForgeTask) => {
-    setTasks((prev) => {
-      const exists = prev.some((entry) => entry.id === task.id);
-      if (!exists) {
-        return [task, ...prev];
-      }
-
-      return prev.map((entry) => (entry.id === task.id ? { ...entry, ...task } : entry));
-    });
+    setTasks((prev) => mergeForgeTask(prev, task));
   };
 
   const selectedTask = () =>
@@ -152,8 +118,7 @@ export default function Forge() {
 
   const fetchTasks = async () => {
     try {
-      const result = await invoke<ForgeTask[]>("forge_list_tasks");
-      setTasks(result);
+      setTasks(await fetchForgeTasks());
     } catch (error) {
       console.error("Failed to fetch tasks", error);
     }
@@ -165,7 +130,7 @@ export default function Forge() {
     setTaskDetailsError(null);
 
     try {
-      const details = await invoke<ForgeTaskDetails | null>("forge_get_task_details", { id: taskId });
+      const details = await fetchForgeTaskDetails(taskId);
       if (requestId !== activeTaskDetailsRequest || !details) {
         return;
       }
@@ -210,47 +175,33 @@ export default function Forge() {
     return id;
   };
 
-  onMount(async () => {
-    await fetchTasks();
+  onMount(() => {
+    void fetchTasks();
 
-    const unlistenStatus = await listen<string>("forge:task_status", (event) => {
-      try {
-        const payload = JSON.parse(event.payload) as ForgeTaskStatusEvent;
-        setTasks((prev) =>
-          prev.map((task) =>
-            task.id === payload.id
-              ? {
-                  ...task,
-                  status: payload.status,
-                  status_message: payload.status_message,
-                  exit_code: payload.exit_code,
-                  finished_at: payload.finished_at,
-                }
-              : task,
-          ),
-        );
-      } catch (error) {
-        console.error("Failed to process forge status event", error);
-      }
-    });
+    void (async () => {
+      const unlistenStatus = await listenToForgeTaskStatus((payload) => {
+        const nextTasks = applyForgeTaskStatusEvent(tasks(), payload);
+        if (nextTasks) {
+          setTasks(nextTasks);
+          return;
+        }
 
-    const unlistenOutput = await listen<string>("forge:task_output", (event) => {
-      try {
-        const payload = JSON.parse(event.payload) as LogLine;
+        void fetchTasks();
+      });
+
+      const unlistenOutput = await listenToForgeTaskOutput((payload) => {
         setLogs((prev) => {
           const taskId = payload.task_id;
           const currentLogs = prev[taskId] ?? [];
           return { ...prev, [taskId]: mergeLogLines(currentLogs, [payload]) };
         });
-      } catch (error) {
-        console.error("Failed to process forge output event", error);
-      }
-    });
+      });
 
-    onCleanup(() => {
-      unlistenStatus();
-      unlistenOutput();
-    });
+      onCleanup(() => {
+        unlistenStatus();
+        unlistenOutput();
+      });
+    })();
   });
 
   createEffect(() => {
