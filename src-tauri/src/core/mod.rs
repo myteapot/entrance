@@ -9,6 +9,7 @@ use self::{
     data_store::{DataStore, MigrationPlan, MigrationStep},
 };
 
+pub mod action;
 pub mod config_store;
 pub mod data_store;
 pub mod event_bus;
@@ -17,6 +18,7 @@ pub mod logging;
 pub mod mcp_server;
 pub mod permission;
 pub mod plugin_manager;
+pub mod supervision;
 pub mod theme;
 pub mod updater;
 pub mod window;
