@@ -1,0 +1,21 @@
+{
+  "kind": "entrance-db-seed",
+  "created_at": "2026-03-21",
+  "path": "A:\\Agent\\Entrance\\entrance.db",
+  "sha256": "711ad63529699f33dbc7758b60cd471ac6a252586366b40a9181f58646e4a276",
+  "counts": {
+    "instincts": 3,
+    "documents": 15,
+    "coffee_chats": 3,
+    "todos": 20,
+    "decisions": 19,
+    "visions": 5,
+    "memory_fragments": 39,
+    "memory_links": 81
+  },
+  "source": {
+    "type": "copy-only",
+    "from": "A:\\.agents\\nota\\data\\store.db",
+    "note": "Copied into Entrance root without modifying source recovery files."
+  }
+}
