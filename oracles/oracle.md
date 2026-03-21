@@ -10,6 +10,8 @@ Entrance — "The last app you'll ever need to open." 插件化桌面统一入�
 
 | 原则 | 含义 |
 |------|------|
+| 冷热双轨优先 | 冷层承载 canonical truth，热层承载 active surface。任何设计都先分清事实层和操作层 |
+| OTP-derived Supervision | max retry + report + no silent failure。冷层定义 supervision contract，热层承载 live retry / error / escalation state |
 | Empty Core + Plugin Everything | Core 零业务逻辑, 所有功能由插件提供 |
 | Single Source of Truth | Entrance 不仅是视图层, **是真实数据源**。外部服务 (OpenClaw 等) 读写 Entrance DB, 自身不持有数据 |
 | 赛博洁癖 | TOML 配置, 单 SQLite, 无冗余文件 |
@@ -55,6 +57,8 @@ Entrance — "The last app you'll ever need to open." 插件化桌面统一入�
 | DataStore | SQLite 抽象层, 每个插件独立表 |
 | ConfigStore | TOML 读写 |
 | PermissionGuard | 运行时权限校验 (L0~L4) |
+| ActionCompiler | 将 `chat/learn/do` 与子角色动作原语编译为受约束 action records 和硬房间 |
+| SupervisionKernel | 将 OTP supervision strategy 编译为 child policy、retry budget、failure visibility 和 escalation decision |
 | WindowManager | Tauri 窗口生命周期 (多窗口) |
 | LoggingSystem | 日志 |
 | GlobalHotkeyManager | 全局快捷键注册 |

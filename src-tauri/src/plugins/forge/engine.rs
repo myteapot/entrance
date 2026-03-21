@@ -51,12 +51,7 @@ impl TaskEngine {
             Err(message) => {
                 self.data_store
                     .update_forge_task_status(id, "Blocked", None, Some(&message))?;
-                if let Ok(log) = self
-                    .data_store
-                    .append_forge_task_log(id, "system", &message)
-                {
-                    self.publish_task_log(&log);
-                }
+                self.append_system_log(id, &message);
                 self.publish_task_status(id);
                 return Ok(());
             }
@@ -85,6 +80,7 @@ impl TaskEngine {
             handle.abort();
             self.data_store
                 .update_forge_task_status(id, "Cancelled", None, None)?;
+            self.append_system_log(id, "Task cancelled by operator");
             self.publish_task_status(id);
             Ok(())
         } else {
@@ -121,14 +117,7 @@ impl TaskEngine {
             Ok(c) => c,
             Err(e) => {
                 let message = format!("Failed to spawn process: {e}");
-                let _ = self.data_store.update_forge_task_status(
-                    id,
-                    "Failed",
-                    Some(-1),
-                    Some(&message),
-                );
-                self.publish_task_status(id);
-                self.active_tasks.lock().unwrap().remove(&id);
+                self.record_terminal_failure(id, Some(-1), &message);
                 return;
             }
         };
@@ -194,23 +183,21 @@ impl TaskEngine {
                 };
                 let status_message =
                     (!exit_status.success()).then(|| format!("Process exited with code {code}"));
-                let _ = self.data_store.update_forge_task_status(
-                    id,
-                    text_status,
-                    Some(code),
-                    status_message.as_deref(),
-                );
-                self.publish_task_status(id);
+                if exit_status.success() {
+                    let _ = self.data_store.update_forge_task_status(
+                        id,
+                        text_status,
+                        Some(code),
+                        status_message.as_deref(),
+                    );
+                    self.publish_task_status(id);
+                } else if let Some(message) = status_message {
+                    self.record_terminal_failure(id, Some(code), &message);
+                }
             }
             Err(e) => {
                 let message = format!("Failed while waiting for process completion: {e}");
-                let _ = self.data_store.update_forge_task_status(
-                    id,
-                    "Failed",
-                    Some(-1),
-                    Some(&message),
-                );
-                self.publish_task_status(id);
+                self.record_terminal_failure(id, Some(-1), &message);
             }
         }
     }
@@ -226,6 +213,21 @@ impl TaskEngine {
     fn publish_task_log(&self, log: &crate::core::data_store::StoredForgeTaskLog) {
         let payload = serde_json::to_string(&ForgeTaskLogEvent::from(log)).unwrap_or_default();
         let _ = self.event_bus.publish("forge:task_output", payload);
+    }
+
+    fn append_system_log(&self, id: i64, message: &str) {
+        if let Ok(log) = self.data_store.append_forge_task_log(id, "system", message) {
+            self.publish_task_log(&log);
+        }
+    }
+
+    fn record_terminal_failure(&self, id: i64, exit_code: Option<i32>, message: &str) {
+        let _ = self
+            .data_store
+            .update_forge_task_status(id, "Failed", exit_code, Some(message));
+        self.append_system_log(id, message);
+        self.publish_task_status(id);
+        self.active_tasks.lock().unwrap().remove(&id);
     }
 
     fn resolve_env_bindings(
@@ -549,6 +551,59 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn failed_process_exit_is_visible_in_system_log() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0003_create_plugin_vault_tables",
+                sql: include_str!("../../../migrations/0003_create_plugin_vault_tables.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+        let engine = Arc::new(TaskEngine::new(store.clone(), EventBus::new()));
+
+        let task_id = store.insert_forge_task(
+            "Fail",
+            test_shell(),
+            &test_shell_args(failing_expression())?,
+            None,
+            None,
+            r#"[]"#,
+            "{}",
+        )?;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            engine.spawn_task(task_id)?;
+            wait_for_terminal_status_async(&store, task_id).await
+        })?;
+
+        let task = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert_eq!(task.status, "Failed");
+        assert_eq!(
+            task.status_message.as_deref(),
+            Some("Process exited with code 7")
+        );
+
+        let logs = store.list_forge_task_logs(task_id)?;
+        assert!(logs
+            .iter()
+            .any(|log| log.stream == "system" && log.line.contains("Process exited with code 7")));
+
+        Ok(())
+    }
+
     async fn wait_for_terminal_status_async(store: &DataStore, task_id: i64) -> Result<()> {
         for _ in 0..1_000 {
             let task = store
@@ -617,6 +672,16 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     fn env_echo_expression() -> &'static str {
         "printf '%s\\n' \"$OPENAI_API_KEY\""
+    }
+
+    #[cfg(target_os = "windows")]
+    fn failing_expression() -> &'static str {
+        "exit /b 7"
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn failing_expression() -> &'static str {
+        "exit 7"
     }
 
     fn create_test_working_dir(prefix: &str) -> Result<PathBuf> {
