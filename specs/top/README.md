@@ -1,10 +1,20 @@
 # Top Layer
 
-> Status: hot surface
+> Status: compressed hot root
 
-The files in this directory are the only top-level design surface for now.
+The active hot root now targets:
 
-- keep only confirmed content
-- keep mounted references
-- keep `TODO(fill)` markers
-- do not let subordinate docs reoccupy the top surface
+- [machine.md](./machine.md)
+- [control.md](./control.md)
+- [truth.md](./truth.md)
+- [phase-todo.md](./phase-todo.md)
+- [pending.md](./pending.md)
+
+The numbered files in this directory remain available as mounted hot detail during transition, but they are no longer the intended root navigation shape.
+
+Top-layer rules:
+
+- keep only confirmed content in the active hot root
+- keep mounted references to transitional detail docs and cold docs
+- keep `TODO(fill)` markers only for real remaining detail work
+- do not let subordinate detail reoccupy the root surface
