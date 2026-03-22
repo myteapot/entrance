@@ -201,11 +201,27 @@ This is the minimum cut because:
 
 - `effective_control_policy_code` should be resolved by runtime from `kind_code`, lineage context, and registry state rather than trusted from model-written evidence rows.
 
-## Open Questions
+## Resolved Boundary
 
-- Should `LEARN_CAPTURE` stay a first-class object kind, or should learn events be normalized into packet plus projection later.
-- Should `VERDICT` remain `LOCAL_ONLY`, or should some verdict families be allowed to route upward as structured summaries.
-- Should `CP_LOCAL_EVIDENCE` allow `WP_OWNER_OR_RUNTIME_APPEND` for mixed machine-generated evidence bundles, or should runtime emit separate receipts only.
+### v0 rule
+
+- `LEARN_CAPTURE` stays a first-class local learning object kind at v0 rather than being normalized into packet plus projection
+- `VERDICT` remains `LOCAL_ONLY` at v0; upward attention should flow through `ESCALATE` and new routed objects rather than by reusing verdict rows as upward packets
+- `CP_LOCAL_EVIDENCE` stays owner-appended at v0; runtime-generated evidence should surface through separate receipts or runtime-owned objects rather than mixed writer append on one evidence row
+
+### Consequence
+
+- learn landing stays explicit and reconstructable inside owned scope
+- verdict semantics stay local and evaluative instead of turning into a shadow routing lane
+- machine-generated artifacts remain visible without weakening single-writer boundaries on evidence objects
+
+## Engagement-Profile Boundary
+
+### v0 rule
+
+- no separate compiler-core engagement-profile registry is required at v0
+- engagement presets may tune surfacing density, budget, or view behavior downstream of canonical routing and truth policy
+- engagement presets must not rewrite writer, route, gate, admission, or canonical truth semantics
 
 ## verdict
 
