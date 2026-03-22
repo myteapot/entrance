@@ -290,6 +290,13 @@ pub async fn prepare_agent_dispatch(
     .map_err(|error| error.to_string())??;
 
     let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
+    build_prepared_agent_dispatch(paths, issue_summary).await
+}
+
+async fn build_prepared_agent_dispatch(
+    paths: DispatchPaths,
+    issue_summary: Option<LinearIssueSummary>,
+) -> Result<PreparedAgentDispatch, String> {
     let (issue_status, issue_status_source) = match issue_summary.as_ref() {
         Some(summary) => (summary.issue_status.clone(), "linear".to_string()),
         None => ("Todo".to_string(), "fallback".to_string()),
@@ -817,14 +824,24 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         process::Command,
+        sync::{Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use anyhow::Result;
+
+    use crate::{
+        core::data_store::MigrationPlan,
+        plugins::vault,
+    };
+
     use super::{
-        build_agent_task_request, generate_agent_prompt,
+        build_agent_task_request, build_prepared_agent_dispatch, generate_agent_prompt,
         managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
         resolve_dispatch_paths_for_project,
     };
+
+    static FORGE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     struct TestDir {
         path: PathBuf,
@@ -867,6 +884,13 @@ mod tests {
             "git init should succeed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn forge_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        FORGE_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("forge test lock should not be poisoned")
     }
 
     #[test]
@@ -1031,5 +1055,79 @@ mod tests {
         .expect_err("missing bootstrap skill should fail");
 
         assert!(error.contains("harness/bootstrap/duet/SKILL.md"));
+    }
+
+    #[test]
+    fn prepare_dispatch_pipeline_builds_without_agents_runtime() -> Result<()> {
+        let _guard = forge_test_guard();
+
+        let temp_dir = TestDir::new("dispatch-pipeline-no-agents");
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        fs::create_dir_all(&bootstrap_skill)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+        let managed_root = temp_dir.path().join("appdata").join("worktrees");
+        let managed_worktree = managed_root.join("Entrance").join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree)?;
+        init_git_repo(&managed_worktree);
+
+        let paths = resolve_dispatch_paths_for_project(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            &[managed_root.clone()],
+        )
+        .expect("managed worktree should resolve");
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let dispatch = runtime
+            .block_on(async { build_prepared_agent_dispatch(paths, None).await })
+            .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.issue_status, "Todo");
+        assert_eq!(dispatch.issue_status_source, "fallback");
+        assert!(dispatch.issue_title.is_none());
+        assert_eq!(
+            dispatch.prompt_source,
+            "Entrance-owned harness/bootstrap prompt"
+        );
+        assert_eq!(
+            dispatch.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+        assert!(dispatch.prompt.contains("harness/bootstrap/duet/SKILL.md"));
+        assert!(!dispatch.prompt.contains(".agents"));
+
+        let request = build_agent_task_request(
+            dispatch.issue_id.clone(),
+            dispatch.worktree_path.clone(),
+            "codex:gpt-5-codex".to_string(),
+            dispatch.prompt.clone(),
+            Vec::new(),
+            None,
+        )
+        .expect("dispatch payload should translate into an agent task");
+
+        assert_eq!(
+            request.working_dir.as_deref(),
+            Some(dispatch.worktree_path.as_str())
+        );
+        assert_eq!(request.stdin_text.as_deref(), Some(dispatch.prompt.as_str()));
+        assert!(request.args.contains(&dispatch.worktree_path));
+        assert!(!request.args.contains(".agents"));
+
+        let store = crate::core::data_store::DataStore::in_memory(MigrationPlan::new(
+            vault::migrations(),
+        ))?;
+        assert!(
+            store.get_vault_token_by_provider("linear")?.is_none(),
+            "test store should not require a legacy `.agents` token source"
+        );
+
+        Ok(())
     }
 }

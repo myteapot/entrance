@@ -43,6 +43,10 @@
   - Forge prompt generation now reads Entrance-owned `harness/bootstrap/duet/SKILL.md` instead of shelling to `A:/.agents/nota/scripts/control.py`
   - Forge now exposes prompt source as `Entrance-owned harness/bootstrap prompt`
 - `MYT-61` is now treated as a completed verification gate kept hot-adjacent, not as an active shell.
+- A new headless Forge verification gate is now landed:
+  - `cargo test prepare_dispatch_pipeline_builds_without_agents_runtime --lib --config "build.rustc-wrapper=''" `
+  - this proves dispatch preparation can resolve the managed worktree path, build the Entrance-owned bootstrap prompt, and translate into an Agent task request without active `.agents` runtime dependencies
+  - this does not yet replace full `.agents`-absent app-level verification
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
   - `specs/top/control.md`

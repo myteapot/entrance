@@ -213,6 +213,12 @@ It should prove that:
 - worktree creation and prompt generation still work from the new owners
 - recovered docs remain available from inside `Entrance`
 
+A smaller headless verification cut is already landed:
+
+- `cargo test prepare_dispatch_pipeline_builds_without_agents_runtime --lib --config "build.rustc-wrapper=''" `
+- this proves Forge dispatch preparation can build from the Entrance-owned worktree and bootstrap prompt paths without active `.agents` runtime dependencies
+- it does not yet replace the full app-level `.agents`-absent verification run above
+
 Only after that verification should manual `.agents` cleanup even be considered.
 
 ## 8. Work Streams Required
