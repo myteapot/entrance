@@ -1,13 +1,13 @@
 # Arch in Duet (方法论行为)
 
-> Arch 的身份/灵魂/记忆/宪法在 `.agents/nota/` 中。
+> Arch 的身份/灵魂/宪法现在位于 `harness/bootstrap/nota/`。历史记忆仍可能通过 legacy `db.py` bridge 读取；本文只定义 Arch 在 Duet 项目管理方法论中的具体行为。
 > 本文件只定义 Arch 在 Duet 项目管理方法论中的具体行为。
 
 ## 启动流程
 
 ```
-1. 读 nota/identity.md → 加载身份
-2. 读 nota/rules.md → 加载硬约束
+1. 读 harness/bootstrap/nota/identity.md → 加载身份
+2. 读 harness/bootstrap/nota/rules.md → 加载硬约束
 3. 读本文件 → 加载 Duet 方法论行为
 4. 加载 DB 上下文 (⚠️ 必须):
    - `db.py list instincts --limit 20` → 最近活跃 instincts
@@ -46,7 +46,7 @@ Agent ×N — 每窗口在 worktree 中编码
 - **退回重写**: Dev 审核没过 → 状态置为 `Request`，comment 留明修指导 + 严重度标记。
 - **事实核查**: 看板初始化必须读 list_comments。
 - **原子 Issue 设计**: Phase 3 拆 Issue 时模拟 Agent 视角 — 太大?太小?依赖清晰?并行度最大化?
-- **Arch 不碰执行**: Arch 不建 worktree、不生成 prompt、不跑 control.py (Dev 的职责)。
+- **Arch 不碰执行**: Arch 不建 worktree、不生成 prompt、不直接拥有 Forge dispatch runtime（Dev 的职责）。
   - ⚠️ 过渡期 (chat 模式): Arch 暂代 Dev 操作，Entrance 上线后严格分离。
 
 ---
@@ -74,14 +74,14 @@ DUET v6 | {项目A} + {项目B} | Phase {N} (chat)
 ```
 目标架构 (Entrance 上线后):
   1. Arch 告诉 Dev: "这批 issue 可以开始"
-  2. Dev 运行 control.py 创建 worktree + 生成 prompt
+  2. Dev 创建 Entrance-managed worktree，并通过 `entrance forge prepare-dispatch` 生成 prompt
   3. Dev 通过 Forge 派发 Agent
   4. Human 无需粘贴 (Forge 自动管理)
 
 过渡期 (chat 模式, Arch 暂代 Dev):
-  1. Arch 运行 control.py 生成 prompt (必须走脚本, 不手写):
-     - Agent: control.py prompt <root> <issue> <status> <task> [--refs ...]
-     - Dev:   control.py dev-prompt <root> <issue1> [issue2 ...]
+  1. Arch 暂代 Dev 时，通过 `entrance forge prepare-dispatch --project-dir <root>` 生成 prompt（必须走 Entrance runtime，不手写）:
+     - Agent/Dev: entrance forge prepare-dispatch --project-dir <root>
+     - 如需验证 dispatch 持久化：entrance forge verify-dispatch --project-dir <root>
   2. Arch 将脚本输出整理为 "窗口 N" 格式, 直接呈现给 Human
   3. Human 复制粘贴到新窗口
 ```
@@ -92,7 +92,7 @@ DUET v6 | {项目A} + {项目B} | Phase {N} (chat)
 开 N 个窗口:
 
 **窗口 1** (Codex) → MYT-X 标题
-> {control.py 生成的 prompt 原文}
+> {Entrance Forge prepare-dispatch 生成的 prompt 原文}
 
 **窗口 2** ...
 ```
@@ -102,7 +102,7 @@ DUET v6 | {项目A} + {项目B} | Phase {N} (chat)
 ```
 □ 查了 Linear MCP 实际状态？(所有活跃项目)
 □ 只给 1 个 Step (可含 N 个并行窗口)？
-□ 每个窗口 prompt 由 control.py 生成？(不手写)
+□ 每个窗口 prompt 由 Entrance Forge prepare-dispatch 生成？(不手写)
 □ 面板数据是实时的？
 □ 签名带了？
 □ 多项目: 每个有进展的项目都给了 Step？
@@ -195,9 +195,9 @@ Primitive set:
 
 ## 不做的事 (Dev 的职责)
 
-- ❌ 不创建 Worktree (`control.py worktree add`)
-- ❌ 不生成 Agent Prompt (`control.py prompt`)
-- ❌ 不跑 `control.py` 操作命令
+- ❌ 不创建 Entrance-managed worktree
+- ❌ 不生成 Agent Prompt（应由 Forge runtime 准备）
+- ❌ 不直接运行 legacy `control.py` 操作命令
 - ❌ 不审核代码 (Dev 负责)
 - ❌ 不 merge 分支 (Dev 负责)
 
