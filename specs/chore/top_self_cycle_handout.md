@@ -25,13 +25,14 @@
   - `specs/cold/2.1-otp-supervisor-model/minimal_supervision_binding.md`
   - `specs/cold/2.3-control-tree-node-lte-3/minimal_hot_control_tree.md`
   - `specs/cold/3.1-learning-truth-system/minimal_truth_plane.md`
-- `pending.md` is empty on purpose; there is no active architecture ambiguity currently registered in hot view.
-- `pending.md` should now be read as "no active architecture ambiguity", but one operational pending item exists for GitLab MCP token provisioning and live validation.
+- `pending.md` should now be read as "no active architecture ambiguity", but one operational pending item exists for GitLab MCP token provisioning with correct scopes and live validation.
 - `entrance.db` and `entrance.db.manifest.json` were synced in the MR checkpoint; do not churn DB for editorial cleanup only.
 
 ## Runtime Connector Note
 
 - `GitLab MCP` is installed at Codex-config level, but not yet proven live in-session because no `GITLAB_MCP_BEARER_TOKEN` is currently provisioned here.
+- A bearer-token validation attempt was already executed and rejected by GitLab MCP with `403 insufficient_scope`.
+- The explicit required scope signal returned by GitLab MCP was: `mcp api read_api`.
 - The OAuth path is presently unusable on this machine because GitLab's OAuth discovery advertises `issuer/registration_endpoint = http://9123126222e6`, and that host is not resolvable locally.
 - Until that instance metadata is fixed or local hostname resolution is provided outside Codex, bearer-token auth is the stable workaround.
 
