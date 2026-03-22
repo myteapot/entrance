@@ -302,6 +302,75 @@ pub struct UpsertCoffeeChatRecord<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct UpsertDecisionRecord<'a> {
+    pub id: i64,
+    pub title: &'a str,
+    pub statement: &'a str,
+    pub rationale: &'a str,
+    pub decision_type: &'a str,
+    pub decision_status: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub source_ref: &'a str,
+    pub decided_by: &'a str,
+    pub enforcement_level: &'a str,
+    pub actor_scope: &'a str,
+    pub confidence: f64,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertVisionRecord<'a> {
+    pub id: i64,
+    pub title: &'a str,
+    pub statement: &'a str,
+    pub horizon: &'a str,
+    pub vision_status: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub source_ref: &'a str,
+    pub confidence: f64,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertMemoryFragmentRecord<'a> {
+    pub id: i64,
+    pub title: &'a str,
+    pub content: &'a str,
+    pub kind: &'a str,
+    pub source_type: &'a str,
+    pub source_ref: &'a str,
+    pub source_hash: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub target_table: &'a str,
+    pub target_ref: &'a str,
+    pub status: &'a str,
+    pub triage_status: &'a str,
+    pub temperature: &'a str,
+    pub tags: &'a str,
+    pub notes: &'a str,
+    pub confidence: f64,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertMemoryLinkRecord<'a> {
+    pub id: i64,
+    pub src_kind: &'a str,
+    pub src_id: i64,
+    pub dst_kind: &'a str,
+    pub dst_id: i64,
+    pub relation_type: &'a str,
+    pub status: &'a str,
+    pub created_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
 pub struct NewSourceIngestRun<'a> {
     pub source_system: &'a str,
     pub source_workspace: &'a str,
@@ -1846,6 +1915,180 @@ impl DataStore {
         })
     }
 
+    pub fn upsert_decision_record(&self, record: UpsertDecisionRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO decisions (
+                    id, title, statement, rationale, decision_type, decision_status, scope_type,
+                    scope_ref, source_ref, decided_by, enforcement_level, actor_scope,
+                    confidence, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    statement = excluded.statement,
+                    rationale = excluded.rationale,
+                    decision_type = excluded.decision_type,
+                    decision_status = excluded.decision_status,
+                    scope_type = excluded.scope_type,
+                    scope_ref = excluded.scope_ref,
+                    source_ref = excluded.source_ref,
+                    decided_by = excluded.decided_by,
+                    enforcement_level = excluded.enforcement_level,
+                    actor_scope = excluded.actor_scope,
+                    confidence = excluded.confidence,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.title,
+                    record.statement,
+                    record.rationale,
+                    record.decision_type,
+                    record.decision_status,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.source_ref,
+                    record.decided_by,
+                    record.enforcement_level,
+                    record.actor_scope,
+                    record.confidence,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_vision_record(&self, record: UpsertVisionRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO visions (
+                    id, title, statement, horizon, vision_status, scope_type, scope_ref,
+                    source_ref, confidence, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    statement = excluded.statement,
+                    horizon = excluded.horizon,
+                    vision_status = excluded.vision_status,
+                    scope_type = excluded.scope_type,
+                    scope_ref = excluded.scope_ref,
+                    source_ref = excluded.source_ref,
+                    confidence = excluded.confidence,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.title,
+                    record.statement,
+                    record.horizon,
+                    record.vision_status,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.source_ref,
+                    record.confidence,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_memory_fragment_record(
+        &self,
+        record: UpsertMemoryFragmentRecord<'_>,
+    ) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO memory_fragments (
+                    id, title, content, kind, source_type, source_ref, source_hash, scope_type,
+                    scope_ref, target_table, target_ref, status, triage_status, temperature,
+                    tags, notes, confidence, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    content = excluded.content,
+                    kind = excluded.kind,
+                    source_type = excluded.source_type,
+                    source_ref = excluded.source_ref,
+                    source_hash = excluded.source_hash,
+                    scope_type = excluded.scope_type,
+                    scope_ref = excluded.scope_ref,
+                    target_table = excluded.target_table,
+                    target_ref = excluded.target_ref,
+                    status = excluded.status,
+                    triage_status = excluded.triage_status,
+                    temperature = excluded.temperature,
+                    tags = excluded.tags,
+                    notes = excluded.notes,
+                    confidence = excluded.confidence,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.title,
+                    record.content,
+                    record.kind,
+                    record.source_type,
+                    record.source_ref,
+                    record.source_hash,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.target_table,
+                    record.target_ref,
+                    record.status,
+                    record.triage_status,
+                    record.temperature,
+                    record.tags,
+                    record.notes,
+                    record.confidence,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_memory_link_record(&self, record: UpsertMemoryLinkRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO memory_links (
+                    id, src_kind, src_id, dst_kind, dst_id, relation_type, status, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                    src_kind = excluded.src_kind,
+                    src_id = excluded.src_id,
+                    dst_kind = excluded.dst_kind,
+                    dst_id = excluded.dst_id,
+                    relation_type = excluded.relation_type,
+                    status = excluded.status,
+                    created_at = excluded.created_at
+                "#,
+                params![
+                    record.id,
+                    record.src_kind,
+                    record.src_id,
+                    record.dst_kind,
+                    record.dst_id,
+                    record.relation_type,
+                    record.status,
+                    record.created_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
     fn migrate(&self, migration_plan: MigrationPlan<'_>) -> Result<()> {
         self.with_connection(|connection| {
             for migration in migration_plan
@@ -2455,6 +2698,71 @@ fn ensure_curated_memory_tables(connection: &Connection) -> Result<()> {
             created_at  TEXT NOT NULL,
             temperature TEXT NOT NULL DEFAULT 'warm'
         );
+
+        CREATE TABLE IF NOT EXISTS decisions (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            title               TEXT NOT NULL,
+            statement           TEXT NOT NULL,
+            rationale           TEXT NOT NULL DEFAULT '',
+            decision_type       TEXT NOT NULL DEFAULT '',
+            decision_status     TEXT NOT NULL DEFAULT 'accepted',
+            scope_type          TEXT NOT NULL DEFAULT '',
+            scope_ref           TEXT NOT NULL DEFAULT '',
+            source_ref          TEXT NOT NULL DEFAULT '',
+            decided_by          TEXT NOT NULL DEFAULT '',
+            enforcement_level   TEXT NOT NULL DEFAULT '',
+            actor_scope         TEXT NOT NULL DEFAULT '',
+            confidence          REAL NOT NULL DEFAULT 1.0,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS visions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            title           TEXT NOT NULL,
+            statement       TEXT NOT NULL,
+            horizon         TEXT NOT NULL DEFAULT '',
+            vision_status   TEXT NOT NULL DEFAULT 'active',
+            scope_type      TEXT NOT NULL DEFAULT '',
+            scope_ref       TEXT NOT NULL DEFAULT '',
+            source_ref      TEXT NOT NULL DEFAULT '',
+            confidence      REAL NOT NULL DEFAULT 1.0,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_fragments (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            title           TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            kind            TEXT NOT NULL DEFAULT '',
+            source_type     TEXT NOT NULL DEFAULT '',
+            source_ref      TEXT NOT NULL DEFAULT '',
+            source_hash     TEXT NOT NULL DEFAULT '',
+            scope_type      TEXT NOT NULL DEFAULT '',
+            scope_ref       TEXT NOT NULL DEFAULT '',
+            target_table    TEXT NOT NULL DEFAULT '',
+            target_ref      TEXT NOT NULL DEFAULT '',
+            status          TEXT NOT NULL DEFAULT '',
+            triage_status   TEXT NOT NULL DEFAULT '',
+            temperature     TEXT NOT NULL DEFAULT 'warm',
+            tags            TEXT NOT NULL DEFAULT '',
+            notes           TEXT NOT NULL DEFAULT '',
+            confidence      REAL NOT NULL DEFAULT 0.0,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_links (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            src_kind        TEXT NOT NULL,
+            src_id          INTEGER NOT NULL,
+            dst_kind        TEXT NOT NULL,
+            dst_id          INTEGER NOT NULL,
+            relation_type   TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'active',
+            created_at      TEXT NOT NULL
+        );
         "#,
     )?;
 
@@ -2552,6 +2860,13 @@ fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
     )?;
 
     Ok(exists != 0)
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let columns = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns.iter().any(|name| name == column))
 }
 
 fn fallback_app_name(path: &str) -> String {
@@ -2764,6 +3079,122 @@ mod tests {
         assert_eq!(links[0].id, link.id);
         assert_eq!(promotions.len(), 1);
         assert_eq!(promotions[0].id, promotion.id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn curated_memory_tables_materialize_remaining_recovery_families() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        store.upsert_decision_record(UpsertDecisionRecord {
+            id: 1,
+            title: "Single runtime db",
+            statement: "Entrance should converge on one runtime db.",
+            rationale: "Avoid split truth between repo root and app data.",
+            decision_type: "storage",
+            decision_status: "accepted",
+            scope_type: "project",
+            scope_ref: "Entrance",
+            source_ref: "recovery_seed:decision:1",
+            decided_by: "Human+NOTA",
+            enforcement_level: "hard",
+            actor_scope: "system",
+            confidence: 0.95,
+            created_at: "2026-03-23T00:00:00Z",
+            updated_at: "2026-03-23T00:05:00Z",
+        })?;
+        store.upsert_vision_record(UpsertVisionRecord {
+            id: 1,
+            title: "NOTA control plane",
+            statement: "Human should primarily interact through NOTA.",
+            horizon: "long",
+            vision_status: "active",
+            scope_type: "system",
+            scope_ref: "nota-control-plane",
+            source_ref: "recovery_seed:vision:1",
+            confidence: 0.92,
+            created_at: "2026-03-23T00:00:00Z",
+            updated_at: "2026-03-23T00:05:00Z",
+        })?;
+        store.upsert_memory_fragment_record(UpsertMemoryFragmentRecord {
+            id: 1,
+            title: "Delete directory safety",
+            content: "Raw directory deletion is forbidden.",
+            kind: "decision",
+            source_type: "human-chat",
+            source_ref: "chat:2026-03-21/raw-directory-delete-policy",
+            source_hash: "hash",
+            scope_type: "system",
+            scope_ref: "filesystem",
+            target_table: "decisions",
+            target_ref: "1",
+            status: "promoted",
+            triage_status: "promoted",
+            temperature: "hot",
+            tags: "safety",
+            notes: "Recovered and clarified.",
+            confidence: 1.0,
+            created_at: "2026-03-23T00:00:00Z",
+            updated_at: "2026-03-23T00:05:00Z",
+        })?;
+        store.upsert_memory_link_record(UpsertMemoryLinkRecord {
+            id: 1,
+            src_kind: "decision",
+            src_id: 1,
+            dst_kind: "memory_fragments",
+            dst_id: 1,
+            relation_type: "derived_from",
+            status: "active",
+            created_at: "2026-03-23T00:05:00Z",
+        })?;
+
+        store.with_connection(|connection| {
+            assert!(table_exists(connection, "decisions")?);
+            assert!(table_exists(connection, "visions")?);
+            assert!(table_exists(connection, "memory_fragments")?);
+            assert!(table_exists(connection, "memory_links")?);
+
+            assert!(table_has_column(
+                connection,
+                "decisions",
+                "decision_status"
+            )?);
+            assert!(table_has_column(connection, "visions", "vision_status")?);
+            assert!(table_has_column(
+                connection,
+                "memory_fragments",
+                "target_table"
+            )?);
+            assert!(table_has_column(
+                connection,
+                "memory_links",
+                "relation_type"
+            )?);
+
+            let decision_count =
+                connection.query_row("SELECT COUNT(*) FROM decisions", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+            let vision_count = connection.query_row("SELECT COUNT(*) FROM visions", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+            let fragment_count =
+                connection.query_row("SELECT COUNT(*) FROM memory_fragments", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+            let link_count =
+                connection.query_row("SELECT COUNT(*) FROM memory_links", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+
+            assert_eq!(decision_count, 1);
+            assert_eq!(vision_count, 1);
+            assert_eq!(fragment_count, 1);
+            assert_eq!(link_count, 1);
+
+            Ok(())
+        })?;
 
         Ok(())
     }
