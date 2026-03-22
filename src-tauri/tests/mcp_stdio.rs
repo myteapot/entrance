@@ -144,6 +144,21 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
             "launcher_launch",
         ]
     );
+    let tools = tools["result"]["tools"]
+        .as_array()
+        .context("tools/list should return an array")?;
+    let dispatch_agent = tools
+        .iter()
+        .find(|tool| tool["name"] == "forge_dispatch_agent")
+        .context("forge_dispatch_agent should be listed")?;
+    let dispatch_dev = tools
+        .iter()
+        .find(|tool| tool["name"] == "forge_dispatch_dev")
+        .context("forge_dispatch_dev should be listed")?;
+    assert_eq!(dispatch_agent["permission"]["actorRole"], "dev");
+    assert_eq!(dispatch_agent["permission"]["primitive"], "dispatch");
+    assert_eq!(dispatch_dev["permission"]["actorRole"], "arch");
+    assert_eq!(dispatch_dev["permission"]["room"], "strategy");
 
     server.send(json!({
         "jsonrpc": "2.0",

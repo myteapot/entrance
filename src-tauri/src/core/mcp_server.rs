@@ -16,6 +16,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::core::permission::{permission_for_mcp_tool, McpToolPermission};
 use crate::plugins::{
     forge::{
         build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
@@ -55,6 +56,8 @@ pub struct McpToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
     pub input_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<McpToolPermission>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -591,6 +594,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["name", "command"]
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_prepare_dispatch",
@@ -602,6 +606,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                     "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
                 }
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_verify_dispatch",
@@ -613,6 +618,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                     "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
                 }
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_prepare_dev_dispatch",
@@ -624,6 +630,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                     "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
                 }
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_verify_dev_dispatch",
@@ -635,6 +642,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                     "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
                 }
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_dispatch_agent",
@@ -663,6 +671,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["issue_id", "worktree_path", "model", "prompt"]
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_dispatch_dev",
@@ -691,6 +700,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["issue_id", "worktree_path", "model", "prompt"]
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_status",
@@ -702,6 +712,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["task_id"]
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_cancel",
@@ -713,6 +724,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["task_id"]
             }),
+            permission: None,
         });
     }
 
@@ -727,6 +739,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["token_id"]
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "vault_list_mcp",
@@ -735,6 +748,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 "type": "object",
                 "properties": {}
             }),
+            permission: None,
         });
     }
 
@@ -750,6 +764,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["query"]
             }),
+            permission: None,
         });
         tools.push(McpToolDescriptor {
             name: "launcher_launch",
@@ -763,7 +778,12 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["path"]
             }),
+            permission: None,
         });
+    }
+
+    for tool in &mut tools {
+        tool.permission = permission_for_mcp_tool(tool.name);
     }
 
     tools
@@ -978,6 +998,21 @@ mod tests {
                 "launcher_launch",
             ]
         );
+        let tools = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array");
+        let dispatch_agent = tools
+            .iter()
+            .find(|tool| tool["name"] == "forge_dispatch_agent")
+            .expect("forge_dispatch_agent should exist");
+        let dispatch_dev = tools
+            .iter()
+            .find(|tool| tool["name"] == "forge_dispatch_dev")
+            .expect("forge_dispatch_dev should exist");
+        assert_eq!(dispatch_agent["permission"]["actorRole"], "dev");
+        assert_eq!(dispatch_agent["permission"]["primitive"], "dispatch");
+        assert_eq!(dispatch_dev["permission"]["actorRole"], "arch");
+        assert_eq!(dispatch_dev["permission"]["room"], "strategy");
 
         Ok(())
     }
