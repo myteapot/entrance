@@ -184,6 +184,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
     assert_eq!(forge_run["id"], "forge-run");
     assert_eq!(forge_run["result"]["isError"], false);
     assert!(forge_run["result"]["entranceSurface"]["actorRole"].is_null());
+    assert!(forge_run["result"]["permission"].is_null());
     assert!(
         forge_run["result"]["structuredContent"]["task_id"]
             .as_i64()
@@ -253,6 +254,10 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
     let forbidden = dev_server.read_response()?;
     assert_eq!(forbidden["result"]["isError"], true);
     assert_eq!(forbidden["result"]["entranceSurface"]["actorRole"], "dev");
+    assert_eq!(forbidden["result"]["permission"]["actorRole"], "arch");
+    assert_eq!(forbidden["result"]["permission"]["primitive"], "assign");
+    assert_eq!(forbidden["result"]["permission"]["room"], "strategy");
+    assert_eq!(forbidden["result"]["permission"]["targetLayer"], "hot");
     assert_eq!(
         forbidden["result"]["structuredContent"]["message"],
         "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
@@ -286,6 +291,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
     let vault_list = dev_server.read_response()?;
     assert_eq!(vault_list["result"]["isError"], false);
     assert_eq!(vault_list["result"]["entranceSurface"]["actorRole"], "dev");
+    assert!(vault_list["result"]["permission"].is_null());
 
     let mut arch_server = spawn_mcp_stdio_with_actor_role(app_dir.path(), None, Some("arch"))?;
     arch_server.send(json!({
@@ -341,6 +347,10 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
     let forbidden = arch_server.read_response()?;
     assert_eq!(forbidden["result"]["isError"], true);
     assert_eq!(forbidden["result"]["entranceSurface"]["actorRole"], "arch");
+    assert_eq!(forbidden["result"]["permission"]["actorRole"], "dev");
+    assert_eq!(forbidden["result"]["permission"]["primitive"], "prepare");
+    assert_eq!(forbidden["result"]["permission"]["room"], "prep");
+    assert_eq!(forbidden["result"]["permission"]["targetLayer"], "hot");
     assert_eq!(
         forbidden["result"]["structuredContent"]["message"],
         "tool `forge_prepare_dispatch` is not available on the current `arch` MCP surface; requires `dev`"
@@ -377,6 +387,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
     let vault_list = arch_server.read_response()?;
     assert_eq!(vault_list["result"]["isError"], false);
     assert_eq!(vault_list["result"]["entranceSurface"]["actorRole"], "arch");
+    assert!(vault_list["result"]["permission"].is_null());
 
     Ok(())
 }
@@ -430,6 +441,10 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
     let prepare = server.read_response()?;
     assert_eq!(prepare["id"], "forge-prepare");
     assert_eq!(prepare["result"]["isError"], false);
+    assert_eq!(prepare["result"]["permission"]["actorRole"], "dev");
+    assert_eq!(prepare["result"]["permission"]["primitive"], "prepare");
+    assert_eq!(prepare["result"]["permission"]["room"], "prep");
+    assert_eq!(prepare["result"]["permission"]["targetLayer"], "hot");
     assert_eq!(prepare["result"]["structuredContent"]["issue_id"], "MYT-48");
     assert_eq!(
         prepare["result"]["structuredContent"]["dispatch_role"],
@@ -583,6 +598,10 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_stdio_without_
     let prepare = server.read_response()?;
     assert_eq!(prepare["id"], "forge-prepare-dev");
     assert_eq!(prepare["result"]["isError"], false);
+    assert_eq!(prepare["result"]["permission"]["actorRole"], "arch");
+    assert_eq!(prepare["result"]["permission"]["primitive"], "assign");
+    assert_eq!(prepare["result"]["permission"]["room"], "strategy");
+    assert_eq!(prepare["result"]["permission"]["targetLayer"], "hot");
     assert_eq!(prepare["result"]["structuredContent"]["issue_id"], "MYT-48");
     assert_eq!(
         prepare["result"]["structuredContent"]["dispatch_role"],
