@@ -84,6 +84,7 @@ struct ForgeBootstrapMcpCycleOptions {
     project_dir: Option<String>,
     model: String,
     agent_command: Option<String>,
+    agent_count: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -93,11 +94,14 @@ struct ForgeBootstrapMcpSurfaceSummary {
     dev_surface_role: &'static str,
     dev_assignment_surface: &'static str,
     agent_dispatch_surface: &'static str,
+    agent_wait_mode: &'static str,
 }
 
 #[derive(Clone, Serialize)]
 struct ForgeBootstrapMcpCycleReport {
     bootstrap_surface: ForgeBootstrapMcpSurfaceSummary,
+    requested_agent_count: usize,
+    shared_worktree_boundary: Option<String>,
     dev_assignment: Value,
     agent_prepare: Value,
     agent_dispatches: Vec<Value>,
@@ -268,7 +272,7 @@ fn run_forge_cli(args: &[String]) -> Result<()> {
             )?)?)
         }
         _ => bail!(
-            "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, `entrance forge verify-dispatch --project-dir <path>`, or `entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>]`"
+            "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, `entrance forge verify-dispatch --project-dir <path>`, or `entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--agent-count <n>]`"
         ),
     }
 }
@@ -395,6 +399,7 @@ fn parse_forge_bootstrap_mcp_cycle_args(
         project_dir: None,
         model: "codex".to_string(),
         agent_command: None,
+        agent_count: 1,
     };
     let mut index = 0;
 
@@ -429,6 +434,21 @@ fn parse_forge_bootstrap_mcp_cycle_args(
                     );
                 }
                 options.agent_command = Some(trimmed.to_string());
+                index += 2;
+            }
+            "--agent-count" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance forge bootstrap-mcp-cycle --agent-count` requires a value")?;
+                let parsed = value.parse::<usize>().with_context(|| {
+                    format!(
+                        "`entrance forge bootstrap-mcp-cycle --agent-count` received invalid value `{value}`"
+                    )
+                })?;
+                if parsed == 0 {
+                    bail!("`entrance forge bootstrap-mcp-cycle --agent-count` must be >= 1");
+                }
+                options.agent_count = parsed;
                 index += 2;
             }
             other => bail!("unsupported forge bootstrap-mcp-cycle argument `{other}`"),
@@ -471,33 +491,58 @@ fn bootstrap_forge_mcp_cycle_cli(
         .context("forge_prepare_agent_dispatch should return worktree_path")?;
     let prompt = json_string(&prepared_agent, &["prompt"])
         .context("forge_prepare_agent_dispatch should return prompt")?;
-
-    let mut dispatch_arguments = json!({
-        "issue_id": issue_id,
-        "worktree_path": worktree_path,
-        "model": options.model,
-        "prompt": prompt,
-        "parent_task_id": parent_task_id,
-        "supervision_strategy": "one_for_one",
-        "child_slot": "agent-1",
+    let shared_worktree_boundary = (options.agent_count > 1).then(|| {
+        format!(
+            "Current bootstrap cut fans out {count} agent children through one Dev surface, but all child agents still share resolved worktree `{worktree}`. This is transport-level fan-out, not a per-agent worktree allocator yet.",
+            count = options.agent_count,
+            worktree = worktree_path,
+        )
     });
-    if let Some(agent_command) = options.agent_command {
-        dispatch_arguments["agent_command"] = Value::String(agent_command);
+
+    let mut dispatched_agents = Vec::with_capacity(options.agent_count);
+    let mut child_task_ids = Vec::with_capacity(options.agent_count);
+    for index in 0..options.agent_count {
+        let slot = format!("agent-{}", index + 1);
+        let mut dispatch_arguments = json!({
+            "issue_id": issue_id.clone(),
+            "worktree_path": worktree_path.clone(),
+            "model": options.model.clone(),
+            "prompt": prompt.clone(),
+            "parent_task_id": parent_task_id,
+            "supervision_strategy": "one_for_one",
+            "child_slot": slot,
+        });
+        if let Some(agent_command) = options.agent_command.as_ref() {
+            dispatch_arguments["agent_command"] = Value::String(agent_command.clone());
+        }
+
+        let dispatched_agent = dev_surface
+            .call_tool("forge_dispatch_agent", dispatch_arguments)?
+            .get("structuredContent")
+            .cloned()
+            .context("forge_dispatch_agent should return structuredContent")?;
+        let child_task_id = json_i64(&dispatched_agent, &["task_id"])
+            .context("forge_dispatch_agent should return a child task id")?;
+        child_task_ids.push(child_task_id);
+        dispatched_agents.push(dispatched_agent);
     }
 
-    let dispatched_agent = dev_surface
-        .call_tool("forge_dispatch_agent", dispatch_arguments)?
-        .get("structuredContent")
-        .cloned()
-        .context("forge_dispatch_agent should return structuredContent")?;
-    let child_task_id = json_i64(&dispatched_agent, &["task_id"])
-        .context("forge_dispatch_agent should return a child task id")?;
-    let child_status = wait_for_terminal_forge_task(&mut dev_surface, child_task_id)?;
+    let child_statuses = wait_for_terminal_forge_tasks(&mut dev_surface, &child_task_ids)?;
     let parent_status = dev_surface
         .call_tool("forge_status", json!({ "task_id": parent_task_id }))?
         .get("structuredContent")
         .cloned()
         .context("forge_status should return structuredContent for parent task")?;
+    let agent_dispatches = dispatched_agents
+        .into_iter()
+        .zip(child_statuses)
+        .map(|(dispatch, final_status)| {
+            json!({
+                "dispatch": strip_prompt_fields(dispatch),
+                "final_status": final_status,
+            })
+        })
+        .collect();
 
     Ok(ForgeBootstrapMcpCycleReport {
         bootstrap_surface: ForgeBootstrapMcpSurfaceSummary {
@@ -506,13 +551,13 @@ fn bootstrap_forge_mcp_cycle_cli(
             dev_surface_role: "dev",
             dev_assignment_surface: "forge_verify_dev_dispatch",
             agent_dispatch_surface: "forge_dispatch_agent",
+            agent_wait_mode: "fanout_then_wait",
         },
+        requested_agent_count: options.agent_count,
+        shared_worktree_boundary,
         dev_assignment: strip_prompt_fields(dev_assignment),
         agent_prepare: strip_prompt_fields(prepared_agent),
-        agent_dispatches: vec![json!({
-            "dispatch": strip_prompt_fields(dispatched_agent),
-            "final_status": child_status,
-        })],
+        agent_dispatches,
         parent_status,
     })
 }
@@ -528,26 +573,51 @@ fn project_dir_tool_arguments(project_dir: Option<&str>) -> Value {
     Value::Object(arguments)
 }
 
-fn wait_for_terminal_forge_task(
+fn wait_for_terminal_forge_tasks(
     surface: &mut SpawnedMcpStdioClient,
-    task_id: i64,
-) -> Result<Value> {
+    task_ids: &[i64],
+) -> Result<Vec<Value>> {
+    let mut terminal_statuses = vec![None; task_ids.len()];
+
     for _ in 0..400 {
-        let status = surface
-            .call_tool("forge_status", json!({ "task_id": task_id }))?
-            .get("structuredContent")
-            .cloned()
-            .context("forge_status should return structuredContent while waiting")?;
-        let task_status = json_string(&status, &["task", "status"])
-            .context("forge_status should return a task.status string")?;
-        if matches!(task_status.as_str(), "Done" | "Failed" | "Cancelled" | "Blocked") {
-            return Ok(status);
+        let mut all_terminal = true;
+        for (index, task_id) in task_ids.iter().enumerate() {
+            if terminal_statuses[index].is_some() {
+                continue;
+            }
+
+            let status = surface
+                .call_tool("forge_status", json!({ "task_id": task_id }))?
+                .get("structuredContent")
+                .cloned()
+                .context("forge_status should return structuredContent while waiting")?;
+            let task_status = json_string(&status, &["task", "status"])
+                .context("forge_status should return a task.status string")?;
+            if matches!(task_status.as_str(), "Done" | "Failed" | "Cancelled" | "Blocked") {
+                terminal_statuses[index] = Some(status);
+            } else {
+                all_terminal = false;
+            }
+        }
+
+        if all_terminal && terminal_statuses.iter().all(Option::is_some) {
+            return terminal_statuses
+                .into_iter()
+                .map(|status| status.context("terminal forge task status should be collected"))
+                .collect();
         }
 
         thread::sleep(Duration::from_millis(25));
     }
 
-    bail!("timed out waiting for forge task `{task_id}` to reach a terminal state")
+    bail!(
+        "timed out waiting for forge tasks `{}` to reach terminal status",
+        task_ids
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn assert_surface_role(response: &Value, expected_role: &str) -> Result<()> {

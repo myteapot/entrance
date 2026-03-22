@@ -350,6 +350,9 @@ fn forge_bootstrap_mcp_cycle_cli_runs_single_agent_bootstrap_without_human_data_
         report["bootstrap_surface"]["agent_dispatch_surface"],
         "forge_dispatch_agent"
     );
+    assert_eq!(report["bootstrap_surface"]["agent_wait_mode"], "fanout_then_wait");
+    assert_eq!(report["requested_agent_count"], 1);
+    assert!(report["shared_worktree_boundary"].is_null());
 
     let parent_task_id = report["dev_assignment"]["task_id"]
         .as_i64()
@@ -415,6 +418,113 @@ fn forge_bootstrap_mcp_cycle_cli_runs_single_agent_bootstrap_without_human_data_
         |row| row.get::<_, i64>(0),
     )?;
     assert_eq!(stored, 1);
+
+    Ok(())
+}
+
+#[test]
+fn forge_bootstrap_mcp_cycle_cli_can_fan_out_multiple_agent_children() -> Result<()> {
+    let temp_dir = TempDir::new("bootstrap-mcp-cycle-fanout")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_mcp_app_state(&app_data_dir)?;
+
+    let project_root = temp_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(temp_dir.path())?;
+    let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
+        .args([
+            "forge",
+            "bootstrap-mcp-cycle",
+            "--project-dir",
+            project_root
+                .to_str()
+                .context("project path should be valid UTF-8")?,
+            "--agent-command",
+            agent_command
+                .to_str()
+                .context("agent command path should be valid UTF-8")?,
+            "--agent-count",
+            "2",
+        ])
+        .env("ENTRANCE_APP_DATA_DIR", &app_data_dir)
+        .env("OPENAI_API_KEY", "test-openai-token")
+        .env_remove("LINEAR_API_KEY")
+        .env_remove("LINEAR_TOKEN")
+        .output()
+        .context("failed to spawn `entrance forge bootstrap-mcp-cycle --agent-count 2`")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "`entrance forge bootstrap-mcp-cycle --agent-count 2` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("CLI stdout should be valid UTF-8")?;
+    let report: Value = serde_json::from_str(&stdout).context("CLI stdout should be valid JSON")?;
+
+    let parent_task_id = report["dev_assignment"]["task_id"]
+        .as_i64()
+        .context("dev assignment should include a task id")?;
+    assert_eq!(report["requested_agent_count"], 2);
+    let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
+    let shared_boundary = report["shared_worktree_boundary"]
+        .as_str()
+        .context("multi-agent fan-out should report shared worktree boundary")?;
+    assert!(shared_boundary.contains("transport-level fan-out"));
+    assert!(shared_boundary.contains(&worktree_path));
+
+    let agent_dispatches = report["agent_dispatches"]
+        .as_array()
+        .context("agent_dispatches should be an array")?;
+    assert_eq!(agent_dispatches.len(), 2);
+    assert_eq!(
+        agent_dispatches[0]["dispatch"]["supervision"]["parent_receipt"]["child_slot"],
+        "agent-1"
+    );
+    assert_eq!(
+        agent_dispatches[1]["dispatch"]["supervision"]["parent_receipt"]["child_slot"],
+        "agent-2"
+    );
+    assert_eq!(
+        agent_dispatches[0]["final_status"]["task"]["status"],
+        "Done"
+    );
+    assert_eq!(
+        agent_dispatches[1]["final_status"]["task"]["status"],
+        "Done"
+    );
+
+    let child_receipts = report["parent_status"]["supervision"]["child_receipts"]
+        .as_array()
+        .context("parent_status should expose child receipts")?;
+    assert_eq!(child_receipts.len(), 2);
+    assert_eq!(child_receipts[0]["parent_task_id"], parent_task_id);
+    assert_eq!(child_receipts[1]["parent_task_id"], parent_task_id);
+    assert_eq!(child_receipts[0]["child_slot"], "agent-1");
+    assert_eq!(child_receipts[1]["child_slot"], "agent-2");
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let stored = connection.query_row(
+        "SELECT COUNT(*) FROM plugin_forge_dispatch_receipts WHERE parent_task_id = ?1",
+        [parent_task_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    assert_eq!(stored, 2);
 
     Ok(())
 }
