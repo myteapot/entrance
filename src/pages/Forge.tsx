@@ -478,7 +478,7 @@ export default function Forge() {
                 </div>
                 <div class="auto-dispatch-field">
                   <span class="auto-dispatch-field__label">Prompt Source</span>
-                  <span class="auto-dispatch-field__value">`control.py prompt`</span>
+                  <span class="auto-dispatch-field__value">{context().prompt_source}</span>
                 </div>
               </div>
               <Show when={context().issue_status_source === "fallback"}>

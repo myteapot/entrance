@@ -42,6 +42,7 @@ const MIGRATIONS: [MigrationStep; 2] = [
 ];
 
 const LEGACY_AGENTS_WORKTREES_ROOT: &str = "A:/.agents/.worktrees";
+const LEGACY_CONTROL_PROMPT_SOURCE_LABEL: &str = "legacy .agents control.py bridge";
 
 pub fn migrations() -> &'static [MigrationStep] {
     &MIGRATIONS
@@ -94,6 +95,7 @@ pub struct PreparedAgentDispatch {
     pub issue_title: Option<String>,
     pub project_root: String,
     pub worktree_path: String,
+    pub prompt_source: String,
     pub prompt: String,
 }
 
@@ -309,6 +311,7 @@ pub async fn prepare_agent_dispatch(
         issue_title: issue_summary.map(|summary| summary.issue_title),
         project_root: paths.project_root,
         worktree_path: paths.worktree_path,
+        prompt_source: LEGACY_CONTROL_PROMPT_SOURCE_LABEL.to_string(),
         prompt,
     })
 }
