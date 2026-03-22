@@ -50,6 +50,7 @@ const ENTRANCE_BOOTSTRAP_DEV_PROMPT_SOURCE_LABEL: &str =
 const FORGE_AGENT_DISPATCH_ROLE: ActorRole = ActorRole::Agent;
 const FORGE_DEV_DISPATCH_ROLE: ActorRole = ActorRole::Dev;
 const FORGE_AGENT_DISPATCH_TOOL_NAME: &str = "forge_dispatch_agent";
+const FORGE_DEV_DISPATCH_TOOL_NAME: &str = "forge_dispatch_dev";
 
 pub fn migrations() -> &'static [MigrationStep] {
     &MIGRATIONS
@@ -125,6 +126,7 @@ pub struct ForgeDispatchVerificationReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct PreparedDevDispatch {
     pub dispatch_role: ActorRole,
+    pub dispatch_tool_name: String,
     pub issue_id: String,
     pub issue_status: String,
     pub issue_status_source: String,
@@ -511,6 +513,7 @@ async fn build_prepared_dev_dispatch(
 
     Ok(PreparedDevDispatch {
         dispatch_role: FORGE_DEV_DISPATCH_ROLE,
+        dispatch_tool_name: FORGE_DEV_DISPATCH_TOOL_NAME.to_string(),
         issue_id: paths.issue_id,
         issue_status,
         issue_status_source,
@@ -556,7 +559,7 @@ pub(crate) fn build_dev_task_request(
         FORGE_DEV_DISPATCH_ROLE,
         "dev_dispatch",
         "Dev",
-        None,
+        Some(FORGE_DEV_DISPATCH_TOOL_NAME),
         issue_id,
         worktree_path,
         model,
@@ -1318,7 +1321,10 @@ mod tests {
         assert_eq!(metadata.kind.as_deref(), Some("dev_dispatch"));
         assert_eq!(metadata.issue_id.as_deref(), Some("MYT-48"));
         assert_eq!(metadata.dispatch_role, Some(ActorRole::Dev));
-        assert!(metadata.dispatch_tool_name.is_none());
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_dev")
+        );
     }
 
     #[test]
@@ -1617,6 +1623,7 @@ mod tests {
 
         assert_eq!(dispatch.issue_id, "MYT-48");
         assert_eq!(dispatch.dispatch_role, ActorRole::Dev);
+        assert_eq!(dispatch.dispatch_tool_name, "forge_dispatch_dev");
         assert_eq!(dispatch.issue_status, "Todo");
         assert_eq!(dispatch.issue_status_source, "fallback");
         assert!(dispatch.issue_title.is_none());
@@ -1656,6 +1663,10 @@ mod tests {
             serde_json::from_str(&request.metadata).expect("request metadata should be valid JSON");
         assert_eq!(metadata.dispatch_role, Some(ActorRole::Dev));
         assert_eq!(metadata.kind.as_deref(), Some("dev_dispatch"));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_dev")
+        );
 
         Ok(())
     }
@@ -1813,6 +1824,7 @@ mod tests {
 
         assert_eq!(dispatch.issue_id, "MYT-48");
         assert_eq!(dispatch.dispatch_role, ActorRole::Dev);
+        assert_eq!(dispatch.dispatch_tool_name, "forge_dispatch_dev");
         assert_eq!(dispatch.issue_status, "Todo");
         assert_eq!(dispatch.issue_status_source, "fallback");
         assert!(dispatch.issue_title.is_none());
@@ -1854,6 +1866,10 @@ mod tests {
             .expect("stored forge task metadata should be valid JSON");
         assert_eq!(metadata.dispatch_role, Some(ActorRole::Dev));
         assert_eq!(metadata.kind.as_deref(), Some("dev_dispatch"));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_dev")
+        );
 
         Ok(())
     }

@@ -643,6 +643,10 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_stdio_without_
         "dev"
     );
     assert_eq!(
+        prepare["result"]["structuredContent"]["dispatch_tool_name"],
+        "forge_dispatch_dev"
+    );
+    assert_eq!(
         prepare["result"]["structuredContent"]["issue_status"],
         "Todo"
     );
@@ -688,6 +692,10 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_stdio_without_
     assert_eq!(
         verify["result"]["structuredContent"]["dispatch"]["dispatch_role"],
         "dev"
+    );
+    assert_eq!(
+        verify["result"]["structuredContent"]["dispatch"]["dispatch_tool_name"],
+        "forge_dispatch_dev"
     );
     assert_eq!(
         verify["result"]["structuredContent"]["dispatch"]["worktree_path"],
@@ -736,6 +744,7 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_stdio_without_
         serde_json::from_str(&stored.4).context("task metadata should be JSON")?;
     assert_eq!(metadata["dispatch_role"], "dev");
     assert_eq!(metadata["kind"], "dev_dispatch");
+    assert_eq!(metadata["dispatch_tool_name"], "forge_dispatch_dev");
     assert!(!stored.3.as_deref().unwrap_or_default().contains(".agents"));
 
     Ok(())
@@ -960,6 +969,10 @@ fn external_client_can_dispatch_dev_over_stdio_with_dev_lane_runtime() -> Result
         dispatch["result"]["structuredContent"]["dispatch_role"],
         "dev"
     );
+    assert_eq!(
+        dispatch["result"]["structuredContent"]["dispatch_tool_name"],
+        "forge_dispatch_dev"
+    );
 
     let task_id = dispatch["result"]["structuredContent"]["task_id"]
         .as_i64()
@@ -975,6 +988,7 @@ fn external_client_can_dispatch_dev_over_stdio_with_dev_lane_runtime() -> Result
         serde_json::from_str(metadata).context("forge_dispatch_dev metadata should be JSON")?;
     assert_eq!(metadata["dispatch_role"], "dev");
     assert_eq!(metadata["kind"], "dev_dispatch");
+    assert_eq!(metadata["dispatch_tool_name"], "forge_dispatch_dev");
 
     let status = wait_for_terminal_status_stdio(&mut server, task_id)?;
     assert_eq!(
@@ -1005,6 +1019,7 @@ fn external_client_can_dispatch_dev_over_stdio_with_dev_lane_runtime() -> Result
         serde_json::from_str(&stored.3).context("task metadata should be JSON")?;
     assert_eq!(metadata["dispatch_role"], "dev");
     assert_eq!(metadata["issue_id"], "MYT-48");
+    assert_eq!(metadata["dispatch_tool_name"], "forge_dispatch_dev");
 
     Ok(())
 }
