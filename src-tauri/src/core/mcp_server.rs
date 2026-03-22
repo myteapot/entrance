@@ -64,6 +64,12 @@ pub struct McpToolDescriptor {
     pub permission: Option<McpToolPermission>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpSurfaceInfo {
+    actor_role: Option<ActorRole>,
+}
+
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
     jsonrpc: String,
@@ -99,6 +105,12 @@ impl McpServer {
 
     pub fn tools(&self) -> &[McpToolDescriptor] {
         self.tools.as_ref().as_slice()
+    }
+
+    fn surface_info(&self) -> McpSurfaceInfo {
+        McpSurfaceInfo {
+            actor_role: self.actor_role,
+        }
     }
 
     pub fn handle_json_rpc_bytes(&self, request: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -171,11 +183,18 @@ impl McpServer {
                     "serverInfo": {
                         "name": env!("CARGO_PKG_NAME"),
                         "version": env!("CARGO_PKG_VERSION")
-                    }
+                    },
+                    "entranceSurface": self.surface_info()
                 }),
             ),
             "ping" => json_rpc_result(id, json!({})),
-            "tools/list" => json_rpc_result(id, json!({ "tools": self.tools() })),
+            "tools/list" => json_rpc_result(
+                id,
+                json!({
+                    "tools": self.tools(),
+                    "entranceSurface": self.surface_info()
+                }),
+            ),
             "tools/call" => {
                 let result = self.handle_tool_call(request.params.as_ref());
                 json_rpc_result(id, tool_call_result(result))
@@ -1059,6 +1078,7 @@ mod tests {
                 "launcher_launch",
             ]
         );
+        assert!(response["result"]["entranceSurface"]["actorRole"].is_null());
         let tools = response["result"]["tools"]
             .as_array()
             .expect("tools/list should return an array");
@@ -1111,6 +1131,7 @@ mod tests {
                 "launcher_launch",
             ]
         );
+        assert_eq!(response["result"]["entranceSurface"]["actorRole"], "arch");
 
         Ok(())
     }
@@ -1148,6 +1169,7 @@ mod tests {
                 "launcher_launch",
             ]
         );
+        assert_eq!(response["result"]["entranceSurface"]["actorRole"], "dev");
 
         Ok(())
     }
@@ -1173,6 +1195,24 @@ mod tests {
             response["result"]["capabilities"]["tools"]["listChanged"],
             false
         );
+        assert!(response["result"]["entranceSurface"]["actorRole"].is_null());
+
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_initialize_reports_current_surface_role() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Dev))?;
+        let response = server
+            .handle_json_rpc_value(json!({
+                "jsonrpc": "2.0",
+                "id": "init",
+                "method": "initialize",
+                "params": {}
+            }))?
+            .expect("initialize should return a response");
+
+        assert_eq!(response["result"]["entranceSurface"]["actorRole"], "dev");
 
         Ok(())
     }

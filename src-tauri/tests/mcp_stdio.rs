@@ -108,6 +108,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
     let initialize = server.read_response()?;
     assert_eq!(initialize["id"], "initialize");
     assert_eq!(initialize["result"]["protocolVersion"], "2024-11-05");
+    assert!(initialize["result"]["entranceSurface"]["actorRole"].is_null());
 
     server.send(json!({
         "jsonrpc": "2.0",
@@ -120,6 +121,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
         "method": "tools/list"
     }))?;
     let tools = server.read_response()?;
+    assert!(tools["result"]["entranceSurface"]["actorRole"].is_null());
     let tool_names = tools["result"]["tools"]
         .as_array()
         .context("tools/list should return an array")?
@@ -205,6 +207,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
     }))?;
     let initialize = dev_server.read_response()?;
     assert_eq!(initialize["id"], "initialize-dev");
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "dev");
     dev_server.send(json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
@@ -215,6 +218,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
         "method": "tools/list"
     }))?;
     let tools = dev_server.read_response()?;
+    assert_eq!(tools["result"]["entranceSurface"]["actorRole"], "dev");
     let tool_names = tools["result"]["tools"]
         .as_array()
         .context("tools/list should return an array")?
@@ -261,6 +265,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
     }))?;
     let initialize = arch_server.read_response()?;
     assert_eq!(initialize["id"], "initialize-arch");
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "arch");
     arch_server.send(json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
@@ -271,6 +276,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
         "method": "tools/list"
     }))?;
     let tools = arch_server.read_response()?;
+    assert_eq!(tools["result"]["entranceSurface"]["actorRole"], "arch");
     let tool_names = tools["result"]["tools"]
         .as_array()
         .context("tools/list should return an array")?
