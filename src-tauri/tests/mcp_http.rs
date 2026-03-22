@@ -146,8 +146,10 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
         .context("forge_dispatch_dev should be listed")?;
     assert_eq!(dispatch_agent["permission"]["actorRole"], "dev");
     assert_eq!(dispatch_agent["permission"]["primitive"], "dispatch");
+    assert_eq!(dispatch_agent["dispatchRole"], "agent");
     assert_eq!(dispatch_dev["permission"]["actorRole"], "arch");
     assert_eq!(dispatch_dev["permission"]["room"], "strategy");
+    assert_eq!(dispatch_dev["dispatchRole"], "dev");
 
     let forge_run = server.send(json!({
         "jsonrpc": "2.0",
@@ -171,6 +173,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
     assert_eq!(forge_run["result"]["isError"], false);
     assert!(forge_run["result"]["entranceSurface"]["actorRole"].is_null());
     assert!(forge_run["result"]["permission"].is_null());
+    assert!(forge_run["result"]["dispatchRole"].is_null());
     assert!(
         forge_run["result"]["structuredContent"]["task_id"]
             .as_i64()
@@ -239,6 +242,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
     assert_eq!(forbidden["result"]["permission"]["primitive"], "assign");
     assert_eq!(forbidden["result"]["permission"]["room"], "strategy");
     assert_eq!(forbidden["result"]["permission"]["targetLayer"], "hot");
+    assert_eq!(forbidden["result"]["dispatchRole"], "dev");
     assert_eq!(
         forbidden["result"]["structuredContent"]["message"],
         "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
@@ -272,6 +276,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
     assert_eq!(vault_list["result"]["isError"], false);
     assert_eq!(vault_list["result"]["entranceSurface"]["actorRole"], "dev");
     assert!(vault_list["result"]["permission"].is_null());
+    assert!(vault_list["result"]["dispatchRole"].is_null());
 
     let port = reserve_port()?;
     let mut arch_server =
@@ -326,6 +331,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
     assert_eq!(forbidden["result"]["permission"]["primitive"], "prepare");
     assert_eq!(forbidden["result"]["permission"]["room"], "prep");
     assert_eq!(forbidden["result"]["permission"]["targetLayer"], "hot");
+    assert_eq!(forbidden["result"]["dispatchRole"], "agent");
     assert_eq!(
         forbidden["result"]["structuredContent"]["message"],
         "tool `forge_prepare_dispatch` is not available on the current `arch` MCP surface; requires `dev`"
@@ -362,6 +368,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
     assert_eq!(vault_list["result"]["isError"], false);
     assert_eq!(vault_list["result"]["entranceSurface"]["actorRole"], "arch");
     assert!(vault_list["result"]["permission"].is_null());
+    assert!(vault_list["result"]["dispatchRole"].is_null());
 
     Ok(())
 }
@@ -414,6 +421,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
     assert_eq!(prepare["result"]["permission"]["primitive"], "prepare");
     assert_eq!(prepare["result"]["permission"]["room"], "prep");
     assert_eq!(prepare["result"]["permission"]["targetLayer"], "hot");
+    assert_eq!(prepare["result"]["dispatchRole"], "agent");
     assert_eq!(prepare["result"]["structuredContent"]["issue_id"], "MYT-48");
     assert_eq!(
         prepare["result"]["structuredContent"]["dispatch_role"],
@@ -565,6 +573,7 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_http_without_a
     assert_eq!(prepare["result"]["permission"]["primitive"], "assign");
     assert_eq!(prepare["result"]["permission"]["room"], "strategy");
     assert_eq!(prepare["result"]["permission"]["targetLayer"], "hot");
+    assert_eq!(prepare["result"]["dispatchRole"], "dev");
     assert_eq!(prepare["result"]["structuredContent"]["issue_id"], "MYT-48");
     assert_eq!(
         prepare["result"]["structuredContent"]["dispatch_role"],

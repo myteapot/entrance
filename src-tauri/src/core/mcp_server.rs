@@ -62,6 +62,8 @@ pub struct McpToolDescriptor {
     pub input_schema: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission: Option<McpToolPermission>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dispatch_role: Option<ActorRole>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -218,8 +220,12 @@ impl McpServer {
             ),
             "tools/call" => {
                 let permission = tool_permission_from_params(request.params.as_ref());
+                let dispatch_role = tool_dispatch_role_from_params(request.params.as_ref());
                 let result = self.handle_tool_call(request.params.as_ref());
-                json_rpc_result(id, tool_call_result(result, self.surface_info(), permission))
+                json_rpc_result(
+                    id,
+                    tool_call_result(result, self.surface_info(), permission, dispatch_role),
+                )
             }
             _ => json_rpc_error(
                 id,
@@ -674,6 +680,7 @@ fn build_tool_descriptors(
                 "required": ["name", "command"]
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_prepare_dispatch",
@@ -686,6 +693,7 @@ fn build_tool_descriptors(
                 }
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_verify_dispatch",
@@ -698,6 +706,7 @@ fn build_tool_descriptors(
                 }
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_prepare_dev_dispatch",
@@ -710,6 +719,7 @@ fn build_tool_descriptors(
                 }
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_verify_dev_dispatch",
@@ -722,6 +732,7 @@ fn build_tool_descriptors(
                 }
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_dispatch_agent",
@@ -751,6 +762,7 @@ fn build_tool_descriptors(
                 "required": ["issue_id", "worktree_path", "model", "prompt"]
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_dispatch_dev",
@@ -780,6 +792,7 @@ fn build_tool_descriptors(
                 "required": ["issue_id", "worktree_path", "model", "prompt"]
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_status",
@@ -792,6 +805,7 @@ fn build_tool_descriptors(
                 "required": ["task_id"]
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_cancel",
@@ -804,6 +818,7 @@ fn build_tool_descriptors(
                 "required": ["task_id"]
             }),
             permission: None,
+            dispatch_role: None,
         });
     }
 
@@ -819,6 +834,7 @@ fn build_tool_descriptors(
                 "required": ["token_id"]
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "vault_list_mcp",
@@ -828,6 +844,7 @@ fn build_tool_descriptors(
                 "properties": {}
             }),
             permission: None,
+            dispatch_role: None,
         });
     }
 
@@ -844,6 +861,7 @@ fn build_tool_descriptors(
                 "required": ["query"]
             }),
             permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "launcher_launch",
@@ -858,11 +876,13 @@ fn build_tool_descriptors(
                 "required": ["path"]
             }),
             permission: None,
+            dispatch_role: None,
         });
     }
 
     for tool in &mut tools {
         tool.permission = permission_for_mcp_tool(tool.name);
+        tool.dispatch_role = tool_dispatch_role_from_name(tool.name);
     }
 
     tools
@@ -1015,6 +1035,7 @@ fn tool_call_result(
     result: Result<Value>,
     surface_info: McpSurfaceInfo,
     permission: Option<McpToolPermission>,
+    dispatch_role: Option<ActorRole>,
 ) -> Value {
     match result {
         Ok(value) => json!({
@@ -1027,9 +1048,10 @@ fn tool_call_result(
             "structuredContent": value,
             "entranceSurface": surface_info,
             "permission": permission,
+            "dispatchRole": dispatch_role,
             "isError": false,
         }),
-        Err(error) => tool_call_error_result(error, surface_info, permission),
+        Err(error) => tool_call_error_result(error, surface_info, permission, dispatch_role),
     }
 }
 
@@ -1037,6 +1059,7 @@ fn tool_call_error_result(
     error: anyhow::Error,
     surface_info: McpSurfaceInfo,
     permission: Option<McpToolPermission>,
+    dispatch_role: Option<ActorRole>,
 ) -> Value {
     let message = error.to_string();
     let structured_content = if let Some(role_error) = error.downcast_ref::<McpToolSurfaceRoleError>()
@@ -1067,6 +1090,7 @@ fn tool_call_error_result(
         "structuredContent": structured_content,
         "entranceSurface": surface_info,
         "permission": permission,
+        "dispatchRole": dispatch_role,
         "isError": true,
     })
 }
@@ -1076,6 +1100,25 @@ fn tool_permission_from_params(params: Option<&Value>) -> Option<McpToolPermissi
         .and_then(|params| params.get("name"))
         .and_then(Value::as_str)
         .and_then(permission_for_mcp_tool)
+}
+
+fn tool_dispatch_role_from_name(name: &str) -> Option<ActorRole> {
+    match name {
+        "forge_prepare_dispatch" | "forge_verify_dispatch" | "forge_dispatch_agent" => {
+            Some(ActorRole::Agent)
+        }
+        "forge_prepare_dev_dispatch" | "forge_verify_dev_dispatch" | "forge_dispatch_dev" => {
+            Some(ActorRole::Dev)
+        }
+        _ => None,
+    }
+}
+
+fn tool_dispatch_role_from_params(params: Option<&Value>) -> Option<ActorRole> {
+    params
+        .and_then(|params| params.get("name"))
+        .and_then(Value::as_str)
+        .and_then(tool_dispatch_role_from_name)
 }
 
 fn to_pretty_json(value: &Value) -> String {
@@ -1153,10 +1196,17 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "forge_dispatch_dev")
             .expect("forge_dispatch_dev should exist");
+        let prepare_agent = tools
+            .iter()
+            .find(|tool| tool["name"] == "forge_prepare_dispatch")
+            .expect("forge_prepare_dispatch should exist");
         assert_eq!(dispatch_agent["permission"]["actorRole"], "dev");
         assert_eq!(dispatch_agent["permission"]["primitive"], "dispatch");
+        assert_eq!(dispatch_agent["dispatchRole"], "agent");
         assert_eq!(dispatch_dev["permission"]["actorRole"], "arch");
         assert_eq!(dispatch_dev["permission"]["room"], "strategy");
+        assert_eq!(dispatch_dev["dispatchRole"], "dev");
+        assert_eq!(prepare_agent["dispatchRole"], "agent");
 
         Ok(())
     }
@@ -1195,6 +1245,7 @@ mod tests {
             ]
         );
         assert_eq!(response["result"]["entranceSurface"]["actorRole"], "arch");
+        assert_eq!(response["result"]["tools"][1]["dispatchRole"], "dev");
 
         Ok(())
     }
@@ -1233,6 +1284,7 @@ mod tests {
             ]
         );
         assert_eq!(response["result"]["entranceSurface"]["actorRole"], "dev");
+        assert_eq!(response["result"]["tools"][1]["dispatchRole"], "agent");
 
         Ok(())
     }
@@ -1298,6 +1350,7 @@ mod tests {
         assert_eq!(launcher_response["isError"], false);
         assert!(launcher_response["entranceSurface"]["actorRole"].is_null());
         assert!(launcher_response["permission"].is_null());
+        assert!(launcher_response["dispatchRole"].is_null());
         assert_eq!(
             launcher_response["structuredContent"]["results"][0]["path"],
             "C:\\Tools\\Code.exe"
@@ -1307,6 +1360,7 @@ mod tests {
         assert_eq!(vault_response["isError"], false);
         assert!(vault_response["entranceSurface"]["actorRole"].is_null());
         assert!(vault_response["permission"].is_null());
+        assert!(vault_response["dispatchRole"].is_null());
         assert_eq!(
             vault_response["structuredContent"]["token"]["provider"],
             "openai"
@@ -1320,6 +1374,7 @@ mod tests {
         assert_eq!(mcp_list_response["isError"], false);
         assert!(mcp_list_response["entranceSurface"]["actorRole"].is_null());
         assert!(mcp_list_response["permission"].is_null());
+        assert!(mcp_list_response["dispatchRole"].is_null());
         assert_eq!(
             mcp_list_response["structuredContent"]["servers"][0]["transport"],
             "stdio"
@@ -1343,6 +1398,7 @@ mod tests {
         assert_eq!(forge_response["isError"], false);
         assert!(forge_response["entranceSurface"]["actorRole"].is_null());
         assert!(forge_response["permission"].is_null());
+        assert!(forge_response["dispatchRole"].is_null());
         assert!(
             forge_response["structuredContent"]["task_id"]
                 .as_i64()
@@ -1365,6 +1421,7 @@ mod tests {
         assert_eq!(response["permission"]["primitive"], "assign");
         assert_eq!(response["permission"]["room"], "strategy");
         assert_eq!(response["permission"]["targetLayer"], "hot");
+        assert_eq!(response["dispatchRole"], "dev");
         assert_eq!(
             response["structuredContent"]["message"],
             "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
@@ -1395,6 +1452,8 @@ mod tests {
 
         assert_eq!(response["isError"], false);
         assert_eq!(response["entranceSurface"]["actorRole"], "arch");
+        assert!(response["permission"].is_null());
+        assert!(response["dispatchRole"].is_null());
         assert_eq!(
             response["structuredContent"]["servers"][0]["transport"],
             "stdio"
