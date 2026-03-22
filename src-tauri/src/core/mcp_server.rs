@@ -438,7 +438,10 @@ async fn handle_http_request(
     State(server): State<McpServer>,
     body: Bytes,
 ) -> Result<Response, McpHttpError> {
-    let payload = server.handle_http_json(&body).map_err(McpHttpError)?;
+    let payload = tokio::task::spawn_blocking(move || server.handle_http_json(&body))
+        .await
+        .map_err(|error| McpHttpError(anyhow!("failed to join MCP HTTP request worker: {error}")))?
+        .map_err(McpHttpError)?;
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
