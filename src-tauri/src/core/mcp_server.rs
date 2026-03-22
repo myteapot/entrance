@@ -218,7 +218,7 @@ impl McpServer {
             ),
             "tools/call" => {
                 let result = self.handle_tool_call(request.params.as_ref());
-                json_rpc_result(id, tool_call_result(result))
+                json_rpc_result(id, tool_call_result(result, self.surface_info()))
             }
             _ => json_rpc_error(
                 id,
@@ -1010,7 +1010,7 @@ fn actor_role_slug(role: ActorRole) -> &'static str {
     }
 }
 
-fn tool_call_result(result: Result<Value>) -> Value {
+fn tool_call_result(result: Result<Value>, surface_info: McpSurfaceInfo) -> Value {
     match result {
         Ok(value) => json!({
             "content": [
@@ -1020,13 +1020,14 @@ fn tool_call_result(result: Result<Value>) -> Value {
                 }
             ],
             "structuredContent": value,
+            "entranceSurface": surface_info,
             "isError": false,
         }),
-        Err(error) => tool_call_error_result(error),
+        Err(error) => tool_call_error_result(error, surface_info),
     }
 }
 
-fn tool_call_error_result(error: anyhow::Error) -> Value {
+fn tool_call_error_result(error: anyhow::Error, surface_info: McpSurfaceInfo) -> Value {
     let message = error.to_string();
     let structured_content = if let Some(role_error) = error.downcast_ref::<McpToolSurfaceRoleError>()
     {
@@ -1054,6 +1055,7 @@ fn tool_call_error_result(error: anyhow::Error) -> Value {
             }
         ],
         "structuredContent": structured_content,
+        "entranceSurface": surface_info,
         "isError": true,
     })
 }
@@ -1276,6 +1278,7 @@ mod tests {
             }),
         )?;
         assert_eq!(launcher_response["isError"], false);
+        assert!(launcher_response["entranceSurface"]["actorRole"].is_null());
         assert_eq!(
             launcher_response["structuredContent"]["results"][0]["path"],
             "C:\\Tools\\Code.exe"
@@ -1283,6 +1286,7 @@ mod tests {
 
         let vault_response = call_tool(&server, "vault_get_token", json!({ "token_id": 1 }))?;
         assert_eq!(vault_response["isError"], false);
+        assert!(vault_response["entranceSurface"]["actorRole"].is_null());
         assert_eq!(
             vault_response["structuredContent"]["token"]["provider"],
             "openai"
@@ -1294,6 +1298,7 @@ mod tests {
 
         let mcp_list_response = call_tool(&server, "vault_list_mcp", json!({}))?;
         assert_eq!(mcp_list_response["isError"], false);
+        assert!(mcp_list_response["entranceSurface"]["actorRole"].is_null());
         assert_eq!(
             mcp_list_response["structuredContent"]["servers"][0]["transport"],
             "stdio"
@@ -1315,6 +1320,7 @@ mod tests {
             )
         })?;
         assert_eq!(forge_response["isError"], false);
+        assert!(forge_response["entranceSurface"]["actorRole"].is_null());
         assert!(
             forge_response["structuredContent"]["task_id"]
                 .as_i64()
@@ -1332,6 +1338,7 @@ mod tests {
         let response = call_tool(&server, "forge_prepare_dev_dispatch", json!({}))?;
 
         assert_eq!(response["isError"], true);
+        assert_eq!(response["entranceSurface"]["actorRole"], "dev");
         assert_eq!(
             response["structuredContent"]["message"],
             "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
@@ -1349,6 +1356,22 @@ mod tests {
         assert_eq!(
             response["structuredContent"]["entranceSurface"]["actorRole"],
             "dev"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_tool_calls_report_current_surface_role() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Arch))?;
+
+        let response = call_tool(&server, "vault_list_mcp", json!({}))?;
+
+        assert_eq!(response["isError"], false);
+        assert_eq!(response["entranceSurface"]["actorRole"], "arch");
+        assert_eq!(
+            response["structuredContent"]["servers"][0]["transport"],
+            "stdio"
         );
 
         Ok(())

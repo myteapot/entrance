@@ -169,6 +169,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
 
     assert_eq!(forge_run["id"], "forge-run");
     assert_eq!(forge_run["result"]["isError"], false);
+    assert!(forge_run["result"]["entranceSurface"]["actorRole"].is_null());
     assert!(
         forge_run["result"]["structuredContent"]["task_id"]
             .as_i64()
@@ -232,6 +233,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
         }
     }))?;
     assert_eq!(forbidden["result"]["isError"], true);
+    assert_eq!(forbidden["result"]["entranceSurface"]["actorRole"], "dev");
     assert_eq!(
         forbidden["result"]["structuredContent"]["message"],
         "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
@@ -253,6 +255,17 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
         forbidden["result"]["structuredContent"]["entranceSurface"]["actorRole"],
         "dev"
     );
+    let vault_list = dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "vault-list-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "vault_list_mcp",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(vault_list["result"]["isError"], false);
+    assert_eq!(vault_list["result"]["entranceSurface"]["actorRole"], "dev");
 
     let port = reserve_port()?;
     let mut arch_server =
@@ -302,6 +315,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
         }
     }))?;
     assert_eq!(forbidden["result"]["isError"], true);
+    assert_eq!(forbidden["result"]["entranceSurface"]["actorRole"], "arch");
     assert_eq!(
         forbidden["result"]["structuredContent"]["message"],
         "tool `forge_prepare_dispatch` is not available on the current `arch` MCP surface; requires `dev`"
@@ -326,6 +340,17 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
         forbidden["result"]["structuredContent"]["entranceSurface"]["actorRole"],
         "arch"
     );
+    let vault_list = arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "vault-list-arch",
+        "method": "tools/call",
+        "params": {
+            "name": "vault_list_mcp",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(vault_list["result"]["isError"], false);
+    assert_eq!(vault_list["result"]["entranceSurface"]["actorRole"], "arch");
 
     Ok(())
 }
