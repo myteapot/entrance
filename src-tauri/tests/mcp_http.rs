@@ -236,6 +236,23 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
         forbidden["result"]["structuredContent"]["message"],
         "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
     );
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["errorCode"],
+        "surface_role_mismatch"
+    );
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["toolName"],
+        "forge_prepare_dev_dispatch"
+    );
+    assert_eq!(forbidden["result"]["structuredContent"]["currentActorRole"], "dev");
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["requiredActorRole"],
+        "arch"
+    );
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["entranceSurface"]["actorRole"],
+        "dev"
+    );
 
     let port = reserve_port()?;
     let mut arch_server =
@@ -288,6 +305,26 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
     assert_eq!(
         forbidden["result"]["structuredContent"]["message"],
         "tool `forge_prepare_dispatch` is not available on the current `arch` MCP surface; requires `dev`"
+    );
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["errorCode"],
+        "surface_role_mismatch"
+    );
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["toolName"],
+        "forge_prepare_dispatch"
+    );
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["currentActorRole"],
+        "arch"
+    );
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["requiredActorRole"],
+        "dev"
+    );
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["entranceSurface"]["actorRole"],
+        "arch"
     );
 
     Ok(())

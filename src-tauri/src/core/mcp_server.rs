@@ -70,6 +70,27 @@ struct McpSurfaceInfo {
     actor_role: Option<ActorRole>,
 }
 
+#[derive(Debug)]
+struct McpToolSurfaceRoleError {
+    tool_name: String,
+    current_actor_role: ActorRole,
+    required_actor_role: ActorRole,
+}
+
+impl std::fmt::Display for McpToolSurfaceRoleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "tool `{}` is not available on the current `{}` MCP surface; requires `{}`",
+            self.tool_name,
+            actor_role_slug(self.current_actor_role),
+            actor_role_slug(self.required_actor_role)
+        )
+    }
+}
+
+impl std::error::Error for McpToolSurfaceRoleError {}
+
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
     jsonrpc: String,
@@ -253,11 +274,12 @@ impl McpServer {
         };
 
         if permission.actor_role != actor_role {
-            bail!(
-                "tool `{name}` is not available on the current `{}` MCP surface; requires `{}`",
-                actor_role_slug(actor_role),
-                actor_role_slug(permission.actor_role)
-            );
+            return Err(McpToolSurfaceRoleError {
+                tool_name: name.to_string(),
+                current_actor_role: actor_role,
+                required_actor_role: permission.actor_role,
+            }
+            .into());
         }
 
         Ok(())
@@ -1000,19 +1022,40 @@ fn tool_call_result(result: Result<Value>) -> Value {
             "structuredContent": value,
             "isError": false,
         }),
-        Err(error) => json!({
-            "content": [
-                {
-                    "type": "text",
-                    "text": error.to_string(),
-                }
-            ],
-            "structuredContent": {
-                "message": error.to_string(),
-            },
-            "isError": true,
-        }),
+        Err(error) => tool_call_error_result(error),
     }
+}
+
+fn tool_call_error_result(error: anyhow::Error) -> Value {
+    let message = error.to_string();
+    let structured_content = if let Some(role_error) = error.downcast_ref::<McpToolSurfaceRoleError>()
+    {
+        json!({
+            "message": message,
+            "errorCode": "surface_role_mismatch",
+            "toolName": role_error.tool_name,
+            "currentActorRole": role_error.current_actor_role,
+            "requiredActorRole": role_error.required_actor_role,
+            "entranceSurface": {
+                "actorRole": role_error.current_actor_role
+            }
+        })
+    } else {
+        json!({
+            "message": message,
+        })
+    };
+
+    json!({
+        "content": [
+            {
+                "type": "text",
+                "text": message,
+            }
+        ],
+        "structuredContent": structured_content,
+        "isError": true,
+    })
 }
 
 fn to_pretty_json(value: &Value) -> String {
@@ -1292,6 +1335,20 @@ mod tests {
         assert_eq!(
             response["structuredContent"]["message"],
             "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
+        );
+        assert_eq!(
+            response["structuredContent"]["errorCode"],
+            "surface_role_mismatch"
+        );
+        assert_eq!(
+            response["structuredContent"]["toolName"],
+            "forge_prepare_dev_dispatch"
+        );
+        assert_eq!(response["structuredContent"]["currentActorRole"], "dev");
+        assert_eq!(response["structuredContent"]["requiredActorRole"], "arch");
+        assert_eq!(
+            response["structuredContent"]["entranceSurface"]["actorRole"],
+            "dev"
         );
 
         Ok(())
