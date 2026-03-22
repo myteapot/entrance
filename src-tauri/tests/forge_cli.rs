@@ -47,7 +47,10 @@ fn forge_verify_dispatch_cli_runs_without_agents_runtime() -> Result<()> {
     fs::create_dir_all(&bootstrap_skill)?;
     fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
 
-    let managed_worktree = app_data_dir.join("worktrees").join("Entrance").join("feat-MYT-48");
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
     fs::create_dir_all(&managed_worktree)?;
     init_git_repo(&managed_worktree)?;
 
@@ -74,10 +77,10 @@ fn forge_verify_dispatch_cli_runs_without_agents_runtime() -> Result<()> {
     }
 
     let stdout = String::from_utf8(output.stdout).context("CLI stdout should be valid UTF-8")?;
-    let report: Value =
-        serde_json::from_str(&stdout).context("CLI stdout should be valid JSON")?;
+    let report: Value = serde_json::from_str(&stdout).context("CLI stdout should be valid JSON")?;
 
     assert_eq!(report["dispatch"]["issue_id"], "MYT-48");
+    assert_eq!(report["dispatch"]["dispatch_role"], "agent");
     assert_eq!(report["dispatch"]["issue_status"], "Todo");
     assert_eq!(report["dispatch"]["issue_status_source"], "fallback");
     assert_eq!(
@@ -107,7 +110,7 @@ fn forge_verify_dispatch_cli_runs_without_agents_runtime() -> Result<()> {
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
-        "SELECT status, command, working_dir, stdin_text FROM plugin_forge_tasks WHERE id = ?1",
+        "SELECT status, command, working_dir, stdin_text, metadata FROM plugin_forge_tasks WHERE id = ?1",
         [task_id],
         |row| {
             Ok((
@@ -115,6 +118,7 @@ fn forge_verify_dispatch_cli_runs_without_agents_runtime() -> Result<()> {
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
             ))
         },
     )?;
@@ -124,6 +128,9 @@ fn forge_verify_dispatch_cli_runs_without_agents_runtime() -> Result<()> {
     assert_eq!(stored.2.as_deref(), Some(worktree_path.as_str()));
     assert_eq!(stored.3.as_deref(), Some(prompt));
     assert!(!stored.3.as_deref().unwrap_or_default().contains(".agents"));
+    let metadata: Value =
+        serde_json::from_str(&stored.4).context("task metadata should be JSON")?;
+    assert_eq!(metadata["dispatch_role"], "agent");
 
     Ok(())
 }
@@ -140,7 +147,10 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
     fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
     init_git_repo_with_commit(&project_root)?;
 
-    let managed_worktree = app_data_dir.join("worktrees").join("Entrance").join("feat-MYT-48");
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
     add_git_worktree(&project_root, &managed_worktree, "feat-MYT-48")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
@@ -162,14 +172,14 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
     }
 
     let stdout = String::from_utf8(output.stdout).context("CLI stdout should be valid UTF-8")?;
-    let report: Value =
-        serde_json::from_str(&stdout).context("CLI stdout should be valid JSON")?;
+    let report: Value = serde_json::from_str(&stdout).context("CLI stdout should be valid JSON")?;
 
     let project_root_path = project_root.to_string_lossy().replace('\\', "/");
     let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
     let bootstrap_skill_path = format!("{project_root_path}/harness/bootstrap/duet/SKILL.md");
 
     assert_eq!(report["dispatch"]["issue_id"], "MYT-48");
+    assert_eq!(report["dispatch"]["dispatch_role"], "agent");
     assert_eq!(report["dispatch"]["project_root"], project_root_path);
     assert_eq!(report["dispatch"]["worktree_path"], worktree_path);
     assert_eq!(
@@ -195,7 +205,7 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
-        "SELECT status, command, working_dir, stdin_text FROM plugin_forge_tasks WHERE id = ?1",
+        "SELECT status, command, working_dir, stdin_text, metadata FROM plugin_forge_tasks WHERE id = ?1",
         [task_id],
         |row| {
             Ok((
@@ -203,6 +213,7 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
             ))
         },
     )?;
@@ -212,12 +223,16 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
     assert_eq!(stored.2.as_deref(), Some(worktree_path.as_str()));
     assert_eq!(stored.3.as_deref(), Some(prompt));
     assert!(!stored.3.as_deref().unwrap_or_default().contains(".agents"));
+    let metadata: Value =
+        serde_json::from_str(&stored.4).context("task metadata should be JSON")?;
+    assert_eq!(metadata["dispatch_role"], "agent");
 
     Ok(())
 }
 
 #[test]
-fn forge_prepare_dispatch_cli_reports_managed_worktree_boundary_without_legacy_fallback() -> Result<()> {
+fn forge_prepare_dispatch_cli_reports_managed_worktree_boundary_without_legacy_fallback(
+) -> Result<()> {
     let temp_dir = TempDir::new("prepare-dispatch-missing-worktree")?;
     let app_data_dir = temp_dir.path().join("appdata");
     seed_app_state(&app_data_dir)?;
@@ -262,7 +277,10 @@ fn forge_prepare_dispatch_cli_reports_managed_worktree_boundary_without_legacy_f
         stderr.contains(&expected_managed_root),
         "expected managed root `{expected_managed_root}` in stderr: {stderr}"
     );
-    assert!(stderr.contains("feat-<ISSUE>"), "unexpected stderr: {stderr}");
+    assert!(
+        stderr.contains("feat-<ISSUE>"),
+        "unexpected stderr: {stderr}"
+    );
     assert!(!stderr.contains(".agents"), "unexpected stderr: {stderr}");
     assert!(!stderr.contains("legacy"), "unexpected stderr: {stderr}");
 

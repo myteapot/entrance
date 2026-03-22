@@ -171,17 +171,13 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
 }
 
 #[test]
-fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agents_runtime() -> Result<()> {
+fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agents_runtime(
+) -> Result<()> {
     let app_dir = TempAppDir::new("forge-dispatch")?;
     seed_app_state(app_dir.path())?;
 
-    let project_root = app_dir
-        .path()
-        .join("Entrance");
-    let bootstrap_skill = project_root
-        .join("harness")
-        .join("bootstrap")
-        .join("duet");
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
     fs::create_dir_all(&bootstrap_skill)?;
     fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
 
@@ -223,9 +219,10 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
     let prepare = server.read_response()?;
     assert_eq!(prepare["id"], "forge-prepare");
     assert_eq!(prepare["result"]["isError"], false);
+    assert_eq!(prepare["result"]["structuredContent"]["issue_id"], "MYT-48");
     assert_eq!(
-        prepare["result"]["structuredContent"]["issue_id"],
-        "MYT-48"
+        prepare["result"]["structuredContent"]["dispatch_role"],
+        "agent"
     );
     assert_eq!(
         prepare["result"]["structuredContent"]["issue_status"],
@@ -270,6 +267,10 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
         "MYT-48"
     );
     assert_eq!(
+        verify["result"]["structuredContent"]["dispatch"]["dispatch_role"],
+        "agent"
+    );
+    assert_eq!(
         verify["result"]["structuredContent"]["dispatch"]["worktree_path"],
         worktree_path
     );
@@ -295,7 +296,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
-        "SELECT status, command, working_dir, stdin_text FROM plugin_forge_tasks WHERE id = ?1",
+        "SELECT status, command, working_dir, stdin_text, metadata FROM plugin_forge_tasks WHERE id = ?1",
         [task_id],
         |row| {
             Ok((
@@ -303,6 +304,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
             ))
         },
     )?;
@@ -312,6 +314,9 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
     assert_eq!(stored.2.as_deref(), Some(worktree_path.as_str()));
     assert_eq!(stored.3.as_deref(), Some(prompt));
     assert!(!stored.3.as_deref().unwrap_or_default().contains(".agents"));
+    let metadata: Value =
+        serde_json::from_str(&stored.4).context("task metadata should be JSON")?;
+    assert_eq!(metadata["dispatch_role"], "agent");
 
     Ok(())
 }

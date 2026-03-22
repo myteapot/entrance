@@ -12,6 +12,7 @@ use std::{
 
 use crate::{
     core::{
+        action::ActorRole,
         data_store::{DataStore, MigrationStep, StoredForgeTask, StoredForgeTaskLog},
         event_bus::EventBus,
     },
@@ -43,6 +44,7 @@ const MIGRATIONS: [MigrationStep; 2] = [
 
 const ENTRANCE_BOOTSTRAP_SKILL_RELATIVE_PATH: &str = "harness/bootstrap/duet/SKILL.md";
 const ENTRANCE_BOOTSTRAP_PROMPT_SOURCE_LABEL: &str = "Entrance-owned harness/bootstrap prompt";
+const FORGE_AGENT_DISPATCH_ROLE: ActorRole = ActorRole::Agent;
 
 pub fn migrations() -> &'static [MigrationStep] {
     &MIGRATIONS
@@ -85,10 +87,13 @@ pub struct ForgeTaskMetadata {
     pub worktree_path: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub dispatch_role: Option<ActorRole>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PreparedAgentDispatch {
+    pub dispatch_role: ActorRole,
     pub issue_id: String,
     pub issue_status: String,
     pub issue_status_source: String,
@@ -377,6 +382,7 @@ async fn build_prepared_agent_dispatch(
     .map_err(|error| error.to_string())??;
 
     Ok(PreparedAgentDispatch {
+        dispatch_role: FORGE_AGENT_DISPATCH_ROLE,
         issue_id: paths.issue_id,
         issue_status,
         issue_status_source,
@@ -472,6 +478,7 @@ pub(crate) fn build_agent_task_request(
         issue_id: Some(issue_id.clone()),
         worktree_path: Some(worktree_path.clone()),
         model: Some(raw_model.clone()),
+        dispatch_role: Some(FORGE_AGENT_DISPATCH_ROLE),
     })
     .map_err(|error| error.to_string())?;
 
@@ -849,11 +856,11 @@ impl Plugin for ForgePlugin {
             },
             McpToolDefinition {
                 name: "forge.prepare_agent_dispatch",
-                description: "Prepare an Entrance-owned agent dispatch from the current worktree context",
+                description: "Prepare an Entrance-owned agent-lane dispatch from the current worktree context",
             },
             McpToolDefinition {
                 name: "forge.verify_agent_dispatch",
-                description: "Prepare and persist a Pending Forge dispatch without starting agent execution",
+                description: "Prepare and persist a Pending agent-lane Forge dispatch without starting agent execution",
             },
             McpToolDefinition {
                 name: "forge.list_tasks",
@@ -900,8 +907,12 @@ mod tests {
 
     use crate::{
         core::{
-            bootstrap_for_paths, config_store::{render_config, EntranceConfig},
-            data_store::MigrationPlan, event_bus::EventBus, AppPaths,
+            action::ActorRole,
+            bootstrap_for_paths,
+            config_store::{render_config, EntranceConfig},
+            data_store::MigrationPlan,
+            event_bus::EventBus,
+            AppPaths,
         },
         plugins::vault,
     };
@@ -909,7 +920,7 @@ mod tests {
     use super::{
         build_agent_task_request, build_prepared_agent_dispatch, generate_agent_prompt,
         managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
-        resolve_dispatch_paths_for_project, prepare_agent_dispatch, ForgePlugin,
+        prepare_agent_dispatch, resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
     };
 
     static FORGE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1016,7 +1027,11 @@ mod tests {
         assert!(request.args.contains("\"gpt-5-codex\""));
         assert!(request.required_tokens.contains("openai"));
         assert!(!request.required_tokens.contains("linear"));
-        assert!(request.metadata.contains("\"issue_id\":\"MYT-48\""));
+        let metadata: ForgeTaskMetadata =
+            serde_json::from_str(&request.metadata).expect("request metadata should be valid JSON");
+        assert_eq!(metadata.kind.as_deref(), Some("agent_dispatch"));
+        assert_eq!(metadata.issue_id.as_deref(), Some("MYT-48"));
+        assert_eq!(metadata.dispatch_role, Some(ActorRole::Agent));
     }
 
     #[test]
@@ -1188,6 +1203,7 @@ mod tests {
             .map_err(anyhow::Error::msg)?;
 
         assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.dispatch_role, ActorRole::Agent);
         assert_eq!(dispatch.issue_status, "Todo");
         assert_eq!(dispatch.issue_status_source, "fallback");
         assert!(dispatch.issue_title.is_none());
@@ -1216,13 +1232,18 @@ mod tests {
             request.working_dir.as_deref(),
             Some(dispatch.worktree_path.as_str())
         );
-        assert_eq!(request.stdin_text.as_deref(), Some(dispatch.prompt.as_str()));
+        assert_eq!(
+            request.stdin_text.as_deref(),
+            Some(dispatch.prompt.as_str())
+        );
         assert!(request.args.contains(&dispatch.worktree_path));
         assert!(!request.args.contains(".agents"));
+        let metadata: ForgeTaskMetadata =
+            serde_json::from_str(&request.metadata).expect("request metadata should be valid JSON");
+        assert_eq!(metadata.dispatch_role, Some(ActorRole::Agent));
 
-        let store = crate::core::data_store::DataStore::in_memory(MigrationPlan::new(
-            vault::migrations(),
-        ))?;
+        let store =
+            crate::core::data_store::DataStore::in_memory(MigrationPlan::new(vault::migrations()))?;
         assert!(
             store.get_vault_token_by_provider("linear")?.is_none(),
             "test store should not require a legacy `.agents` token source"
@@ -1244,10 +1265,7 @@ mod tests {
         fs::create_dir_all(&app_data_dir)?;
         let mut config = EntranceConfig::default();
         config.plugins.forge.enabled = true;
-        fs::write(
-            app_data_dir.join("entrance.toml"),
-            render_config(&config)?,
-        )?;
+        fs::write(app_data_dir.join("entrance.toml"), render_config(&config)?)?;
 
         let startup = bootstrap_for_paths(AppPaths::new(app_data_dir.clone()))?;
         assert_eq!(startup.paths().app_data_dir(), app_data_dir.as_path());
@@ -1258,7 +1276,10 @@ mod tests {
         fs::create_dir_all(&bootstrap_skill)?;
         fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
 
-        let managed_worktree = app_data_dir.join("worktrees").join("Entrance").join("feat-MYT-48");
+        let managed_worktree = app_data_dir
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
         fs::create_dir_all(&managed_worktree)?;
         init_git_repo(&managed_worktree);
 
@@ -1281,6 +1302,7 @@ mod tests {
             .map_err(anyhow::Error::msg)?;
 
         assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.dispatch_role, ActorRole::Agent);
         assert_eq!(dispatch.issue_status, "Todo");
         assert_eq!(dispatch.issue_status_source, "fallback");
         assert!(dispatch.issue_title.is_none());
@@ -1314,7 +1336,13 @@ mod tests {
             stored_task.working_dir.as_deref(),
             Some(dispatch.worktree_path.as_str())
         );
-        assert_eq!(stored_task.stdin_text.as_deref(), Some(dispatch.prompt.as_str()));
+        assert_eq!(
+            stored_task.stdin_text.as_deref(),
+            Some(dispatch.prompt.as_str())
+        );
+        let metadata: ForgeTaskMetadata = serde_json::from_str(&stored_task.metadata)
+            .expect("stored forge task metadata should be valid JSON");
+        assert_eq!(metadata.dispatch_role, Some(ActorRole::Agent));
 
         Ok(())
     }

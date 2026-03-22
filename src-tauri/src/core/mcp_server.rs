@@ -260,7 +260,8 @@ impl McpServer {
             .or_else(|| optional_string(arguments, "projectDir"))
             .map(str::to_string);
         let report = verify_agent_dispatch(forge, project_dir).map_err(anyhow::Error::msg)?;
-        serde_json::to_value(report).context("failed to serialize forge dispatch verification report")
+        serde_json::to_value(report)
+            .context("failed to serialize forge dispatch verification report")
     }
 
     fn handle_forge_status(&self, arguments: &Value) -> Result<Value> {
@@ -473,7 +474,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
         });
         tools.push(McpToolDescriptor {
             name: "forge_prepare_dispatch",
-            description: "Prepare an Entrance-owned Forge dispatch from the managed worktree for a project.",
+            description: "Prepare an Entrance-owned agent-lane Forge dispatch from the managed worktree for a project.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -484,7 +485,7 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
         });
         tools.push(McpToolDescriptor {
             name: "forge_verify_dispatch",
-            description: "Prepare and persist a Pending Forge dispatch without starting agent execution.",
+            description: "Prepare and persist a Pending agent-lane Forge dispatch without starting agent execution.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
