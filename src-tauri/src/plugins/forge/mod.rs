@@ -41,7 +41,6 @@ const MIGRATIONS: [MigrationStep; 2] = [
     },
 ];
 
-const LEGACY_AGENTS_WORKTREES_ROOT: &str = "A:/.agents/.worktrees";
 const ENTRANCE_BOOTSTRAP_SKILL_RELATIVE_PATH: &str = "harness/bootstrap/duet/SKILL.md";
 const ENTRANCE_BOOTSTRAP_PROMPT_SOURCE_LABEL: &str = "Entrance-owned harness/bootstrap prompt";
 
@@ -449,10 +448,7 @@ fn managed_worktrees_root_for_app_data_dir(app_data_dir: &Path) -> PathBuf {
 
 fn resolve_dispatch_worktree_roots() -> Result<Vec<PathBuf>, String> {
     let app_data_dir = crate::core::resolve_app_data_dir().map_err(|error| error.to_string())?;
-    Ok(vec![
-        managed_worktrees_root_for_app_data_dir(&app_data_dir),
-        PathBuf::from(LEGACY_AGENTS_WORKTREES_ROOT),
-    ])
+    Ok(vec![managed_worktrees_root_for_app_data_dir(&app_data_dir)])
 }
 
 fn resolve_dispatch_paths(project_dir: Option<&str>) -> Result<DispatchPaths, String> {
@@ -922,8 +918,8 @@ mod tests {
     }
 
     #[test]
-    fn project_dispatch_prefers_managed_worktree_root() {
-        let temp_dir = TestDir::new("dispatch-prefer-managed");
+    fn project_dispatch_uses_managed_worktree_root() {
+        let temp_dir = TestDir::new("dispatch-managed");
         let project_root = temp_dir.path().join("Entrance");
         fs::create_dir_all(&project_root).expect("project root should exist");
 
@@ -932,18 +928,13 @@ mod tests {
         fs::create_dir_all(&managed_worktree).expect("managed worktree should exist");
         init_git_repo(&managed_worktree);
 
-        let legacy_root = temp_dir.path().join("legacy-agents");
-        let legacy_worktree = legacy_root.join("Entrance").join("feat-MYT-99");
-        fs::create_dir_all(&legacy_worktree).expect("legacy worktree should exist");
-        init_git_repo(&legacy_worktree);
-
         let paths = resolve_dispatch_paths_for_project(
             project_root
                 .to_str()
                 .expect("project path should be valid UTF-8"),
-            &[managed_root.clone(), legacy_root],
+            &[managed_root.clone()],
         )
-        .expect("managed worktree should be preferred");
+        .expect("managed worktree should be used");
 
         assert_eq!(paths.issue_id, "MYT-48");
         assert_eq!(
@@ -963,18 +954,18 @@ mod tests {
         fs::create_dir_all(&project_root).expect("project root should exist");
 
         let managed_root = temp_dir.path().join("appdata").join("worktrees");
-        let legacy_root = temp_dir.path().join("legacy-agents");
 
         let error = resolve_dispatch_paths_for_project(
             project_root
                 .to_str()
                 .expect("project path should be valid UTF-8"),
-            &[managed_root.clone(), legacy_root],
+            &[managed_root.clone()],
         )
         .expect_err("missing worktree should return an error");
 
         assert!(error.contains(&managed_root.join("Entrance").display().to_string()));
         assert!(!error.contains("control.py"));
+        assert!(!error.contains("legacy-agents"));
     }
 
     #[test]

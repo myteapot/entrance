@@ -100,11 +100,11 @@ These shells should remain mirrored as evidence but should not stay in the activ
 
 ### Do Not Promote Blindly From Linear State
 
-- `MYT-57` `control.py retirement` is `Done` in Linear, but current repo facts still show only a partial runtime cut:
+- `MYT-57` `control.py retirement` is `Done` in Linear, but current repo facts still show a runtime cut that remains unverified under `.agents`-absent conditions:
   - `src-tauri/src/plugins/forge/mod.rs` now generates Agent prompts from `harness/bootstrap/duet/SKILL.md` and no longer shells to `A:/.agents/nota/scripts/control.py`
-  - `src-tauri/src/plugins/forge/mod.rs` now prefers `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}`, but still falls back to `A:/.agents/.worktrees/...`
+  - `src-tauri/src/plugins/forge/mod.rs` now uses `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}` as its only runtime worktree owner path
   - `src/pages/Forge.tsx` now shows prompt source as `Entrance-owned harness/bootstrap prompt`
-- Therefore `MYT-57` should still be treated as partial progress, not as fully promoted internal truth, because the legacy worktree fallback and `.agents`-absent verification are still open.
+- Therefore `MYT-57` should still be treated as partial progress, not as fully promoted internal truth, because `.agents`-absent end-to-end verification is still open.
 
 ## Promotion Candidates For Later Internal Storage Truth
 

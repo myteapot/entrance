@@ -38,8 +38,8 @@
 - `MYT-65` is now repo-side landed:
   - recovery provenance copies now exist under `specs/recovery/`
   - `.agents` remains preserved, but these docs are no longer recovery-only in location
-- `MYT-63` has now advanced through three small runtime cuts:
-  - Forge worktree discovery now prefers `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}` and only falls back to `A:/.agents/.worktrees/...`
+- `MYT-63` has now advanced through four small runtime cuts:
+  - Forge worktree discovery now uses `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}` as its only runtime owner path
   - Forge prompt generation now reads Entrance-owned `harness/bootstrap/duet/SKILL.md` instead of shelling to `A:/.agents/nota/scripts/control.py`
   - Forge now exposes prompt source as `Entrance-owned harness/bootstrap prompt`
 - `MYT-61` is now treated as a completed verification gate kept hot-adjacent, not as an active shell.
@@ -118,7 +118,7 @@
 ### What It Means
 
 - Entrance now has the minimal landing substrate needed to absorb external planning truth into its own DB.
-- Entrance is not yet fully detached from Linear at the operating level, because repo-side bootstrap and recovery imports are now landed but runtime still has not cut over away from `.agents`.
+- Entrance is not yet fully detached from the legacy bootstrap substrate at the operating level, because repo-side bootstrap and recovery imports are now landed and Forge runtime no longer depends on `.agents`, but `.agents`-absent verification has not happened yet.
 - The correct next move is to keep working the `MYT-63` decoupling lane, then selectively absorb milestones/issues into internal storage by hot/cold fact, and only then redesign `NEXT WAVE`.
 
 ## State-Machine Reading Of The Program
@@ -236,7 +236,7 @@ What is already landed:
 - the minimal landing handoff layer now exists in code, not just in prose
 - the bootstrap substrate now has repo-side canonical copies under `harness/bootstrap/`
 - the recovery substrate now has repo-side canonical copies under `specs/recovery/`
-- Forge worktree discovery now prefers the Entrance-managed app-data root and only falls back to legacy `.agents` worktrees
+- Forge worktree discovery now uses the Entrance-managed app-data root as its only runtime owner path
 - Forge prompt generation now runs from the repo-side bootstrap owner at `harness/bootstrap/duet/SKILL.md`
 - Forge now exposes prompt source as `Entrance-owned harness/bootstrap prompt`
 - a first cold reconciliation cut now exists and classifies the 50 imported shells into:
@@ -249,8 +249,7 @@ What is still open:
 
 - define which Linear milestones/issues deserve promotion into internal storage as active program truth
 - absorb the current classification into stronger owned storage truth when the schema/object path is ready
-- remove the `.agents/.worktrees` fallback once Entrance-owned worktree lifecycle is ready
-- verify Forge dispatch end-to-end with `.agents` absent once the remaining fallback is removed
+- verify Forge dispatch end-to-end with `.agents` absent
 - redesign `NEXT WAVE` only after the first reconciliation cut exists
 
 Local caution:
