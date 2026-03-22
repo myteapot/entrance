@@ -2,19 +2,22 @@ pub mod core;
 mod plugins;
 
 use std::{
+    io::{self, Read},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
+use serde_json::Value;
 use tauri::{Emitter, Manager};
 
 use core::{
     action::ActorRole,
     bootstrap_for_paths,
     bootstrap_mcp_cycle::{
-        run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions, ForgeBootstrapMcpCycleReport,
+        run_forge_bootstrap_dev_task, run_forge_bootstrap_mcp_cycle,
+        ForgeBootstrapMcpCycleOptions, ForgeBootstrapMcpCycleReport,
     },
     data_store::StoredSourceIngestRun,
     event_bus::EventBus,
@@ -371,8 +374,11 @@ fn run_forge_cli(args: &[String]) -> Result<()> {
                 rest,
             )?)?)
         }
+        [command] if command == "run-bootstrap-dev-plan" => {
+            print_json(&run_forge_bootstrap_dev_plan_cli()?)
+        }
         _ => bail!(
-            "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, `entrance forge verify-dispatch --project-dir <path>`, or `entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--agent-count <n>]`"
+            "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, `entrance forge verify-dispatch --project-dir <path>`, `entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--agent-count <n>]`, or `entrance forge run-bootstrap-dev-plan`"
         ),
     }
 }
@@ -560,7 +566,17 @@ fn bootstrap_forge_mcp_cycle_cli(
     options: ForgeBootstrapMcpCycleOptions,
 ) -> Result<ForgeBootstrapMcpCycleReport> {
     let startup = bootstrap_forge_mcp_cli_state()?;
-    run_forge_bootstrap_mcp_cycle(startup.paths().app_data_dir(), options)
+    let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
+    run_forge_bootstrap_mcp_cycle(&forge_plugin, startup.paths().app_data_dir(), options)
+}
+
+fn run_forge_bootstrap_dev_plan_cli() -> Result<Value> {
+    let startup = bootstrap_forge_mcp_cli_state()?;
+    let mut raw_plan = String::new();
+    io::stdin()
+        .read_to_string(&mut raw_plan)
+        .context("failed to read bootstrap dev task plan from stdin")?;
+    run_forge_bootstrap_dev_task(startup.paths().app_data_dir(), &raw_plan)
 }
 
 fn build_mcp_server(

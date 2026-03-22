@@ -347,12 +347,16 @@ fn forge_bootstrap_mcp_cycle_cli_runs_single_agent_bootstrap_without_human_data_
         "forge_verify_dev_dispatch"
     );
     assert_eq!(
+        report["bootstrap_surface"]["dev_execution_mode"],
+        "bootstrap_dev_runtime_task"
+    );
+    assert_eq!(
         report["bootstrap_surface"]["agent_dispatch_surface"],
         "forge_dispatch_agent"
     );
     assert_eq!(
         report["bootstrap_surface"]["agent_wait_mode"],
-        "fanout_then_wait"
+        "dev_parent_waits_children"
     );
     assert_eq!(report["requested_agent_count"], 1);
     assert_eq!(report["agent_worktree_mode"], "single_managed_worktree");
@@ -367,8 +371,17 @@ fn forge_bootstrap_mcp_cycle_cli_runs_single_agent_bootstrap_without_human_data_
         report["dev_assignment"]["dispatch"]["prompt_source"],
         "Entrance-owned harness/bootstrap dev prompt"
     );
-    assert_eq!(report["dev_assignment"]["task_status"], "Pending");
+    assert_eq!(report["dev_assignment"]["task_status"], "Done");
+    assert_eq!(
+        report["dev_assignment"]["execution_mode"],
+        "bootstrap_dev_runtime_task"
+    );
     assert!(report["dev_assignment"]["dispatch"]["prompt"].is_null());
+    assert_eq!(report["parent_status"]["task"]["status"], "Done");
+    assert_eq!(
+        report["parent_status"]["task"]["command"],
+        report["dev_assignment"]["task_command"]
+    );
 
     assert_eq!(
         report["agent_prepare"]["prompt_source"],
@@ -489,9 +502,23 @@ fn forge_bootstrap_mcp_cycle_cli_can_fan_out_multiple_agent_children() -> Result
     let parent_task_id = report["dev_assignment"]["task_id"]
         .as_i64()
         .context("dev assignment should include a task id")?;
+    assert_eq!(
+        report["bootstrap_surface"]["dev_execution_mode"],
+        "bootstrap_dev_runtime_task"
+    );
+    assert_eq!(
+        report["bootstrap_surface"]["agent_wait_mode"],
+        "dev_parent_waits_children"
+    );
     assert_eq!(report["requested_agent_count"], 2);
     assert_eq!(report["agent_worktree_mode"], "per_agent_slot_worktree");
     assert!(report["shared_worktree_boundary"].is_null());
+    assert_eq!(report["dev_assignment"]["task_status"], "Done");
+    assert_eq!(
+        report["dev_assignment"]["execution_mode"],
+        "bootstrap_dev_runtime_task"
+    );
+    assert_eq!(report["parent_status"]["task"]["status"], "Done");
 
     let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
     let slot_one_worktree = app_data_dir

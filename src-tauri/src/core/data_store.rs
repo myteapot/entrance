@@ -863,6 +863,50 @@ impl DataStore {
         })
     }
 
+    pub fn update_pending_forge_task_request(
+        &self,
+        id: i64,
+        command: &str,
+        args: &str,
+        working_dir: Option<&str>,
+        stdin_text: Option<&str>,
+        required_tokens: &str,
+        metadata: &str,
+    ) -> Result<()> {
+        let changed = self.with_connection(|conn| {
+            Ok(conn.execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET command = ?2,
+                    args = ?3,
+                    working_dir = ?4,
+                    stdin_text = ?5,
+                    required_tokens = ?6,
+                    metadata = ?7
+                WHERE id = ?1
+                  AND status = 'Pending'
+                "#,
+                params![
+                    id,
+                    command,
+                    args,
+                    working_dir,
+                    stdin_text,
+                    required_tokens,
+                    metadata,
+                ],
+            )?)
+        })?;
+
+        if changed == 0 {
+            return Err(anyhow!(
+                "forge task `{id}` does not exist or is no longer Pending"
+            ));
+        }
+
+        Ok(())
+    }
+
     pub fn list_forge_tasks(&self) -> Result<Vec<StoredForgeTask>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(

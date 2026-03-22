@@ -122,6 +122,12 @@ pub struct ForgeTaskMetadata {
     pub dispatch_role: Option<ActorRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocator_role: Option<ActorRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocator_surface: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -303,6 +309,18 @@ impl ForgePlugin {
                 &request.metadata,
             )
         }
+    }
+
+    pub fn replace_pending_task_request(&self, id: i64, request: CreateTaskRequest) -> Result<()> {
+        self.data_store.update_pending_forge_task_request(
+            id,
+            &request.command,
+            &request.args,
+            request.working_dir.as_deref(),
+            request.stdin_text.as_deref(),
+            &request.required_tokens,
+            &request.metadata,
+        )
     }
 
     pub fn list_tasks(&self) -> Result<Vec<StoredForgeTask>> {
@@ -753,6 +771,7 @@ fn build_dispatch_task_request(
         model: Some(raw_model.clone()),
         dispatch_role: Some(dispatch_role),
         dispatch_tool_name: dispatch_tool_name.map(str::to_string),
+        ..ForgeTaskMetadata::default()
     })
     .map_err(|error| error.to_string())?;
 

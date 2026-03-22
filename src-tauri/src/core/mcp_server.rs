@@ -558,6 +558,10 @@ impl McpServer {
         };
 
         let report = run_forge_bootstrap_mcp_cycle(
+            self.plugins
+                .forge
+                .as_ref()
+                .context("forge plugin is not enabled")?,
             &resolve_app_data_dir()?,
             ForgeBootstrapMcpCycleOptions {
                 project_dir,

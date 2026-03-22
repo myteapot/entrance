@@ -1447,8 +1447,16 @@ fn external_client_can_bootstrap_allocator_cycle_over_nota_stdio_surface() -> Re
         "forge_verify_dev_dispatch"
     );
     assert_eq!(
+        report["bootstrap_surface"]["dev_execution_mode"],
+        "bootstrap_dev_runtime_task"
+    );
+    assert_eq!(
         report["bootstrap_surface"]["agent_dispatch_surface"],
         "forge_dispatch_agent"
+    );
+    assert_eq!(
+        report["bootstrap_surface"]["agent_wait_mode"],
+        "dev_parent_waits_children"
     );
     assert_eq!(report["requested_agent_count"], 2);
     assert_eq!(report["agent_worktree_mode"], "per_agent_slot_worktree");
@@ -1481,11 +1489,17 @@ fn external_client_can_bootstrap_allocator_cycle_over_nota_stdio_surface() -> Re
         .context("dev assignment should include a task id")?;
     assert!(parent_task_id > 0);
     assert_eq!(report["dev_assignment"]["dispatch"]["dispatch_role"], "dev");
+    assert_eq!(report["dev_assignment"]["task_status"], "Done");
+    assert_eq!(
+        report["dev_assignment"]["execution_mode"],
+        "bootstrap_dev_runtime_task"
+    );
     assert_eq!(
         report["dev_assignment"]["dispatch"]["dispatch_tool_name"],
         "forge_dispatch_dev"
     );
     assert!(report["dev_assignment"]["dispatch"]["prompt"].is_null());
+    assert_eq!(report["parent_status"]["task"]["status"], "Done");
 
     assert_eq!(report["agent_prepare"]["dispatch_role"], "agent");
     assert_eq!(
