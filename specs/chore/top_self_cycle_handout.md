@@ -1,13 +1,30 @@
 # Top Self-Cycle Handout
 
-> Purpose: new-window continuation packet for advancing Entrance top architecture without reheating root ambiguity
+> Purpose: continuation packet for resuming Entrance from the compressed top root into the newly landed minimal landing layer, without reheating root ambiguity or losing the reconciliation queue
 
 ## Current Snapshot
 
 - Branch: `codex/docs-top-self-cycle-handout-20260322`
-- Commit checkpoint: use the current branch `HEAD`; older fixed-hash checkpoints in this handout are historical only
+- Commit checkpoint: `cc27c20913c5608feb314125b9b036f3973851b8`
 - Active MR: `http://server:9311/pub/entrance/-/merge_requests/3`
 - Previously merged checkpoint MR: `http://server:9311/pub/entrance/-/merge_requests/2`
+- Minimal landing layer `v0` is now landed in core code and should be treated as live program truth, not as a side plugin experiment.
+- Real Linear snapshot import has been executed successfully from:
+  - `A:\Agent\linear-entrance-snapshot-2026-03-22.json`
+- Real import checkpoint:
+  - `ingest_run_id = 1`
+  - `artifact_sha256 = efacdf3f3fed206bc4c29325fc84a26544eb895c32fb62a69f8dd02a1de49f4d`
+  - `imported_issue_count = 50`
+  - `imported_document_count = 1`
+  - `imported_milestone_count = 0`
+  - `imported_planning_item_count = 50`
+- Post-import landing state in the verification DB:
+  - `external_issue_mirrors = 50`
+  - `planning_items = 50`
+  - `planning_item_links = 52`
+  - `promotion_records = 100`
+  - `unreconciled_planning_items = 50`
+- The next real phase is not another architecture rewrite; it is the first reconciliation pass over the 50 imported planning shells.
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
   - `specs/top/control.md`
@@ -29,6 +46,9 @@
   - `specs/cold/3.1-learning-truth-system/minimal_truth_plane.md`
 - `pending.md` should now be read as "no active architecture or operational blocker in hot view"; prior GitLab MCP token notes are fallback history, not active pending.
 - `entrance.db` and `entrance.db.manifest.json` were synced in the MR checkpoint; do not churn DB for editorial cleanup only.
+- Local repo caution:
+  - `src-tauri/src/plugins/forge/mod.rs` is modified in the worktree and was not touched by the landing commits in this window.
+  - `.tmp/` exists as local verification residue and currently includes landing-layer temp appdata.
 
 ## Runtime Connector Note
 
@@ -38,20 +58,64 @@
 - If re-provisioning is needed outside the current session, the explicit required scope signal returned earlier was: `mcp api read_api`.
 - The OAuth path remained unreliable on this machine because GitLab's OAuth discovery advertised `issuer/registration_endpoint = http://9123126222e6`, and that host was not locally resolvable.
 
+## Landing Layer Checkpoint
+
+### What Landed
+
+- A minimal landing layer now exists as `core`, not as a plugin:
+  - `src-tauri/migrations/0005_create_core_landing_tables.sql`
+  - `src-tauri/src/core/data_store.rs`
+  - `src-tauri/src/core/landing.rs`
+  - `src-tauri/src/core/mod.rs`
+  - `src-tauri/src/lib.rs`
+- The landing split is now explicit and OS-driven:
+  - `source_artifacts` / `external_issue_mirrors` hold external captured truth
+  - `planning_items` / `promotion_records` hold Entrance-owned planning objects and promotion history
+- Minimal manual entrypoints now exist:
+  - `entrance landing import --file <path>`
+  - `entrance landing runs`
+  - `entrance landing mirrors`
+  - `entrance landing planning`
+  - `entrance landing unreconciled`
+- The first real bridge from Linear into Entrance now works without requiring live OAuth, write-back, or UI.
+
+### What Was Explicitly Deferred
+
+- No auto-sync
+- No OAuth repair work
+- No UI for landing/reconciliation
+- No Linear write-back
+- No attempt yet to redesign the whole planning system before reconciliation truth exists
+
+### Verification
+
+- Tests passed:
+  - `cargo test landing_tables_round_trip --lib --config "build.rustc-wrapper=''" `
+  - `cargo test imports_linear_snapshot_into_landing_tables --lib --config "build.rustc-wrapper=''" `
+- Real import was exercised against the exported snapshot, not just fixtures.
+- The temp verification DB lives under `.tmp/landing-appdata/` and should be treated as a sandbox proof point rather than canonical production data.
+
+### What It Means
+
+- Entrance now has the minimal landing substrate needed to absorb external planning truth into its own DB.
+- Entrance is not yet fully detached from Linear at the operating level, because reconciliation has not yet converted the 50 imported shells into an internally-owned roadmap cut.
+- The correct next move is to reconcile and classify, then selectively absorb milestones/issues into internal storage by hot/cold fact, and only then redesign `NEXT WAVE`.
+
 ## State-Machine Reading Of The Program
 
 ### Global Projection
 
-- `FLOW_PHASE = CYCLE`
-  the compressed root is landed, but local detail completion is still ongoing.
+- `FLOW_PHASE = CYCLE + LANDING_V0_LANDED`
+  the compressed root is landed, and the minimal landing substrate now exists; the active queue has shifted to reconciliation rather than root design.
 - `ATTENTION_STATE = READY`
   there is no known blocking dependency that requires Human wake-up before the next self-cycle.
-- `INTEGRITY_OVERLAY = none projected`
-  no active top-level architecture conflict is currently mounted in hot view.
+- `INTEGRITY_OVERLAY = RECONCILIATION_BACKLOG`
+  there is no active top-level architecture conflict, but there is now a concrete backlog of 50 unreconciled internal planning shells.
 
 ### Human-Interruption Rule
 
 - Do not wake Human for hot-root restatement, editorial cleanup, or local-detail completion.
+- Do not wake Human for landing-layer ingestion, reconciliation classification, or cold/hot sync as long as they stay within the already chosen substrate boundaries.
 - Wake Human only if a new canonical boundary decision appears or a hard `state / route / writer / truth` conflict cannot be resolved locally.
 
 ## Canonical Read Set For A New Window
@@ -65,8 +129,12 @@ Read in this order:
 5. `specs/top/truth.md`
 6. `specs/top/phase-todo.md`
 7. `specs/top/pending.md`
+8. `src-tauri/migrations/0005_create_core_landing_tables.sql`
+9. `src-tauri/src/core/landing.rs`
+10. `src-tauri/src/core/data_store.rs`
+11. `src-tauri/src/lib.rs`
 
-Then descend only into the single selected trunk for the current cycle.
+Then descend only into the single selected trunk or substrate lane for the current cycle.
 
 ## Trunk State
 
@@ -132,16 +200,46 @@ What is still open:
 - `specs/cold/2.2-lead-model-3/prd.md` is legacy and currently mojibake-prone in terminal rendering.
 - Treat it as a weak historical reference, not as canonical architecture source.
 
+## Landing / Reconciliation State
+
+Current state:
+
+- `LANDING = landed-v0`
+- `RECONCILIATION = not-started`
+
+What is already landed:
+
+- external truth can be imported into Entrance DB through a stable, manually triggered path
+- every imported Linear issue now has a mirrored landing record plus an Entrance planning shell
+- promotion history is being recorded from the first import onward
+- the minimal landing handoff layer now exists in code, not just in prose
+
+What is still open:
+
+- classify the 50 unreconciled planning shells into:
+  - bootstrap critical path
+  - cold backlog worth preserving
+  - historical / duplicate / canceled residue
+- define which Linear milestones/issues deserve promotion into internal storage as active program truth
+- sync the document system so hot, cold, and storage all describe the same operating posture
+- redesign `NEXT WAVE` only after the first reconciliation cut exists
+
+Local caution:
+
+- do not treat `.tmp/landing-appdata/entrance.db` as production truth
+- do not casually revert `src-tauri/src/plugins/forge/mod.rs`; it is unrelated local state in the current worktree
+
 ## Self-Cycle Protocol For The Next Agent
 
 ### `IN`
 
 1. Verify branch/MR context and confirm the read set above.
 2. Confirm that the compressed hot root is still canonical.
-3. Choose exactly one semantic trunk for this cycle:
+3. Choose exactly one semantic trunk or substrate lane for this cycle:
    - `Machine`
    - `Truth`
    - `Control`
+   - `Landing / Reconciliation`
 
 ### `CYCLE`
 
@@ -149,6 +247,7 @@ What is still open:
 2. Classify the intended work as one of:
    - editorial compression
    - local-detail completion
+   - reconciliation / absorption
    - new oracle
 3. If the work is editorial compression:
    - keep the change in mounted hot detail or cold docs
@@ -157,11 +256,15 @@ What is still open:
 4. If the work is local-detail completion:
    - prefer cold docs first
    - promote to hot only if the hot root truly needs a sharper oracle summary
-5. If the work produces a new oracle:
+5. If the work is reconciliation / absorption:
+   - reconcile imported shells before inventing new roadmap structure
+   - promote only the items that deserve internal ownership by current hot/cold fact
+   - keep external mirrors intact as captured evidence
+6. If the work produces a new oracle:
    - update the relevant hot trunk
    - write DB decision or memory records
    - sync `entrance.db.manifest.json`
-6. If ambiguity remains unresolved after local critique:
+7. If ambiguity remains unresolved after local critique:
    - park it in cold or `pending.md`
    - do not bloat the hot root with speculative text
 
@@ -181,15 +284,18 @@ What is still open:
 - Do not let numbered top docs regrow into root summaries.
 - Do not treat `do / learn / chat` as reopened root architecture unless Human explicitly asks to reopen it.
 - Do not create DB churn for editorial cleanup.
+- Do not mistake landing-layer existence for completed de-Linear sovereignty; reconciliation still has to happen.
+- Do not build sync, OAuth, UI, or write-back before the reconciliation model is proven locally.
 - Do not trust row-local prose when a fact should be runtime-derived from registry plus topology.
 - Do not wake Human for local-quality, local-structure, or local-compression work that can be resolved inside the current trunk.
 
 ## Recommended Priority Rule
 
 - No semantic trunk currently requires forced wake-up by default.
-- Prefer the narrowest implementation-facing cold detail if runtime work later exposes a real gap.
-- Keep `Truth` parked unless runtime implementation exposes a genuine new truth-plane gap.
-- Keep `Control` parked unless compression pressure, naming cleanup, or legacy-pruning work creates a stronger reason to move it.
+- The default next move is `Landing / Reconciliation`, not another root-level architecture pass.
+- Prefer the narrowest reconciliation cut that turns imported shells into owned internal classification truth.
+- Keep `Truth` parked unless landing/reconciliation exposes a genuine new truth-plane gap.
+- Keep `Control` parked unless reconciliation exposes a real control-surface or ownership-host conflict.
 - Never advance more than one semantic trunk in the same self-cycle unless a newly discovered oracle forces a cross-trunk promotion.
 
 ## Success Condition For The Next Window
@@ -197,6 +303,7 @@ What is still open:
 A good next cycle should end with all of the following true:
 
 - one trunk moved forward without reheating root ambiguity
+- or one bounded reconciliation cut landed without inventing unnecessary new structure
 - hot root stayed compressed
 - any new detail landed below the root first
 - Human interruption budget remained unused unless a genuine new canonical decision appeared
