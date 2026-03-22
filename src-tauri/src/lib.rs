@@ -16,30 +16,31 @@ use tauri::{Emitter, Manager};
 use core::{
     action::ActorRole,
     bootstrap_for_paths,
-    mcp_stdio_client::SpawnedMcpStdioClient,
+    data_store::StoredSourceIngestRun,
+    event_bus::EventBus,
+    hotkey,
     landing::{
         import_linear_entrance_snapshot, list_landing_ingest_runs, list_landing_mirror_items,
         list_landing_planning_items, list_landing_unreconciled_items, LandingImportReport,
         LandingMirrorSummary, LandingPlanningItemSummary,
     },
-    event_bus::EventBus,
-    hotkey,
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
+    mcp_stdio_client::SpawnedMcpStdioClient,
     plugin_manager::PluginManager,
+    recovery::import_recovery_seed,
     resolve_app_data_dir,
-    data_store::StoredSourceIngestRun,
     theme::ThemeSystem,
     AppPaths, StartupState,
 };
 use plugins::{
-    forge::{
-        prepare_agent_dispatch_blocking, verify_agent_dispatch,
-        ForgeDispatchVerificationReport, PreparedAgentDispatch,
-    },
     forge::commands::{
         forge_cancel_task, forge_create_task, forge_dispatch_agent, forge_get_task,
         forge_get_task_details, forge_list_tasks, forge_prepare_agent_dispatch,
+    },
+    forge::{
+        prepare_agent_dispatch_blocking, verify_agent_dispatch, ForgeDispatchVerificationReport,
+        PreparedAgentDispatch,
     },
     launcher::{launcher_launch, launcher_pin, launcher_search, LauncherPlugin},
     vault::{
@@ -174,7 +175,10 @@ fn setup_application<R: tauri::Runtime>(
     if startup.forge_enabled() {
         let forge_plugin = plugins::forge::ForgePlugin::new(data_store.clone(), event_bus.clone());
         if let Err(error) = forge_plugin.start_http_server(startup.forge_http_port()) {
-            tracing::warn!(?error, "Forge HTTP server failed to start (port may be in use), continuing without it");
+            tracing::warn!(
+                ?error,
+                "Forge HTTP server failed to start (port may be in use), continuing without it"
+            );
         }
         plugin_manager.register(Arc::new(forge_plugin.clone()));
         app.manage(forge_plugin);
@@ -191,7 +195,11 @@ fn setup_application<R: tauri::Runtime>(
 
     if let Some(shortcut) = launcher_hotkey.as_deref() {
         if let Err(err) = hotkey::register_launcher_shortcut(app, shortcut) {
-            tracing::warn!("Failed to register launcher hotkey '{}': {}. Launcher shortcut disabled.", shortcut, err);
+            tracing::warn!(
+                "Failed to register launcher hotkey '{}': {}. Launcher shortcut disabled.",
+                shortcut,
+                err
+            );
         }
     }
 
@@ -207,6 +215,7 @@ pub fn dispatch_cli_or_run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
         [command, rest @ ..] if command == "landing" => run_landing_cli(rest),
+        [command, rest @ ..] if command == "recovery" => run_recovery_cli(rest),
         [command, rest @ ..] if command == "forge" => run_forge_cli(rest),
         [command, transport, rest @ ..] if command == "mcp" && transport == "stdio" => {
             run_mcp_stdio(rest)
@@ -221,6 +230,24 @@ pub fn dispatch_cli_or_run() -> Result<()> {
             run();
             Ok(())
         }
+    }
+}
+
+fn run_recovery_cli(args: &[String]) -> Result<()> {
+    let startup = bootstrap_cli_state()?;
+
+    match args {
+        [command, flag, value] if command == "import-seed" && flag == "--file" => {
+            let report = import_recovery_seed(&startup.data_store(), value)?;
+            print_json(&report)
+        }
+        [command, value] if command == "import-seed" => {
+            let report = import_recovery_seed(&startup.data_store(), value)?;
+            print_json(&report)
+        }
+        _ => bail!(
+            "unsupported recovery command, expected `entrance recovery import-seed --file <path>`"
+        ),
     }
 }
 
@@ -377,7 +404,9 @@ fn prepare_forge_dispatch_cli(project_dir: Option<String>) -> Result<PreparedAge
     prepare_forge_dispatch_with_startup(&startup, project_dir)
 }
 
-fn verify_forge_dispatch_cli(project_dir: Option<String>) -> Result<ForgeDispatchVerificationReport> {
+fn verify_forge_dispatch_cli(
+    project_dir: Option<String>,
+) -> Result<ForgeDispatchVerificationReport> {
     let startup = bootstrap_forge_cli_state()?;
     let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
     verify_agent_dispatch(&forge_plugin, project_dir).map_err(anyhow::Error::msg)
@@ -392,9 +421,7 @@ fn bootstrap_forge_mcp_cli_state() -> Result<StartupState> {
     Ok(startup)
 }
 
-fn parse_forge_bootstrap_mcp_cycle_args(
-    args: &[String],
-) -> Result<ForgeBootstrapMcpCycleOptions> {
+fn parse_forge_bootstrap_mcp_cycle_args(args: &[String]) -> Result<ForgeBootstrapMcpCycleOptions> {
     let mut options = ForgeBootstrapMcpCycleOptions {
         project_dir: None,
         model: "codex".to_string(),
@@ -406,9 +433,9 @@ fn parse_forge_bootstrap_mcp_cycle_args(
     while index < args.len() {
         match args[index].as_str() {
             "--project-dir" => {
-                let value = args
-                    .get(index + 1)
-                    .context("`entrance forge bootstrap-mcp-cycle --project-dir` requires a value")?;
+                let value = args.get(index + 1).context(
+                    "`entrance forge bootstrap-mcp-cycle --project-dir` requires a value",
+                )?;
                 options.project_dir = Some(value.to_string());
                 index += 2;
             }
@@ -424,22 +451,20 @@ fn parse_forge_bootstrap_mcp_cycle_args(
                 index += 2;
             }
             "--agent-command" => {
-                let value = args
-                    .get(index + 1)
-                    .context("`entrance forge bootstrap-mcp-cycle --agent-command` requires a value")?;
+                let value = args.get(index + 1).context(
+                    "`entrance forge bootstrap-mcp-cycle --agent-command` requires a value",
+                )?;
                 let trimmed = value.trim();
                 if trimmed.is_empty() {
-                    bail!(
-                        "`entrance forge bootstrap-mcp-cycle --agent-command` must not be empty"
-                    );
+                    bail!("`entrance forge bootstrap-mcp-cycle --agent-command` must not be empty");
                 }
                 options.agent_command = Some(trimmed.to_string());
                 index += 2;
             }
             "--agent-count" => {
-                let value = args
-                    .get(index + 1)
-                    .context("`entrance forge bootstrap-mcp-cycle --agent-count` requires a value")?;
+                let value = args.get(index + 1).context(
+                    "`entrance forge bootstrap-mcp-cycle --agent-count` requires a value",
+                )?;
                 let parsed = value.parse::<usize>().with_context(|| {
                     format!(
                         "`entrance forge bootstrap-mcp-cycle --agent-count` received invalid value `{value}`"
@@ -593,7 +618,10 @@ fn wait_for_terminal_forge_tasks(
                 .context("forge_status should return structuredContent while waiting")?;
             let task_status = json_string(&status, &["task", "status"])
                 .context("forge_status should return a task.status string")?;
-            if matches!(task_status.as_str(), "Done" | "Failed" | "Cancelled" | "Blocked") {
+            if matches!(
+                task_status.as_str(),
+                "Done" | "Failed" | "Cancelled" | "Blocked"
+            ) {
                 terminal_statuses[index] = Some(status);
             } else {
                 all_terminal = false;
@@ -628,9 +656,7 @@ fn assert_surface_role(response: &Value, expected_role: &str) -> Result<()> {
         .and_then(Value::as_str)
         .context("MCP initialize should report entranceSurface.actorRole")?;
     if actual_role != expected_role {
-        bail!(
-            "child MCP surface role mismatch: expected `{expected_role}`, got `{actual_role}`"
-        );
+        bail!("child MCP surface role mismatch: expected `{expected_role}`, got `{actual_role}`");
     }
 
     Ok(())
@@ -993,17 +1019,17 @@ mod tests {
         fs::create_dir_all(&app_data_dir)?;
         let mut config = EntranceConfig::default();
         config.plugins.forge.enabled = true;
-        fs::write(
-            app_data_dir.join("entrance.toml"),
-            render_config(&config)?,
-        )?;
+        fs::write(app_data_dir.join("entrance.toml"), render_config(&config)?)?;
 
         let project_root = temp_dir.path().join("Entrance");
         let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
         fs::create_dir_all(&bootstrap_skill)?;
         fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
 
-        let managed_worktree = app_data_dir.join("worktrees").join("Entrance").join("feat-MYT-48");
+        let managed_worktree = app_data_dir
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
         fs::create_dir_all(&managed_worktree)?;
         init_git_repo(&managed_worktree);
 
@@ -1065,17 +1091,17 @@ mod tests {
         fs::create_dir_all(&app_data_dir)?;
         let mut config = EntranceConfig::default();
         config.plugins.forge.enabled = true;
-        fs::write(
-            app_data_dir.join("entrance.toml"),
-            render_config(&config)?,
-        )?;
+        fs::write(app_data_dir.join("entrance.toml"), render_config(&config)?)?;
 
         let project_root = temp_dir.path().join("Entrance");
         let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
         fs::create_dir_all(&bootstrap_skill)?;
         fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
 
-        let managed_worktree = app_data_dir.join("worktrees").join("Entrance").join("feat-MYT-48");
+        let managed_worktree = app_data_dir
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
         fs::create_dir_all(&managed_worktree)?;
         init_git_repo(&managed_worktree);
 

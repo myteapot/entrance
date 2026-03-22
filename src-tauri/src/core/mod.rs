@@ -20,6 +20,7 @@ pub mod mcp_server;
 pub mod mcp_stdio_client;
 pub mod permission;
 pub mod plugin_manager;
+pub mod recovery;
 pub mod supervision;
 pub mod theme;
 pub mod updater;
