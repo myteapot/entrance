@@ -12,12 +12,18 @@ use tauri::{Emitter, Manager};
 
 use core::{
     bootstrap_for_paths,
+    landing::{
+        import_linear_entrance_snapshot, list_landing_ingest_runs, list_landing_mirror_items,
+        list_landing_planning_items, list_landing_unreconciled_items, LandingImportReport,
+        LandingMirrorSummary, LandingPlanningItemSummary,
+    },
     event_bus::EventBus,
     hotkey,
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     plugin_manager::PluginManager,
     resolve_app_data_dir,
+    data_store::StoredSourceIngestRun,
     theme::ThemeSystem,
     AppPaths, StartupState,
 };
@@ -162,6 +168,7 @@ fn launcher_hotkey(state: tauri::State<'_, LauncherUiState>) -> Option<String> {
 pub fn dispatch_cli_or_run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
+        [command, rest @ ..] if command == "landing" => run_landing_cli(rest),
         [command, transport] if command == "mcp" && transport == "stdio" => run_mcp_stdio(),
         [command, transport, rest @ ..] if command == "mcp" && transport == "http" => {
             run_mcp_http(rest)
@@ -173,6 +180,34 @@ pub fn dispatch_cli_or_run() -> Result<()> {
             run();
             Ok(())
         }
+    }
+}
+
+fn run_landing_cli(args: &[String]) -> Result<()> {
+    let startup = bootstrap_cli_state()?;
+
+    match args {
+        [command, flag, value] if command == "import" && flag == "--file" => {
+            let report = import_linear_entrance_snapshot(&startup.data_store(), value)?;
+            print_json(&report)
+        }
+        [command, value] if command == "import" => {
+            let report = import_linear_entrance_snapshot(&startup.data_store(), value)?;
+            print_json(&report)
+        }
+        [command] if command == "runs" => print_json(&list_landing_ingest_runs(&startup.data_store())?),
+        [command] if command == "mirrors" => {
+            print_json(&list_landing_mirror_items(&startup.data_store())?)
+        }
+        [command] if command == "planning" => {
+            print_json(&list_landing_planning_items(&startup.data_store())?)
+        }
+        [command] if command == "unreconciled" => {
+            print_json(&list_landing_unreconciled_items(&startup.data_store())?)
+        }
+        _ => bail!(
+            "unsupported landing command, expected one of `entrance landing import --file <path>`, `entrance landing runs`, `entrance landing mirrors`, `entrance landing planning`, or `entrance landing unreconciled`"
+        ),
     }
 }
 
@@ -226,8 +261,7 @@ fn run_mcp_http(args: &[String]) -> Result<()> {
 }
 
 fn bootstrap_headless() -> Result<StartupState> {
-    let app_paths = AppPaths::new(resolve_app_data_dir()?);
-    let startup = bootstrap_for_paths(app_paths)?;
+    let startup = bootstrap_cli_state()?;
     if !startup.mcp_enabled() {
         bail!("MCP server is disabled in entrance.toml");
     }
@@ -239,6 +273,11 @@ fn bootstrap_headless() -> Result<StartupState> {
     )?;
 
     Ok(startup)
+}
+
+fn bootstrap_cli_state() -> Result<StartupState> {
+    let app_paths = AppPaths::new(resolve_app_data_dir()?);
+    bootstrap_for_paths(app_paths)
 }
 
 fn build_mcp_server(startup: &StartupState, transport: McpTransport) -> Result<McpServer> {
@@ -338,6 +377,42 @@ fn dashboard_summary(
     })
 }
 
+#[tauri::command]
+fn landing_import_snapshot(
+    path: String,
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<LandingImportReport, String> {
+    import_linear_entrance_snapshot(&data_store, path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn landing_list_ingest_runs(
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<Vec<StoredSourceIngestRun>, String> {
+    list_landing_ingest_runs(&data_store).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn landing_list_mirror_items(
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<Vec<LandingMirrorSummary>, String> {
+    list_landing_mirror_items(&data_store).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn landing_list_planning_items(
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<Vec<LandingPlanningItemSummary>, String> {
+    list_landing_planning_items(&data_store).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn landing_list_unreconciled_items(
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<Vec<LandingPlanningItemSummary>, String> {
+    list_landing_unreconciled_items(&data_store).map_err(|error| error.to_string())
+}
+
 fn update_latest_timestamp(current: &mut Option<String>, candidate: Option<&str>) {
     let Some(candidate) = candidate.filter(|value| !value.is_empty()) else {
         return;
@@ -352,6 +427,14 @@ fn update_latest_timestamp(current: &mut Option<String>, candidate: Option<&str>
     }
 }
 
+fn print_json<T: Serialize>(value: &T) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).context("failed to serialize CLI output")?
+    );
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -364,6 +447,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             launcher_hotkey,
             dashboard_summary,
+            landing_import_snapshot,
+            landing_list_ingest_runs,
+            landing_list_mirror_items,
+            landing_list_planning_items,
+            landing_list_unreconciled_items,
             core::theme::get_theme,
             core::theme::set_theme,
             launcher_search,

@@ -10,7 +10,8 @@ use sha2::{Digest, Sha256};
 
 use crate::core::data_store::{
     DataStore, NewPlanningItemLink, NewPromotionRecord, NewSourceArtifact, NewSourceIngestRun,
-    SourceIngestRunCompletion, UpsertExternalIssueMirror, UpsertPlanningItem,
+    SourceIngestRunCompletion, StoredExternalIssueMirror, StoredPlanningItem,
+    StoredPromotionRecord, StoredSourceIngestRun, UpsertExternalIssueMirror, UpsertPlanningItem,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +27,24 @@ pub struct LandingImportReport {
     pub imported_document_count: i64,
     pub imported_milestone_count: i64,
     pub imported_planning_item_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LandingMirrorSummary {
+    #[serde(flatten)]
+    pub mirror: StoredExternalIssueMirror,
+    pub promotion_state: Option<String>,
+    pub promotion_reason: Option<String>,
+    pub promotion_recorded_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LandingPlanningItemSummary {
+    #[serde(flatten)]
+    pub planning_item: StoredPlanningItem,
+    pub promotion_state: Option<String>,
+    pub promotion_reason: Option<String>,
+    pub promotion_recorded_at: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -363,6 +382,14 @@ fn import_snapshot_contents(
             archived_at: issue.archived_at.as_deref(),
         })?;
 
+        data_store.append_promotion_record(NewPromotionRecord {
+            subject_kind: "external_issue_mirror",
+            subject_id: mirror.id,
+            promotion_state: "storage_only",
+            reason: Some("captured from external issue snapshot"),
+            source_ingest_run_id: Some(ingest_run_id),
+        })?;
+
         let planning_item = data_store.upsert_planning_item(UpsertPlanningItem {
             canonical_key: Some(&issue_key),
             item_type: "issue",
@@ -451,6 +478,68 @@ fn import_snapshot_contents(
     }
 
     Ok(snapshot_artifact.id)
+}
+
+pub fn list_landing_ingest_runs(data_store: &DataStore) -> Result<Vec<StoredSourceIngestRun>> {
+    data_store.list_source_ingest_runs()
+}
+
+pub fn list_landing_mirror_items(data_store: &DataStore) -> Result<Vec<LandingMirrorSummary>> {
+    let mirrors = data_store.list_external_issue_mirrors()?;
+    let latest_promotions = latest_promotion_map(data_store.list_promotion_records()?);
+
+    Ok(mirrors
+        .into_iter()
+        .map(|mirror| {
+            let promotion = latest_promotions.get(&("external_issue_mirror".to_string(), mirror.id));
+            LandingMirrorSummary {
+                mirror,
+                promotion_state: promotion.map(|record| record.promotion_state.clone()),
+                promotion_reason: promotion.and_then(|record| record.reason.clone()),
+                promotion_recorded_at: promotion.map(|record| record.created_at.clone()),
+            }
+        })
+        .collect())
+}
+
+pub fn list_landing_planning_items(
+    data_store: &DataStore,
+) -> Result<Vec<LandingPlanningItemSummary>> {
+    let items = data_store.list_planning_items()?;
+    let latest_promotions = latest_promotion_map(data_store.list_promotion_records()?);
+
+    Ok(items
+        .into_iter()
+        .map(|planning_item| {
+            let promotion = latest_promotions.get(&("planning_item".to_string(), planning_item.id));
+            LandingPlanningItemSummary {
+                planning_item,
+                promotion_state: promotion.map(|record| record.promotion_state.clone()),
+                promotion_reason: promotion.and_then(|record| record.reason.clone()),
+                promotion_recorded_at: promotion.map(|record| record.created_at.clone()),
+            }
+        })
+        .collect())
+}
+
+pub fn list_landing_unreconciled_items(
+    data_store: &DataStore,
+) -> Result<Vec<LandingPlanningItemSummary>> {
+    let items = data_store.list_unreconciled_planning_items()?;
+    let latest_promotions = latest_promotion_map(data_store.list_promotion_records()?);
+
+    Ok(items
+        .into_iter()
+        .map(|planning_item| {
+            let promotion = latest_promotions.get(&("planning_item".to_string(), planning_item.id));
+            LandingPlanningItemSummary {
+                planning_item,
+                promotion_state: promotion.map(|record| record.promotion_state.clone()),
+                promotion_reason: promotion.and_then(|record| record.reason.clone()),
+                promotion_recorded_at: promotion.map(|record| record.created_at.clone()),
+            }
+        })
+        .collect())
 }
 
 fn import_relation_links(
@@ -558,6 +647,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{digest:x}")
 }
 
+fn latest_promotion_map(
+    records: Vec<StoredPromotionRecord>,
+) -> HashMap<(String, i64), StoredPromotionRecord> {
+    let mut latest = HashMap::new();
+
+    for record in records {
+        let key = (record.subject_kind.clone(), record.subject_id);
+        latest.entry(key).or_insert(record);
+    }
+
+    latest
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -592,7 +694,7 @@ mod tests {
         assert_eq!(planning_items.len(), 3);
         assert!(links.iter().any(|link| link.link_type == "mirrors"));
         assert!(links.iter().any(|link| link.link_type == "blocks"));
-        assert_eq!(promotions.len(), 3);
+        assert_eq!(promotions.len(), 5);
 
         let _ = fs::remove_file(snapshot_path);
         Ok(())
