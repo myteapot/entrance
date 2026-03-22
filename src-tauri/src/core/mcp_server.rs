@@ -18,8 +18,9 @@ use serde_json::{json, Value};
 
 use crate::plugins::{
     forge::{
-        build_agent_task_request, prepare_agent_dispatch_blocking, prepare_dev_dispatch_blocking,
-        verify_agent_dispatch, verify_dev_dispatch, CreateTaskRequest, ForgePlugin,
+        build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
+        prepare_dev_dispatch_blocking, verify_agent_dispatch, verify_dev_dispatch,
+        CreateTaskRequest, ForgePlugin,
     },
     launcher::LauncherPlugin,
     vault::VaultPlugin,
@@ -195,6 +196,7 @@ impl McpServer {
             "forge_prepare_dev_dispatch" => self.handle_forge_prepare_dev_dispatch(arguments),
             "forge_verify_dev_dispatch" => self.handle_forge_verify_dev_dispatch(arguments),
             "forge_dispatch_agent" => self.handle_forge_dispatch_agent(arguments),
+            "forge_dispatch_dev" => self.handle_forge_dispatch_dev(arguments),
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
@@ -334,6 +336,49 @@ impl McpServer {
 
         Ok(json!({
             "dispatch_role": "agent",
+            "task_id": task.id,
+            "task": task,
+        }))
+    }
+
+    fn handle_forge_dispatch_dev(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let issue_id = require_string_any(arguments, &["issue_id", "issueId"])?;
+        let worktree_path = require_string_any(arguments, &["worktree_path", "worktreePath"])?;
+        let model = require_string(arguments, "model")?;
+        let prompt = require_string(arguments, "prompt")?;
+        let required_tokens =
+            require_string_list(arguments, &["required_tokens", "requiredTokens"])?;
+        let agent_command = optional_string(arguments, "agent_command")
+            .or_else(|| optional_string(arguments, "agentCommand"))
+            .map(str::to_string);
+
+        let request = build_dev_task_request(
+            issue_id.to_string(),
+            worktree_path.to_string(),
+            model.to_string(),
+            prompt.to_string(),
+            required_tokens,
+            agent_command,
+        )
+        .map_err(anyhow::Error::msg)?;
+
+        let task_id = forge.create_task(request).map_err(anyhow::Error::msg)?;
+        forge
+            .engine()
+            .spawn_task(task_id)
+            .with_context(|| format!("failed to start forge task `{task_id}`"))?;
+
+        let task = forge
+            .get_task(task_id)?
+            .ok_or_else(|| anyhow!("forge task `{task_id}` disappeared after creation"))?;
+
+        Ok(json!({
+            "dispatch_role": "dev",
             "task_id": task.id,
             "task": task,
         }))
@@ -620,6 +665,34 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
             }),
         });
         tools.push(McpToolDescriptor {
+            name: "forge_dispatch_dev",
+            description: "Create and start a dev-lane Forge dispatch from issue, worktree, model, and prompt inputs.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "issue_id": { "type": "string", "description": "Issue identifier for the dev dispatch." },
+                    "issueId": { "type": "string", "description": "CamelCase alias for issue_id." },
+                    "worktree_path": { "type": "string", "description": "Managed worktree path where Dev should run." },
+                    "worktreePath": { "type": "string", "description": "CamelCase alias for worktree_path." },
+                    "model": { "type": "string", "description": "Dev runner or runner:model string such as codex or codex:gpt-5-codex." },
+                    "prompt": { "type": "string", "description": "Prompt sent to the Dev role." },
+                    "required_tokens": {
+                        "type": "array",
+                        "description": "Optional provider tokens that must be available before launch.",
+                        "items": { "type": "string" }
+                    },
+                    "requiredTokens": {
+                        "type": "array",
+                        "description": "CamelCase alias for required_tokens.",
+                        "items": { "type": "string" }
+                    },
+                    "agent_command": { "type": "string", "description": "Optional executable path overriding the default CLI." },
+                    "agentCommand": { "type": "string", "description": "CamelCase alias for agent_command." }
+                },
+                "required": ["issue_id", "worktree_path", "model", "prompt"]
+            }),
+        });
+        tools.push(McpToolDescriptor {
             name: "forge_status",
             description: "Fetch a Forge task and its latest execution status.",
             input_schema: json!({
@@ -896,6 +969,7 @@ mod tests {
                 "forge_prepare_dev_dispatch",
                 "forge_verify_dev_dispatch",
                 "forge_dispatch_agent",
+                "forge_dispatch_dev",
                 "forge_status",
                 "forge_cancel",
                 "vault_get_token",

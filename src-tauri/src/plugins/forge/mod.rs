@@ -1086,6 +1086,10 @@ impl Plugin for ForgePlugin {
                 description: "Launch an Agent task from issue, worktree and prompt",
             },
             McpToolDefinition {
+                name: "forge.run_dev",
+                description: "Launch a Dev task from issue, worktree and prompt",
+            },
+            McpToolDefinition {
                 name: "forge.prepare_agent_dispatch",
                 description: "Prepare an Entrance-owned agent-lane dispatch from the current worktree context",
             },

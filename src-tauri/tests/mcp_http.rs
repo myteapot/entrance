@@ -122,6 +122,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
             "forge_prepare_dev_dispatch",
             "forge_verify_dev_dispatch",
             "forge_dispatch_agent",
+            "forge_dispatch_dev",
             "forge_status",
             "forge_cancel",
             "vault_get_token",
@@ -572,6 +573,130 @@ fn external_client_can_dispatch_agent_over_http_with_agent_lane_runtime() -> Res
     let metadata: Value =
         serde_json::from_str(&stored.3).context("task metadata should be JSON")?;
     assert_eq!(metadata["dispatch_role"], "agent");
+    assert_eq!(metadata["issue_id"], "MYT-48");
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_dispatch_dev_over_http_with_dev_lane_runtime() -> Result<()> {
+    let app_dir = TempAppDir::new("forge-dispatch-dev")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?
+        .to_string_lossy()
+        .to_string();
+
+    let port = reserve_port()?;
+    let mut server = spawn_mcp_http(app_dir.path(), port, "/mcp", Some("test-openai-token"))?;
+
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["id"], "initialize");
+    assert_eq!(initialize["result"]["protocolVersion"], "2024-11-05");
+
+    let prepare = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-prepare-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_prepare_dev_dispatch",
+            "arguments": {
+                "project_dir": project_root
+            }
+        }
+    }))?;
+    assert_eq!(prepare["result"]["isError"], false);
+
+    let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
+    let prompt = prepare["result"]["structuredContent"]["prompt"]
+        .as_str()
+        .context("prepared dev dispatch prompt should be a string")?;
+
+    let dispatch = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-dispatch-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_dispatch_dev",
+            "arguments": {
+                "issue_id": "MYT-48",
+                "worktree_path": worktree_path,
+                "model": "codex",
+                "prompt": prompt,
+                "agent_command": agent_command
+            }
+        }
+    }))?;
+    assert_eq!(dispatch["id"], "forge-dispatch-dev");
+    assert_eq!(dispatch["result"]["isError"], false);
+    assert_eq!(
+        dispatch["result"]["structuredContent"]["dispatch_role"],
+        "dev"
+    );
+
+    let task_id = dispatch["result"]["structuredContent"]["task_id"]
+        .as_i64()
+        .context("forge_dispatch_dev should return a numeric task_id")?;
+    assert!(task_id > 0);
+
+    let task = &dispatch["result"]["structuredContent"]["task"];
+    assert_eq!(task["working_dir"], worktree_path);
+    let metadata = task["metadata"]
+        .as_str()
+        .context("forge_dispatch_dev task metadata should be a string")?;
+    let metadata: Value =
+        serde_json::from_str(metadata).context("forge_dispatch_dev metadata should be JSON")?;
+    assert_eq!(metadata["dispatch_role"], "dev");
+    assert_eq!(metadata["kind"], "dev_dispatch");
+
+    let status = wait_for_terminal_status_http(&mut server, task_id)?;
+    assert_eq!(
+        status["result"]["structuredContent"]["task"]["status"],
+        "Done"
+    );
+
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let stored = connection.query_row(
+        "SELECT status, command, working_dir, metadata FROM plugin_forge_tasks WHERE id = ?1",
+        [task_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    )?;
+
+    assert_eq!(stored.0, "Done");
+    assert_eq!(stored.1, agent_command);
+    assert_eq!(stored.2.as_deref(), Some(worktree_path.as_str()));
+    let metadata: Value =
+        serde_json::from_str(&stored.3).context("task metadata should be JSON")?;
+    assert_eq!(metadata["dispatch_role"], "dev");
     assert_eq!(metadata["issue_id"], "MYT-48");
 
     Ok(())
