@@ -30,7 +30,7 @@ use core::{
     plugin_manager::PluginManager,
     recovery::{
         import_recovery_seed, list_recovery_seed_rows, list_recovery_seed_runs,
-        RecoverySeedRowsQuery,
+        promote_safe_recovery_seed_v0, RecoverySeedPromotionQuery, RecoverySeedRowsQuery,
     },
     resolve_app_data_dir,
     theme::ThemeSystem,
@@ -253,8 +253,12 @@ fn run_recovery_cli(args: &[String]) -> Result<()> {
             let query = parse_recovery_rows_args(rest)?;
             print_json(&list_recovery_seed_rows(&startup.data_store(), query)?)
         }
+        [command, rest @ ..] if command == "promote-safe-v0" => {
+            let query = parse_recovery_promotion_args(rest)?;
+            print_json(&promote_safe_recovery_seed_v0(&startup.data_store(), query)?)
+        }
         _ => bail!(
-            "unsupported recovery command, expected `entrance recovery import-seed --file <path>`, `entrance recovery runs`, or `entrance recovery rows [--ingest-run-id <id>] [--table <name>] [--limit <n>]`"
+            "unsupported recovery command, expected `entrance recovery import-seed --file <path>`, `entrance recovery runs`, `entrance recovery rows [--ingest-run-id <id>] [--table <name>] [--limit <n>]`, or `entrance recovery promote-safe-v0 [--ingest-run-id <id>] [--table <name>]`"
         ),
     }
 }
@@ -301,6 +305,41 @@ fn parse_recovery_rows_args(args: &[String]) -> Result<RecoverySeedRowsQuery> {
                 index += 2;
             }
             other => bail!("unsupported recovery rows argument `{other}`"),
+        }
+    }
+
+    Ok(query)
+}
+
+fn parse_recovery_promotion_args(args: &[String]) -> Result<RecoverySeedPromotionQuery> {
+    let mut query = RecoverySeedPromotionQuery::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--ingest-run-id" => {
+                let value = args.get(index + 1).context(
+                    "`entrance recovery promote-safe-v0 --ingest-run-id` requires a value",
+                )?;
+                query.ingest_run_id = Some(
+                    value
+                        .parse::<i64>()
+                        .with_context(|| format!("invalid recovery ingest run id `{value}`"))?,
+                );
+                index += 2;
+            }
+            "--table" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance recovery promote-safe-v0 --table` requires a value")?;
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    bail!("`entrance recovery promote-safe-v0 --table` must not be empty");
+                }
+                query.table_name = Some(trimmed.to_string());
+                index += 2;
+            }
+            other => bail!("unsupported recovery promote-safe-v0 argument `{other}`"),
         }
     }
 

@@ -174,6 +174,68 @@ fn recovery_cli_lists_absorbed_seed_runs_and_rows() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn recovery_promote_safe_v0_cli_promotes_stable_memory_families_idempotently() -> Result<()> {
+    let temp_dir = TempDir::new("promote-safe-v0-runtime-db")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+    seed_preexisting_runtime_db(&app_data_dir.join("entrance.db"))?;
+
+    let recovery_seed_path = write_promotable_recovery_seed(temp_dir.path())?;
+    run_recovery_cli(
+        &app_data_dir,
+        &[
+            "recovery",
+            "import-seed",
+            "--file",
+            recovery_seed_path
+                .to_str()
+                .context("recovery seed path should be valid UTF-8")?,
+        ],
+    )?;
+
+    let promote_output = run_recovery_cli(&app_data_dir, &["recovery", "promote-safe-v0"])?;
+    let report: Value = serde_json::from_str(&promote_output)
+        .context("recovery promote-safe-v0 output should be valid JSON")?;
+    assert_eq!(report["total_candidate_rows"], 4);
+    assert_eq!(report["upserted_row_count"], 4);
+    assert_eq!(report["new_promotion_record_count"], 4);
+    assert_eq!(report["rows_by_table"]["documents"], 1);
+    assert_eq!(report["rows_by_table"]["todos"], 1);
+    assert_eq!(report["rows_by_table"]["instincts"], 1);
+    assert_eq!(report["rows_by_table"]["coffee_chats"], 1);
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "documents")?, 1);
+    assert_eq!(count_rows(&connection, "todos")?, 1);
+    assert_eq!(count_rows(&connection, "instincts")?, 1);
+    assert_eq!(count_rows(&connection, "coffee_chats")?, 1);
+
+    assert!(table_has_column(&connection, "todos", "due_on")?);
+    assert!(table_has_column(&connection, "todos", "reminder_status")?);
+    assert!(table_has_column(
+        &connection,
+        "instincts",
+        "lifecycle_status"
+    )?);
+    assert!(table_has_column(&connection, "instincts", "temperature")?);
+    assert!(table_has_column(
+        &connection,
+        "coffee_chats",
+        "temperature"
+    )?);
+
+    let rerun_output = run_recovery_cli(&app_data_dir, &["recovery", "promote-safe-v0"])?;
+    let rerun: Value = serde_json::from_str(&rerun_output)
+        .context("recovery promote-safe-v0 rerun output should be valid JSON")?;
+    assert_eq!(rerun["upserted_row_count"], 4);
+    assert_eq!(rerun["new_promotion_record_count"], 0);
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(
@@ -522,7 +584,164 @@ fn write_test_recovery_seed(root: &Path) -> Result<PathBuf> {
     Ok(db_path)
 }
 
+fn write_promotable_recovery_seed(root: &Path) -> Result<PathBuf> {
+    let db_path = root.join("promotable-recovery-seed.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute_batch(
+        r#"
+        CREATE TABLE schema_meta (
+            version INTEGER,
+            applied_at TEXT
+        );
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            category TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            priority INTEGER NOT NULL DEFAULT 2,
+            project TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            done_at TEXT,
+            temperature TEXT NOT NULL DEFAULT 'warm',
+            due_on TEXT NOT NULL DEFAULT '',
+            remind_every_days INTEGER NOT NULL DEFAULT 0,
+            remind_next_on TEXT NOT NULL DEFAULT '',
+            last_reminded_at TEXT NOT NULL DEFAULT '',
+            reminder_status TEXT NOT NULL DEFAULT 'none'
+        );
+        CREATE TABLE instincts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern TEXT NOT NULL,
+            action TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.8,
+            source TEXT NOT NULL DEFAULT '',
+            ref TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            surfaced_to TEXT NOT NULL DEFAULT '',
+            review_status TEXT NOT NULL DEFAULT '',
+            origin_type TEXT NOT NULL DEFAULT 'manual',
+            lifecycle_status TEXT NOT NULL DEFAULT 'active',
+            temperature TEXT NOT NULL DEFAULT 'warm',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE coffee_chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            retro TEXT NOT NULL,
+            forward TEXT NOT NULL,
+            priorities TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            temperature TEXT NOT NULL DEFAULT 'warm'
+        );
+        "#,
+    )?;
+
+    connection.execute(
+        "INSERT INTO schema_meta (version, applied_at) VALUES (?1, ?2)",
+        (8, "2026-03-23T00:00:00Z"),
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO documents (id, slug, title, content, category, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        (
+            1,
+            "promoted-doc",
+            "Promoted doc",
+            "# promoted",
+            "architecture",
+            "2026-03-23T00:00:00Z",
+            "2026-03-23T00:10:00Z",
+        ),
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO todos (
+            id, title, status, priority, project, created_at, done_at, temperature,
+            due_on, remind_every_days, remind_next_on, last_reminded_at, reminder_status
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12)
+        "#,
+        (
+            1,
+            "Promoted todo",
+            "pending",
+            1,
+            "Entrance",
+            "2026-03-23T00:15:00Z",
+            "warm",
+            "2026-03-30",
+            0,
+            "",
+            "",
+            "none",
+        ),
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO instincts (
+            id, pattern, action, confidence, source, ref, created_at, status,
+            surfaced_to, review_status, origin_type, lifecycle_status, temperature, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        "#,
+        (
+            1,
+            "When recovery row is stable",
+            "promote into cold memory",
+            0.9f64,
+            "recovery",
+            "seed",
+            "2026-03-23T00:20:00Z",
+            "active",
+            "",
+            "approved",
+            "manual",
+            "active",
+            "warm",
+            "2026-03-23T00:25:00Z",
+        ),
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO coffee_chats (
+            id, project, stage, retro, forward, priorities, created_at, temperature
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+        (
+            1,
+            "Entrance",
+            "bootstrap",
+            "absorbed recovery seed",
+            "promote stable memory",
+            "documents,todos",
+            "2026-03-23T00:30:00Z",
+            "warm",
+        ),
+    )?;
+
+    Ok(db_path)
+}
+
 fn count_rows(connection: &Connection, table: &str) -> Result<i64> {
     let query = format!("SELECT COUNT(*) FROM {table}");
     Ok(connection.query_row(&query, [], |row| row.get(0))?)
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let query = format!("PRAGMA table_info({table})");
+    let mut statement = connection.prepare(&query)?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let columns = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns.iter().any(|name| name == column))
 }

@@ -244,6 +244,64 @@ pub struct StoredPromotionRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct UpsertDocumentRecord<'a> {
+    pub id: i64,
+    pub slug: &'a str,
+    pub title: &'a str,
+    pub content: &'a str,
+    pub category: &'a str,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertTodoRecord<'a> {
+    pub id: i64,
+    pub title: &'a str,
+    pub status: &'a str,
+    pub priority: i64,
+    pub project: &'a str,
+    pub created_at: &'a str,
+    pub done_at: Option<&'a str>,
+    pub temperature: &'a str,
+    pub due_on: &'a str,
+    pub remind_every_days: i64,
+    pub remind_next_on: &'a str,
+    pub last_reminded_at: &'a str,
+    pub reminder_status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertInstinctRecord<'a> {
+    pub id: i64,
+    pub pattern: &'a str,
+    pub action: &'a str,
+    pub confidence: f64,
+    pub source: &'a str,
+    pub reference: &'a str,
+    pub created_at: &'a str,
+    pub status: &'a str,
+    pub surfaced_to: &'a str,
+    pub review_status: &'a str,
+    pub origin_type: &'a str,
+    pub lifecycle_status: &'a str,
+    pub temperature: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertCoffeeChatRecord<'a> {
+    pub id: i64,
+    pub project: &'a str,
+    pub stage: &'a str,
+    pub retro: &'a str,
+    pub forward: &'a str,
+    pub priorities: &'a str,
+    pub created_at: &'a str,
+    pub temperature: &'a str,
+}
+
+#[derive(Debug, Clone)]
 pub struct NewSourceIngestRun<'a> {
     pub source_system: &'a str,
     pub source_workspace: &'a str,
@@ -1642,6 +1700,152 @@ impl DataStore {
         })
     }
 
+    pub fn upsert_document_record(&self, record: UpsertDocumentRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO documents (
+                    id, slug, title, content, category, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ON CONFLICT(id) DO UPDATE SET
+                    slug = excluded.slug,
+                    title = excluded.title,
+                    content = excluded.content,
+                    category = excluded.category,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.slug,
+                    record.title,
+                    record.content,
+                    record.category,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_todo_record(&self, record: UpsertTodoRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO todos (
+                    id, title, status, priority, project, created_at, done_at, temperature,
+                    due_on, remind_every_days, remind_next_on, last_reminded_at, reminder_status
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    status = excluded.status,
+                    priority = excluded.priority,
+                    project = excluded.project,
+                    created_at = excluded.created_at,
+                    done_at = excluded.done_at,
+                    temperature = excluded.temperature,
+                    due_on = excluded.due_on,
+                    remind_every_days = excluded.remind_every_days,
+                    remind_next_on = excluded.remind_next_on,
+                    last_reminded_at = excluded.last_reminded_at,
+                    reminder_status = excluded.reminder_status
+                "#,
+                params![
+                    record.id,
+                    record.title,
+                    record.status,
+                    record.priority,
+                    record.project,
+                    record.created_at,
+                    record.done_at,
+                    record.temperature,
+                    record.due_on,
+                    record.remind_every_days,
+                    record.remind_next_on,
+                    record.last_reminded_at,
+                    record.reminder_status,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_instinct_record(&self, record: UpsertInstinctRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO instincts (
+                    id, pattern, action, confidence, source, ref, created_at, status,
+                    surfaced_to, review_status, origin_type, lifecycle_status, temperature, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                ON CONFLICT(id) DO UPDATE SET
+                    pattern = excluded.pattern,
+                    action = excluded.action,
+                    confidence = excluded.confidence,
+                    source = excluded.source,
+                    ref = excluded.ref,
+                    created_at = excluded.created_at,
+                    status = excluded.status,
+                    surfaced_to = excluded.surfaced_to,
+                    review_status = excluded.review_status,
+                    origin_type = excluded.origin_type,
+                    lifecycle_status = excluded.lifecycle_status,
+                    temperature = excluded.temperature,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.pattern,
+                    record.action,
+                    record.confidence,
+                    record.source,
+                    record.reference,
+                    record.created_at,
+                    record.status,
+                    record.surfaced_to,
+                    record.review_status,
+                    record.origin_type,
+                    record.lifecycle_status,
+                    record.temperature,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_coffee_chat_record(&self, record: UpsertCoffeeChatRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO coffee_chats (
+                    id, project, stage, retro, forward, priorities, created_at, temperature
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                    project = excluded.project,
+                    stage = excluded.stage,
+                    retro = excluded.retro,
+                    forward = excluded.forward,
+                    priorities = excluded.priorities,
+                    created_at = excluded.created_at,
+                    temperature = excluded.temperature
+                "#,
+                params![
+                    record.id,
+                    record.project,
+                    record.stage,
+                    record.retro,
+                    record.forward,
+                    record.priorities,
+                    record.created_at,
+                    record.temperature,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
     fn migrate(&self, migration_plan: MigrationPlan<'_>) -> Result<()> {
         self.with_connection(|connection| {
             for migration in migration_plan
@@ -1653,6 +1857,7 @@ impl DataStore {
                 connection.execute_batch(migration.sql)?;
             }
             ensure_forge_task_columns(connection)?;
+            ensure_curated_memory_tables(connection)?;
             Ok(())
         })
     }
@@ -2194,6 +2399,151 @@ fn ensure_forge_task_columns(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_curated_memory_tables(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS documents (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug        TEXT NOT NULL,
+            title       TEXT NOT NULL,
+            content     TEXT NOT NULL,
+            category    TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS todos (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            title               TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'pending',
+            priority            INTEGER NOT NULL DEFAULT 2,
+            project             TEXT NOT NULL DEFAULT '',
+            created_at          TEXT NOT NULL,
+            done_at             TEXT,
+            temperature         TEXT NOT NULL DEFAULT 'warm',
+            due_on              TEXT NOT NULL DEFAULT '',
+            remind_every_days   INTEGER NOT NULL DEFAULT 0,
+            remind_next_on      TEXT NOT NULL DEFAULT '',
+            last_reminded_at    TEXT NOT NULL DEFAULT '',
+            reminder_status     TEXT NOT NULL DEFAULT 'none'
+        );
+
+        CREATE TABLE IF NOT EXISTS instincts (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern             TEXT NOT NULL,
+            action              TEXT NOT NULL,
+            confidence          REAL NOT NULL DEFAULT 0.8,
+            source              TEXT NOT NULL DEFAULT '',
+            ref                 TEXT NOT NULL DEFAULT '',
+            created_at          TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'active',
+            surfaced_to         TEXT NOT NULL DEFAULT '',
+            review_status       TEXT NOT NULL DEFAULT '',
+            origin_type         TEXT NOT NULL DEFAULT 'manual',
+            lifecycle_status    TEXT NOT NULL DEFAULT 'active',
+            temperature         TEXT NOT NULL DEFAULT 'warm',
+            updated_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS coffee_chats (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            project     TEXT NOT NULL,
+            stage       TEXT NOT NULL,
+            retro       TEXT NOT NULL,
+            forward     TEXT NOT NULL,
+            priorities  TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            temperature TEXT NOT NULL DEFAULT 'warm'
+        );
+        "#,
+    )?;
+
+    ensure_table_column(
+        connection,
+        "todos",
+        "temperature",
+        "ALTER TABLE todos ADD COLUMN temperature TEXT NOT NULL DEFAULT 'warm'",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "due_on",
+        "ALTER TABLE todos ADD COLUMN due_on TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "remind_every_days",
+        "ALTER TABLE todos ADD COLUMN remind_every_days INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "remind_next_on",
+        "ALTER TABLE todos ADD COLUMN remind_next_on TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "last_reminded_at",
+        "ALTER TABLE todos ADD COLUMN last_reminded_at TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "reminder_status",
+        "ALTER TABLE todos ADD COLUMN reminder_status TEXT NOT NULL DEFAULT 'none'",
+    )?;
+
+    ensure_table_column(
+        connection,
+        "instincts",
+        "lifecycle_status",
+        "ALTER TABLE instincts ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'active'",
+    )?;
+    ensure_table_column(
+        connection,
+        "instincts",
+        "temperature",
+        "ALTER TABLE instincts ADD COLUMN temperature TEXT NOT NULL DEFAULT 'warm'",
+    )?;
+    ensure_table_column(
+        connection,
+        "instincts",
+        "updated_at",
+        "ALTER TABLE instincts ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    )?;
+
+    ensure_table_column(
+        connection,
+        "coffee_chats",
+        "temperature",
+        "ALTER TABLE coffee_chats ADD COLUMN temperature TEXT NOT NULL DEFAULT 'warm'",
+    )?;
+
+    Ok(())
+}
+
+fn ensure_table_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> Result<()> {
+    if !table_exists(connection, table)? {
+        return Ok(());
+    }
+
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let columns = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|name| name == column) {
+        connection.execute(alter_sql, [])?;
+    }
+
+    Ok(())
+}
+
 fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
     let exists = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
@@ -2254,7 +2604,9 @@ mod tests {
             },
             MigrationStep {
                 name: "0006_create_plugin_forge_dispatch_receipts",
-                sql: include_str!("../../migrations/0006_create_plugin_forge_dispatch_receipts.sql"),
+                sql: include_str!(
+                    "../../migrations/0006_create_plugin_forge_dispatch_receipts.sql"
+                ),
             },
         ]))?;
 
@@ -2287,7 +2639,10 @@ mod tests {
             .get_forge_dispatch_parent_receipt(child_task_id)?
             .expect("child task should have a parent receipt");
         assert_eq!(parent_receipt.parent_task_id, parent_task_id);
-        assert_eq!(parent_receipt.child_dispatch_tool_name, "forge_dispatch_agent");
+        assert_eq!(
+            parent_receipt.child_dispatch_tool_name,
+            "forge_dispatch_agent"
+        );
 
         let child_receipts = store.list_forge_dispatch_child_receipts(parent_task_id)?;
         assert_eq!(child_receipts.len(), 1);

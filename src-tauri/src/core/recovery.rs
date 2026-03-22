@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::core::data_store::{
     DataStore, NewPromotionRecord, NewSourceArtifact, NewSourceIngestRun,
     SourceIngestRunCompletion, StoredPromotionRecord, StoredSourceArtifact, StoredSourceIngestRun,
+    UpsertCoffeeChatRecord, UpsertDocumentRecord, UpsertInstinctRecord, UpsertTodoRecord,
 };
 
 const RECOVERY_SEED_SOURCE_SYSTEM: &str = "recovery_seed";
@@ -30,6 +31,8 @@ const RECOVERY_SEED_TABLES: [&str; 10] = [
     "todos",
     "visions",
 ];
+const SAFE_RECOVERY_PROMOTION_TABLES: [&str; 4] =
+    ["coffee_chats", "documents", "instincts", "todos"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RecoverySeedImportReport {
@@ -80,6 +83,17 @@ pub struct RecoverySeedRowsReport {
     pub rows: Vec<RecoverySeedRowSummary>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoverySeedPromotionReport {
+    pub ingest_run: RecoverySeedRunSummary,
+    pub requested_table: Option<String>,
+    pub promoted_tables: Vec<String>,
+    pub total_candidate_rows: i64,
+    pub upserted_row_count: i64,
+    pub new_promotion_record_count: i64,
+    pub rows_by_table: BTreeMap<String, i64>,
+}
+
 #[derive(Debug)]
 struct RecoverySeedImportProgress {
     imported_row_count: i64,
@@ -124,6 +138,87 @@ pub struct RecoverySeedRowsQuery {
     pub ingest_run_id: Option<i64>,
     pub table_name: Option<String>,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RecoverySeedPromotionQuery {
+    pub ingest_run_id: Option<i64>,
+    pub table_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedDocumentRow {
+    id: i64,
+    slug: String,
+    title: String,
+    content: String,
+    category: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedTodoRow {
+    id: i64,
+    title: String,
+    status: String,
+    priority: i64,
+    project: String,
+    created_at: String,
+    #[serde(default)]
+    done_at: Option<String>,
+    #[serde(default = "default_warm")]
+    temperature: String,
+    #[serde(default)]
+    due_on: String,
+    #[serde(default)]
+    remind_every_days: i64,
+    #[serde(default)]
+    remind_next_on: String,
+    #[serde(default)]
+    last_reminded_at: String,
+    #[serde(default = "default_none")]
+    reminder_status: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedInstinctRow {
+    id: i64,
+    pattern: String,
+    action: String,
+    confidence: f64,
+    #[serde(default)]
+    source: String,
+    #[serde(default, rename = "ref")]
+    reference: String,
+    created_at: String,
+    #[serde(default = "default_active")]
+    status: String,
+    #[serde(default)]
+    surfaced_to: String,
+    #[serde(default)]
+    review_status: String,
+    #[serde(default)]
+    origin_type: String,
+    #[serde(default = "default_active")]
+    lifecycle_status: String,
+    #[serde(default = "default_warm")]
+    temperature: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedCoffeeChatRow {
+    id: i64,
+    project: String,
+    stage: String,
+    retro: String,
+    forward: String,
+    priorities: String,
+    created_at: String,
+    #[serde(default = "default_warm")]
+    temperature: String,
 }
 
 pub fn import_recovery_seed(
@@ -260,54 +355,15 @@ pub fn list_recovery_seed_rows(
     data_store: &DataStore,
     query: RecoverySeedRowsQuery,
 ) -> Result<RecoverySeedRowsReport> {
-    let runs = list_recovery_seed_runs(data_store)?;
-    let ingest_run = match query.ingest_run_id {
-        Some(ingest_run_id) => runs
-            .into_iter()
-            .find(|run| run.run.id == ingest_run_id)
-            .ok_or_else(|| anyhow!("recovery seed ingest run `{ingest_run_id}` does not exist"))?,
-        None => runs
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("no recovery seed ingest runs have been imported yet"))?,
-    };
+    let ingest_run = resolve_recovery_seed_run(data_store, query.ingest_run_id)?;
 
     let limit = query.limit.unwrap_or(50);
     if limit == 0 {
         return Err(anyhow!("recovery rows `limit` must be >= 1"));
     }
 
-    let promotions = latest_promotion_map(data_store.list_promotion_records()?);
-    let requested_table = query
-        .table_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let artifacts = data_store.list_source_artifacts(ingest_run.run.id)?;
-    let mut rows = Vec::new();
-
-    for artifact in artifacts
-        .into_iter()
-        .filter(|artifact| artifact.artifact_kind == "recovery_seed_row")
-    {
-        let row_payload = parse_recovery_seed_row_payload(&artifact)?;
-        if let Some(requested_table) = requested_table {
-            if row_payload.source_table != requested_table {
-                continue;
-            }
-        }
-
-        let promotion = promotions.get(&("source_artifact".to_string(), artifact.id));
-        rows.push(RecoverySeedRowSummary {
-            artifact,
-            promotion_state: promotion.map(|record| record.promotion_state.clone()),
-            promotion_reason: promotion.and_then(|record| record.reason.clone()),
-            promotion_recorded_at: promotion.map(|record| record.created_at.clone()),
-            source_table: row_payload.source_table,
-            source_row_key: row_payload.source_row_key,
-            source_row: row_payload.source_row,
-        });
-    }
+    let requested_table = normalized_optional_table_name(query.table_name.as_deref());
+    let mut rows = collect_recovery_seed_rows(data_store, ingest_run.run.id, requested_table)?;
 
     let total_matching_rows = rows.len();
     rows.truncate(limit);
@@ -318,6 +374,155 @@ pub fn list_recovery_seed_rows(
         limit,
         total_matching_rows,
         rows,
+    })
+}
+
+pub fn promote_safe_recovery_seed_v0(
+    data_store: &DataStore,
+    query: RecoverySeedPromotionQuery,
+) -> Result<RecoverySeedPromotionReport> {
+    let ingest_run = resolve_recovery_seed_run(data_store, query.ingest_run_id)?;
+    let requested_table = normalized_optional_table_name(query.table_name.as_deref());
+    if let Some(requested_table) = requested_table {
+        if !SAFE_RECOVERY_PROMOTION_TABLES.contains(&requested_table) {
+            return Err(anyhow!(
+                "unsupported safe recovery promotion table `{requested_table}`; use one of: {}",
+                SAFE_RECOVERY_PROMOTION_TABLES.join(", ")
+            ));
+        }
+    }
+
+    let rows = collect_recovery_seed_rows(data_store, ingest_run.run.id, requested_table)?
+        .into_iter()
+        .filter(|row| SAFE_RECOVERY_PROMOTION_TABLES.contains(&row.source_table.as_str()))
+        .collect::<Vec<_>>();
+    let latest_promotions = latest_promotion_map(data_store.list_promotion_records()?);
+    let mut promoted_tables = Vec::new();
+    let mut rows_by_table = BTreeMap::new();
+    let mut new_promotion_record_count = 0i64;
+
+    for row in &rows {
+        match row.source_table.as_str() {
+            "documents" => {
+                let payload: RecoverySeedDocumentRow =
+                    serde_json::from_value(row.source_row.clone())
+                        .context("failed to parse recovery document row")?;
+                data_store.upsert_document_record(UpsertDocumentRecord {
+                    id: payload.id,
+                    slug: &payload.slug,
+                    title: &payload.title,
+                    content: &payload.content,
+                    category: &payload.category,
+                    created_at: &payload.created_at,
+                    updated_at: &payload.updated_at,
+                })?;
+            }
+            "todos" => {
+                let payload: RecoverySeedTodoRow = serde_json::from_value(row.source_row.clone())
+                    .context("failed to parse recovery todo row")?;
+                data_store.upsert_todo_record(UpsertTodoRecord {
+                    id: payload.id,
+                    title: &payload.title,
+                    status: &payload.status,
+                    priority: payload.priority,
+                    project: &payload.project,
+                    created_at: &payload.created_at,
+                    done_at: payload.done_at.as_deref(),
+                    temperature: &payload.temperature,
+                    due_on: &payload.due_on,
+                    remind_every_days: payload.remind_every_days,
+                    remind_next_on: &payload.remind_next_on,
+                    last_reminded_at: &payload.last_reminded_at,
+                    reminder_status: &payload.reminder_status,
+                })?;
+            }
+            "instincts" => {
+                let payload: RecoverySeedInstinctRow =
+                    serde_json::from_value(row.source_row.clone())
+                        .context("failed to parse recovery instinct row")?;
+                let updated_at = if payload.updated_at.trim().is_empty() {
+                    payload.created_at.as_str()
+                } else {
+                    payload.updated_at.as_str()
+                };
+                data_store.upsert_instinct_record(UpsertInstinctRecord {
+                    id: payload.id,
+                    pattern: &payload.pattern,
+                    action: &payload.action,
+                    confidence: payload.confidence,
+                    source: &payload.source,
+                    reference: &payload.reference,
+                    created_at: &payload.created_at,
+                    status: &payload.status,
+                    surfaced_to: &payload.surfaced_to,
+                    review_status: &payload.review_status,
+                    origin_type: &payload.origin_type,
+                    lifecycle_status: &payload.lifecycle_status,
+                    temperature: &payload.temperature,
+                    updated_at,
+                })?;
+            }
+            "coffee_chats" => {
+                let payload: RecoverySeedCoffeeChatRow =
+                    serde_json::from_value(row.source_row.clone())
+                        .context("failed to parse recovery coffee chat row")?;
+                data_store.upsert_coffee_chat_record(UpsertCoffeeChatRecord {
+                    id: payload.id,
+                    project: &payload.project,
+                    stage: &payload.stage,
+                    retro: &payload.retro,
+                    forward: &payload.forward,
+                    priorities: &payload.priorities,
+                    created_at: &payload.created_at,
+                    temperature: &payload.temperature,
+                })?;
+            }
+            other => {
+                return Err(anyhow!(
+                    "safe recovery promotion does not support source table `{other}`"
+                ));
+            }
+        }
+
+        let latest_state = latest_promotions
+            .get(&("source_artifact".to_string(), row.artifact.id))
+            .map(|record| record.promotion_state.as_str());
+        if latest_state != Some("cold_promoted") {
+            data_store.append_promotion_record(NewPromotionRecord {
+                subject_kind: "source_artifact",
+                subject_id: row.artifact.id,
+                promotion_state: "cold_promoted",
+                reason: Some(match row.source_table.as_str() {
+                    "documents" => "promoted recovery seed row into canonical documents table",
+                    "todos" => "promoted recovery seed row into canonical todos table",
+                    "instincts" => "promoted recovery seed row into canonical instincts table",
+                    "coffee_chats" => {
+                        "promoted recovery seed row into canonical coffee_chats table"
+                    }
+                    _ => "promoted recovery seed row into canonical runtime memory table",
+                }),
+                source_ingest_run_id: Some(ingest_run.run.id),
+            })?;
+            new_promotion_record_count += 1;
+        }
+
+        *rows_by_table.entry(row.source_table.clone()).or_insert(0) += 1;
+        if !promoted_tables
+            .iter()
+            .any(|table| table == &row.source_table)
+        {
+            promoted_tables.push(row.source_table.clone());
+        }
+    }
+
+    Ok(RecoverySeedPromotionReport {
+        ingest_run,
+        requested_table: requested_table.map(str::to_string),
+        promoted_tables,
+        total_candidate_rows: rows.len() as i64,
+        upserted_row_count: rows.len() as i64,
+        new_promotion_record_count,
+        rows_by_table,
     })
 }
 
@@ -534,6 +739,62 @@ fn append_storage_only_promotion(
     Ok(())
 }
 
+fn resolve_recovery_seed_run(
+    data_store: &DataStore,
+    ingest_run_id: Option<i64>,
+) -> Result<RecoverySeedRunSummary> {
+    let runs = list_recovery_seed_runs(data_store)?;
+    match ingest_run_id {
+        Some(ingest_run_id) => runs
+            .into_iter()
+            .find(|run| run.run.id == ingest_run_id)
+            .ok_or_else(|| anyhow!("recovery seed ingest run `{ingest_run_id}` does not exist")),
+        None => runs
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("no recovery seed ingest runs have been imported yet")),
+    }
+}
+
+fn collect_recovery_seed_rows(
+    data_store: &DataStore,
+    ingest_run_id: i64,
+    requested_table: Option<&str>,
+) -> Result<Vec<RecoverySeedRowSummary>> {
+    let promotions = latest_promotion_map(data_store.list_promotion_records()?);
+    let artifacts = data_store.list_source_artifacts(ingest_run_id)?;
+    let mut rows = Vec::new();
+
+    for artifact in artifacts
+        .into_iter()
+        .filter(|artifact| artifact.artifact_kind == "recovery_seed_row")
+    {
+        let row_payload = parse_recovery_seed_row_payload(&artifact)?;
+        if let Some(requested_table) = requested_table {
+            if row_payload.source_table != requested_table {
+                continue;
+            }
+        }
+
+        let promotion = promotions.get(&("source_artifact".to_string(), artifact.id));
+        rows.push(RecoverySeedRowSummary {
+            artifact,
+            promotion_state: promotion.map(|record| record.promotion_state.clone()),
+            promotion_reason: promotion.and_then(|record| record.reason.clone()),
+            promotion_recorded_at: promotion.map(|record| record.created_at.clone()),
+            source_table: row_payload.source_table,
+            source_row_key: row_payload.source_row_key,
+            source_row: row_payload.source_row,
+        });
+    }
+
+    Ok(rows)
+}
+
+fn normalized_optional_table_name(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
 fn parse_recovery_seed_manifest_payload(
     artifact: &StoredSourceArtifact,
 ) -> Result<RecoverySeedManifestArtifactPayload> {
@@ -654,4 +915,16 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("{digest:x}")
+}
+
+fn default_active() -> String {
+    "active".to_string()
+}
+
+fn default_warm() -> String {
+    "warm".to_string()
+}
+
+fn default_none() -> String {
+    "none".to_string()
 }
