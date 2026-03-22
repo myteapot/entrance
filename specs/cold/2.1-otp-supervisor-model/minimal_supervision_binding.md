@@ -173,6 +173,34 @@ Meaning:
 - `REPLACE_CHILD` should create a newly compiled instance, not resume a tainted mid-state.
 - v0 may defer active replace implementation, but the supervision binding should reserve replacement for tainted or admin-forced paths rather than for ordinary quality rejection.
 
+## Strategy Mapping Boundary
+
+### v0 rule
+
+- the automatic restart or replace unit should map to the execution child or compiled worker instance, not to the whole dispatch pipeline or session bundle
+- dispatch pipeline surfaces are routing and admission infrastructure; they should route, reject, or surface incidents, but they are not normal retry targets
+- session bundles or lineage containers are visibility and admin envelopes; stronger bundle-level replacement should remain a distinct runtime or admin path rather than the default meaning of `REPLACE_CHILD`
+
+### Consequence
+
+- retry budget attaches to execution-child failure, not to whole conversation or session containers
+- ordinary `REPLACE_CHILD` swaps a fresh runnable child instance first
+- stronger replacement of a broader bundle should remain explicit, visible, and rarer than ordinary child restart or replace
+
+## Replacement Activation Path
+
+### v0 rule
+
+1. mark the current child non-runnable through block, quarantine, or equivalent supervisor action as needed
+2. preserve existing receipts, incidents, and return lineage rather than reusing mutable mid-state
+3. compile or create a fresh child instance under runtime-owned activation
+4. route future work through the normal runtime-owned queues and receipts of the new child instance
+
+### Consequence
+
+- replacement is visible and reconstructable rather than silent resume
+- replacement does not grant a shortcut around writer, route, or admission rules
+
 ## Slice Order
 
 1. Classify typed signal from receipt, verdict, or integrity event

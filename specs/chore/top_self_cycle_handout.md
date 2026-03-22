@@ -5,7 +5,7 @@
 ## Current Snapshot
 
 - Branch: `codex/docs-top-self-cycle-handout-20260322`
-- Commit checkpoint: `b2d44853aa4f735475bda9c7c05bd944fc486dfe`
+- Commit checkpoint: `c36589ad1359e239afb428ac41c246b868109472`
 - Active MR: `http://server:9311/pub/entrance/-/merge_requests/3`
 - Previously merged checkpoint MR: `http://server:9311/pub/entrance/-/merge_requests/2`
 - The compressed hot root is now canonical:
@@ -25,16 +25,16 @@
   - `specs/cold/2.1-otp-supervisor-model/minimal_supervision_binding.md`
   - `specs/cold/2.3-control-tree-node-lte-3/minimal_hot_control_tree.md`
   - `specs/cold/3.1-learning-truth-system/minimal_truth_plane.md`
-- `pending.md` should now be read as "no active architecture ambiguity", but one operational pending item exists for GitLab MCP token provisioning with correct scopes and live validation.
+- `pending.md` should now be read as "no active architecture or operational blocker in hot view"; prior GitLab MCP token notes are fallback history, not active pending.
 - `entrance.db` and `entrance.db.manifest.json` were synced in the MR checkpoint; do not churn DB for editorial cleanup only.
 
 ## Runtime Connector Note
 
-- `GitLab MCP` is installed at Codex-config level, but not yet proven live in-session because no `GITLAB_MCP_BEARER_TOKEN` is currently provisioned here.
-- A bearer-token validation attempt was already executed and rejected by GitLab MCP with `403 insufficient_scope`.
-- The explicit required scope signal returned by GitLab MCP was: `mcp api read_api`.
-- The OAuth path is presently unusable on this machine because GitLab's OAuth discovery advertises `issuer/registration_endpoint = http://9123126222e6`, and that host is not resolvable locally.
-- Until that instance metadata is fixed or local hostname resolution is provided outside Codex, bearer-token auth is the stable workaround.
+- `GitLab MCP` is now proven live in-session for read access.
+- This window successfully queried `pub/entrance`, MR `!3`, the MR diffs, and the MR commit list through GitLab MCP.
+- The earlier bearer-token validation attempt that returned `403 insufficient_scope` is now historical fallback rather than an active blocker.
+- If re-provisioning is needed outside the current session, the explicit required scope signal returned earlier was: `mcp api read_api`.
+- The OAuth path remained unreliable on this machine because GitLab's OAuth discovery advertised `issuer/registration_endpoint = http://9123126222e6`, and that host was not locally resolvable.
 
 ## State-Machine Reading Of The Program
 
@@ -79,31 +79,30 @@ What is already landed:
 - hot root summary is stable in `machine.md`
 - mounted hot detail docs are slimmed and no longer act as root competitors
 - cold machine-side drafts now cover the whole-system graph, registry cut, and supervision binding
+- packet resolution now stays explicitly runtime-routed, with sender re-entry derived from returned objects rather than packet mutation
+- phase remains projection and cadence remains Human-window protocol rather than peer machine state
 
 What is still open:
 
-- packet-resolution detail that is still too implicit in the mounted hot docs
-- final relation between machine state, phase projection, and cadence protocol
-- remaining strategy-mapping and replacement-path detail in supervision binding
+- remaining narrow strategy-mapping and stronger replacement-path detail in supervision binding
 
 ### Truth
 
 Current state:
 
-- `CYCLE + READY`
+- `CYCLE + low-motion`
 
 What is already landed:
 
 - hot root summary is stable in `truth.md`
 - storage/cold/hot split is fixed
 - `minimal_truth_plane.md` now holds the denser landing rules below the root
+- truth-side admission defaults, cadence subtype defaults, and retrieval attachment rules are now mounted below the root
 
 What is still open:
 
-- final registry layout for admission, projection, and coherence semantics
-- remaining event-ledger vs object-ledger admission detail
-- cadence-protocol object taxonomy and subtype-specific admission rules
-- implementation-facing attachment detail for vector retrieval and memory projection
+- no active truth-side document ambiguity is currently mounted
+- later truth work should stay implementation-facing and land below the root unless a new oracle appears
 
 ### Control
 
@@ -182,7 +181,8 @@ What is still open:
 
 ## Recommended Priority Rule
 
-- Prefer `Machine` or `Truth` for the next self-cycle.
+- Prefer `Machine` for the next self-cycle.
+- Keep `Truth` parked unless runtime implementation exposes a genuine new truth-plane gap.
 - Keep `Control` parked unless compression pressure, naming cleanup, or legacy-pruning work creates a stronger reason to move it.
 - Never advance more than one semantic trunk in the same self-cycle unless a newly discovered oracle forces a cross-trunk promotion.
 

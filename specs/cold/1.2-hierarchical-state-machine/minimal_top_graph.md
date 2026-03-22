@@ -162,6 +162,23 @@ Graph edge:
 - `ESCALATE`
   receiver becomes sender relative to its parent; original sender waits on returned status
 
+## Packet Resolution Rule
+
+### v0 rule
+
+- once a sender emits an upward packet, the sender-side machine remains on the ownership-transfer edge rather than reopening the packet locally
+- while a receiver verdict or stronger upstream status is pending, the sender should project `ATTENTION_STATE = WAITING`
+- returned feedback is resolved by runtime-owned routing into `OWNER_RETURN_QUEUE`, not by mutating the original submitted packet
+- once the returned object is observed:
+  - `RETURN_FOR_REPAIR` may re-enter sender `CYCLE`
+  - terminal `ACCEPT` or terminal `REJECT` may end in sender `STOPPED`
+  - `ESCALATE` keeps sender waiting on the stronger path rather than pretending the local cycle is complete
+
+### Consequence
+
+- the canonical machine does not need a separate peer phase for "returned but not yet re-entered"
+- a UI may briefly render edge-handling states such as `OUT + WAITING`, but that remains projection rather than a new canonical family
+
 ## NOTA Position
 
 ### v0 rule
@@ -199,6 +216,21 @@ Graph edge:
 - `PHASE` is a Human-facing projection over the graph, not a peer state family
 - one phase may summarize several runtime graph positions
 - different UI density presets may project the same underlying graph differently without changing truth
+
+## Phase And Cadence Relation
+
+### v0 rule
+
+- `FLOW_PHASE / ATTENTION_STATE / INTEGRITY_OVERLAY` remain the only canonical machine-readable state families
+- `PHASE` summarizes graph position, local runnability, and return or supervision context for Human-facing understanding
+- cadence protocol organizes Human engagement windows, checkpoints, and handouts across time
+- cadence may reference phase summaries, but it must not overwrite or author canonical machine state by itself
+
+### Consequence
+
+- one cadence window may contain several node-local machine transitions
+- the same node-local machine state may persist across more than one cadence window
+- phase may compress multiple graph positions for readability without becoming a fourth peer machine family
 
 ## Stop Conditions
 
@@ -240,5 +272,4 @@ Supervision: projected from runtime facts, not a peer canonical family
 ## Open Questions
 
 - Should `NOTA` inward routing target only `Policy` at v0, or should some NOTA-local work close without internal lineage spawn.
-- Should `RETURN_FOR_REPAIR` and `REJECT` both project `OUT + WAITING` before sender re-entry, or should return handling jump directly back into `CYCLE`.
 - Should `INTAKE_BUNDLE` admission into `Policy` be modeled as its own explicit packet lane or remain boundary-specific at v0.

@@ -10,10 +10,8 @@
 ## Current State
 
 - No active architecture pending items are currently registered in the DB-backed working set.
-- Operational pending: `GitLab MCP` is now configured in Codex as server `gitlab` at `http://server:9311/api/v4/mcp` using bearer-token auth via `GITLAB_MCP_BEARER_TOKEN`, but a live bearer-token test has already failed with `403 insufficient_scope`.
-- Required scope signal from GitLab MCP: `mcp api read_api`.
-- Current local state: no valid `GITLAB_MCP_BEARER_TOKEN` is provisioned in user environment after clearing the rejected token.
-- Operational note: the OAuth route was not used because this GitLab instance advertises `issuer/registration_endpoint = http://9123126222e6`, and that host is not resolvable on this machine.
+- No active operational blocker is currently mounted in the hot root.
+- `GitLab MCP` read access has been validated live in-session against `pub/entrance`; older token-scope and OAuth-host notes are now historical fallback rather than active pending.
 
 ## Rule
 
@@ -24,4 +22,4 @@
 
 ## TODO(fill)
 
-- repopulate only when a new unresolved architecture question or operational blocker actually appears
+- repopulate only when a new unresolved architecture question or live operational blocker actually appears

@@ -131,24 +131,33 @@ Typical contents:
 - they preserve timing, provenance, and runtime or protocol occurrence
 - they do not become semantic replacement objects by themselves
 
-### v0 event-ledger defaults
-
-- `RECEIPT` defaults to `AP_STORAGE_ALWAYS`
-- `TAINT_EVENT` defaults to `AP_STORAGE_ALWAYS`
-- `ADMIN_EVENT` defaults to `AP_STORAGE_ALWAYS`
-- cold visibility for events should usually happen through selective curation, derived summaries, or policy-triggered promotion rather than automatic cold duplication of every event row
-
 ### Object ledger rule
 
 - object-ledger records are governed semantic objects or curation objects
 - they may land in storage only or storage plus cold depending on admission policy
 - object-ledger rows remain the normal vehicle for semantic linking, review status, and later projection
 
-### v0 object-ledger defaults
+### v0 landing table
 
-- packets, verdicts, evidence objects, intake bundles, and cadence objects follow their own admission policy code
+| family or kind | storage family | admission default | projection default | note |
+| --- | --- | --- | --- | --- |
+| `RECEIPT` | `OBJECT_LEDGER` | `AP_STORAGE_ALWAYS` | `PP_HOT_NEVER` | runtime fact object; cold visibility should happen through derived summaries, evidence refs, or explicit curation rather than blanket cold duplication |
+| `TAINT_EVENT` | `EVENT_LEDGER` | `AP_STORAGE_ALWAYS` | `PP_HOT_ON_ATTENTION_OR_REJECT` | integrity-risk event; stays storage-first but may surface hot while the risk is active |
+| `ADMIN_EVENT` | `EVENT_LEDGER` | `AP_STORAGE_ALWAYS` | `PP_HOT_ON_ATTENTION_OR_REJECT` | admin-path event; hot visibility is policy-driven, not a default cold-memory duplication rule |
+| `INTAKE_BUNDLE` | `OBJECT_LEDGER` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ON_ATTENTION_OR_REJECT` | boundary input should remain reconstructable in cold when it anchors later work or wake routing |
+| `LEARN_CAPTURE` | `OBJECT_LEDGER` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ACTIVE_ONLY` | local learning object; durable in cold, hot only while relevant |
+| `SIMULATION_EVIDENCE` | `OBJECT_LEDGER` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ACTIVE_ONLY` | evidence stays durable but only projects hot when actively inspected or needed for a gate |
+| `SUBMISSION_PACKET` | `OBJECT_LEDGER` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ON_ATTENTION_OR_REJECT` | packet path should remain reconstructable for review, rejection, and escalation |
+| `EXCEPTION_PACKET` | `OBJECT_LEDGER` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ON_ATTENTION_OR_REJECT` | blocker asks must remain visible while unresolved or escalated |
+| `VERDICT` | `OBJECT_LEDGER` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ON_ATTENTION_OR_REJECT` | evaluation result needs durable reviewability and hot visibility on active returns or rejection |
+| `DECISION / VISION / TODO / MEMORY_FRAGMENT / MEMORY_LINK / top-doc summary` | `OBJECT_LEDGER` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ACTIVE_ONLY` | curated semantic memory belongs in cold by default; hot shows only the active working slice |
+| `CADENCE_*` | `OBJECT_LEDGER` | `AP_STORAGE_AND_COLD_ALWAYS` | subtype-specific | cadence follows the subtype defaults defined below rather than one universal hot rule |
+
+### Consequence
+
+- `RECEIPT` is a runtime object in the object ledger, not a general event-ledger row, even though it records mechanical fact
+- event-ledger families remain storage-first visibility surfaces; when they appear in cold, it should be through curation objects or explicit incident summaries
 - if an object must later support review, conflict handling, or hot reconstruction, it should not remain storage-only by default
-- curation objects such as decisions, memory fragments, visions, and top-doc summaries belong in cold memory even when they also retain storage provenance
 
 ## Projection Rule Matrix
 
@@ -224,6 +233,22 @@ Typical contents:
 - one document may be stale or conflicted for reasons that are not identical to one concept-review state
 - do not collapse concept review, document coherence, lifecycle, and temperature into one shared code family
 
+## Registry Layout
+
+### v0 layout
+
+- object-type policy defaults should live in a registry family separate from concept review and document coherence
+- each governed semantic object type should resolve default writer scope, default admission policy, default projection policy, and any evidence-retention requirement at the object-type layer
+- concept review registry should carry concept-level review state and relations such as `conflicts_with` and `supersedes`
+- document coherence registry should carry cold-artifact states such as `coherent`, `conflicted`, `stale`, and `superseded`
+- lifecycle state and temperature should remain separate from all of the families above; `PHASE` remains a projection, not a registry-owned truth state
+
+### Consequence
+
+- one object may be accepted yet still participate in a conflicted concept-review edge without overloading one enum
+- one cold document may be stale or conflicted without mutating the lifecycle of every concept it references
+- new truth-object subtypes should register defaults once at the object-type layer instead of inventing row-local prose semantics
+
 ## Truth Ownership Rule
 
 ### v0 rule
@@ -263,9 +288,38 @@ Typical contents:
 - indexes are rebuildable and non-canonical
 - retrieval results may accelerate hot projection or recall, but they do not become a shadow truth plane
 
+### Implementation-facing attachment rule
+
+- every retrieval unit should attach to a canonical source ref rather than becoming a free-floating memory object
+- the canonical source may be a cold doc section, a curated object such as `DECISION / VISION / MEMORY_FRAGMENT`, or a storage-backed evidence object plus stable manifest ref
+- raw artifact blobs may be indexed for search only through stable manifest-backed refs; they must not become hot truth by retrieval alone
+
+### Minimal attachment fields
+
+- `source_object_ref`
+- `source_plane_code`
+- `source_version_ref` or equivalent stable content hash
+- `source_span_ref` for document sections or chunk boundaries when the source is segmentable
+- `coherence_snapshot_code`
+- `conflict_snapshot_code`
+- `index_family_code`
+
+### Memory projection protocol
+
+1. retrieval returns candidate refs and scores from derived indexes
+2. runtime or query service dereferences each candidate back to canonical storage or cold objects
+3. superseded, deleted, or incoherent candidates are dropped or demoted based on canonical state, not on index rank alone
+4. hot summaries and memory projection are assembled from the dereferenced canonical refs, not from raw embedding chunks alone
+
+### v0 default ranking rule
+
+- conflict-aware ranking should live in cold/query services first, not as a direct hot-layer truth rule
+- hot may consume a query-service result, but it must still re-check canonical coherence and conflict state before pinning anything into the working set
+
 ### Consequence
 
 - deletion, supersession, conflict, and curation status must still be resolved from canonical planes rather than from index contents alone
+- retrieval indexes may improve recall speed, but they do not gain authority to declare what is current, coherent, or promotable
 
 ## Phase And Cadence Projection Rule
 
@@ -280,7 +334,31 @@ Typical contents:
 - cadence stays durable and auditable without becoming a separate semantic truth trunk
 - phase and cadence remain related but distinct: one is projection, the other is governed protocol object capture
 
+## Cadence Protocol Taxonomy
+
+### v0 subtype split
+
+- `CADENCE_CHECKPOINT` records a resumable local-cycle checkpoint with branch, checkpoint refs, selected trunk, and next-start hints
+- `CADENCE_HANDOUT` records a continuation packet for a later window, including read order, guardrails, and the intended next-cycle focus
+- `CADENCE_WAKE_REQUEST` records an explicit unresolved blocker or canonical-decision ask that may require Human attention
+- `CADENCE_POLICY_NOTE` records durable cadence rules such as interruption budget, wake criteria, or handoff protocol that should survive beyond one hot session
+
+### v0 subtype defaults
+
+| subtype | admission default | projection default | note |
+| --- | --- | --- | --- |
+| `CADENCE_CHECKPOINT` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ACTIVE_ONLY` | durable checkpoint, visible while the checkpoint is current |
+| `CADENCE_HANDOUT` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ACTIVE_ONLY` | durable handoff packet, hot while it is the active continuation surface |
+| `CADENCE_WAKE_REQUEST` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_ON_ATTENTION_OR_REJECT` | hot-visible when interruption, blocker, or wake routing is active |
+| `CADENCE_POLICY_NOTE` | `AP_STORAGE_AND_COLD_ALWAYS` | `PP_HOT_NEVER` | durable protocol note; hot surfaces should summarize it indirectly rather than pinning the raw note |
+
+### Rule
+
+- do not create a canonical `CADENCE_PHASE` object subtype at v0; `PHASE` remains projection
+- cadence objects record protocol and continuity, not effective machine state
+- subtype differences should stay small and policy-driven; do not explode cadence into role-local workflow enums
+- current docs such as `top_self_cycle_handout.md` are best read as `CADENCE_HANDOUT`-class artifacts, not as a replacement truth plane
+
 ## Minimal Open Questions
 
-- whether cadence protocol objects need more than one subtype-specific admission profile after v0
-- whether retrieval indexes should expose conflict-aware ranking hints directly in the hot layer or only in cold/query services
+- none mounted at v0; reopen only if runtime implementation reveals a real retrieval or projection gap

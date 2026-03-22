@@ -29,9 +29,9 @@
 ## Active Chunks
 
 - `Machine`
-  finish the remaining cold-level detail for whole-system graph, registry cut, and supervision binding while keeping mounted hot detail thin.
+  finish the remaining narrow supervision mapping between restartable child scope and stronger replacement paths while keeping packet-resolution and phase/cadence rules stable below the root.
 - `Truth`
-  finish remaining subtype-level rules for registry layout, evidence retention detail, and phase/cadence mapping detail.
+  keep the truth trunk stable; only reopen it if runtime implementation exposes a genuine gap in admission landing, retrieval attachment, or reconstructability.
 - `Control`
   keep the no-path-churn compressed root stable, and decide later whether legacy mounted detail such as naming cleanup or old PRD linkage is still worth preserving.
 
