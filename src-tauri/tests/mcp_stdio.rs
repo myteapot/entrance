@@ -568,6 +568,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
     let metadata: Value =
         serde_json::from_str(&stored.4).context("task metadata should be JSON")?;
     assert_eq!(metadata["dispatch_role"], "agent");
+    assert_eq!(metadata["dispatch_tool_name"], "forge_dispatch_agent");
 
     Ok(())
 }
@@ -830,6 +831,7 @@ fn external_client_can_dispatch_agent_over_stdio_with_agent_lane_runtime() -> Re
         serde_json::from_str(metadata).context("forge_dispatch_agent metadata should be JSON")?;
     assert_eq!(metadata["dispatch_role"], "agent");
     assert_eq!(metadata["kind"], "agent_dispatch");
+    assert_eq!(metadata["dispatch_tool_name"], "forge_dispatch_agent");
 
     let status = wait_for_terminal_status_stdio(&mut server, task_id)?;
     assert_eq!(
@@ -860,6 +862,7 @@ fn external_client_can_dispatch_agent_over_stdio_with_agent_lane_runtime() -> Re
         serde_json::from_str(&stored.3).context("task metadata should be JSON")?;
     assert_eq!(metadata["dispatch_role"], "agent");
     assert_eq!(metadata["issue_id"], "MYT-48");
+    assert_eq!(metadata["dispatch_tool_name"], "forge_dispatch_agent");
 
     Ok(())
 }

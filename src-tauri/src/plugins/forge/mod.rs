@@ -49,6 +49,7 @@ const ENTRANCE_BOOTSTRAP_DEV_PROMPT_SOURCE_LABEL: &str =
     "Entrance-owned harness/bootstrap dev prompt";
 const FORGE_AGENT_DISPATCH_ROLE: ActorRole = ActorRole::Agent;
 const FORGE_DEV_DISPATCH_ROLE: ActorRole = ActorRole::Dev;
+const FORGE_AGENT_DISPATCH_TOOL_NAME: &str = "forge_dispatch_agent";
 
 pub fn migrations() -> &'static [MigrationStep] {
     &MIGRATIONS
@@ -93,6 +94,8 @@ pub struct ForgeTaskMetadata {
     pub model: Option<String>,
     #[serde(default)]
     pub dispatch_role: Option<ActorRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_tool_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -529,6 +532,7 @@ pub(crate) fn build_agent_task_request(
         FORGE_AGENT_DISPATCH_ROLE,
         "agent_dispatch",
         "Agent",
+        Some(FORGE_AGENT_DISPATCH_TOOL_NAME),
         issue_id,
         worktree_path,
         model,
@@ -550,6 +554,7 @@ pub(crate) fn build_dev_task_request(
         FORGE_DEV_DISPATCH_ROLE,
         "dev_dispatch",
         "Dev",
+        None,
         issue_id,
         worktree_path,
         model,
@@ -563,6 +568,7 @@ fn build_dispatch_task_request(
     dispatch_role: ActorRole,
     metadata_kind: &str,
     task_name_prefix: &str,
+    dispatch_tool_name: Option<&str>,
     issue_id: String,
     worktree_path: String,
     model: String,
@@ -647,6 +653,7 @@ fn build_dispatch_task_request(
         worktree_path: Some(worktree_path.clone()),
         model: Some(raw_model.clone()),
         dispatch_role: Some(dispatch_role),
+        dispatch_tool_name: dispatch_tool_name.map(str::to_string),
     })
     .map_err(|error| error.to_string())?;
 
@@ -1277,6 +1284,10 @@ mod tests {
         assert_eq!(metadata.kind.as_deref(), Some("agent_dispatch"));
         assert_eq!(metadata.issue_id.as_deref(), Some("MYT-48"));
         assert_eq!(metadata.dispatch_role, Some(ActorRole::Agent));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_agent")
+        );
     }
 
     #[test]
@@ -1305,6 +1316,7 @@ mod tests {
         assert_eq!(metadata.kind.as_deref(), Some("dev_dispatch"));
         assert_eq!(metadata.issue_id.as_deref(), Some("MYT-48"));
         assert_eq!(metadata.dispatch_role, Some(ActorRole::Dev));
+        assert!(metadata.dispatch_tool_name.is_none());
     }
 
     #[test]
@@ -1553,6 +1565,10 @@ mod tests {
         let metadata: ForgeTaskMetadata =
             serde_json::from_str(&request.metadata).expect("request metadata should be valid JSON");
         assert_eq!(metadata.dispatch_role, Some(ActorRole::Agent));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_agent")
+        );
 
         let store =
             crate::core::data_store::DataStore::in_memory(MigrationPlan::new(vault::migrations()))?;
@@ -1732,6 +1748,10 @@ mod tests {
         let metadata: ForgeTaskMetadata = serde_json::from_str(&stored_task.metadata)
             .expect("stored forge task metadata should be valid JSON");
         assert_eq!(metadata.dispatch_role, Some(ActorRole::Agent));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_agent")
+        );
 
         Ok(())
     }
