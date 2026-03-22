@@ -192,6 +192,126 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
 }
 
 #[test]
+fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Result<()> {
+    let app_dir = TempAppDir::new("scoped-surface")?;
+    seed_app_state(app_dir.path())?;
+
+    let mut dev_server = spawn_mcp_stdio_with_actor_role(app_dir.path(), None, Some("dev"))?;
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-dev",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    let initialize = dev_server.read_response()?;
+    assert_eq!(initialize["id"], "initialize-dev");
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }))?;
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "tools-dev",
+        "method": "tools/list"
+    }))?;
+    let tools = dev_server.read_response()?;
+    let tool_names = tools["result"]["tools"]
+        .as_array()
+        .context("tools/list should return an array")?
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec![
+            "forge_run",
+            "forge_prepare_dispatch",
+            "forge_verify_dispatch",
+            "forge_dispatch_agent",
+            "forge_status",
+            "forge_cancel",
+            "vault_get_token",
+            "vault_list_mcp",
+            "launcher_search",
+            "launcher_launch",
+        ]
+    );
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forbidden-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_prepare_dev_dispatch",
+            "arguments": {}
+        }
+    }))?;
+    let forbidden = dev_server.read_response()?;
+    assert_eq!(forbidden["result"]["isError"], true);
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["message"],
+        "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
+    );
+
+    let mut arch_server = spawn_mcp_stdio_with_actor_role(app_dir.path(), None, Some("arch"))?;
+    arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-arch",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    let initialize = arch_server.read_response()?;
+    assert_eq!(initialize["id"], "initialize-arch");
+    arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }))?;
+    arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "tools-arch",
+        "method": "tools/list"
+    }))?;
+    let tools = arch_server.read_response()?;
+    let tool_names = tools["result"]["tools"]
+        .as_array()
+        .context("tools/list should return an array")?
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec![
+            "forge_run",
+            "forge_prepare_dev_dispatch",
+            "forge_verify_dev_dispatch",
+            "forge_dispatch_dev",
+            "forge_status",
+            "forge_cancel",
+            "vault_get_token",
+            "vault_list_mcp",
+            "launcher_search",
+            "launcher_launch",
+        ]
+    );
+    arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forbidden-arch",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_prepare_dispatch",
+            "arguments": {}
+        }
+    }))?;
+    let forbidden = arch_server.read_response()?;
+    assert_eq!(forbidden["result"]["isError"], true);
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["message"],
+        "tool `forge_prepare_dispatch` is not available on the current `arch` MCP surface; requires `dev`"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agents_runtime(
 ) -> Result<()> {
     let app_dir = TempAppDir::new("forge-dispatch")?;
@@ -833,9 +953,20 @@ fn write_stub_agent_command(root: &PathBuf) -> Result<PathBuf> {
 }
 
 fn spawn_mcp_stdio(app_dir: &PathBuf, openai_api_key: Option<&str>) -> Result<SpawnedMcp> {
+    spawn_mcp_stdio_with_actor_role(app_dir, openai_api_key, None)
+}
+
+fn spawn_mcp_stdio_with_actor_role(
+    app_dir: &PathBuf,
+    openai_api_key: Option<&str>,
+    actor_role: Option<&str>,
+) -> Result<SpawnedMcp> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_entrance"));
+    command.arg("mcp").arg("stdio");
+    if let Some(actor_role) = actor_role {
+        command.args(["--actor-role", actor_role]);
+    }
     command
-        .args(["mcp", "stdio"])
         .env("ENTRANCE_APP_DATA_DIR", app_dir)
         .env_remove("LINEAR_API_KEY")
         .env_remove("LINEAR_TOKEN")

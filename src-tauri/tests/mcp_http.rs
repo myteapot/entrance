@@ -178,6 +178,116 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
 }
 
 #[test]
+fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("scoped-surface")?;
+    seed_app_state(app_dir.path())?;
+
+    let port = reserve_port()?;
+    let mut dev_server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("dev"))?;
+    let initialize = dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-dev",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["id"], "initialize-dev");
+    let tools = dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "tools-dev",
+        "method": "tools/list"
+    }))?;
+    let tool_names = tools["result"]["tools"]
+        .as_array()
+        .context("tools/list should return an array")?
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec![
+            "forge_run",
+            "forge_prepare_dispatch",
+            "forge_verify_dispatch",
+            "forge_dispatch_agent",
+            "forge_status",
+            "forge_cancel",
+            "vault_get_token",
+            "vault_list_mcp",
+            "launcher_search",
+            "launcher_launch",
+        ]
+    );
+    let forbidden = dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forbidden-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_prepare_dev_dispatch",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(forbidden["result"]["isError"], true);
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["message"],
+        "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
+    );
+
+    let port = reserve_port()?;
+    let mut arch_server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("arch"))?;
+    let initialize = arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-arch",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["id"], "initialize-arch");
+    let tools = arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "tools-arch",
+        "method": "tools/list"
+    }))?;
+    let tool_names = tools["result"]["tools"]
+        .as_array()
+        .context("tools/list should return an array")?
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec![
+            "forge_run",
+            "forge_prepare_dev_dispatch",
+            "forge_verify_dev_dispatch",
+            "forge_dispatch_dev",
+            "forge_status",
+            "forge_cancel",
+            "vault_get_token",
+            "vault_list_mcp",
+            "launcher_search",
+            "launcher_launch",
+        ]
+    );
+    let forbidden = arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forbidden-arch",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_prepare_dispatch",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(forbidden["result"]["isError"], true);
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["message"],
+        "tool `forge_prepare_dispatch` is not available on the current `arch` MCP surface; requires `dev`"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agents_runtime(
 ) -> Result<()> {
     let app_dir = TempAppDir::new("forge-dispatch")?;
@@ -805,16 +915,28 @@ fn spawn_mcp_http(
     endpoint: &str,
     openai_api_key: Option<&str>,
 ) -> Result<SpawnedHttpMcp> {
+    spawn_mcp_http_with_actor_role(app_dir, port, endpoint, openai_api_key, None)
+}
+
+fn spawn_mcp_http_with_actor_role(
+    app_dir: &PathBuf,
+    port: u16,
+    endpoint: &str,
+    openai_api_key: Option<&str>,
+    actor_role: Option<&str>,
+) -> Result<SpawnedHttpMcp> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_entrance"));
     command
-        .args([
-            "mcp",
-            "http",
-            "--port",
-            &port.to_string(),
-            "--endpoint",
-            endpoint,
-        ])
+        .arg("mcp")
+        .arg("http")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--endpoint")
+        .arg(endpoint);
+    if let Some(actor_role) = actor_role {
+        command.args(["--actor-role", actor_role]);
+    }
+    command
         .env("ENTRANCE_APP_DATA_DIR", app_dir)
         .env_remove("LINEAR_API_KEY")
         .env_remove("LINEAR_TOKEN")

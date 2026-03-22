@@ -16,7 +16,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::core::permission::{permission_for_mcp_tool, McpToolPermission};
+use crate::core::{
+    action::ActorRole,
+    permission::{permission_for_mcp_tool, McpToolPermission},
+};
 use crate::plugins::{
     forge::{
         build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
@@ -47,6 +50,7 @@ pub struct McpPluginSet {
 pub struct McpServer {
     transport: McpTransport,
     plugins: McpPluginSet,
+    actor_role: Option<ActorRole>,
     tools: Arc<Vec<McpToolDescriptor>>,
 }
 
@@ -72,10 +76,19 @@ struct JsonRpcRequest {
 
 impl McpServer {
     pub fn new(transport: McpTransport, plugins: McpPluginSet) -> Self {
-        let tools = build_tool_descriptors(&plugins);
+        Self::with_actor_role(transport, plugins, None)
+    }
+
+    pub fn with_actor_role(
+        transport: McpTransport,
+        plugins: McpPluginSet,
+        actor_role: Option<ActorRole>,
+    ) -> Self {
+        let tools = build_tool_descriptors(&plugins, actor_role);
         Self {
             transport,
             plugins,
+            actor_role,
             tools: Arc::new(tools),
         }
     }
@@ -190,6 +203,7 @@ impl McpServer {
             .get("name")
             .and_then(Value::as_str)
             .context("tools/call requires a string `name` field")?;
+        self.ensure_tool_is_available(name)?;
         let arguments = params.get("arguments").unwrap_or(&Value::Null);
 
         match name {
@@ -208,6 +222,26 @@ impl McpServer {
             "launcher_launch" => self.handle_launcher_launch(arguments),
             _ => bail!("tool `{name}` is not registered"),
         }
+    }
+
+    fn ensure_tool_is_available(&self, name: &str) -> Result<()> {
+        let Some(actor_role) = self.actor_role else {
+            return Ok(());
+        };
+
+        let Some(permission) = permission_for_mcp_tool(name) else {
+            return Ok(());
+        };
+
+        if permission.actor_role != actor_role {
+            bail!(
+                "tool `{name}` is not available on the current `{}` MCP surface; requires `{}`",
+                actor_role_slug(actor_role),
+                actor_role_slug(permission.actor_role)
+            );
+        }
+
+        Ok(())
     }
 
     fn handle_forge_run(&self, arguments: &Value) -> Result<Value> {
@@ -574,7 +608,10 @@ async fn handle_http_request(
         .into_response())
 }
 
-fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
+fn build_tool_descriptors(
+    plugins: &McpPluginSet,
+    actor_role: Option<ActorRole>,
+) -> Vec<McpToolDescriptor> {
     let mut tools = Vec::new();
 
     if plugins.forge.is_some() {
@@ -787,6 +824,9 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
     }
 
     tools
+        .into_iter()
+        .filter(|tool| tool_is_visible_to_actor(tool, actor_role))
+        .collect()
 }
 
 fn require_string<'a>(arguments: &'a Value, field: &str) -> Result<&'a str> {
@@ -910,6 +950,25 @@ fn json_rpc_error(id: Value, code: i64, message: &str) -> Value {
     })
 }
 
+fn tool_is_visible_to_actor(tool: &McpToolDescriptor, actor_role: Option<ActorRole>) -> bool {
+    let Some(actor_role) = actor_role else {
+        return true;
+    };
+
+    tool.permission
+        .map(|permission| permission.actor_role == actor_role)
+        .unwrap_or(true)
+}
+
+fn actor_role_slug(role: ActorRole) -> &'static str {
+    match role {
+        ActorRole::Nota => "nota",
+        ActorRole::Arch => "arch",
+        ActorRole::Dev => "dev",
+        ActorRole::Agent => "agent",
+    }
+}
+
 fn tool_call_result(result: Result<Value>) -> Value {
     match result {
         Ok(value) => json!({
@@ -959,6 +1018,8 @@ mod tests {
             vault::VaultPlugin,
         },
     };
+
+    use crate::core::action::ActorRole;
 
     use super::{McpPluginSet, McpServer, McpTransport, MCP_PROTOCOL_VERSION};
 
@@ -1013,6 +1074,80 @@ mod tests {
         assert_eq!(dispatch_agent["permission"]["primitive"], "dispatch");
         assert_eq!(dispatch_dev["permission"]["actorRole"], "arch");
         assert_eq!(dispatch_dev["permission"]["room"], "strategy");
+
+        Ok(())
+    }
+
+    #[test]
+    fn arch_surface_lists_only_arch_dispatch_lane_plus_neutral_tools() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Arch))?;
+        let response = server
+            .handle_json_rpc_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list"
+            }))?
+            .expect("tools/list should return a response");
+
+        let names = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "forge_run",
+                "forge_prepare_dev_dispatch",
+                "forge_verify_dev_dispatch",
+                "forge_dispatch_dev",
+                "forge_status",
+                "forge_cancel",
+                "vault_get_token",
+                "vault_list_mcp",
+                "launcher_search",
+                "launcher_launch",
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn dev_surface_lists_only_dev_dispatch_lane_plus_neutral_tools() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Dev))?;
+        let response = server
+            .handle_json_rpc_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list"
+            }))?
+            .expect("tools/list should return a response");
+
+        let names = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "forge_run",
+                "forge_prepare_dispatch",
+                "forge_verify_dispatch",
+                "forge_dispatch_agent",
+                "forge_status",
+                "forge_cancel",
+                "vault_get_token",
+                "vault_list_mcp",
+                "launcher_search",
+                "launcher_launch",
+            ]
+        );
 
         Ok(())
     }
@@ -1108,6 +1243,21 @@ mod tests {
     }
 
     #[test]
+    fn scoped_surface_rejects_dispatch_tools_owned_by_other_role() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Dev))?;
+
+        let response = call_tool(&server, "forge_prepare_dev_dispatch", json!({}))?;
+
+        assert_eq!(response["isError"], true);
+        assert_eq!(
+            response["structuredContent"]["message"],
+            "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn stdio_transport_uses_line_delimited_json() -> Result<()> {
         let server = build_test_server()?;
         let request = concat!(
@@ -1154,6 +1304,10 @@ mod tests {
     }
 
     fn build_test_server() -> Result<McpServer> {
+        build_test_server_with_actor_role(None)
+    }
+
+    fn build_test_server_with_actor_role(actor_role: Option<ActorRole>) -> Result<McpServer> {
         let data_store = DataStore::in_memory(MigrationPlan::new(&[
             crate::plugins::launcher::migrations()[0],
             crate::plugins::forge::migrations()[0],
@@ -1177,13 +1331,14 @@ mod tests {
         vault.add_token("Primary", "openai", "secret-token")?;
         vault.update_mcp_config(None, "Local MCP", "stdio", "npx -y some-mcp", true)?;
 
-        Ok(McpServer::new(
+        Ok(McpServer::with_actor_role(
             McpTransport::InProcess,
             McpPluginSet {
                 forge: Some(forge),
                 launcher: Some(launcher),
                 vault: Some(vault),
             },
+            actor_role,
         ))
     }
 }
