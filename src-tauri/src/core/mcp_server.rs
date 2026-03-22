@@ -18,9 +18,11 @@ use serde_json::{json, Value};
 
 use crate::core::{
     action::ActorRole,
+    bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
     data_store::DataStore,
     permission::{permission_for_mcp_tool, McpToolPermission},
     recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
+    resolve_app_data_dir,
     supervision::SupervisionStrategy,
 };
 use crate::plugins::{
@@ -277,6 +279,7 @@ impl McpServer {
             "forge_verify_dev_dispatch" => self.handle_forge_verify_dev_dispatch(arguments),
             "forge_dispatch_agent" => self.handle_forge_dispatch_agent(arguments),
             "forge_dispatch_dev" => self.handle_forge_dispatch_dev(arguments),
+            "forge_bootstrap_mcp_cycle" => self.handle_forge_bootstrap_mcp_cycle(arguments),
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
             "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
@@ -514,6 +517,45 @@ impl McpServer {
             "task": task,
             "supervision": supervision,
         }))
+    }
+
+    fn handle_forge_bootstrap_mcp_cycle(&self, arguments: &Value) -> Result<Value> {
+        self.plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let model = optional_string(arguments, "model")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("codex")
+            .to_string();
+        let agent_command = optional_string(arguments, "agent_command")
+            .or_else(|| optional_string(arguments, "agentCommand"))
+            .map(str::to_string);
+        let agent_count = match optional_i64(arguments, &["agent_count", "agentCount"]) {
+            Some(value) if value <= 0 => {
+                bail!("tool argument `agent_count`/`agentCount` must be >= 1")
+            }
+            Some(value) => usize::try_from(value)
+                .context("tool argument `agent_count`/`agentCount` is out of range")?,
+            None => 1,
+        };
+
+        let report = run_forge_bootstrap_mcp_cycle(
+            &resolve_app_data_dir()?,
+            ForgeBootstrapMcpCycleOptions {
+                project_dir,
+                model,
+                agent_command,
+                agent_count,
+            },
+        )?;
+
+        serde_json::to_value(report).context("failed to serialize forge bootstrap MCP cycle report")
     }
 
     fn handle_forge_status(&self, arguments: &Value) -> Result<Value> {
@@ -869,6 +911,24 @@ fn build_tool_descriptors(
                     "agentCommand": { "type": "string", "description": "CamelCase alias for agent_command." }
                 },
                 "required": ["issue_id", "worktree_path", "model", "prompt"]
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_bootstrap_mcp_cycle",
+            description: "Run the current Nota-owned bootstrap allocator cut across Arch, Dev, and Agent MCP surfaces. Multi-agent fan-out still shares one resolved worktree.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." },
+                    "model": { "type": "string", "description": "Runner or runner:model string used for child agent dispatches. Defaults to codex." },
+                    "agent_command": { "type": "string", "description": "Optional executable path overriding the default agent CLI for child agent dispatches." },
+                    "agentCommand": { "type": "string", "description": "CamelCase alias for agent_command." },
+                    "agent_count": { "type": "integer", "description": "Number of agent children to fan out through the current shared-worktree bootstrap cut. Defaults to 1." },
+                    "agentCount": { "type": "integer", "description": "CamelCase alias for agent_count." }
+                }
             }),
             permission: None,
             dispatch_role: None,
@@ -1349,6 +1409,7 @@ mod tests {
                 "forge_verify_dev_dispatch",
                 "forge_dispatch_agent",
                 "forge_dispatch_dev",
+                "forge_bootstrap_mcp_cycle",
                 "forge_status",
                 "forge_cancel",
                 "recovery_list_seed_runs",
@@ -1371,6 +1432,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "forge_dispatch_dev")
             .expect("forge_dispatch_dev should exist");
+        let bootstrap_cycle = tools
+            .iter()
+            .find(|tool| tool["name"] == "forge_bootstrap_mcp_cycle")
+            .expect("forge_bootstrap_mcp_cycle should exist");
         let prepare_agent = tools
             .iter()
             .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
@@ -1381,6 +1446,10 @@ mod tests {
         assert_eq!(dispatch_dev["permission"]["actorRole"], "arch");
         assert_eq!(dispatch_dev["permission"]["room"], "strategy");
         assert_eq!(dispatch_dev["dispatchRole"], "dev");
+        assert_eq!(bootstrap_cycle["permission"]["actorRole"], "nota");
+        assert_eq!(bootstrap_cycle["permission"]["primitive"], "assign");
+        assert_eq!(bootstrap_cycle["permission"]["room"], "strategy");
+        assert!(bootstrap_cycle["dispatchRole"].is_null());
         assert_eq!(prepare_agent["dispatchRole"], "agent");
 
         Ok(())
@@ -1423,6 +1492,49 @@ mod tests {
         );
         assert_eq!(response["result"]["entranceSurface"]["actorRole"], "arch");
         assert_eq!(response["result"]["tools"][1]["dispatchRole"], "dev");
+
+        Ok(())
+    }
+
+    #[test]
+    fn nota_surface_lists_only_bootstrap_allocator_plus_neutral_tools() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Nota))?;
+        let response = server
+            .handle_json_rpc_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list"
+            }))?
+            .expect("tools/list should return a response");
+
+        let names = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "forge_run",
+                "forge_bootstrap_mcp_cycle",
+                "forge_status",
+                "forge_cancel",
+                "recovery_list_seed_runs",
+                "recovery_list_seed_rows",
+                "vault_get_token",
+                "vault_list_mcp",
+                "launcher_search",
+                "launcher_launch",
+            ]
+        );
+        assert_eq!(response["result"]["entranceSurface"]["actorRole"], "nota");
+        assert!(response["result"]["tools"][1]["dispatchRole"].is_null());
+        assert_eq!(
+            response["result"]["tools"][1]["permission"]["actorRole"],
+            "nota"
+        );
 
         Ok(())
     }

@@ -125,6 +125,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
             "forge_verify_dev_dispatch",
             "forge_dispatch_agent",
             "forge_dispatch_dev",
+            "forge_bootstrap_mcp_cycle",
             "forge_status",
             "forge_cancel",
             "recovery_list_seed_runs",
@@ -146,6 +147,10 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
         .iter()
         .find(|tool| tool["name"] == "forge_dispatch_dev")
         .context("forge_dispatch_dev should be listed")?;
+    let bootstrap_cycle = tools
+        .iter()
+        .find(|tool| tool["name"] == "forge_bootstrap_mcp_cycle")
+        .context("forge_bootstrap_mcp_cycle should be listed")?;
     let prepare_agent = tools
         .iter()
         .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
@@ -156,6 +161,10 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
     assert_eq!(dispatch_dev["permission"]["actorRole"], "arch");
     assert_eq!(dispatch_dev["permission"]["room"], "strategy");
     assert_eq!(dispatch_dev["dispatchRole"], "dev");
+    assert_eq!(bootstrap_cycle["permission"]["actorRole"], "nota");
+    assert_eq!(bootstrap_cycle["permission"]["primitive"], "assign");
+    assert_eq!(bootstrap_cycle["permission"]["room"], "strategy");
+    assert!(bootstrap_cycle["dispatchRole"].is_null());
     assert_eq!(prepare_agent["dispatchRole"], "agent");
 
     let forge_run = server.send(json!({
@@ -385,6 +394,58 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
     }))?;
     assert_eq!(vault_list["result"]["isError"], false);
     assert_eq!(vault_list["result"]["entranceSurface"]["actorRole"], "arch");
+    assert!(vault_list["result"]["permission"].is_null());
+    assert!(vault_list["result"]["dispatchRole"].is_null());
+
+    let port = reserve_port()?;
+    let mut nota_server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+    let initialize = nota_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["id"], "initialize-nota");
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+    let tools = nota_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "tools-nota",
+        "method": "tools/list"
+    }))?;
+    assert_eq!(tools["result"]["entranceSurface"]["actorRole"], "nota");
+    let tool_names = tools["result"]["tools"]
+        .as_array()
+        .context("tools/list should return an array")?
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec![
+            "forge_run",
+            "forge_bootstrap_mcp_cycle",
+            "forge_status",
+            "forge_cancel",
+            "recovery_list_seed_runs",
+            "recovery_list_seed_rows",
+            "vault_get_token",
+            "vault_list_mcp",
+            "launcher_search",
+            "launcher_launch",
+        ]
+    );
+    let vault_list = nota_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "vault-list-nota",
+        "method": "tools/call",
+        "params": {
+            "name": "vault_list_mcp",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(vault_list["result"]["isError"], false);
+    assert_eq!(vault_list["result"]["entranceSurface"]["actorRole"], "nota");
     assert!(vault_list["result"]["permission"].is_null());
     assert!(vault_list["result"]["dispatchRole"].is_null());
 
@@ -1246,6 +1307,158 @@ fn external_client_can_observe_dispatch_supervision_receipts_over_http() -> Resu
     assert_eq!(stored_receipt.6.as_deref(), Some("agent-1"));
 
     let _ = wait_for_terminal_status_http(&mut dev_server, child_task_id)?;
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_bootstrap_allocator_cycle_over_nota_http_surface() -> Result<()> {
+    let app_dir = TempAppDir::new("forge-bootstrap-allocator-http")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let role_dir = bootstrap_skill.join("roles");
+    fs::create_dir_all(&role_dir)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(role_dir.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?
+        .to_string_lossy()
+        .to_string();
+
+    let port = reserve_port()?;
+    let mut nota_server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
+    let initialize = nota_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let bootstrap = nota_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "bootstrap-cycle",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_bootstrap_mcp_cycle",
+            "arguments": {
+                "project_dir": project_root,
+                "agent_command": agent_command,
+                "agent_count": 2
+            }
+        }
+    }))?;
+
+    assert_eq!(bootstrap["id"], "bootstrap-cycle");
+    assert_eq!(bootstrap["result"]["isError"], false);
+    assert_eq!(bootstrap["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(bootstrap["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(bootstrap["result"]["permission"]["primitive"], "assign");
+    assert_eq!(bootstrap["result"]["permission"]["room"], "strategy");
+    assert_eq!(bootstrap["result"]["permission"]["targetLayer"], "hot");
+    assert!(bootstrap["result"]["dispatchRole"].is_null());
+    assert!(bootstrap["result"]["canonicalToolName"].is_null());
+
+    let report = &bootstrap["result"]["structuredContent"];
+    assert_eq!(report["bootstrap_surface"]["coordinator_role"], "nota");
+    assert_eq!(report["bootstrap_surface"]["arch_surface_role"], "arch");
+    assert_eq!(report["bootstrap_surface"]["dev_surface_role"], "dev");
+    assert_eq!(
+        report["bootstrap_surface"]["dev_assignment_surface"],
+        "forge_verify_dev_dispatch"
+    );
+    assert_eq!(
+        report["bootstrap_surface"]["agent_dispatch_surface"],
+        "forge_dispatch_agent"
+    );
+    assert_eq!(report["requested_agent_count"], 2);
+
+    let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
+    let shared_boundary = report["shared_worktree_boundary"]
+        .as_str()
+        .context("bootstrap cycle should report the current shared worktree boundary")?;
+    assert!(shared_boundary.contains("transport-level fan-out"));
+    assert!(shared_boundary.contains(&worktree_path));
+
+    let parent_task_id = report["dev_assignment"]["task_id"]
+        .as_i64()
+        .context("dev assignment should include a task id")?;
+    assert!(parent_task_id > 0);
+    assert_eq!(report["dev_assignment"]["dispatch"]["dispatch_role"], "dev");
+    assert_eq!(
+        report["dev_assignment"]["dispatch"]["dispatch_tool_name"],
+        "forge_dispatch_dev"
+    );
+    assert!(report["dev_assignment"]["dispatch"]["prompt"].is_null());
+
+    assert_eq!(report["agent_prepare"]["dispatch_role"], "agent");
+    assert_eq!(
+        report["agent_prepare"]["dispatch_tool_name"],
+        "forge_dispatch_agent"
+    );
+    assert_eq!(report["agent_prepare"]["worktree_path"], worktree_path);
+    assert!(report["agent_prepare"]["prompt"].is_null());
+
+    let agent_dispatches = report["agent_dispatches"]
+        .as_array()
+        .context("agent_dispatches should be an array")?;
+    assert_eq!(agent_dispatches.len(), 2);
+    assert_eq!(agent_dispatches[0]["dispatch"]["dispatch_role"], "agent");
+    assert_eq!(
+        agent_dispatches[0]["dispatch"]["supervision"]["parent_receipt"]["parent_task_id"],
+        parent_task_id
+    );
+    assert_eq!(
+        agent_dispatches[0]["dispatch"]["supervision"]["parent_receipt"]["child_slot"],
+        "agent-1"
+    );
+    assert_eq!(
+        agent_dispatches[1]["dispatch"]["supervision"]["parent_receipt"]["child_slot"],
+        "agent-2"
+    );
+    assert_eq!(
+        agent_dispatches[0]["final_status"]["task"]["status"],
+        "Done"
+    );
+    assert_eq!(
+        agent_dispatches[1]["final_status"]["task"]["status"],
+        "Done"
+    );
+
+    let child_receipts = report["parent_status"]["supervision"]["child_receipts"]
+        .as_array()
+        .context("parent_status should expose child receipts")?;
+    assert_eq!(child_receipts.len(), 2);
+    assert_eq!(child_receipts[0]["parent_task_id"], parent_task_id);
+    assert_eq!(child_receipts[1]["parent_task_id"], parent_task_id);
+    assert_eq!(child_receipts[0]["child_slot"], "agent-1");
+    assert_eq!(child_receipts[1]["child_slot"], "agent-2");
+
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let stored = connection.query_row(
+        "SELECT COUNT(*) FROM plugin_forge_dispatch_receipts WHERE parent_task_id = ?1",
+        [parent_task_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    assert_eq!(stored, 2);
 
     Ok(())
 }

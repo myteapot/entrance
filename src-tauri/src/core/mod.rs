@@ -10,6 +10,7 @@ use self::{
 };
 
 pub mod action;
+pub mod bootstrap_mcp_cycle;
 pub mod config_store;
 pub mod data_store;
 pub mod event_bus;

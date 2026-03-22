@@ -4,18 +4,18 @@ mod plugins;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
-    thread,
-    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 
 use core::{
     action::ActorRole,
     bootstrap_for_paths,
+    bootstrap_mcp_cycle::{
+        run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions, ForgeBootstrapMcpCycleReport,
+    },
     data_store::StoredSourceIngestRun,
     event_bus::EventBus,
     hotkey,
@@ -26,7 +26,6 @@ use core::{
     },
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
-    mcp_stdio_client::SpawnedMcpStdioClient,
     plugin_manager::PluginManager,
     recovery::{
         import_recovery_seed, list_recovery_seed_rows, list_recovery_seed_runs,
@@ -82,35 +81,6 @@ struct DashboardSummary {
     token_count: usize,
     mcp_config_count: usize,
     enabled_mcp_count: usize,
-}
-
-#[derive(Debug, Clone, Default)]
-struct ForgeBootstrapMcpCycleOptions {
-    project_dir: Option<String>,
-    model: String,
-    agent_command: Option<String>,
-    agent_count: usize,
-}
-
-#[derive(Clone, Serialize)]
-struct ForgeBootstrapMcpSurfaceSummary {
-    coordinator_role: &'static str,
-    arch_surface_role: &'static str,
-    dev_surface_role: &'static str,
-    dev_assignment_surface: &'static str,
-    agent_dispatch_surface: &'static str,
-    agent_wait_mode: &'static str,
-}
-
-#[derive(Clone, Serialize)]
-struct ForgeBootstrapMcpCycleReport {
-    bootstrap_surface: ForgeBootstrapMcpSurfaceSummary,
-    requested_agent_count: usize,
-    shared_worktree_boundary: Option<String>,
-    dev_assignment: Value,
-    agent_prepare: Value,
-    agent_dispatches: Vec<Value>,
-    parent_status: Value,
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -590,207 +560,7 @@ fn bootstrap_forge_mcp_cycle_cli(
     options: ForgeBootstrapMcpCycleOptions,
 ) -> Result<ForgeBootstrapMcpCycleReport> {
     let startup = bootstrap_forge_mcp_cli_state()?;
-    let app_data_dir = startup.paths().app_data_dir().to_path_buf();
-    let mut arch_surface = SpawnedMcpStdioClient::spawn(&app_data_dir, ActorRole::Arch)?;
-    let initialize_arch = arch_surface.initialize()?;
-    assert_surface_role(&initialize_arch, "arch")?;
-
-    let mut dev_surface = SpawnedMcpStdioClient::spawn(&app_data_dir, ActorRole::Dev)?;
-    let initialize_dev = dev_surface.initialize()?;
-    assert_surface_role(&initialize_dev, "dev")?;
-
-    let project_arguments = project_dir_tool_arguments(options.project_dir.as_deref());
-    let dev_assignment = arch_surface
-        .call_tool("forge_verify_dev_dispatch", project_arguments.clone())?
-        .get("structuredContent")
-        .cloned()
-        .context("forge_verify_dev_dispatch should return structuredContent")?;
-    let parent_task_id = json_i64(&dev_assignment, &["task_id"])
-        .context("forge_verify_dev_dispatch should return a parent task id")?;
-
-    let prepared_agent = dev_surface
-        .call_tool("forge_prepare_agent_dispatch", project_arguments)?
-        .get("structuredContent")
-        .cloned()
-        .context("forge_prepare_agent_dispatch should return structuredContent")?;
-    let issue_id = json_string(&prepared_agent, &["issue_id"])
-        .context("forge_prepare_agent_dispatch should return issue_id")?;
-    let worktree_path = json_string(&prepared_agent, &["worktree_path"])
-        .context("forge_prepare_agent_dispatch should return worktree_path")?;
-    let prompt = json_string(&prepared_agent, &["prompt"])
-        .context("forge_prepare_agent_dispatch should return prompt")?;
-    let shared_worktree_boundary = (options.agent_count > 1).then(|| {
-        format!(
-            "Current bootstrap cut fans out {count} agent children through one Dev surface, but all child agents still share resolved worktree `{worktree}`. This is transport-level fan-out, not a per-agent worktree allocator yet.",
-            count = options.agent_count,
-            worktree = worktree_path,
-        )
-    });
-
-    let mut dispatched_agents = Vec::with_capacity(options.agent_count);
-    let mut child_task_ids = Vec::with_capacity(options.agent_count);
-    for index in 0..options.agent_count {
-        let slot = format!("agent-{}", index + 1);
-        let mut dispatch_arguments = json!({
-            "issue_id": issue_id.clone(),
-            "worktree_path": worktree_path.clone(),
-            "model": options.model.clone(),
-            "prompt": prompt.clone(),
-            "parent_task_id": parent_task_id,
-            "supervision_strategy": "one_for_one",
-            "child_slot": slot,
-        });
-        if let Some(agent_command) = options.agent_command.as_ref() {
-            dispatch_arguments["agent_command"] = Value::String(agent_command.clone());
-        }
-
-        let dispatched_agent = dev_surface
-            .call_tool("forge_dispatch_agent", dispatch_arguments)?
-            .get("structuredContent")
-            .cloned()
-            .context("forge_dispatch_agent should return structuredContent")?;
-        let child_task_id = json_i64(&dispatched_agent, &["task_id"])
-            .context("forge_dispatch_agent should return a child task id")?;
-        child_task_ids.push(child_task_id);
-        dispatched_agents.push(dispatched_agent);
-    }
-
-    let child_statuses = wait_for_terminal_forge_tasks(&mut dev_surface, &child_task_ids)?;
-    let parent_status = dev_surface
-        .call_tool("forge_status", json!({ "task_id": parent_task_id }))?
-        .get("structuredContent")
-        .cloned()
-        .context("forge_status should return structuredContent for parent task")?;
-    let agent_dispatches = dispatched_agents
-        .into_iter()
-        .zip(child_statuses)
-        .map(|(dispatch, final_status)| {
-            json!({
-                "dispatch": strip_prompt_fields(dispatch),
-                "final_status": final_status,
-            })
-        })
-        .collect();
-
-    Ok(ForgeBootstrapMcpCycleReport {
-        bootstrap_surface: ForgeBootstrapMcpSurfaceSummary {
-            coordinator_role: "nota",
-            arch_surface_role: "arch",
-            dev_surface_role: "dev",
-            dev_assignment_surface: "forge_verify_dev_dispatch",
-            agent_dispatch_surface: "forge_dispatch_agent",
-            agent_wait_mode: "fanout_then_wait",
-        },
-        requested_agent_count: options.agent_count,
-        shared_worktree_boundary,
-        dev_assignment: strip_prompt_fields(dev_assignment),
-        agent_prepare: strip_prompt_fields(prepared_agent),
-        agent_dispatches,
-        parent_status,
-    })
-}
-
-fn project_dir_tool_arguments(project_dir: Option<&str>) -> Value {
-    let mut arguments = serde_json::Map::new();
-    if let Some(project_dir) = project_dir {
-        arguments.insert(
-            "project_dir".to_string(),
-            Value::String(project_dir.to_string()),
-        );
-    }
-    Value::Object(arguments)
-}
-
-fn wait_for_terminal_forge_tasks(
-    surface: &mut SpawnedMcpStdioClient,
-    task_ids: &[i64],
-) -> Result<Vec<Value>> {
-    let mut terminal_statuses = vec![None; task_ids.len()];
-
-    for _ in 0..400 {
-        let mut all_terminal = true;
-        for (index, task_id) in task_ids.iter().enumerate() {
-            if terminal_statuses[index].is_some() {
-                continue;
-            }
-
-            let status = surface
-                .call_tool("forge_status", json!({ "task_id": task_id }))?
-                .get("structuredContent")
-                .cloned()
-                .context("forge_status should return structuredContent while waiting")?;
-            let task_status = json_string(&status, &["task", "status"])
-                .context("forge_status should return a task.status string")?;
-            if matches!(
-                task_status.as_str(),
-                "Done" | "Failed" | "Cancelled" | "Blocked"
-            ) {
-                terminal_statuses[index] = Some(status);
-            } else {
-                all_terminal = false;
-            }
-        }
-
-        if all_terminal && terminal_statuses.iter().all(Option::is_some) {
-            return terminal_statuses
-                .into_iter()
-                .map(|status| status.context("terminal forge task status should be collected"))
-                .collect();
-        }
-
-        thread::sleep(Duration::from_millis(25));
-    }
-
-    bail!(
-        "timed out waiting for forge tasks `{}` to reach terminal status",
-        task_ids
-            .iter()
-            .map(i64::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
-}
-
-fn assert_surface_role(response: &Value, expected_role: &str) -> Result<()> {
-    let actual_role = response
-        .get("result")
-        .and_then(|value| value.get("entranceSurface"))
-        .and_then(|value| value.get("actorRole"))
-        .and_then(Value::as_str)
-        .context("MCP initialize should report entranceSurface.actorRole")?;
-    if actual_role != expected_role {
-        bail!("child MCP surface role mismatch: expected `{expected_role}`, got `{actual_role}`");
-    }
-
-    Ok(())
-}
-
-fn json_i64(value: &Value, path: &[&str]) -> Option<i64> {
-    json_value_at_path(value, path).and_then(Value::as_i64)
-}
-
-fn json_string(value: &Value, path: &[&str]) -> Option<String> {
-    json_value_at_path(value, path)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn json_value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
-    let mut current = value;
-    for segment in path {
-        current = current.get(*segment)?;
-    }
-    Some(current)
-}
-
-fn strip_prompt_fields(mut value: Value) -> Value {
-    if let Some(object) = value.as_object_mut() {
-        object.remove("prompt");
-        if let Some(dispatch) = object.get_mut("dispatch").and_then(Value::as_object_mut) {
-            dispatch.remove("prompt");
-        }
-    }
-    value
+    run_forge_bootstrap_mcp_cycle(startup.paths().app_data_dir(), options)
 }
 
 fn build_mcp_server(
@@ -844,9 +614,10 @@ fn parse_mcp_actor_role_args(args: &[String]) -> Result<Option<ActorRole>> {
 
 fn parse_mcp_actor_role(value: &str) -> Result<ActorRole> {
     match value.trim() {
+        "nota" => Ok(ActorRole::Nota),
         "arch" => Ok(ActorRole::Arch),
         "dev" => Ok(ActorRole::Dev),
-        other => bail!("unsupported MCP actor role `{other}`, expected `arch` or `dev`"),
+        other => bail!("unsupported MCP actor role `{other}`, expected `nota`, `arch`, or `dev`"),
     }
 }
 

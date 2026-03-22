@@ -57,6 +57,13 @@ const HOT_ASSIGN_ARCH: McpToolPermission = McpToolPermission::new(
     KnowledgeLayer::Hot,
 );
 
+const HOT_ASSIGN_NOTA: McpToolPermission = McpToolPermission::new(
+    ActorRole::Nota,
+    ActionPrimitive::Assign,
+    ActionRoom::Strategy,
+    KnowledgeLayer::Hot,
+);
+
 pub fn permission_for_mcp_tool(name: &str) -> Option<McpToolPermission> {
     match name {
         "forge_prepare_dispatch"
@@ -64,6 +71,7 @@ pub fn permission_for_mcp_tool(name: &str) -> Option<McpToolPermission> {
         | "forge_prepare_agent_dispatch"
         | "forge_verify_agent_dispatch" => Some(HOT_PREP_DEV),
         "forge_dispatch_agent" => Some(HOT_DISPATCH_DEV),
+        "forge_bootstrap_mcp_cycle" => Some(HOT_ASSIGN_NOTA),
         "forge_prepare_dev_dispatch" | "forge_verify_dev_dispatch" | "forge_dispatch_dev" => {
             Some(HOT_ASSIGN_ARCH)
         }
@@ -83,6 +91,7 @@ mod tests {
             "forge_prepare_agent_dispatch",
             "forge_verify_agent_dispatch",
             "forge_dispatch_agent",
+            "forge_bootstrap_mcp_cycle",
             "forge_prepare_dev_dispatch",
             "forge_verify_dev_dispatch",
             "forge_dispatch_dev",
@@ -132,6 +141,19 @@ mod tests {
             permission_for_mcp_tool("forge_dispatch_dev"),
             Some(super::McpToolPermission::new(
                 ActorRole::Arch,
+                ActionPrimitive::Assign,
+                ActionRoom::Strategy,
+                KnowledgeLayer::Hot,
+            ))
+        );
+    }
+
+    #[test]
+    fn bootstrap_allocator_tool_is_currently_nota_owned_assignment_surface() {
+        assert_eq!(
+            permission_for_mcp_tool("forge_bootstrap_mcp_cycle"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
                 ActionPrimitive::Assign,
                 ActionRoom::Strategy,
                 KnowledgeLayer::Hot,
