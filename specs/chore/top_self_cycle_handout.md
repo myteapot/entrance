@@ -47,6 +47,11 @@
   - `cargo test prepare_dispatch_pipeline_builds_without_agents_runtime --lib --config "build.rustc-wrapper=''" `
   - this proves dispatch preparation can resolve the managed worktree path, build the Entrance-owned bootstrap prompt, and translate into an Agent task request without active `.agents` runtime dependencies
   - this does not yet replace full `.agents`-absent app-level verification
+- A stronger bootstrapped headless Forge verification gate is now landed:
+  - `cargo test prepare_agent_dispatch_works_after_bootstrap_without_agents_runtime --lib --config "build.rustc-wrapper=''" `
+  - this boots fresh app-data config with Forge enabled, resolves the managed worktree through `prepare_agent_dispatch()`, and persists the resulting task request without active `.agents` runtime dependencies
+  - Forge's Linear token fallback now tolerates fresh-bootstrap stores where `plugin_vault_tokens` has not been migrated because Vault is disabled
+  - this still does not replace full GUI/app-level `.agents`-absent verification
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
   - `specs/top/control.md`

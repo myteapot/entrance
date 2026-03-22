@@ -788,19 +788,28 @@ impl DataStore {
         provider: &str,
     ) -> Result<Option<EncryptedVaultToken>> {
         self.with_connection(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, name, provider, encrypted_value, created_at, updated_at
-                FROM plugin_vault_tokens
-                WHERE LOWER(provider) = LOWER(?1)
-                ORDER BY updated_at DESC, id DESC
-                LIMIT 1
-                "#,
-                [provider],
-                map_encrypted_vault_token_row,
-            )
-            .optional()
-            .map_err(Into::into)
+            match conn
+                .query_row(
+                    r#"
+                    SELECT id, name, provider, encrypted_value, created_at, updated_at
+                    FROM plugin_vault_tokens
+                    WHERE LOWER(provider) = LOWER(?1)
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                    "#,
+                    [provider],
+                    map_encrypted_vault_token_row,
+                )
+                .optional()
+            {
+                Ok(token) => Ok(token),
+                Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                    if message.contains("no such table: plugin_vault_tokens") =>
+                {
+                    Ok(None)
+                }
+                Err(error) => Err(error.into()),
+            }
         })
     }
 

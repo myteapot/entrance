@@ -821,6 +821,8 @@ impl Plugin for ForgePlugin {
 #[cfg(test)]
 mod tests {
     use std::{
+        env,
+        ffi::{OsStr, OsString},
         fs,
         path::{Path, PathBuf},
         process::Command,
@@ -831,20 +833,28 @@ mod tests {
     use anyhow::Result;
 
     use crate::{
-        core::data_store::MigrationPlan,
+        core::{
+            bootstrap_for_paths, config_store::{render_config, EntranceConfig},
+            data_store::MigrationPlan, event_bus::EventBus, AppPaths,
+        },
         plugins::vault,
     };
 
     use super::{
         build_agent_task_request, build_prepared_agent_dispatch, generate_agent_prompt,
         managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
-        resolve_dispatch_paths_for_project,
+        resolve_dispatch_paths_for_project, prepare_agent_dispatch, ForgePlugin,
     };
 
     static FORGE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     struct TestDir {
         path: PathBuf,
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
     }
 
     impl TestDir {
@@ -869,6 +879,30 @@ mod tests {
     impl Drop for TestDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = env::var_os(key);
+            env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = env::var_os(key);
+            env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                env::set_var(self.key, value);
+            } else {
+                env::remove_var(self.key);
+            }
         }
     }
 
@@ -1127,6 +1161,94 @@ mod tests {
             store.get_vault_token_by_provider("linear")?.is_none(),
             "test store should not require a legacy `.agents` token source"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_agent_dispatch_works_after_bootstrap_without_agents_runtime() -> Result<()> {
+        let _guard = forge_test_guard();
+
+        let temp_dir = TestDir::new("dispatch-bootstrap-no-agents");
+        let app_data_dir = temp_dir.path().join("appdata");
+        let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+        let _linear_api_key_guard = EnvVarGuard::remove("LINEAR_API_KEY");
+        let _linear_token_guard = EnvVarGuard::remove("LINEAR_TOKEN");
+
+        fs::create_dir_all(&app_data_dir)?;
+        let mut config = EntranceConfig::default();
+        config.plugins.forge.enabled = true;
+        fs::write(
+            app_data_dir.join("entrance.toml"),
+            render_config(&config)?,
+        )?;
+
+        let startup = bootstrap_for_paths(AppPaths::new(app_data_dir.clone()))?;
+        assert_eq!(startup.paths().app_data_dir(), app_data_dir.as_path());
+        assert!(startup.forge_enabled());
+
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        fs::create_dir_all(&bootstrap_skill)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+        let managed_worktree = app_data_dir.join("worktrees").join("Entrance").join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree)?;
+        init_git_repo(&managed_worktree);
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let dispatch = runtime
+            .block_on(async {
+                prepare_agent_dispatch(
+                    startup.data_store(),
+                    Some(
+                        project_root
+                            .to_str()
+                            .expect("project path should be valid UTF-8")
+                            .to_string(),
+                    ),
+                )
+                .await
+            })
+            .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.issue_status, "Todo");
+        assert_eq!(dispatch.issue_status_source, "fallback");
+        assert!(dispatch.issue_title.is_none());
+        assert_eq!(
+            dispatch.prompt_source,
+            "Entrance-owned harness/bootstrap prompt"
+        );
+        assert_eq!(
+            dispatch.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+        assert!(!dispatch.prompt.contains(".agents"));
+
+        let request = build_agent_task_request(
+            dispatch.issue_id.clone(),
+            dispatch.worktree_path.clone(),
+            "codex:gpt-5-codex".to_string(),
+            dispatch.prompt.clone(),
+            Vec::new(),
+            None,
+        )
+        .expect("dispatch payload should translate into an agent task");
+
+        let forge_plugin = ForgePlugin::new(startup.data_store(), EventBus::new());
+        let task_id = forge_plugin.create_task(request)?;
+        let stored_task = forge_plugin
+            .get_task(task_id)?
+            .expect("stored forge task should exist");
+
+        assert_eq!(
+            stored_task.working_dir.as_deref(),
+            Some(dispatch.worktree_path.as_str())
+        );
+        assert_eq!(stored_task.stdin_text.as_deref(), Some(dispatch.prompt.as_str()));
 
         Ok(())
     }

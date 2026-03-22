@@ -219,6 +219,13 @@ A smaller headless verification cut is already landed:
 - this proves Forge dispatch preparation can build from the Entrance-owned worktree and bootstrap prompt paths without active `.agents` runtime dependencies
 - it does not yet replace the full app-level `.agents`-absent verification run above
 
+A stronger bootstrapped headless verification cut is now also landed:
+
+- `cargo test prepare_agent_dispatch_works_after_bootstrap_without_agents_runtime --lib --config "build.rustc-wrapper=''" `
+- this boots fresh app-data config with Forge enabled, runs `prepare_agent_dispatch()`, and persists the resulting task request without active `.agents` runtime dependencies
+- it also proves Forge's Linear token fallback tolerates fresh-bootstrap stores where Vault tables are absent
+- it still does not replace the full GUI/app-level `.agents`-absent verification run above
+
 Only after that verification should manual `.agents` cleanup even be considered.
 
 ## 8. Work Streams Required
