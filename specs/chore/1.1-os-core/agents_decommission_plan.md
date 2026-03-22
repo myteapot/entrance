@@ -61,9 +61,10 @@ As of this design, `Entrance` runtime still depends on old `.agents` paths:
 
 - `src-tauri/src/plugins/forge/mod.rs`
   - direct reference to `A:/.agents/nota/scripts/control.py`
-  - direct reference to `A:/.agents/.worktrees/...`
+  - managed worktree discovery now prefers `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}`
+  - legacy fallback still checks `A:/.agents/.worktrees/...`
 - `src/pages/Forge.tsx`
-  - UI still exposes ``control.py prompt`` as the prompt source
+  - UI now surfaces `legacy .agents control.py bridge` instead of claiming `control.py prompt` as a native source
 
 This means `.agents` has now been demoted from "only copy of key assets" to "runtime dependency plus preserved recovery source," but it is still not deletable.
 
@@ -259,10 +260,12 @@ Needed outcome:
 - [ ] recovered docs are copied into `Entrance` with provenance retained
 - [ ] runtime code no longer depends on `A:/.agents/nota/scripts/control.py`
 - [ ] runtime code no longer depends on `A:/.agents/.worktrees`
-- [ ] Forge UI no longer names ``control.py prompt`` as the live prompt source
+- [x] Forge UI no longer names ``control.py prompt`` as the live prompt source
 - [ ] role and rule bootstrap comes from `Entrance`-owned harness assets
 - [ ] memory domains needed for NOTA and Duet are available from `Entrance` local state
 - [ ] a verification run succeeds with `.agents` absent or renamed
+
+The checked UI item only means the surface now tells the truth about the current bridge. Prompt generation still depends on the legacy `.agents` control path until the runtime replacement line lands.
 
 Recommended verification command before claiming readiness:
 

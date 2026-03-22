@@ -5,7 +5,7 @@
 ## Current Snapshot
 
 - Branch: `codex/docs-top-self-cycle-handout-20260322`
-- Commit checkpoint: `cac6f6a8d27ca479fdc965771587e5794130b12a`
+- Commit checkpoint: `08b22edf6c2298867fdaf6060b38ecdf924dff0e`
 - Active MR: `http://server:9311/pub/entrance/-/merge_requests/3`
 - Previously merged checkpoint MR: `http://server:9311/pub/entrance/-/merge_requests/2`
 - Minimal landing layer `v0` is now landed in core code and should be treated as live program truth, not as a side plugin experiment.
@@ -38,6 +38,9 @@
 - `MYT-65` is now repo-side landed:
   - recovery provenance copies now exist under `specs/recovery/`
   - `.agents` remains preserved, but these docs are no longer recovery-only in location
+- `MYT-63` has now advanced through two small runtime cuts:
+  - Forge worktree discovery now prefers `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}` and only falls back to `A:/.agents/.worktrees/...`
+  - Forge UI now exposes prompt source as `legacy .agents control.py bridge` instead of claiming a native `control.py prompt`
 - `MYT-61` is now treated as a completed verification gate kept hot-adjacent, not as an active shell.
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
@@ -64,7 +67,6 @@
 - The verified landing import currently lives in `.tmp/landing-appdata/entrance.db`; treat it as evidence of the import path, not as canonical production truth.
 - Do not churn either DB for editorial cleanup only.
 - Local repo caution:
-  - `src-tauri/src/plugins/forge/mod.rs` is modified in the worktree and was not touched by the landing commits in this window.
   - `.tmp/` exists as local verification residue and currently includes landing-layer temp appdata.
 
 ## Runtime Connector Note
@@ -233,6 +235,8 @@ What is already landed:
 - the minimal landing handoff layer now exists in code, not just in prose
 - the bootstrap substrate now has repo-side canonical copies under `harness/bootstrap/`
 - the recovery substrate now has repo-side canonical copies under `specs/recovery/`
+- Forge worktree discovery now prefers the Entrance-managed app-data root and only falls back to legacy `.agents` worktrees
+- Forge UI now labels prompt source as a legacy `.agents` bridge instead of pretending native prompt ownership
 - a first cold reconciliation cut now exists and classifies the 50 imported shells into:
   - `MYT-63 / MYT-64 / MYT-65` as the active bootstrap absorption lane
   - `11` parked backlog items
@@ -243,7 +247,8 @@ What is still open:
 
 - define which Linear milestones/issues deserve promotion into internal storage as active program truth
 - absorb the current classification into stronger owned storage truth when the schema/object path is ready
-- replace runtime dependencies on `.agents/control.py` and `.agents/.worktrees` now that bootstrap and recovery imports are both landed repo-side
+- remove the remaining legacy prompt bridge to `A:/.agents/nota/scripts/control.py`
+- remove the `.agents/.worktrees` fallback once Entrance-owned worktree lifecycle is ready
 - redesign `NEXT WAVE` only after the first reconciliation cut exists
 
 Local caution:

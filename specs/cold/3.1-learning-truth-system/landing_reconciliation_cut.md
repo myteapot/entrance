@@ -101,9 +101,9 @@ These shells should remain mirrored as evidence but should not stay in the activ
 ### Do Not Promote Blindly From Linear State
 
 - `MYT-57` `control.py retirement` is `Done` in Linear, but current repo facts still show live `.agents` coupling:
-  - `src-tauri/src/plugins/forge/mod.rs` still references `A:/.agents/.worktrees/...`
+  - `src-tauri/src/plugins/forge/mod.rs` now prefers `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}`, but still falls back to `A:/.agents/.worktrees/...`
   - `src-tauri/src/plugins/forge/mod.rs` still shells to `A:/.agents/nota/scripts/control.py`
-  - `src/pages/Forge.tsx` still renders ``control.py prompt`` as the prompt source
+  - `src/pages/Forge.tsx` now labels the prompt source as `legacy .agents control.py bridge`, which is honest transitional wording rather than native Entrance prompt ownership
 - Therefore `MYT-57` should be treated as historical intent plus partial progress, not as fully promoted internal truth.
 
 ## Promotion Candidates For Later Internal Storage Truth
