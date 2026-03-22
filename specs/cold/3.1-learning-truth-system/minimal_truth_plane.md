@@ -356,6 +356,7 @@ Typical contents:
 
 - do not create a canonical `CADENCE_PHASE` object subtype at v0; `PHASE` remains projection
 - cadence objects record protocol and continuity, not effective machine state
+- cadence objects should prefer a narrow dedicated storage cut such as `cadence_objects`; do not collapse `CADENCE_CHECKPOINT` or `CADENCE_HANDOUT` into generic `memory_fragments`
 - subtype differences should stay small and policy-driven; do not explode cadence into role-local workflow enums
 - current docs such as `top_self_cycle_handout.md` are best read as `CADENCE_HANDOUT`-class artifacts, not as a replacement truth plane
 
