@@ -5,7 +5,7 @@
 ## Current Snapshot
 
 - Branch: `codex/docs-top-self-cycle-handout-20260322`
-- Commit checkpoint: `c36589ad1359e239afb428ac41c246b868109472`
+- Commit checkpoint: use the current branch `HEAD`; older fixed-hash checkpoints in this handout are historical only
 - Active MR: `http://server:9311/pub/entrance/-/merge_requests/3`
 - Previously merged checkpoint MR: `http://server:9311/pub/entrance/-/merge_requests/2`
 - The compressed hot root is now canonical:
@@ -19,10 +19,12 @@
   - name: `gitlab`
   - url: `http://server:9311/api/v4/mcp`
   - auth mode: bearer token via `GITLAB_MCP_BEARER_TOKEN`
-- Cold local-detail drafts now exist for the heaviest remaining machine/truth/control cuts:
+- Cold local-detail mounts now exist for the active machine/truth/control cuts, including:
+  - `specs/cold/1.1-os-core/minimal_os_boundary.md`
   - `specs/cold/1.2-hierarchical-state-machine/minimal_top_graph.md`
   - `specs/cold/1.3-compiler-action-ir/minimal_registry_cut.md`
   - `specs/cold/2.1-otp-supervisor-model/minimal_supervision_binding.md`
+  - `specs/cold/2.2-lead-model-3/minimal_control_slot_model.md`
   - `specs/cold/2.3-control-tree-node-lte-3/minimal_hot_control_tree.md`
   - `specs/cold/3.1-learning-truth-system/minimal_truth_plane.md`
 - `pending.md` should now be read as "no active architecture or operational blocker in hot view"; prior GitLab MCP token notes are fallback history, not active pending.
