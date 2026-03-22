@@ -41,6 +41,8 @@ const MIGRATIONS: [MigrationStep; 2] = [
     },
 ];
 
+const LEGACY_AGENTS_WORKTREES_ROOT: &str = "A:/.agents/.worktrees";
+
 pub fn migrations() -> &'static [MigrationStep] {
     &MIGRATIONS
 }
@@ -279,9 +281,11 @@ pub async fn prepare_agent_dispatch(
     data_store: DataStore,
     project_dir: Option<String>,
 ) -> Result<PreparedAgentDispatch, String> {
-    let paths = tauri::async_runtime::spawn_blocking(move || resolve_dispatch_paths(project_dir.as_deref()))
-        .await
-        .map_err(|error| error.to_string())??;
+    let paths = tauri::async_runtime::spawn_blocking(move || {
+        resolve_dispatch_paths(project_dir.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
 
     let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
     let (issue_status, issue_status_source) = match issue_summary.as_ref() {
@@ -428,45 +432,22 @@ fn split_runner_and_variant(model: &str) -> (&str, Option<&str>) {
     }
 }
 
+fn managed_worktrees_root_for_app_data_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("worktrees")
+}
+
+fn resolve_dispatch_worktree_roots() -> Result<Vec<PathBuf>, String> {
+    let app_data_dir = crate::core::resolve_app_data_dir().map_err(|error| error.to_string())?;
+    Ok(vec![
+        managed_worktrees_root_for_app_data_dir(&app_data_dir),
+        PathBuf::from(LEGACY_AGENTS_WORKTREES_ROOT),
+    ])
+}
+
 fn resolve_dispatch_paths(project_dir: Option<&str>) -> Result<DispatchPaths, String> {
-    // If project_dir is given, scan for worktrees under the agents directory
     if let Some(project_dir) = project_dir {
-        let project_root = PathBuf::from(project_dir);
-        if !project_root.exists() {
-            return Err(format!("Project directory `{}` does not exist", project_dir));
-        }
-
-        // Find the first feat-* worktree under .agents/.worktrees/<project_name>/
-        let project_name = project_root
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let worktrees_dir = PathBuf::from("A:/.agents/.worktrees").join(&project_name);
-
-        if worktrees_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&worktrees_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("feat-") && entry.path().is_dir() {
-                        let worktree_path = entry.path();
-                        let issue_id = parse_issue_id_from_branch(&name)?;
-                        // Verify it's a git worktree
-                        if run_git_command(&worktree_path, ["rev-parse", "--show-toplevel"]).is_ok() {
-                            return Ok(DispatchPaths {
-                                issue_id,
-                                project_root: project_dir.replace('\\', "/"),
-                                worktree_path: worktree_path.to_string_lossy().replace('\\', "/"),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        return Err(format!(
-            "No active worktree found for project `{}`. Create a worktree first with control.py.",
-            project_name
-        ));
+        let worktree_roots = resolve_dispatch_worktree_roots()?;
+        return resolve_dispatch_paths_for_project(project_dir, &worktree_roots);
     }
 
     // Fallback: detect from CWD
@@ -489,6 +470,84 @@ fn resolve_dispatch_paths(project_dir: Option<&str>) -> Result<DispatchPaths, St
         project_root: project_root.to_string_lossy().replace('\\', "/"),
         worktree_path: worktree_path.to_string_lossy().replace('\\', "/"),
     })
+}
+
+fn resolve_dispatch_paths_for_project(
+    project_dir: &str,
+    worktree_roots: &[PathBuf],
+) -> Result<DispatchPaths, String> {
+    let project_root = PathBuf::from(project_dir);
+    if !project_root.exists() {
+        return Err(format!(
+            "Project directory `{}` does not exist",
+            project_dir
+        ));
+    }
+
+    let project_name = project_root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    if let Some(worktree_path) = find_project_worktree(&project_name, worktree_roots)? {
+        let issue_id = parse_issue_id_from_branch(
+            &worktree_path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        )?;
+
+        return Ok(DispatchPaths {
+            issue_id,
+            project_root: project_dir.replace('\\', "/"),
+            worktree_path: worktree_path.to_string_lossy().replace('\\', "/"),
+        });
+    }
+
+    Err(format_missing_worktree_error(&project_name, worktree_roots))
+}
+
+fn find_project_worktree(
+    project_name: &str,
+    worktree_roots: &[PathBuf],
+) -> Result<Option<PathBuf>, String> {
+    for worktree_root in worktree_roots {
+        let project_worktrees_dir = worktree_root.join(project_name);
+        if !project_worktrees_dir.exists() {
+            continue;
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&project_worktrees_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("feat-") && entry.path().is_dir() {
+                    let worktree_path = entry.path();
+                    if run_git_command(&worktree_path, ["rev-parse", "--show-toplevel"]).is_ok() {
+                        return Ok(Some(worktree_path));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn format_missing_worktree_error(project_name: &str, worktree_roots: &[PathBuf]) -> String {
+    let searched_roots = worktree_roots
+        .iter()
+        .map(|root| format!("`{}`", root.join(project_name).display()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let managed_root = worktree_roots
+        .first()
+        .map(|root| root.join(project_name))
+        .unwrap_or_else(|| PathBuf::from(project_name));
+
+    format!(
+        "No active worktree found for project `{project_name}`. Forge looked under {searched_roots}. Create a `feat-<ISSUE>` worktree under `{}` and try again.",
+        managed_root.display()
+    )
 }
 
 fn run_git_command<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String, String> {
@@ -779,13 +838,67 @@ impl Plugin for ForgePlugin {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_agent_task_request, extract_generated_prompt, parse_issue_id_from_branch};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{
+        build_agent_task_request, extract_generated_prompt,
+        managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
+        resolve_dispatch_paths_for_project,
+    };
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "entrance-forge-{label}-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("test temp directory should be created");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn init_git_repo(path: &Path) {
+        let output = Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .current_dir(path)
+            .output()
+            .expect("git init should run");
+        assert!(
+            output.status.success(),
+            "git init should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn codex_agent_requests_are_translated_into_cli_tasks() {
         let request = build_agent_task_request(
             "MYT-48".to_string(),
-            "A:/.agents/.worktrees/Entrance/feat-MYT-48".to_string(),
+            "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48".to_string(),
             "codex:gpt-5-codex".to_string(),
             "implement the task".to_string(),
             vec!["openai".to_string()],
@@ -796,7 +909,7 @@ mod tests {
         assert_eq!(request.command, "codex");
         assert_eq!(
             request.working_dir.as_deref(),
-            Some("A:/.agents/.worktrees/Entrance/feat-MYT-48")
+            Some("C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48")
         );
         assert_eq!(request.stdin_text.as_deref(), Some("implement the task"));
         assert!(request.args.contains("\"exec\""));
@@ -818,6 +931,71 @@ mod tests {
                 .expect("scoped feature branch should parse"),
             "MYT-99"
         );
+    }
+
+    #[test]
+    fn managed_worktree_root_is_derived_from_app_data_dir() {
+        let app_data_dir = PathBuf::from("C:/Users/test/AppData/Local/Entrance");
+        assert_eq!(
+            managed_worktrees_root_for_app_data_dir(&app_data_dir),
+            app_data_dir.join("worktrees")
+        );
+    }
+
+    #[test]
+    fn project_dispatch_prefers_managed_worktree_root() {
+        let temp_dir = TestDir::new("dispatch-prefer-managed");
+        let project_root = temp_dir.path().join("Entrance");
+        fs::create_dir_all(&project_root).expect("project root should exist");
+
+        let managed_root = temp_dir.path().join("appdata").join("worktrees");
+        let managed_worktree = managed_root.join("Entrance").join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree).expect("managed worktree should exist");
+        init_git_repo(&managed_worktree);
+
+        let legacy_root = temp_dir.path().join("legacy-agents");
+        let legacy_worktree = legacy_root.join("Entrance").join("feat-MYT-99");
+        fs::create_dir_all(&legacy_worktree).expect("legacy worktree should exist");
+        init_git_repo(&legacy_worktree);
+
+        let paths = resolve_dispatch_paths_for_project(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            &[managed_root.clone(), legacy_root],
+        )
+        .expect("managed worktree should be preferred");
+
+        assert_eq!(paths.issue_id, "MYT-48");
+        assert_eq!(
+            paths.project_root,
+            project_root.to_string_lossy().replace('\\', "/")
+        );
+        assert_eq!(
+            paths.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+    }
+
+    #[test]
+    fn missing_project_worktree_error_points_to_managed_root() {
+        let temp_dir = TestDir::new("dispatch-missing");
+        let project_root = temp_dir.path().join("Entrance");
+        fs::create_dir_all(&project_root).expect("project root should exist");
+
+        let managed_root = temp_dir.path().join("appdata").join("worktrees");
+        let legacy_root = temp_dir.path().join("legacy-agents");
+
+        let error = resolve_dispatch_paths_for_project(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            &[managed_root.clone(), legacy_root],
+        )
+        .expect_err("missing worktree should return an error");
+
+        assert!(error.contains(&managed_root.join("Entrance").display().to_string()));
+        assert!(!error.contains("control.py"));
     }
 
     #[test]
