@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -664,6 +664,7 @@ fn latest_promotion_map(
 mod tests {
     use std::{
         env,
+        path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -682,6 +683,9 @@ mod tests {
         let planning_items = store.list_planning_items()?;
         let links = store.list_planning_item_links()?;
         let promotions = store.list_promotion_records()?;
+        let mirror_summaries = list_landing_mirror_items(&store)?;
+        let planning_summaries = list_landing_planning_items(&store)?;
+        let unreconciled_summaries = list_landing_unreconciled_items(&store)?;
 
         assert_eq!(report.imported_issue_count, 2);
         assert_eq!(report.imported_document_count, 1);
@@ -695,6 +699,15 @@ mod tests {
         assert!(links.iter().any(|link| link.link_type == "mirrors"));
         assert!(links.iter().any(|link| link.link_type == "blocks"));
         assert_eq!(promotions.len(), 5);
+        assert_eq!(mirror_summaries.len(), 2);
+        assert!(mirror_summaries
+            .iter()
+            .all(|summary| summary.promotion_state.as_deref() == Some("storage_only")));
+        assert_eq!(planning_summaries.len(), 3);
+        assert!(planning_summaries
+            .iter()
+            .all(|summary| summary.promotion_state.as_deref() == Some("storage_only")));
+        assert_eq!(unreconciled_summaries.len(), 3);
 
         let _ = fs::remove_file(snapshot_path);
         Ok(())
