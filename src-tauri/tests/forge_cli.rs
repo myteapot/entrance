@@ -216,6 +216,59 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn forge_prepare_dispatch_cli_reports_managed_worktree_boundary_without_legacy_fallback() -> Result<()> {
+    let temp_dir = TempDir::new("prepare-dispatch-missing-worktree")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    let project_root = temp_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    fs::create_dir_all(&bootstrap_skill)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
+        .args([
+            "forge",
+            "prepare-dispatch",
+            "--project-dir",
+            project_root
+                .to_str()
+                .context("project path should be valid UTF-8")?,
+        ])
+        .env("ENTRANCE_APP_DATA_DIR", &app_data_dir)
+        .env_remove("LINEAR_API_KEY")
+        .env_remove("LINEAR_TOKEN")
+        .output()
+        .context("failed to spawn `entrance forge prepare-dispatch`")?;
+
+    assert!(
+        !output.status.success(),
+        "`entrance forge prepare-dispatch` unexpectedly succeeded without a managed worktree"
+    );
+
+    let stderr = String::from_utf8(output.stderr).context("CLI stderr should be valid UTF-8")?;
+    let expected_managed_root = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .display()
+        .to_string();
+
+    assert!(
+        stderr.contains("No active worktree found for project `Entrance`"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&expected_managed_root),
+        "expected managed root `{expected_managed_root}` in stderr: {stderr}"
+    );
+    assert!(stderr.contains("feat-<ISSUE>"), "unexpected stderr: {stderr}");
+    assert!(!stderr.contains(".agents"), "unexpected stderr: {stderr}");
+    assert!(!stderr.contains("legacy"), "unexpected stderr: {stderr}");
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(
