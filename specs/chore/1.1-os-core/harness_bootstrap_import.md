@@ -2,14 +2,25 @@
 
 > Arch design
 > Issue: `MYT-64`
-> Status: Proposed
-> Stage: update phase, still using human paste-prompt flow
+> Status: Landed repo-side bootstrap import
+> Stage: update phase, runtime cutover still deferred
 
 ## 1. Goal
 
 Import the live bootstrap substrate from `A:/.agents` into a first-class, source-controlled home inside `Entrance`, using a strict copy-first migration.
 
 This issue does not replace runtime behavior yet. It only establishes canonical owned copies for the bootstrap files that are still currently living in `.agents`.
+
+Repo-side checkpoint now landed:
+
+- `harness/bootstrap/duet/SKILL.md`
+- `harness/bootstrap/duet/roles/arch.md`
+- `harness/bootstrap/duet/roles/dev.md`
+- `harness/bootstrap/duet/roles/agent.md`
+- `harness/bootstrap/nota/identity.md`
+- `harness/bootstrap/nota/rules.md`
+- `harness/bootstrap/README.md`
+- `harness/bootstrap/mapping.md`
 
 ## 2. Why This Comes First
 

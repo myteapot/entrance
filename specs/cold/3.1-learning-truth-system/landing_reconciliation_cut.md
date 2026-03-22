@@ -49,8 +49,8 @@ These are the only imported shells that currently form the active bootstrap abso
   - This is the real master issue for turning external substrate into Entrance-owned assets.
   - It already names the live runtime dependencies that still block de-`.agents` operation.
 - `MYT-64` `bootstrap import from .agents`
-  - This is already `In Progress`.
-  - It is the first ownership cut that can land without replacing runtime behavior yet.
+  - Repo-side canonical copies now exist under `harness/bootstrap/`.
+  - This landed the bootstrap ownership cut without replacing runtime behavior yet.
 - `MYT-65` `recovery docs import`
   - This is the documentation/provenance companion to `MYT-64`.
   - It is required before later runtime cutover can claim durable provenance.
@@ -125,7 +125,7 @@ These are promotion candidates because they still shape current operating truth,
 
 ## Resulting Operating Posture
 
-- Active reconciliation lane: `MYT-63 / MYT-64 / MYT-65`
+- Active reconciliation lane: `MYT-63 / MYT-65`, with `MYT-64` already landed as repo-side bootstrap import
 - Keep backlog preserved but cold: `MYT-45 / MYT-46 / MYT-47 / MYT-49 / MYT-50 / MYT-51 / MYT-52 / MYT-53 / MYT-54 / MYT-60 / MYT-62`
 - Keep canceled and duplicate items mirrored only as external evidence
 - Keep already-landed slices as provenance unless they still define present ownership boundaries
