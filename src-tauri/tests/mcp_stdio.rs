@@ -132,8 +132,8 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
         tool_names,
         vec![
             "forge_run",
-            "forge_prepare_dispatch",
-            "forge_verify_dispatch",
+            "forge_prepare_agent_dispatch",
+            "forge_verify_agent_dispatch",
             "forge_prepare_dev_dispatch",
             "forge_verify_dev_dispatch",
             "forge_dispatch_agent",
@@ -157,12 +157,17 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
         .iter()
         .find(|tool| tool["name"] == "forge_dispatch_dev")
         .context("forge_dispatch_dev should be listed")?;
+    let prepare_agent = tools
+        .iter()
+        .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
+        .context("forge_prepare_agent_dispatch should be listed")?;
     assert_eq!(dispatch_agent["permission"]["actorRole"], "dev");
     assert_eq!(dispatch_agent["permission"]["primitive"], "dispatch");
     assert_eq!(dispatch_agent["dispatchRole"], "agent");
     assert_eq!(dispatch_dev["permission"]["actorRole"], "arch");
     assert_eq!(dispatch_dev["permission"]["room"], "strategy");
     assert_eq!(dispatch_dev["dispatchRole"], "dev");
+    assert_eq!(prepare_agent["dispatchRole"], "agent");
 
     server.send(json!({
         "jsonrpc": "2.0",
@@ -234,8 +239,8 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
         tool_names,
         vec![
             "forge_run",
-            "forge_prepare_dispatch",
-            "forge_verify_dispatch",
+            "forge_prepare_agent_dispatch",
+            "forge_verify_agent_dispatch",
             "forge_dispatch_agent",
             "forge_status",
             "forge_cancel",
@@ -439,7 +444,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
         "id": "forge-prepare",
         "method": "tools/call",
         "params": {
-            "name": "forge_prepare_dispatch",
+            "name": "forge_prepare_agent_dispatch",
             "arguments": {
                 "project_dir": project_root
             }
@@ -487,7 +492,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
         "id": "forge-verify",
         "method": "tools/call",
         "params": {
-            "name": "forge_verify_dispatch",
+            "name": "forge_verify_agent_dispatch",
             "arguments": {
                 "projectDir": project_root
             }

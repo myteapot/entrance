@@ -255,8 +255,12 @@ impl McpServer {
 
         match name {
             "forge_run" => self.handle_forge_run(arguments),
-            "forge_prepare_dispatch" => self.handle_forge_prepare_dispatch(arguments),
-            "forge_verify_dispatch" => self.handle_forge_verify_dispatch(arguments),
+            "forge_prepare_dispatch" | "forge_prepare_agent_dispatch" => {
+                self.handle_forge_prepare_dispatch(arguments)
+            }
+            "forge_verify_dispatch" | "forge_verify_agent_dispatch" => {
+                self.handle_forge_verify_dispatch(arguments)
+            }
             "forge_prepare_dev_dispatch" => self.handle_forge_prepare_dev_dispatch(arguments),
             "forge_verify_dev_dispatch" => self.handle_forge_verify_dev_dispatch(arguments),
             "forge_dispatch_agent" => self.handle_forge_dispatch_agent(arguments),
@@ -683,7 +687,7 @@ fn build_tool_descriptors(
             dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
-            name: "forge_prepare_dispatch",
+            name: "forge_prepare_agent_dispatch",
             description: "Prepare an Entrance-owned agent-lane Forge dispatch from the managed worktree for a project.",
             input_schema: json!({
                 "type": "object",
@@ -696,7 +700,7 @@ fn build_tool_descriptors(
             dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
-            name: "forge_verify_dispatch",
+            name: "forge_verify_agent_dispatch",
             description: "Prepare and persist a Pending agent-lane Forge dispatch without starting agent execution.",
             input_schema: json!({
                 "type": "object",
@@ -1104,9 +1108,11 @@ fn tool_permission_from_params(params: Option<&Value>) -> Option<McpToolPermissi
 
 fn tool_dispatch_role_from_name(name: &str) -> Option<ActorRole> {
     match name {
-        "forge_prepare_dispatch" | "forge_verify_dispatch" | "forge_dispatch_agent" => {
-            Some(ActorRole::Agent)
-        }
+        "forge_prepare_dispatch"
+        | "forge_verify_dispatch"
+        | "forge_prepare_agent_dispatch"
+        | "forge_verify_agent_dispatch"
+        | "forge_dispatch_agent" => Some(ActorRole::Agent),
         "forge_prepare_dev_dispatch" | "forge_verify_dev_dispatch" | "forge_dispatch_dev" => {
             Some(ActorRole::Dev)
         }
@@ -1170,8 +1176,8 @@ mod tests {
             names,
             vec![
                 "forge_run",
-                "forge_prepare_dispatch",
-                "forge_verify_dispatch",
+                "forge_prepare_agent_dispatch",
+                "forge_verify_agent_dispatch",
                 "forge_prepare_dev_dispatch",
                 "forge_verify_dev_dispatch",
                 "forge_dispatch_agent",
@@ -1198,8 +1204,8 @@ mod tests {
             .expect("forge_dispatch_dev should exist");
         let prepare_agent = tools
             .iter()
-            .find(|tool| tool["name"] == "forge_prepare_dispatch")
-            .expect("forge_prepare_dispatch should exist");
+            .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
+            .expect("forge_prepare_agent_dispatch should exist");
         assert_eq!(dispatch_agent["permission"]["actorRole"], "dev");
         assert_eq!(dispatch_agent["permission"]["primitive"], "dispatch");
         assert_eq!(dispatch_agent["dispatchRole"], "agent");
@@ -1272,8 +1278,8 @@ mod tests {
             names,
             vec![
                 "forge_run",
-                "forge_prepare_dispatch",
-                "forge_verify_dispatch",
+                "forge_prepare_agent_dispatch",
+                "forge_verify_agent_dispatch",
                 "forge_dispatch_agent",
                 "forge_status",
                 "forge_cancel",

@@ -59,7 +59,10 @@ const HOT_ASSIGN_ARCH: McpToolPermission = McpToolPermission::new(
 
 pub fn permission_for_mcp_tool(name: &str) -> Option<McpToolPermission> {
     match name {
-        "forge_prepare_dispatch" | "forge_verify_dispatch" => Some(HOT_PREP_DEV),
+        "forge_prepare_dispatch"
+        | "forge_verify_dispatch"
+        | "forge_prepare_agent_dispatch"
+        | "forge_verify_agent_dispatch" => Some(HOT_PREP_DEV),
         "forge_dispatch_agent" => Some(HOT_DISPATCH_DEV),
         "forge_prepare_dev_dispatch" | "forge_verify_dev_dispatch" | "forge_dispatch_dev" => {
             Some(HOT_ASSIGN_ARCH)
@@ -77,6 +80,8 @@ mod tests {
         for name in [
             "forge_prepare_dispatch",
             "forge_verify_dispatch",
+            "forge_prepare_agent_dispatch",
+            "forge_verify_agent_dispatch",
             "forge_dispatch_agent",
             "forge_prepare_dev_dispatch",
             "forge_verify_dev_dispatch",
