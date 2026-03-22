@@ -127,6 +127,8 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
         tool_names,
         vec![
             "forge_run",
+            "forge_prepare_dispatch",
+            "forge_verify_dispatch",
             "forge_status",
             "forge_cancel",
             "vault_get_token",

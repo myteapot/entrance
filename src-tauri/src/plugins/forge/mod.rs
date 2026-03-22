@@ -99,6 +99,16 @@ pub struct PreparedAgentDispatch {
     pub prompt: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ForgeDispatchVerificationReport {
+    pub dispatch: PreparedAgentDispatch,
+    pub task_id: i64,
+    pub task_status: String,
+    pub task_command: String,
+    pub task_working_dir: Option<String>,
+    pub prompt_via_stdin: bool,
+}
+
 #[derive(Debug, Clone)]
 struct DispatchPaths {
     issue_id: String,
@@ -238,6 +248,10 @@ impl ForgePlugin {
         self.engine.clone()
     }
 
+    pub fn data_store(&self) -> DataStore {
+        self.data_store.clone()
+    }
+
     pub fn subscribe_events(
         &self,
     ) -> tokio::sync::broadcast::Receiver<crate::core::event_bus::EventPayload> {
@@ -291,6 +305,50 @@ pub async fn prepare_agent_dispatch(
 
     let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
     build_prepared_agent_dispatch(paths, issue_summary).await
+}
+
+pub fn prepare_agent_dispatch_blocking(
+    data_store: DataStore,
+    project_dir: Option<String>,
+) -> Result<PreparedAgentDispatch, String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to build Tokio runtime for Forge dispatch: {error}"))?;
+
+    runtime.block_on(prepare_agent_dispatch(data_store, project_dir))
+}
+
+pub fn verify_agent_dispatch(
+    forge: &ForgePlugin,
+    project_dir: Option<String>,
+) -> Result<ForgeDispatchVerificationReport, String> {
+    let dispatch = prepare_agent_dispatch_blocking(forge.data_store(), project_dir)?;
+    let request = build_agent_task_request(
+        dispatch.issue_id.clone(),
+        dispatch.worktree_path.clone(),
+        "codex".to_string(),
+        dispatch.prompt.clone(),
+        Vec::new(),
+        None,
+    )?;
+
+    let task_id = forge
+        .create_task(request)
+        .map_err(|error| error.to_string())?;
+    let task = forge
+        .get_task(task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "stored Forge verification task should exist".to_string())?;
+
+    Ok(ForgeDispatchVerificationReport {
+        dispatch,
+        task_id,
+        task_status: task.status,
+        task_command: task.command,
+        task_working_dir: task.working_dir,
+        prompt_via_stdin: task.stdin_text.is_some(),
+    })
 }
 
 async fn build_prepared_agent_dispatch(
@@ -788,6 +846,14 @@ impl Plugin for ForgePlugin {
             McpToolDefinition {
                 name: "forge.run_agent",
                 description: "Launch an Agent task from issue, worktree and prompt",
+            },
+            McpToolDefinition {
+                name: "forge.prepare_agent_dispatch",
+                description: "Prepare an Entrance-owned agent dispatch from the current worktree context",
+            },
+            McpToolDefinition {
+                name: "forge.verify_agent_dispatch",
+                description: "Prepare and persist a Pending Forge dispatch without starting agent execution",
             },
             McpToolDefinition {
                 name: "forge.list_tasks",

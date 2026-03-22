@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::plugins::{
-    forge::{CreateTaskRequest, ForgePlugin},
+    forge::{
+        prepare_agent_dispatch_blocking, verify_agent_dispatch, CreateTaskRequest, ForgePlugin,
+    },
     launcher::LauncherPlugin,
     vault::VaultPlugin,
 };
@@ -187,6 +189,8 @@ impl McpServer {
 
         match name {
             "forge_run" => self.handle_forge_run(arguments),
+            "forge_prepare_dispatch" => self.handle_forge_prepare_dispatch(arguments),
+            "forge_verify_dispatch" => self.handle_forge_verify_dispatch(arguments),
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
@@ -230,6 +234,33 @@ impl McpServer {
             "task_id": task.id,
             "task": task,
         }))
+    }
+
+    fn handle_forge_prepare_dispatch(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let dispatch = prepare_agent_dispatch_blocking(forge.data_store(), project_dir)
+            .map_err(anyhow::Error::msg)?;
+        serde_json::to_value(dispatch).context("failed to serialize forge dispatch")
+    }
+
+    fn handle_forge_verify_dispatch(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let report = verify_agent_dispatch(forge, project_dir).map_err(anyhow::Error::msg)?;
+        serde_json::to_value(report).context("failed to serialize forge dispatch verification report")
     }
 
     fn handle_forge_status(&self, arguments: &Value) -> Result<Value> {
@@ -435,6 +466,28 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                     }
                 },
                 "required": ["name", "command"]
+            }),
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_prepare_dispatch",
+            description: "Prepare an Entrance-owned Forge dispatch from the managed worktree for a project.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                }
+            }),
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_verify_dispatch",
+            description: "Prepare and persist a Pending Forge dispatch without starting agent execution.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                }
             }),
         });
         tools.push(McpToolDescriptor {
@@ -655,6 +708,8 @@ mod tests {
             names,
             vec![
                 "forge_run",
+                "forge_prepare_dispatch",
+                "forge_verify_dispatch",
                 "forge_status",
                 "forge_cancel",
                 "vault_get_token",

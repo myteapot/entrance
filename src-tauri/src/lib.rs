@@ -29,8 +29,8 @@ use core::{
 };
 use plugins::{
     forge::{
-        build_agent_task_request, prepare_agent_dispatch as prepare_forge_agent_dispatch,
-        PreparedAgentDispatch,
+        prepare_agent_dispatch_blocking, verify_agent_dispatch,
+        ForgeDispatchVerificationReport, PreparedAgentDispatch,
     },
     forge::commands::{
         forge_cancel_task, forge_create_task, forge_dispatch_agent, forge_get_task,
@@ -72,16 +72,6 @@ struct DashboardSummary {
     token_count: usize,
     mcp_config_count: usize,
     enabled_mcp_count: usize,
-}
-
-#[derive(Clone, Serialize)]
-struct ForgeDispatchVerificationReport {
-    dispatch: PreparedAgentDispatch,
-    task_id: i64,
-    task_status: String,
-    task_command: String,
-    task_working_dir: Option<String>,
-    prompt_via_stdin: bool,
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -328,15 +318,7 @@ fn prepare_forge_dispatch_with_startup(
     startup: &StartupState,
     project_dir: Option<String>,
 ) -> Result<PreparedAgentDispatch> {
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("failed to build Tokio runtime for Forge CLI")?;
-
-    runtime
-        .block_on(prepare_forge_agent_dispatch(startup.data_store(), project_dir))
-        .map_err(anyhow::Error::msg)
+    prepare_agent_dispatch_blocking(startup.data_store(), project_dir).map_err(anyhow::Error::msg)
 }
 
 fn prepare_forge_dispatch_cli(project_dir: Option<String>) -> Result<PreparedAgentDispatch> {
@@ -346,32 +328,8 @@ fn prepare_forge_dispatch_cli(project_dir: Option<String>) -> Result<PreparedAge
 
 fn verify_forge_dispatch_cli(project_dir: Option<String>) -> Result<ForgeDispatchVerificationReport> {
     let startup = bootstrap_forge_cli_state()?;
-    let dispatch = prepare_forge_dispatch_with_startup(&startup, project_dir)?;
-
-    let request = build_agent_task_request(
-        dispatch.issue_id.clone(),
-        dispatch.worktree_path.clone(),
-        "codex".to_string(),
-        dispatch.prompt.clone(),
-        Vec::new(),
-        None,
-    )
-    .map_err(anyhow::Error::msg)?;
-
     let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
-    let task_id = forge_plugin.create_task(request)?;
-    let task = forge_plugin
-        .get_task(task_id)?
-        .context("stored Forge verification task should exist")?;
-
-    Ok(ForgeDispatchVerificationReport {
-        dispatch,
-        task_id,
-        task_status: task.status,
-        task_command: task.command,
-        task_working_dir: task.working_dir,
-        prompt_via_stdin: task.stdin_text.is_some(),
-    })
+    verify_agent_dispatch(&forge_plugin, project_dir).map_err(anyhow::Error::msg)
 }
 
 fn build_mcp_server(startup: &StartupState, transport: McpTransport) -> Result<McpServer> {
