@@ -60,13 +60,13 @@ The following recovered documents now also have repo-side copies under `Entrance
 As of this design, `Entrance` runtime still depends on old `.agents` paths:
 
 - `src-tauri/src/plugins/forge/mod.rs`
-  - direct reference to `A:/.agents/nota/scripts/control.py`
+  - prompt generation now reads Entrance-owned `harness/bootstrap/duet/SKILL.md`
   - managed worktree discovery now prefers `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}`
   - legacy fallback still checks `A:/.agents/.worktrees/...`
 - `src/pages/Forge.tsx`
-  - UI now surfaces `legacy .agents control.py bridge` instead of claiming `control.py prompt` as a native source
+  - UI now surfaces `Entrance-owned harness/bootstrap prompt`
 
-This means `.agents` has now been demoted from "only copy of key assets" to "runtime dependency plus preserved recovery source," but it is still not deletable.
+This means `.agents` has now been demoted from "only copy of key assets" to "legacy worktree dependency plus preserved recovery source," but it is still not deletable.
 
 ## 3. Decommission Goal
 
@@ -194,11 +194,11 @@ Release N must not claim `.agents` is removable yet.
 
 Release N+1 should replace all active runtime dependencies on `.agents`:
 
-- Forge prompt generation must stop shelling out to `control.py`
+- Forge prompt generation no longer shells out to `control.py`; it now reads the repo-owned bootstrap source
 - Forge worktree discovery must stop reading `A:/.agents/.worktrees`
 - prompt and role loading must read from Harness-owned sources
 - memory reads must stop depending on `db.py` as the primary runtime path
-- UI must stop advertising ``control.py prompt`` as the active source
+- UI now advertises `Entrance-owned harness/bootstrap prompt` as the active source
 
 At the end of Release N+1, `.agents` may still exist, but it should no longer be required by runtime code.
 
@@ -258,14 +258,14 @@ Needed outcome:
 
 - [ ] all required hot files have canonical copies inside `Entrance`
 - [ ] recovered docs are copied into `Entrance` with provenance retained
-- [ ] runtime code no longer depends on `A:/.agents/nota/scripts/control.py`
+- [x] runtime code no longer depends on `A:/.agents/nota/scripts/control.py`
 - [ ] runtime code no longer depends on `A:/.agents/.worktrees`
 - [x] Forge UI no longer names ``control.py prompt`` as the live prompt source
 - [ ] role and rule bootstrap comes from `Entrance`-owned harness assets
 - [ ] memory domains needed for NOTA and Duet are available from `Entrance` local state
 - [ ] a verification run succeeds with `.agents` absent or renamed
 
-The checked UI item only means the surface now tells the truth about the current bridge. Prompt generation still depends on the legacy `.agents` control path until the runtime replacement line lands.
+The checked prompt items mean Forge now owns prompt generation and surfaces the new owner honestly. Worktree fallback, broader role/rule bootstrap ownership, and `.agents`-absent verification are still open.
 
 Recommended verification command before claiming readiness:
 
@@ -287,7 +287,7 @@ That scan should return no active runtime dependency hits, or only intentionally
 Until runtime decoupling is actually complete, the project stays in an update-phase operating mode:
 
 - human paste-prompt flow remains the active dispatch path
-- prompt generation still follows the current `.agents`-based path
+- prompt generation now follows the Entrance-owned `harness/bootstrap/` path
 - `Entrance` may assist and observe, but is not yet allowed to claim full bootstrap ownership
 - runtime replacement starts only after bootstrap assets and recovery docs are safely imported
 
@@ -300,14 +300,14 @@ From the current state, the expected remaining human awake cycles before "Entran
 1. Bootstrap import cycle
    Covers hot-file import and recovery-doc import.
 2. Runtime decoupling cycle
-   Covers replacing `control.py` and `.agents/.worktrees` runtime dependencies.
+   Covers removing the remaining `.agents/.worktrees` runtime dependency.
 3. Self-bootstrap verification cycle
    Covers end-to-end validation that Entrance can bootstrap without `.agents`.
 
 Conservative estimate:
 
-- baseline: `3` awake cycles
-- with one verification rollback/fix loop: `4` awake cycles
+- baseline: `2` awake cycles
+- with one verification rollback/fix loop: `3` awake cycles
 
 This budget assumes no major architectural reversal and no new hidden `.agents` runtime dependency is discovered.
 

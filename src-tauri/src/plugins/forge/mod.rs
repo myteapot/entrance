@@ -42,7 +42,8 @@ const MIGRATIONS: [MigrationStep; 2] = [
 ];
 
 const LEGACY_AGENTS_WORKTREES_ROOT: &str = "A:/.agents/.worktrees";
-const LEGACY_CONTROL_PROMPT_SOURCE_LABEL: &str = "legacy .agents control.py bridge";
+const ENTRANCE_BOOTSTRAP_SKILL_RELATIVE_PATH: &str = "harness/bootstrap/duet/SKILL.md";
+const ENTRANCE_BOOTSTRAP_PROMPT_SOURCE_LABEL: &str = "Entrance-owned harness/bootstrap prompt";
 
 pub fn migrations() -> &'static [MigrationStep] {
     &MIGRATIONS
@@ -296,10 +297,17 @@ pub async fn prepare_agent_dispatch(
     };
     let task = build_agent_task_text(&paths.issue_id, issue_summary.as_ref());
     let project_root = paths.project_root.clone();
+    let worktree_path_for_prompt = paths.worktree_path.clone();
     let issue_id = paths.issue_id.clone();
     let issue_status_for_prompt = issue_status.clone();
     let prompt = tauri::async_runtime::spawn_blocking(move || {
-        generate_agent_prompt(&project_root, &issue_id, &issue_status_for_prompt, &task)
+        generate_agent_prompt(
+            &project_root,
+            &worktree_path_for_prompt,
+            &issue_id,
+            &issue_status_for_prompt,
+            &task,
+        )
     })
     .await
     .map_err(|error| error.to_string())??;
@@ -311,7 +319,7 @@ pub async fn prepare_agent_dispatch(
         issue_title: issue_summary.map(|summary| summary.issue_title),
         project_root: paths.project_root,
         worktree_path: paths.worktree_path,
-        prompt_source: LEGACY_CONTROL_PROMPT_SOURCE_LABEL.to_string(),
+        prompt_source: ENTRANCE_BOOTSTRAP_PROMPT_SOURCE_LABEL.to_string(),
         prompt,
     })
 }
@@ -584,6 +592,10 @@ fn normalize_command_path(cwd: &Path, raw: &str) -> PathBuf {
     }
 }
 
+fn normalize_display_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn parse_issue_id_from_branch(branch: &str) -> Result<String, String> {
     let candidate = branch.trim().rsplit('/').next().unwrap_or(branch.trim());
     match candidate.strip_prefix("feat-") {
@@ -686,72 +698,36 @@ fn build_agent_task_text(issue_id: &str, issue_summary: Option<&LinearIssueSumma
 
 fn generate_agent_prompt(
     project_root: &str,
+    worktree_path: &str,
     issue_id: &str,
     issue_status: &str,
     task: &str,
 ) -> Result<String, String> {
-    let output = Command::new("python")
-        .arg("A:/.agents/nota/scripts/control.py")
-        .arg("prompt")
-        .arg(project_root)
-        .arg(issue_id)
-        .arg(issue_status)
-        .arg(task)
-        .output()
-        .map_err(|error| error.to_string())?;
+    let project_root = PathBuf::from(project_root);
+    let worktree_path = PathBuf::from(worktree_path);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "Failed to generate Agent prompt with control.py".to_string()
-        } else {
-            format!("Failed to generate Agent prompt with control.py: {stderr}")
-        });
+    if !worktree_path.exists() {
+        return Err(format!(
+            "Resolved worktree `{}` does not exist",
+            normalize_display_path(&worktree_path)
+        ));
     }
 
-    let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
-    extract_generated_prompt(&stdout)
-}
-
-fn extract_generated_prompt(output: &str) -> Result<String, String> {
-    const MARKER: &str = "GENERATED AGENT PROMPT";
-
-    let mut marker_seen = false;
-    let mut collecting = false;
-    let mut buffer = Vec::new();
-
-    for line in output.lines() {
-        if !marker_seen {
-            if line.contains(MARKER) {
-                marker_seen = true;
-            }
-            continue;
-        }
-
-        if !collecting {
-            if line.starts_with('=') {
-                collecting = true;
-            }
-            continue;
-        }
-
-        if line.starts_with('=') {
-            break;
-        }
-
-        if buffer.is_empty() && line.trim().is_empty() {
-            continue;
-        }
-
-        buffer.push(line);
+    let bootstrap_skill_path = project_root.join(ENTRANCE_BOOTSTRAP_SKILL_RELATIVE_PATH);
+    if !bootstrap_skill_path.exists() {
+        return Err(format!(
+            "Entrance bootstrap skill file `{}` does not exist",
+            normalize_display_path(&bootstrap_skill_path)
+        ));
     }
 
-    let prompt = buffer.join("\n").trim().to_string();
-    if prompt.is_empty() {
-        Err("control.py did not return a generated Agent prompt".to_string())
-    } else {
-        Ok(prompt)
-    }
+    let project_root = normalize_display_path(&project_root);
+    let worktree_path = normalize_display_path(&worktree_path);
+    let bootstrap_skill_path = normalize_display_path(&bootstrap_skill_path);
+
+    Ok(format!(
+        "读 `{bootstrap_skill_path}`，以 Agent 身份启动。\n从 Linear 获取 `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/specs/`\n\n第一动作，在写任何代码前必须完成:\n1. 调用 Linear MCP，把 `{issue_id}` 标记为 `In Progress`\n2. 在 issue comment 留言:\n   `> Agent ({{当前模型名}}) 已领取，开始工作`\n\n这是硬约束:\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 Linear issue comment 中汇报结果。"
+    ))
 }
 
 impl Plugin for ForgePlugin {
@@ -849,7 +825,7 @@ mod tests {
     };
 
     use super::{
-        build_agent_task_request, extract_generated_prompt,
+        build_agent_task_request, generate_agent_prompt,
         managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
         resolve_dispatch_paths_for_project,
     };
@@ -1002,12 +978,67 @@ mod tests {
     }
 
     #[test]
-    fn generated_prompt_is_extracted_from_control_output() {
-        let prompt = extract_generated_prompt(
-            "============================================================\nGENERATED AGENT PROMPT\n============================================================\n\nprompt line 1\nprompt line 2\n============================================================\n\nCopy the prompt above into a new Agent window.\n",
-        )
-        .expect("prompt should be extracted");
+    fn generated_prompt_uses_entrance_bootstrap_skill() {
+        let temp_dir = TestDir::new("dispatch-prompt");
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        fs::create_dir_all(&bootstrap_skill).expect("bootstrap skill directory should exist");
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")
+            .expect("bootstrap skill should be written");
 
-        assert_eq!(prompt, "prompt line 1\nprompt line 2");
+        let worktree_path = temp_dir
+            .path()
+            .join("appdata")
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
+        fs::create_dir_all(&worktree_path).expect("worktree path should exist");
+
+        let prompt = generate_agent_prompt(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            worktree_path
+                .to_str()
+                .expect("worktree path should be valid UTF-8"),
+            "MYT-48",
+            "Todo",
+            "implement the task",
+        )
+        .expect("prompt should be generated");
+
+        assert!(prompt.contains("harness/bootstrap/duet/SKILL.md"));
+        assert!(prompt.contains(&worktree_path.to_string_lossy().replace('\\', "/")));
+        assert!(!prompt.contains(".agents/nota/scripts/control.py"));
+    }
+
+    #[test]
+    fn prompt_generation_requires_repo_bootstrap_skill() {
+        let temp_dir = TestDir::new("dispatch-prompt-missing-skill");
+        let project_root = temp_dir.path().join("Entrance");
+        fs::create_dir_all(&project_root).expect("project root should exist");
+
+        let worktree_path = temp_dir
+            .path()
+            .join("appdata")
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
+        fs::create_dir_all(&worktree_path).expect("worktree path should exist");
+
+        let error = generate_agent_prompt(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            worktree_path
+                .to_str()
+                .expect("worktree path should be valid UTF-8"),
+            "MYT-48",
+            "Todo",
+            "implement the task",
+        )
+        .expect_err("missing bootstrap skill should fail");
+
+        assert!(error.contains("harness/bootstrap/duet/SKILL.md"));
     }
 }

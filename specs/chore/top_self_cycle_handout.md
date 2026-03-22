@@ -38,9 +38,10 @@
 - `MYT-65` is now repo-side landed:
   - recovery provenance copies now exist under `specs/recovery/`
   - `.agents` remains preserved, but these docs are no longer recovery-only in location
-- `MYT-63` has now advanced through two small runtime cuts:
+- `MYT-63` has now advanced through three small runtime cuts:
   - Forge worktree discovery now prefers `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}` and only falls back to `A:/.agents/.worktrees/...`
-  - Forge UI now exposes prompt source as `legacy .agents control.py bridge` instead of claiming a native `control.py prompt`
+  - Forge prompt generation now reads Entrance-owned `harness/bootstrap/duet/SKILL.md` instead of shelling to `A:/.agents/nota/scripts/control.py`
+  - Forge now exposes prompt source as `Entrance-owned harness/bootstrap prompt`
 - `MYT-61` is now treated as a completed verification gate kept hot-adjacent, not as an active shell.
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
@@ -236,7 +237,8 @@ What is already landed:
 - the bootstrap substrate now has repo-side canonical copies under `harness/bootstrap/`
 - the recovery substrate now has repo-side canonical copies under `specs/recovery/`
 - Forge worktree discovery now prefers the Entrance-managed app-data root and only falls back to legacy `.agents` worktrees
-- Forge UI now labels prompt source as a legacy `.agents` bridge instead of pretending native prompt ownership
+- Forge prompt generation now runs from the repo-side bootstrap owner at `harness/bootstrap/duet/SKILL.md`
+- Forge now exposes prompt source as `Entrance-owned harness/bootstrap prompt`
 - a first cold reconciliation cut now exists and classifies the 50 imported shells into:
   - `MYT-63 / MYT-64 / MYT-65` as the active bootstrap absorption lane
   - `11` parked backlog items
@@ -247,8 +249,8 @@ What is still open:
 
 - define which Linear milestones/issues deserve promotion into internal storage as active program truth
 - absorb the current classification into stronger owned storage truth when the schema/object path is ready
-- remove the remaining legacy prompt bridge to `A:/.agents/nota/scripts/control.py`
 - remove the `.agents/.worktrees` fallback once Entrance-owned worktree lifecycle is ready
+- verify Forge dispatch end-to-end with `.agents` absent once the remaining fallback is removed
 - redesign `NEXT WAVE` only after the first reconciliation cut exists
 
 Local caution:
