@@ -5,7 +5,7 @@
 ## Current Snapshot
 
 - Branch: `codex/docs-top-self-cycle-handout-20260322`
-- Commit checkpoint: `cc27c20913c5608feb314125b9b036f3973851b8`
+- Commit checkpoint: `4cc849a52b84585e43b1110ae7f9e4a460370ff4`
 - Active MR: `http://server:9311/pub/entrance/-/merge_requests/3`
 - Previously merged checkpoint MR: `http://server:9311/pub/entrance/-/merge_requests/2`
 - Minimal landing layer `v0` is now landed in core code and should be treated as live program truth, not as a side plugin experiment.
@@ -24,7 +24,15 @@
   - `planning_item_links = 52`
   - `promotion_records = 100`
   - `unreconciled_planning_items = 50`
-- The next real phase is not another architecture rewrite; it is the first reconciliation pass over the 50 imported planning shells.
+- The next real phase is not another architecture rewrite; it remains `Landing / Reconciliation`.
+- The first cold reconciliation cut is now landed:
+  - `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
+- That first cut classifies the imported shells as:
+  - `bootstrap critical path = 3` (`MYT-63 / MYT-64 / MYT-65`)
+  - `cold backlog = 11`
+  - `canceled or duplicate residue = 5`
+  - `done historical items = 31`
+- `MYT-61` is now treated as a completed verification gate kept hot-adjacent, not as an active shell.
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
   - `specs/top/control.md`
@@ -43,9 +51,12 @@
   - `specs/cold/2.1-otp-supervisor-model/minimal_supervision_binding.md`
   - `specs/cold/2.2-lead-model-3/minimal_control_slot_model.md`
   - `specs/cold/2.3-control-tree-node-lte-3/minimal_hot_control_tree.md`
+  - `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
   - `specs/cold/3.1-learning-truth-system/minimal_truth_plane.md`
 - `pending.md` should now be read as "no active architecture or operational blocker in hot view"; prior GitLab MCP token notes are fallback history, not active pending.
-- `entrance.db` and `entrance.db.manifest.json` were synced in the MR checkpoint; do not churn DB for editorial cleanup only.
+- Repo-root `entrance.db` and `entrance.db.manifest.json` remain copy-only recovery seed artifacts and do not currently carry the landed landing tables.
+- The verified landing import currently lives in `.tmp/landing-appdata/entrance.db`; treat it as evidence of the import path, not as canonical production truth.
+- Do not churn either DB for editorial cleanup only.
 - Local repo caution:
   - `src-tauri/src/plugins/forge/mod.rs` is modified in the worktree and was not touched by the landing commits in this window.
   - `.tmp/` exists as local verification residue and currently includes landing-layer temp appdata.
@@ -98,8 +109,8 @@
 ### What It Means
 
 - Entrance now has the minimal landing substrate needed to absorb external planning truth into its own DB.
-- Entrance is not yet fully detached from Linear at the operating level, because reconciliation has not yet converted the 50 imported shells into an internally-owned roadmap cut.
-- The correct next move is to reconcile and classify, then selectively absorb milestones/issues into internal storage by hot/cold fact, and only then redesign `NEXT WAVE`.
+- Entrance is not yet fully detached from Linear at the operating level, because the first reconciliation cut is now classified in docs but not yet absorbed as owned storage truth.
+- The correct next move is to keep working the `MYT-63 / MYT-64 / MYT-65` absorption lane, then selectively absorb milestones/issues into internal storage by hot/cold fact, and only then redesign `NEXT WAVE`.
 
 ## State-Machine Reading Of The Program
 
@@ -109,8 +120,8 @@
   the compressed root is landed, and the minimal landing substrate now exists; the active queue has shifted to reconciliation rather than root design.
 - `ATTENTION_STATE = READY`
   there is no known blocking dependency that requires Human wake-up before the next self-cycle.
-- `INTEGRITY_OVERLAY = RECONCILIATION_BACKLOG`
-  there is no active top-level architecture conflict, but there is now a concrete backlog of 50 unreconciled internal planning shells.
+- `INTEGRITY_OVERLAY = RECONCILIATION_BACKLOG_CLASSIFIED`
+  there is no active top-level architecture conflict; the imported shells now have a first cold-truth classification, but owned storage reconciliation has not happened yet.
 
 ### Human-Interruption Rule
 
@@ -129,10 +140,11 @@ Read in this order:
 5. `specs/top/truth.md`
 6. `specs/top/phase-todo.md`
 7. `specs/top/pending.md`
-8. `src-tauri/migrations/0005_create_core_landing_tables.sql`
-9. `src-tauri/src/core/landing.rs`
-10. `src-tauri/src/core/data_store.rs`
-11. `src-tauri/src/lib.rs`
+8. `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
+9. `src-tauri/migrations/0005_create_core_landing_tables.sql`
+10. `src-tauri/src/core/landing.rs`
+11. `src-tauri/src/core/data_store.rs`
+12. `src-tauri/src/lib.rs`
 
 Then descend only into the single selected trunk or substrate lane for the current cycle.
 
@@ -205,7 +217,7 @@ What is still open:
 Current state:
 
 - `LANDING = landed-v0`
-- `RECONCILIATION = not-started`
+- `RECONCILIATION = first-cut-classified`
 
 What is already landed:
 
@@ -213,20 +225,22 @@ What is already landed:
 - every imported Linear issue now has a mirrored landing record plus an Entrance planning shell
 - promotion history is being recorded from the first import onward
 - the minimal landing handoff layer now exists in code, not just in prose
+- a first cold reconciliation cut now exists and classifies the 50 imported shells into:
+  - `MYT-63 / MYT-64 / MYT-65` as the active bootstrap absorption lane
+  - `11` parked backlog items
+  - `5` canceled or duplicate residue items
+  - `31` done historical items that remain provenance rather than live queue
 
 What is still open:
 
-- classify the 50 unreconciled planning shells into:
-  - bootstrap critical path
-  - cold backlog worth preserving
-  - historical / duplicate / canceled residue
 - define which Linear milestones/issues deserve promotion into internal storage as active program truth
-- sync the document system so hot, cold, and storage all describe the same operating posture
+- absorb the current classification into stronger owned storage truth when the schema/object path is ready
 - redesign `NEXT WAVE` only after the first reconciliation cut exists
 
 Local caution:
 
 - do not treat `.tmp/landing-appdata/entrance.db` as production truth
+- do not mistake repo-root `entrance.db` for landing truth; it is still a copy-only recovery seed
 - do not casually revert `src-tauri/src/plugins/forge/mod.rs`; it is unrelated local state in the current worktree
 
 ## Self-Cycle Protocol For The Next Agent
@@ -257,7 +271,8 @@ Local caution:
    - prefer cold docs first
    - promote to hot only if the hot root truly needs a sharper oracle summary
 5. If the work is reconciliation / absorption:
-   - reconcile imported shells before inventing new roadmap structure
+   - start from the already-landed first cut in `landing_reconciliation_cut.md`
+   - keep `MYT-63 / MYT-64 / MYT-65` as the default active lane unless runtime fact disproves it
    - promote only the items that deserve internal ownership by current hot/cold fact
    - keep external mirrors intact as captured evidence
 6. If the work produces a new oracle:
@@ -294,6 +309,7 @@ Local caution:
 - No semantic trunk currently requires forced wake-up by default.
 - The default next move is `Landing / Reconciliation`, not another root-level architecture pass.
 - Prefer the narrowest reconciliation cut that turns imported shells into owned internal classification truth.
+- Inside that lane, prefer `MYT-64` and `MYT-65` as the smallest next absorption steps under the `MYT-63` master control boundary.
 - Keep `Truth` parked unless landing/reconciliation exposes a genuine new truth-plane gap.
 - Keep `Control` parked unless reconciliation exposes a real control-surface or ownership-host conflict.
 - Never advance more than one semantic trunk in the same self-cycle unless a newly discovered oracle forces a cross-trunk promotion.
