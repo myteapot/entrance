@@ -33,7 +33,7 @@
 - `Truth`
   keep the truth trunk stable; only reopen it if runtime implementation exposes a genuine gap in admission landing, retrieval attachment, or reconstructability.
 - `Control`
-  keep the no-path-churn compressed root stable, and decide later whether legacy mounted detail such as naming cleanup or old PRD linkage is still worth preserving.
+  keep the control trunk parked; only reopen it if compression pressure returns or a later physical relocation of mounted detail becomes clearly worth the churn.
 
 ## Rule
 

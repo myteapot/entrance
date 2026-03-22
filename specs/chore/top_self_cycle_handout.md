@@ -115,12 +115,13 @@ What is already landed:
 - hot-control compression target is fixed at `3 semantic hot docs + 1 phase todo + 1 pending`
 - `NOTA` is fixed as Human-facing boundary host rather than internal strategy superuser
 - `2.2 / 2.3` are now mounted detail, not root competitors
+- control-slot boundary and hot-control compression cut are now both mounted below the root
+- legacy `Bt tree` wording is now historical only; the canonical naming is `Control Tree`
 
 What is still open:
 
-- whether any legacy mounted detail is still worth preserving after compression stabilizes
-- eventual naming cleanup such as old `Bt tree` wording
-- any later physical relocation, but only after compression clearly holds
+- no active control-side document ambiguity is currently mounted
+- later physical relocation remains optional cleanup only if compression pressure returns
 
 ### Control Warning
 
