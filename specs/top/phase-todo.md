@@ -11,14 +11,14 @@
 
 - keep the compressed hot root canonical while treating reconciliation detail as cold-truth work
 - use the first landing reconciliation cut to filter the 50 imported planning shells before any new UI, sync, or automation work
-- keep the active queue on `MYT-63 / MYT-65`; `MYT-64` has now landed repo-side bootstrap copies under `harness/bootstrap/`
+- keep the active queue on `MYT-63`; `MYT-64` and `MYT-65` now have repo-side canonical copies under `harness/bootstrap/` and `specs/recovery/`
 - keep the rest of the imported backlog parked unless runtime fact forces promotion
 
 ## Landing Sequence
 
 1. keep `machine.md / control.md / truth.md / phase-todo.md / pending.md` as the active hot root
 2. keep the first reconciliation cut in cold detail at `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
-3. finish the recovery-doc absorption lane now that the bootstrap substrate has a repo-side canonical home
+3. use the landed bootstrap and recovery imports as the repo-side source for the next decoupling step under `MYT-63`
 4. only after the first reconciliation cut is absorbed decide whether storage needs an explicit owned reconciliation bucket beyond `unreconciled`
 
 ## Current Boundary
@@ -33,7 +33,7 @@
 ## Active Chunks
 
 - `Landing / Reconciliation`
-  move only the bootstrap absorption lane now: `MYT-63 / MYT-65`, with `MYT-64` landed as repo-side bootstrap import, `MYT-61` kept as a completed verification gate, and the rest of the imported shells preserved in cold backlog or historical residue.
+  move only the de-`.agents` absorption lane now: `MYT-63`, with `MYT-64` and `MYT-65` landed as repo-side imports, `MYT-61` kept as a completed verification gate, and the rest of the imported shells preserved in cold backlog or historical residue.
 - `Machine`
   keep the machine trunk stable; only reopen it if reconciliation exposes a genuine runtime-routing or ownership-boundary gap.
 - `Truth`

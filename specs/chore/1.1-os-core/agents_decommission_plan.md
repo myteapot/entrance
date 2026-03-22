@@ -29,9 +29,9 @@ The following files already carry part of the architecture truth:
 
 These should continue to exist as source-controlled design truth.
 
-### 2.2 Still only in `.agents`
+### 2.2 Imported copy-first, source still preserved in `.agents`
 
-The following hot files still define active behavior or active prompt structure:
+The following hot files now have repo-side canonical copies under `Entrance/harness/bootstrap/`, while the original `.agents` files remain preserved:
 
 - `A:/.agents/duet/SKILL.md`
 - `A:/.agents/duet/roles/arch.md`
@@ -40,7 +40,7 @@ The following hot files still define active behavior or active prompt structure:
 - `A:/.agents/nota/identity.md`
 - `A:/.agents/nota/rules.md`
 
-The following recovered documents are also still only in `.agents`:
+The following recovered documents now also have repo-side copies under `Entrance/specs/recovery/`, while the original `.agents` files remain preserved:
 
 - `A:/.agents/nota/data/docs/entrance-control-plane.md`
 - `A:/.agents/nota/data/docs/entrance-dashboard-runtime.md`
@@ -65,7 +65,7 @@ As of this design, `Entrance` runtime still depends on old `.agents` paths:
 - `src/pages/Forge.tsx`
   - UI still exposes ``control.py prompt`` as the prompt source
 
-This means `.agents` is still a runtime dependency, not only a recovery archive.
+This means `.agents` has now been demoted from "only copy of key assets" to "runtime dependency plus preserved recovery source," but it is still not deletable.
 
 ## 3. Decommission Goal
 

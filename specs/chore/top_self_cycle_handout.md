@@ -5,7 +5,7 @@
 ## Current Snapshot
 
 - Branch: `codex/docs-top-self-cycle-handout-20260322`
-- Commit checkpoint: `5af276e4badd99a7c8f569488ee1c5576891ec3a`
+- Commit checkpoint: `cac6f6a8d27ca479fdc965771587e5794130b12a`
 - Active MR: `http://server:9311/pub/entrance/-/merge_requests/3`
 - Previously merged checkpoint MR: `http://server:9311/pub/entrance/-/merge_requests/2`
 - Minimal landing layer `v0` is now landed in core code and should be treated as live program truth, not as a side plugin experiment.
@@ -35,6 +35,9 @@
 - `MYT-64` is now repo-side landed:
   - canonical bootstrap copies now exist under `harness/bootstrap/`
   - runtime still has not cut over away from `.agents`
+- `MYT-65` is now repo-side landed:
+  - recovery provenance copies now exist under `specs/recovery/`
+  - `.agents` remains preserved, but these docs are no longer recovery-only in location
 - `MYT-61` is now treated as a completed verification gate kept hot-adjacent, not as an active shell.
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
@@ -112,8 +115,8 @@
 ### What It Means
 
 - Entrance now has the minimal landing substrate needed to absorb external planning truth into its own DB.
-- Entrance is not yet fully detached from Linear at the operating level, because repo-side bootstrap import is now landed but runtime still has not cut over and the recovery-doc lane is still open.
-- The correct next move is to keep working the `MYT-63 / MYT-65` absorption lane, then selectively absorb milestones/issues into internal storage by hot/cold fact, and only then redesign `NEXT WAVE`.
+- Entrance is not yet fully detached from Linear at the operating level, because repo-side bootstrap and recovery imports are now landed but runtime still has not cut over away from `.agents`.
+- The correct next move is to keep working the `MYT-63` decoupling lane, then selectively absorb milestones/issues into internal storage by hot/cold fact, and only then redesign `NEXT WAVE`.
 
 ## State-Machine Reading Of The Program
 
@@ -229,6 +232,7 @@ What is already landed:
 - promotion history is being recorded from the first import onward
 - the minimal landing handoff layer now exists in code, not just in prose
 - the bootstrap substrate now has repo-side canonical copies under `harness/bootstrap/`
+- the recovery substrate now has repo-side canonical copies under `specs/recovery/`
 - a first cold reconciliation cut now exists and classifies the 50 imported shells into:
   - `MYT-63 / MYT-64 / MYT-65` as the active bootstrap absorption lane
   - `11` parked backlog items
@@ -239,7 +243,7 @@ What is still open:
 
 - define which Linear milestones/issues deserve promotion into internal storage as active program truth
 - absorb the current classification into stronger owned storage truth when the schema/object path is ready
-- finish `MYT-65` so recovery provenance is absorbed alongside the newly landed bootstrap copies
+- replace runtime dependencies on `.agents/control.py` and `.agents/.worktrees` now that bootstrap and recovery imports are both landed repo-side
 - redesign `NEXT WAVE` only after the first reconciliation cut exists
 
 Local caution:
@@ -277,7 +281,7 @@ Local caution:
    - promote to hot only if the hot root truly needs a sharper oracle summary
 5. If the work is reconciliation / absorption:
    - start from the already-landed first cut in `landing_reconciliation_cut.md`
-   - keep `MYT-63 / MYT-65` as the default active lane now that `MYT-64` is landed repo-side
+   - keep `MYT-63` as the default active lane now that `MYT-64` and `MYT-65` are both landed repo-side
    - promote only the items that deserve internal ownership by current hot/cold fact
    - keep external mirrors intact as captured evidence
 6. If the work produces a new oracle:
@@ -314,7 +318,7 @@ Local caution:
 - No semantic trunk currently requires forced wake-up by default.
 - The default next move is `Landing / Reconciliation`, not another root-level architecture pass.
 - Prefer the narrowest reconciliation cut that turns imported shells into owned internal classification truth.
-- Inside that lane, prefer `MYT-65` as the next smallest absorption step under the `MYT-63` master control boundary.
+- Inside that lane, prefer the next smallest `.agents` runtime-decoupling step under the `MYT-63` master control boundary.
 - Keep `Truth` parked unless landing/reconciliation exposes a genuine new truth-plane gap.
 - Keep `Control` parked unless reconciliation exposes a real control-surface or ownership-host conflict.
 - Never advance more than one semantic trunk in the same self-cycle unless a newly discovered oracle forces a cross-trunk promotion.

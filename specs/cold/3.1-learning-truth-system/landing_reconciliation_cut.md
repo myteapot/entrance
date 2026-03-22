@@ -52,8 +52,8 @@ These are the only imported shells that currently form the active bootstrap abso
   - Repo-side canonical copies now exist under `harness/bootstrap/`.
   - This landed the bootstrap ownership cut without replacing runtime behavior yet.
 - `MYT-65` `recovery docs import`
-  - This is the documentation/provenance companion to `MYT-64`.
-  - It is required before later runtime cutover can claim durable provenance.
+  - Repo-side recovery copies now exist under `specs/recovery/`.
+  - This landed the provenance-preservation cut needed before later runtime cutover can claim durable ownership.
 
 ### Completed Gate Worth Keeping Hot-Adjacent
 
@@ -125,7 +125,7 @@ These are promotion candidates because they still shape current operating truth,
 
 ## Resulting Operating Posture
 
-- Active reconciliation lane: `MYT-63 / MYT-65`, with `MYT-64` already landed as repo-side bootstrap import
+- Active reconciliation lane: `MYT-63`, with `MYT-64` and `MYT-65` already landed as repo-side import cuts
 - Keep backlog preserved but cold: `MYT-45 / MYT-46 / MYT-47 / MYT-49 / MYT-50 / MYT-51 / MYT-52 / MYT-53 / MYT-54 / MYT-60 / MYT-62`
 - Keep canceled and duplicate items mirrored only as external evidence
 - Keep already-landed slices as provenance unless they still define present ownership boundaries
