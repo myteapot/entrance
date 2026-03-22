@@ -140,6 +140,8 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
             "forge_dispatch_dev",
             "forge_status",
             "forge_cancel",
+            "recovery_list_seed_runs",
+            "recovery_list_seed_rows",
             "vault_get_token",
             "vault_list_mcp",
             "launcher_search",
@@ -244,6 +246,8 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
             "forge_dispatch_agent",
             "forge_status",
             "forge_cancel",
+            "recovery_list_seed_runs",
+            "recovery_list_seed_rows",
             "vault_get_token",
             "vault_list_mcp",
             "launcher_search",
@@ -279,7 +283,10 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
         forbidden["result"]["structuredContent"]["toolName"],
         "forge_prepare_dev_dispatch"
     );
-    assert_eq!(forbidden["result"]["structuredContent"]["currentActorRole"], "dev");
+    assert_eq!(
+        forbidden["result"]["structuredContent"]["currentActorRole"],
+        "dev"
+    );
     assert_eq!(
         forbidden["result"]["structuredContent"]["requiredActorRole"],
         "arch"
@@ -339,6 +346,8 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
             "forge_dispatch_dev",
             "forge_status",
             "forge_cancel",
+            "recovery_list_seed_runs",
+            "recovery_list_seed_rows",
             "vault_get_token",
             "vault_list_mcp",
             "launcher_search",
@@ -404,6 +413,79 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
     assert_eq!(vault_list["result"]["entranceSurface"]["actorRole"], "arch");
     assert!(vault_list["result"]["permission"].is_null());
     assert!(vault_list["result"]["dispatchRole"].is_null());
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_read_recovery_seed_runtime_surface_over_stdio() -> Result<()> {
+    let app_dir = TempAppDir::new("recovery-surface")?;
+    seed_app_state(app_dir.path())?;
+    seed_recovery_runtime_surface(app_dir.path())?;
+
+    let mut server = spawn_mcp_stdio(app_dir.path(), None)?;
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    let _ = server.read_response()?;
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }))?;
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "recovery-runs",
+        "method": "tools/call",
+        "params": {
+            "name": "recovery_list_seed_runs",
+            "arguments": {}
+        }
+    }))?;
+    let runs = server.read_response()?;
+    assert_eq!(runs["result"]["isError"], false);
+    let runs = runs["result"]["structuredContent"]
+        .as_array()
+        .context("recovery_list_seed_runs should return an array")?;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["source_system"], "recovery_seed");
+    assert_eq!(runs[0]["imported_table_count"], 3);
+    assert_eq!(runs[0]["imported_row_count"], 3);
+    assert_eq!(runs[0]["table_row_counts"]["documents"], 1);
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "recovery-rows",
+        "method": "tools/call",
+        "params": {
+            "name": "recovery_list_seed_rows",
+            "arguments": {
+                "table_name": "documents",
+                "limit": 5
+            }
+        }
+    }))?;
+    let rows = server.read_response()?;
+    assert_eq!(rows["result"]["isError"], false);
+    assert_eq!(
+        rows["result"]["structuredContent"]["requested_table"],
+        "documents"
+    );
+    assert_eq!(
+        rows["result"]["structuredContent"]["total_matching_rows"],
+        1
+    );
+    assert_eq!(
+        rows["result"]["structuredContent"]["rows"][0]["source_row"]["title"],
+        "Recovered MCP doc"
+    );
+    assert_eq!(
+        rows["result"]["structuredContent"]["rows"][0]["promotion_state"],
+        "storage_only"
+    );
 
     Ok(())
 }
@@ -1136,7 +1218,8 @@ fn external_client_can_observe_dispatch_supervision_receipts_over_stdio() -> Res
         parent_task_id
     );
     assert_eq!(
-        child["result"]["structuredContent"]["supervision"]["parent_receipt"]["supervision_strategy"],
+        child["result"]["structuredContent"]["supervision"]["parent_receipt"]
+            ["supervision_strategy"],
         "one_for_one"
     );
     assert_eq!(
@@ -1156,14 +1239,20 @@ fn external_client_can_observe_dispatch_supervision_receipts_over_stdio() -> Res
         }
     }))?;
     let parent_status = dev_server.read_response()?;
-    assert!(parent_status["result"]["structuredContent"]["supervision"]["parent_receipt"].is_null());
-    let child_receipts = parent_status["result"]["structuredContent"]["supervision"]["child_receipts"]
+    assert!(
+        parent_status["result"]["structuredContent"]["supervision"]["parent_receipt"].is_null()
+    );
+    let child_receipts = parent_status["result"]["structuredContent"]["supervision"]
+        ["child_receipts"]
         .as_array()
         .context("parent supervision child_receipts should be an array")?;
     assert_eq!(child_receipts.len(), 1);
     assert_eq!(child_receipts[0]["child_task_id"], child_task_id);
     assert_eq!(child_receipts[0]["child_dispatch_role"], "agent");
-    assert_eq!(child_receipts[0]["child_dispatch_tool_name"], "forge_dispatch_agent");
+    assert_eq!(
+        child_receipts[0]["child_dispatch_tool_name"],
+        "forge_dispatch_agent"
+    );
     assert_eq!(child_receipts[0]["child_slot"], "agent-1");
 
     dev_server.send(json!({
@@ -1179,7 +1268,8 @@ fn external_client_can_observe_dispatch_supervision_receipts_over_stdio() -> Res
     }))?;
     let child_status = dev_server.read_response()?;
     assert_eq!(
-        child_status["result"]["structuredContent"]["supervision"]["parent_receipt"]["parent_task_id"],
+        child_status["result"]["structuredContent"]["supervision"]["parent_receipt"]
+            ["parent_task_id"],
         parent_task_id
     );
     assert_eq!(
@@ -1243,6 +1333,22 @@ enabled = true
     Ok(())
 }
 
+fn seed_recovery_runtime_surface(app_dir: &PathBuf) -> Result<()> {
+    let recovery_seed_path = write_test_recovery_seed(app_dir)?;
+    run_entrance_cli(
+        app_dir,
+        &[
+            "recovery",
+            "import-seed",
+            "--file",
+            recovery_seed_path
+                .to_str()
+                .context("recovery seed path should be valid UTF-8")?,
+        ],
+    )?;
+    Ok(())
+}
+
 fn wait_for_terminal_status_stdio(server: &mut SpawnedMcp, task_id: i64) -> Result<Value> {
     for _ in 0..200 {
         server.send(json!({
@@ -1297,6 +1403,107 @@ fn write_stub_agent_command(root: &PathBuf) -> Result<PathBuf> {
 
 fn spawn_mcp_stdio(app_dir: &PathBuf, openai_api_key: Option<&str>) -> Result<SpawnedMcp> {
     spawn_mcp_stdio_with_actor_role(app_dir, openai_api_key, None)
+}
+
+fn run_entrance_cli(app_dir: &PathBuf, args: &[&str]) -> Result<String> {
+    let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
+        .args(args)
+        .env("ENTRANCE_APP_DATA_DIR", app_dir)
+        .env_remove("LINEAR_API_KEY")
+        .env_remove("LINEAR_TOKEN")
+        .output()
+        .with_context(|| format!("failed to spawn `entrance {}`", args.join(" ")))?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "`entrance {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    String::from_utf8(output.stdout).context("CLI stdout should be valid UTF-8")
+}
+
+fn write_test_recovery_seed(root: &PathBuf) -> Result<PathBuf> {
+    let db_path = root.join("recovery-seed.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute_batch(
+        r#"
+        CREATE TABLE schema_meta (
+            version INTEGER,
+            applied_at TEXT
+        );
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            category TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            priority INTEGER NOT NULL DEFAULT 2,
+            project TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            done_at TEXT,
+            temperature TEXT NOT NULL DEFAULT 'warm',
+            due_on TEXT NOT NULL DEFAULT '',
+            remind_every_days INTEGER NOT NULL DEFAULT 0,
+            remind_next_on TEXT NOT NULL DEFAULT '',
+            last_reminded_at TEXT NOT NULL DEFAULT '',
+            reminder_status TEXT NOT NULL DEFAULT 'none'
+        );
+        "#,
+    )?;
+    connection.execute(
+        "INSERT INTO schema_meta (version, applied_at) VALUES (?1, ?2)",
+        (8, "2026-03-23T00:00:00Z"),
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO documents (id, slug, title, content, category, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        (
+            1,
+            "recovery-doc",
+            "Recovered MCP doc",
+            "# recovery",
+            "architecture",
+            "2026-03-23T00:00:00Z",
+            "2026-03-23T00:10:00Z",
+        ),
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO todos (
+            id, title, status, priority, project, created_at, done_at, temperature,
+            due_on, remind_every_days, remind_next_on, last_reminded_at, reminder_status
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12)
+        "#,
+        (
+            1,
+            "Recovered MCP todo",
+            "pending",
+            1,
+            "Entrance",
+            "2026-03-23T00:15:00Z",
+            "warm",
+            "",
+            0,
+            "",
+            "",
+            "none",
+        ),
+    )?;
+
+    Ok(db_path)
 }
 
 fn spawn_mcp_stdio_with_actor_role(

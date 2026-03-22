@@ -28,7 +28,10 @@ use core::{
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     mcp_stdio_client::SpawnedMcpStdioClient,
     plugin_manager::PluginManager,
-    recovery::import_recovery_seed,
+    recovery::{
+        import_recovery_seed, list_recovery_seed_rows, list_recovery_seed_runs,
+        RecoverySeedRowsQuery,
+    },
     resolve_app_data_dir,
     theme::ThemeSystem,
     AppPaths, StartupState,
@@ -245,10 +248,63 @@ fn run_recovery_cli(args: &[String]) -> Result<()> {
             let report = import_recovery_seed(&startup.data_store(), value)?;
             print_json(&report)
         }
+        [command] if command == "runs" => print_json(&list_recovery_seed_runs(&startup.data_store())?),
+        [command, rest @ ..] if command == "rows" => {
+            let query = parse_recovery_rows_args(rest)?;
+            print_json(&list_recovery_seed_rows(&startup.data_store(), query)?)
+        }
         _ => bail!(
-            "unsupported recovery command, expected `entrance recovery import-seed --file <path>`"
+            "unsupported recovery command, expected `entrance recovery import-seed --file <path>`, `entrance recovery runs`, or `entrance recovery rows [--ingest-run-id <id>] [--table <name>] [--limit <n>]`"
         ),
     }
+}
+
+fn parse_recovery_rows_args(args: &[String]) -> Result<RecoverySeedRowsQuery> {
+    let mut query = RecoverySeedRowsQuery::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--ingest-run-id" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance recovery rows --ingest-run-id` requires a value")?;
+                query.ingest_run_id = Some(
+                    value
+                        .parse::<i64>()
+                        .with_context(|| format!("invalid recovery ingest run id `{value}`"))?,
+                );
+                index += 2;
+            }
+            "--table" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance recovery rows --table` requires a value")?;
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    bail!("`entrance recovery rows --table` must not be empty");
+                }
+                query.table_name = Some(trimmed.to_string());
+                index += 2;
+            }
+            "--limit" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance recovery rows --limit` requires a value")?;
+                let limit = value
+                    .parse::<usize>()
+                    .with_context(|| format!("invalid recovery row limit `{value}`"))?;
+                if limit == 0 {
+                    bail!("`entrance recovery rows --limit` must be >= 1");
+                }
+                query.limit = Some(limit);
+                index += 2;
+            }
+            other => bail!("unsupported recovery rows argument `{other}`"),
+        }
+    }
+
+    Ok(query)
 }
 
 fn run_landing_cli(args: &[String]) -> Result<()> {
@@ -701,6 +757,7 @@ fn build_mcp_server(
     Ok(McpServer::with_actor_role(
         transport,
         McpPluginSet {
+            core_data_store: Some(data_store.clone()),
             forge: startup
                 .forge_enabled()
                 .then(|| plugins::forge::ForgePlugin::new(data_store.clone(), event_bus.clone())),

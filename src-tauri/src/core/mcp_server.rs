@@ -18,14 +18,16 @@ use serde_json::{json, Value};
 
 use crate::core::{
     action::ActorRole,
+    data_store::DataStore,
     permission::{permission_for_mcp_tool, McpToolPermission},
+    recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
     supervision::SupervisionStrategy,
 };
 use crate::plugins::{
     forge::{
         build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
-        prepare_dev_dispatch_blocking, verify_agent_dispatch, verify_dev_dispatch, CreateTaskRequest,
-        DispatchReceiptRequest, ForgePlugin,
+        prepare_dev_dispatch_blocking, verify_agent_dispatch, verify_dev_dispatch,
+        CreateTaskRequest, DispatchReceiptRequest, ForgePlugin,
     },
     launcher::LauncherPlugin,
     vault::VaultPlugin,
@@ -42,6 +44,7 @@ pub enum McpTransport {
 
 #[derive(Clone, Default)]
 pub struct McpPluginSet {
+    pub core_data_store: Option<DataStore>,
     pub forge: Option<ForgePlugin>,
     pub launcher: Option<LauncherPlugin>,
     pub vault: Option<VaultPlugin>,
@@ -276,6 +279,8 @@ impl McpServer {
             "forge_dispatch_dev" => self.handle_forge_dispatch_dev(arguments),
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
+            "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
+            "recovery_list_seed_rows" => self.handle_recovery_list_seed_rows(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
             "vault_list_mcp" => self.handle_vault_list_mcp(),
             "launcher_search" => self.handle_launcher_search(arguments),
@@ -412,11 +417,8 @@ impl McpServer {
         let agent_command = optional_string(arguments, "agent_command")
             .or_else(|| optional_string(arguments, "agentCommand"))
             .map(str::to_string);
-        let dispatch_receipt = parse_dispatch_receipt_request(
-            arguments,
-            "forge_dispatch_agent",
-            ActorRole::Agent,
-        )?;
+        let dispatch_receipt =
+            parse_dispatch_receipt_request(arguments, "forge_dispatch_agent", ActorRole::Agent)?;
         if let Some(receipt) = dispatch_receipt.as_ref() {
             forge.get_task(receipt.parent_task_id)?.ok_or_else(|| {
                 anyhow!(
@@ -548,6 +550,36 @@ impl McpServer {
             "cancelled": true,
             "task": task,
         }))
+    }
+
+    fn handle_recovery_list_seed_runs(&self) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        Ok(json!(list_recovery_seed_runs(data_store)?))
+    }
+
+    fn handle_recovery_list_seed_rows(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let limit = optional_i64(arguments, &["limit"])
+            .map(|value| {
+                usize::try_from(value)
+                    .map_err(|_| anyhow!("recovery rows `limit` must be a positive integer"))
+            })
+            .transpose()?;
+        let query = RecoverySeedRowsQuery {
+            ingest_run_id: optional_i64(arguments, &["ingest_run_id", "ingestRunId"]),
+            table_name: optional_string_any(arguments, &["table_name", "tableName"])
+                .map(str::to_string),
+            limit,
+        };
+        Ok(json!(list_recovery_seed_rows(data_store, query)?))
     }
 
     fn handle_vault_get_token(&self, arguments: &Value) -> Result<Value> {
@@ -869,6 +901,35 @@ fn build_tool_descriptors(
         });
     }
 
+    if plugins.core_data_store.is_some() {
+        tools.push(McpToolDescriptor {
+            name: "recovery_list_seed_runs",
+            description: "List recovery-seed imports that have been absorbed into the runtime DB storage plane.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "recovery_list_seed_rows",
+            description: "List absorbed recovery-seed rows from the runtime DB, optionally filtered by ingest run or source table.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ingest_run_id": { "type": "integer", "description": "Optional recovery ingest run identifier. Defaults to the latest recovery run." },
+                    "ingestRunId": { "type": "integer", "description": "CamelCase alias for ingest_run_id." },
+                    "table_name": { "type": "string", "description": "Optional recovery source table name such as documents or decisions." },
+                    "tableName": { "type": "string", "description": "CamelCase alias for table_name." },
+                    "limit": { "type": "integer", "description": "Optional maximum number of rows to return. Defaults to 50." }
+                }
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+    }
+
     if plugins.vault.is_some() {
         tools.push(McpToolDescriptor {
             name: "vault_get_token",
@@ -990,17 +1051,13 @@ fn parse_dispatch_receipt_request(
     child_dispatch_role: ActorRole,
 ) -> Result<Option<DispatchReceiptRequest>> {
     let parent_task_id = optional_i64(arguments, &["parent_task_id", "parentTaskId"]);
-    let supervision_strategy = optional_string_any(
-        arguments,
-        &["supervision_strategy", "supervisionStrategy"],
-    );
+    let supervision_strategy =
+        optional_string_any(arguments, &["supervision_strategy", "supervisionStrategy"]);
     let child_slot = optional_string_any(arguments, &["child_slot", "childSlot"]);
 
     if parent_task_id.is_none() {
         if supervision_strategy.is_some() || child_slot.is_some() {
-            bail!(
-                "dispatch supervision fields require `parent_task_id`/`parentTaskId` to be set"
-            );
+            bail!("dispatch supervision fields require `parent_task_id`/`parentTaskId` to be set");
         }
         return Ok(None);
     }
@@ -1171,23 +1228,23 @@ fn tool_call_error_result(
     canonical_tool_name: Option<&'static str>,
 ) -> Value {
     let message = error.to_string();
-    let structured_content = if let Some(role_error) = error.downcast_ref::<McpToolSurfaceRoleError>()
-    {
-        json!({
-            "message": message,
-            "errorCode": "surface_role_mismatch",
-            "toolName": role_error.tool_name,
-            "currentActorRole": role_error.current_actor_role,
-            "requiredActorRole": role_error.required_actor_role,
-            "entranceSurface": {
-                "actorRole": role_error.current_actor_role
-            }
-        })
-    } else {
-        json!({
-            "message": message,
-        })
-    };
+    let structured_content =
+        if let Some(role_error) = error.downcast_ref::<McpToolSurfaceRoleError>() {
+            json!({
+                "message": message,
+                "errorCode": "surface_role_mismatch",
+                "toolName": role_error.tool_name,
+                "currentActorRole": role_error.current_actor_role,
+                "requiredActorRole": role_error.required_actor_role,
+                "entranceSurface": {
+                    "actorRole": role_error.current_actor_role
+                }
+            })
+        } else {
+            json!({
+                "message": message,
+            })
+        };
 
     json!({
         "content": [
@@ -1294,6 +1351,8 @@ mod tests {
                 "forge_dispatch_dev",
                 "forge_status",
                 "forge_cancel",
+                "recovery_list_seed_runs",
+                "recovery_list_seed_rows",
                 "vault_get_token",
                 "vault_list_mcp",
                 "launcher_search",
@@ -1354,6 +1413,8 @@ mod tests {
                 "forge_dispatch_dev",
                 "forge_status",
                 "forge_cancel",
+                "recovery_list_seed_runs",
+                "recovery_list_seed_rows",
                 "vault_get_token",
                 "vault_list_mcp",
                 "launcher_search",
@@ -1393,6 +1454,8 @@ mod tests {
                 "forge_dispatch_agent",
                 "forge_status",
                 "forge_cancel",
+                "recovery_list_seed_runs",
+                "recovery_list_seed_rows",
                 "vault_get_token",
                 "vault_list_mcp",
                 "launcher_search",
@@ -1572,8 +1635,14 @@ mod tests {
 
         assert_eq!(response["isError"], true);
         assert_eq!(response["dispatchRole"], "agent");
-        assert_eq!(response["canonicalToolName"], "forge_prepare_agent_dispatch");
-        assert_eq!(response["structuredContent"]["toolName"], "forge_prepare_dispatch");
+        assert_eq!(
+            response["canonicalToolName"],
+            "forge_prepare_agent_dispatch"
+        );
+        assert_eq!(
+            response["structuredContent"]["toolName"],
+            "forge_prepare_dispatch"
+        );
 
         Ok(())
     }
@@ -1666,13 +1735,14 @@ mod tests {
 
         let launcher = LauncherPlugin::new(data_store.clone());
         let forge = ForgePlugin::new(data_store.clone(), event_bus);
-        let vault = VaultPlugin::new(data_store)?;
+        let vault = VaultPlugin::new(data_store.clone())?;
         vault.add_token("Primary", "openai", "secret-token")?;
         vault.update_mcp_config(None, "Local MCP", "stdio", "npx -y some-mcp", true)?;
 
         Ok(McpServer::with_actor_role(
             McpTransport::InProcess,
             McpPluginSet {
+                core_data_store: Some(data_store.clone()),
                 forge: Some(forge),
                 launcher: Some(launcher),
                 vault: Some(vault),

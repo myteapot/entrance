@@ -6,12 +6,13 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{types::ValueRef, Connection, OpenFlags};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::core::data_store::{
-    DataStore, NewPromotionRecord, NewSourceArtifact, NewSourceIngestRun, SourceIngestRunCompletion,
+    DataStore, NewPromotionRecord, NewSourceArtifact, NewSourceIngestRun,
+    SourceIngestRunCompletion, StoredPromotionRecord, StoredSourceArtifact, StoredSourceIngestRun,
 };
 
 const RECOVERY_SEED_SOURCE_SYSTEM: &str = "recovery_seed";
@@ -46,6 +47,39 @@ pub struct RecoverySeedImportReport {
     pub table_row_counts: BTreeMap<String, i64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoverySeedRunSummary {
+    #[serde(flatten)]
+    pub run: StoredSourceIngestRun,
+    pub imported_table_count: i64,
+    pub imported_row_count: i64,
+    pub imported_artifact_count: i64,
+    pub recognized_tables: Vec<String>,
+    pub table_row_counts: BTreeMap<String, i64>,
+    pub source_manifest_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoverySeedRowSummary {
+    #[serde(flatten)]
+    pub artifact: StoredSourceArtifact,
+    pub promotion_state: Option<String>,
+    pub promotion_reason: Option<String>,
+    pub promotion_recorded_at: Option<String>,
+    pub source_table: String,
+    pub source_row_key: String,
+    pub source_row: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoverySeedRowsReport {
+    pub ingest_run: RecoverySeedRunSummary,
+    pub requested_table: Option<String>,
+    pub limit: usize,
+    pub total_matching_rows: usize,
+    pub rows: Vec<RecoverySeedRowSummary>,
+}
+
 #[derive(Debug)]
 struct RecoverySeedImportProgress {
     imported_row_count: i64,
@@ -64,6 +98,32 @@ struct RecoverySeedSnapshot {
 struct RecoverySeedTableDump {
     table_name: String,
     rows: Vec<Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedManifestArtifactPayload {
+    #[serde(default)]
+    imported_row_count: i64,
+    #[serde(default)]
+    recognized_tables: Vec<String>,
+    #[serde(default)]
+    table_row_counts: BTreeMap<String, i64>,
+    #[serde(default)]
+    source_manifest_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedRowArtifactPayload {
+    source_table: String,
+    source_row_key: String,
+    source_row: Value,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RecoverySeedRowsQuery {
+    pub ingest_run_id: Option<i64>,
+    pub table_name: Option<String>,
+    pub limit: Option<usize>,
 }
 
 pub fn import_recovery_seed(
@@ -159,6 +219,106 @@ pub fn import_recovery_seed(
             Err(error)
         }
     }
+}
+
+pub fn list_recovery_seed_runs(data_store: &DataStore) -> Result<Vec<RecoverySeedRunSummary>> {
+    let runs = data_store.list_source_ingest_runs()?;
+    let mut summaries = Vec::new();
+
+    for run in runs
+        .into_iter()
+        .filter(|run| run.source_system == RECOVERY_SEED_SOURCE_SYSTEM)
+    {
+        let artifacts = data_store.list_source_artifacts(run.id)?;
+        let manifest = artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_kind == "recovery_seed_manifest")
+            .map(parse_recovery_seed_manifest_payload)
+            .transpose()?
+            .unwrap_or_else(|| RecoverySeedManifestArtifactPayload {
+                imported_row_count: 0,
+                recognized_tables: Vec::new(),
+                table_row_counts: BTreeMap::new(),
+                source_manifest_path: None,
+            });
+
+        summaries.push(RecoverySeedRunSummary {
+            run,
+            imported_table_count: manifest.table_row_counts.len() as i64,
+            imported_row_count: manifest.imported_row_count,
+            imported_artifact_count: artifacts.len() as i64,
+            recognized_tables: manifest.recognized_tables,
+            table_row_counts: manifest.table_row_counts,
+            source_manifest_path: manifest.source_manifest_path,
+        });
+    }
+
+    Ok(summaries)
+}
+
+pub fn list_recovery_seed_rows(
+    data_store: &DataStore,
+    query: RecoverySeedRowsQuery,
+) -> Result<RecoverySeedRowsReport> {
+    let runs = list_recovery_seed_runs(data_store)?;
+    let ingest_run = match query.ingest_run_id {
+        Some(ingest_run_id) => runs
+            .into_iter()
+            .find(|run| run.run.id == ingest_run_id)
+            .ok_or_else(|| anyhow!("recovery seed ingest run `{ingest_run_id}` does not exist"))?,
+        None => runs
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("no recovery seed ingest runs have been imported yet"))?,
+    };
+
+    let limit = query.limit.unwrap_or(50);
+    if limit == 0 {
+        return Err(anyhow!("recovery rows `limit` must be >= 1"));
+    }
+
+    let promotions = latest_promotion_map(data_store.list_promotion_records()?);
+    let requested_table = query
+        .table_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let artifacts = data_store.list_source_artifacts(ingest_run.run.id)?;
+    let mut rows = Vec::new();
+
+    for artifact in artifacts
+        .into_iter()
+        .filter(|artifact| artifact.artifact_kind == "recovery_seed_row")
+    {
+        let row_payload = parse_recovery_seed_row_payload(&artifact)?;
+        if let Some(requested_table) = requested_table {
+            if row_payload.source_table != requested_table {
+                continue;
+            }
+        }
+
+        let promotion = promotions.get(&("source_artifact".to_string(), artifact.id));
+        rows.push(RecoverySeedRowSummary {
+            artifact,
+            promotion_state: promotion.map(|record| record.promotion_state.clone()),
+            promotion_reason: promotion.and_then(|record| record.reason.clone()),
+            promotion_recorded_at: promotion.map(|record| record.created_at.clone()),
+            source_table: row_payload.source_table,
+            source_row_key: row_payload.source_row_key,
+            source_row: row_payload.source_row,
+        });
+    }
+
+    let total_matching_rows = rows.len();
+    rows.truncate(limit);
+
+    Ok(RecoverySeedRowsReport {
+        ingest_run,
+        requested_table: requested_table.map(str::to_string),
+        limit,
+        total_matching_rows,
+        rows,
+    })
 }
 
 fn import_recovery_seed_snapshot(
@@ -374,6 +534,28 @@ fn append_storage_only_promotion(
     Ok(())
 }
 
+fn parse_recovery_seed_manifest_payload(
+    artifact: &StoredSourceArtifact,
+) -> Result<RecoverySeedManifestArtifactPayload> {
+    serde_json::from_str(&artifact.payload_json).with_context(|| {
+        format!(
+            "failed to parse recovery seed manifest artifact `{}` payload",
+            artifact.artifact_key
+        )
+    })
+}
+
+fn parse_recovery_seed_row_payload(
+    artifact: &StoredSourceArtifact,
+) -> Result<RecoverySeedRowArtifactPayload> {
+    serde_json::from_str(&artifact.payload_json).with_context(|| {
+        format!(
+            "failed to parse recovery seed row artifact `{}` payload",
+            artifact.artifact_key
+        )
+    })
+}
+
 fn artifact_row_key(row: &Map<String, Value>, index: usize) -> String {
     row.get("id")
         .map(json_key_fragment)
@@ -425,6 +607,19 @@ fn wrap_source_manifest_payload(manifest_path: &Path, manifest_payload: &str) ->
         "manifest": manifest_json,
     }))
     .context("failed to serialize adjacent recovery seed manifest payload")
+}
+
+fn latest_promotion_map(
+    records: Vec<StoredPromotionRecord>,
+) -> BTreeMap<(String, i64), StoredPromotionRecord> {
+    let mut latest = BTreeMap::new();
+
+    for record in records {
+        let key = (record.subject_kind.clone(), record.subject_id);
+        latest.entry(key).or_insert(record);
+    }
+
+    latest
 }
 
 fn adjacent_manifest_path(db_path: &Path) -> Option<PathBuf> {

@@ -119,6 +119,61 @@ fn recovery_import_seed_cli_absorbs_seed_rows_into_existing_runtime_db() -> Resu
     Ok(())
 }
 
+#[test]
+fn recovery_cli_lists_absorbed_seed_runs_and_rows() -> Result<()> {
+    let temp_dir = TempDir::new("list-seed-runtime-db")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+    seed_preexisting_runtime_db(&app_data_dir.join("entrance.db"))?;
+
+    let recovery_seed_path = write_test_recovery_seed(temp_dir.path())?;
+    run_recovery_cli(
+        &app_data_dir,
+        &[
+            "recovery",
+            "import-seed",
+            "--file",
+            recovery_seed_path
+                .to_str()
+                .context("recovery seed path should be valid UTF-8")?,
+        ],
+    )?;
+
+    let runs_output = run_recovery_cli(&app_data_dir, &["recovery", "runs"])?;
+    let runs: Value =
+        serde_json::from_str(&runs_output).context("recovery runs output should be valid JSON")?;
+    let runs = runs
+        .as_array()
+        .context("recovery runs output should be an array")?;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["source_system"], "recovery_seed");
+    assert_eq!(runs[0]["imported_table_count"], 7);
+    assert_eq!(runs[0]["imported_row_count"], 7);
+    assert_eq!(runs[0]["table_row_counts"]["memory_fragments"], 2);
+
+    let rows_output = run_recovery_cli(
+        &app_data_dir,
+        &["recovery", "rows", "--table", "documents", "--limit", "5"],
+    )?;
+    let rows: Value =
+        serde_json::from_str(&rows_output).context("recovery rows output should be valid JSON")?;
+    assert_eq!(rows["ingest_run"]["source_system"], "recovery_seed");
+    assert_eq!(rows["requested_table"], "documents");
+    assert_eq!(rows["total_matching_rows"], 1);
+    assert_eq!(
+        rows["rows"]
+            .as_array()
+            .context("rows should be an array")?
+            .len(),
+        1
+    );
+    assert_eq!(rows["rows"][0]["source_table"], "documents");
+    assert_eq!(rows["rows"][0]["source_row"]["title"], "Recovered doc");
+    assert_eq!(rows["rows"][0]["promotion_state"], "storage_only");
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(
@@ -143,6 +198,24 @@ enabled = false
     )?;
 
     Ok(())
+}
+
+fn run_recovery_cli(app_data_dir: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
+        .args(args)
+        .env("ENTRANCE_APP_DATA_DIR", app_data_dir)
+        .output()
+        .with_context(|| format!("failed to spawn `entrance {}`", args.join(" ")))?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "`entrance {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    String::from_utf8(output.stdout).context("CLI stdout should be valid UTF-8")
 }
 
 fn seed_preexisting_runtime_db(db_path: &Path) -> Result<()> {
