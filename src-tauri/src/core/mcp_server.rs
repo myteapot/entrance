@@ -219,12 +219,20 @@ impl McpServer {
                 }),
             ),
             "tools/call" => {
-                let permission = tool_permission_from_params(request.params.as_ref());
-                let dispatch_role = tool_dispatch_role_from_params(request.params.as_ref());
+                let tool_name = tool_name_from_params(request.params.as_ref());
+                let permission = tool_name.and_then(permission_for_mcp_tool);
+                let dispatch_role = tool_name.and_then(tool_dispatch_role_from_name);
+                let canonical_tool_name = tool_name.and_then(canonical_tool_name_from_name);
                 let result = self.handle_tool_call(request.params.as_ref());
                 json_rpc_result(
                     id,
-                    tool_call_result(result, self.surface_info(), permission, dispatch_role),
+                    tool_call_result(
+                        result,
+                        self.surface_info(),
+                        permission,
+                        dispatch_role,
+                        canonical_tool_name,
+                    ),
                 )
             }
             _ => json_rpc_error(
@@ -1040,6 +1048,7 @@ fn tool_call_result(
     surface_info: McpSurfaceInfo,
     permission: Option<McpToolPermission>,
     dispatch_role: Option<ActorRole>,
+    canonical_tool_name: Option<&'static str>,
 ) -> Value {
     match result {
         Ok(value) => json!({
@@ -1053,9 +1062,16 @@ fn tool_call_result(
             "entranceSurface": surface_info,
             "permission": permission,
             "dispatchRole": dispatch_role,
+            "canonicalToolName": canonical_tool_name,
             "isError": false,
         }),
-        Err(error) => tool_call_error_result(error, surface_info, permission, dispatch_role),
+        Err(error) => tool_call_error_result(
+            error,
+            surface_info,
+            permission,
+            dispatch_role,
+            canonical_tool_name,
+        ),
     }
 }
 
@@ -1064,6 +1080,7 @@ fn tool_call_error_result(
     surface_info: McpSurfaceInfo,
     permission: Option<McpToolPermission>,
     dispatch_role: Option<ActorRole>,
+    canonical_tool_name: Option<&'static str>,
 ) -> Value {
     let message = error.to_string();
     let structured_content = if let Some(role_error) = error.downcast_ref::<McpToolSurfaceRoleError>()
@@ -1095,15 +1112,15 @@ fn tool_call_error_result(
         "entranceSurface": surface_info,
         "permission": permission,
         "dispatchRole": dispatch_role,
+        "canonicalToolName": canonical_tool_name,
         "isError": true,
     })
 }
 
-fn tool_permission_from_params(params: Option<&Value>) -> Option<McpToolPermission> {
+fn tool_name_from_params(params: Option<&Value>) -> Option<&str> {
     params
         .and_then(|params| params.get("name"))
         .and_then(Value::as_str)
-        .and_then(permission_for_mcp_tool)
 }
 
 fn tool_dispatch_role_from_name(name: &str) -> Option<ActorRole> {
@@ -1120,11 +1137,16 @@ fn tool_dispatch_role_from_name(name: &str) -> Option<ActorRole> {
     }
 }
 
-fn tool_dispatch_role_from_params(params: Option<&Value>) -> Option<ActorRole> {
-    params
-        .and_then(|params| params.get("name"))
-        .and_then(Value::as_str)
-        .and_then(tool_dispatch_role_from_name)
+fn canonical_tool_name_from_name(name: &str) -> Option<&'static str> {
+    match name {
+        "forge_prepare_dispatch" | "forge_prepare_agent_dispatch" => {
+            Some("forge_prepare_agent_dispatch")
+        }
+        "forge_verify_dispatch" | "forge_verify_agent_dispatch" => {
+            Some("forge_verify_agent_dispatch")
+        }
+        _ => None,
+    }
 }
 
 fn to_pretty_json(value: &Value) -> String {
@@ -1357,6 +1379,7 @@ mod tests {
         assert!(launcher_response["entranceSurface"]["actorRole"].is_null());
         assert!(launcher_response["permission"].is_null());
         assert!(launcher_response["dispatchRole"].is_null());
+        assert!(launcher_response["canonicalToolName"].is_null());
         assert_eq!(
             launcher_response["structuredContent"]["results"][0]["path"],
             "C:\\Tools\\Code.exe"
@@ -1367,6 +1390,7 @@ mod tests {
         assert!(vault_response["entranceSurface"]["actorRole"].is_null());
         assert!(vault_response["permission"].is_null());
         assert!(vault_response["dispatchRole"].is_null());
+        assert!(vault_response["canonicalToolName"].is_null());
         assert_eq!(
             vault_response["structuredContent"]["token"]["provider"],
             "openai"
@@ -1381,6 +1405,7 @@ mod tests {
         assert!(mcp_list_response["entranceSurface"]["actorRole"].is_null());
         assert!(mcp_list_response["permission"].is_null());
         assert!(mcp_list_response["dispatchRole"].is_null());
+        assert!(mcp_list_response["canonicalToolName"].is_null());
         assert_eq!(
             mcp_list_response["structuredContent"]["servers"][0]["transport"],
             "stdio"
@@ -1405,6 +1430,7 @@ mod tests {
         assert!(forge_response["entranceSurface"]["actorRole"].is_null());
         assert!(forge_response["permission"].is_null());
         assert!(forge_response["dispatchRole"].is_null());
+        assert!(forge_response["canonicalToolName"].is_null());
         assert!(
             forge_response["structuredContent"]["task_id"]
                 .as_i64()
@@ -1446,6 +1472,20 @@ mod tests {
             response["structuredContent"]["entranceSurface"]["actorRole"],
             "dev"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_agent_dispatch_alias_reports_canonical_tool_name() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Arch))?;
+
+        let response = call_tool(&server, "forge_prepare_dispatch", json!({}))?;
+
+        assert_eq!(response["isError"], true);
+        assert_eq!(response["dispatchRole"], "agent");
+        assert_eq!(response["canonicalToolName"], "forge_prepare_agent_dispatch");
+        assert_eq!(response["structuredContent"]["toolName"], "forge_prepare_dispatch");
 
         Ok(())
     }

@@ -338,6 +338,10 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
     assert_eq!(forbidden["result"]["permission"]["targetLayer"], "hot");
     assert_eq!(forbidden["result"]["dispatchRole"], "agent");
     assert_eq!(
+        forbidden["result"]["canonicalToolName"],
+        "forge_prepare_agent_dispatch"
+    );
+    assert_eq!(
         forbidden["result"]["structuredContent"]["message"],
         "tool `forge_prepare_dispatch` is not available on the current `arch` MCP surface; requires `dev`"
     );
@@ -427,6 +431,10 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
     assert_eq!(prepare["result"]["permission"]["room"], "prep");
     assert_eq!(prepare["result"]["permission"]["targetLayer"], "hot");
     assert_eq!(prepare["result"]["dispatchRole"], "agent");
+    assert_eq!(
+        prepare["result"]["canonicalToolName"],
+        "forge_prepare_agent_dispatch"
+    );
     assert_eq!(prepare["result"]["structuredContent"]["issue_id"], "MYT-48");
     assert_eq!(
         prepare["result"]["structuredContent"]["dispatch_role"],
@@ -469,6 +477,10 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
     }))?;
     assert_eq!(verify["id"], "forge-verify");
     assert_eq!(verify["result"]["isError"], false);
+    assert_eq!(
+        verify["result"]["canonicalToolName"],
+        "forge_verify_agent_dispatch"
+    );
     assert_eq!(
         verify["result"]["structuredContent"]["dispatch"]["issue_id"],
         "MYT-48"
@@ -728,6 +740,10 @@ fn external_client_can_dispatch_agent_over_http_with_agent_lane_runtime() -> Res
         }
     }))?;
     assert_eq!(prepare["result"]["isError"], false);
+    assert_eq!(
+        prepare["result"]["canonicalToolName"],
+        "forge_prepare_agent_dispatch"
+    );
 
     let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
     let prompt = prepare["result"]["structuredContent"]["prompt"]
