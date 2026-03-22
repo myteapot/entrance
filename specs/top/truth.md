@@ -15,6 +15,7 @@
 - `Hot Working Set` is a reconstructable projection plane rather than a canonical semantic authoring plane.
 - Learn landing follows `Storage -> Cold -> Hot projection`; hot-first learning is invalid.
 - Hot surfaces own no canonical semantic truth; unreconstructable hot summaries are cache rather than truth.
+- External planning mirrors remain captured evidence; imported planning shells do not become Entrance-owned roadmap truth until reconciliation or explicit promotion says so.
 - Truth ownership differs by plane; hot owns no semantic truth and cold owns curation outcomes.
 - Event-ledger rows are append-only and default storage-first.
 - `SIMULATION_EVIDENCE`, its attempt receipt, and its artifact manifest must persist across storage plus cold for reconstructability.

@@ -9,8 +9,10 @@
 
 ## Current State
 
+- The first cold reconciliation cut is now landed; the active absorption lane is `MYT-63 / MYT-64 / MYT-65`.
 - No active architecture pending items are currently registered in the DB-backed working set.
 - No active operational blocker is currently mounted in the hot root.
+- Repo-root `entrance.db` is still a copy-only recovery seed while the verified landing import lives in `.tmp/landing-appdata/entrance.db`; this is a known storage boundary, not a hot blocker.
 - `GitLab MCP` read access has been validated live in-session against `pub/entrance`; older token-scope and OAuth-host notes are now historical fallback rather than active pending.
 
 ## Rule
