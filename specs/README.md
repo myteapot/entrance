@@ -25,4 +25,4 @@
 ## Notes
 
 - The current `cold/` tree is a repo-side cold staging layer.
-- `TODO(fill)`: archive superseded/conflicting state-machine drafts into DB with explicit relations.
+- Superseded or conflicting state-machine drafts should be recorded in runtime DB through `entrance hygiene spec-v0` with explicit relations before hot-side cleanup deletes context.

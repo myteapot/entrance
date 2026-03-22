@@ -16,12 +16,13 @@ use core::{
     action::ActorRole,
     bootstrap_for_paths,
     bootstrap_mcp_cycle::{
-        run_forge_bootstrap_dev_task, run_forge_bootstrap_mcp_cycle,
-        ForgeBootstrapMcpCycleOptions, ForgeBootstrapMcpCycleReport,
+        run_forge_bootstrap_dev_task, run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions,
+        ForgeBootstrapMcpCycleReport,
     },
     data_store::StoredSourceIngestRun,
     event_bus::EventBus,
     hotkey,
+    hygiene::{list_spec_hygiene_v0, run_spec_hygiene_v0, SpecHygieneReport},
     landing::{
         import_linear_entrance_snapshot, list_landing_ingest_runs, list_landing_mirror_items,
         list_landing_planning_items, list_landing_unreconciled_items, LandingImportReport,
@@ -193,6 +194,7 @@ pub fn dispatch_cli_or_run() -> Result<()> {
     match args.as_slice() {
         [command, rest @ ..] if command == "landing" => run_landing_cli(rest),
         [command, rest @ ..] if command == "recovery" => run_recovery_cli(rest),
+        [command, rest @ ..] if command == "hygiene" => run_hygiene_cli(rest),
         [command, rest @ ..] if command == "forge" => run_forge_cli(rest),
         [command, transport, rest @ ..] if command == "mcp" && transport == "stdio" => {
             run_mcp_stdio(rest)
@@ -379,6 +381,20 @@ fn run_forge_cli(args: &[String]) -> Result<()> {
         }
         _ => bail!(
             "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, `entrance forge verify-dispatch --project-dir <path>`, `entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--agent-count <n>]`, or `entrance forge run-bootstrap-dev-plan`"
+        ),
+    }
+}
+
+fn run_hygiene_cli(args: &[String]) -> Result<()> {
+    let startup = bootstrap_cli_state()?;
+
+    match args {
+        [command] if command == "spec-v0" => print_json(&run_spec_hygiene_v0(&startup.data_store())?),
+        [command] if command == "list-spec-v0" => {
+            print_json(&list_spec_hygiene_v0(&startup.data_store())?)
+        }
+        _ => bail!(
+            "unsupported hygiene command, expected `entrance hygiene spec-v0` or `entrance hygiene list-spec-v0`"
         ),
     }
 }
@@ -735,6 +751,13 @@ fn landing_list_unreconciled_items(
     list_landing_unreconciled_items(&data_store).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn hygiene_list_spec_v0(
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<SpecHygieneReport, String> {
+    list_spec_hygiene_v0(&data_store).map_err(|error| error.to_string())
+}
+
 fn update_latest_timestamp(current: &mut Option<String>, candidate: Option<&str>) {
     let Some(candidate) = candidate.filter(|value| !value.is_empty()) else {
         return;
@@ -774,6 +797,7 @@ pub fn run() {
             landing_list_mirror_items,
             landing_list_planning_items,
             landing_list_unreconciled_items,
+            hygiene_list_spec_v0,
             core::theme::get_theme,
             core::theme::set_theme,
             launcher_search,

@@ -243,6 +243,41 @@ pub struct StoredPromotionRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredMemoryFragment {
+    pub id: i64,
+    pub title: String,
+    pub content: String,
+    pub kind: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub source_hash: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub target_table: String,
+    pub target_ref: String,
+    pub status: String,
+    pub triage_status: String,
+    pub temperature: String,
+    pub tags: String,
+    pub notes: String,
+    pub confidence: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredMemoryLink {
+    pub id: i64,
+    pub src_kind: String,
+    pub src_id: i64,
+    pub dst_kind: String,
+    pub dst_id: i64,
+    pub relation_type: String,
+    pub status: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertDocumentRecord<'a> {
     pub id: i64,
@@ -1813,6 +1848,63 @@ impl DataStore {
         })
     }
 
+    pub fn list_memory_fragment_records(&self) -> Result<Vec<StoredMemoryFragment>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    title,
+                    content,
+                    kind,
+                    source_type,
+                    source_ref,
+                    source_hash,
+                    scope_type,
+                    scope_ref,
+                    target_table,
+                    target_ref,
+                    status,
+                    triage_status,
+                    temperature,
+                    tags,
+                    notes,
+                    confidence,
+                    created_at,
+                    updated_at
+                FROM memory_fragments
+                ORDER BY kind ASC, target_ref ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_memory_fragment_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn list_memory_link_records(&self) -> Result<Vec<StoredMemoryLink>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    src_kind,
+                    src_id,
+                    dst_kind,
+                    dst_id,
+                    relation_type,
+                    status,
+                    created_at
+                FROM memory_links
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_memory_link_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_document_record(&self, record: UpsertDocumentRecord<'_>) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute(
@@ -2364,6 +2456,43 @@ fn map_promotion_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredP
         reason: row.get(4)?,
         source_ingest_run_id: row.get(5)?,
         created_at: row.get(6)?,
+    })
+}
+
+fn map_memory_fragment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemoryFragment> {
+    Ok(StoredMemoryFragment {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        content: row.get(2)?,
+        kind: row.get(3)?,
+        source_type: row.get(4)?,
+        source_ref: row.get(5)?,
+        source_hash: row.get(6)?,
+        scope_type: row.get(7)?,
+        scope_ref: row.get(8)?,
+        target_table: row.get(9)?,
+        target_ref: row.get(10)?,
+        status: row.get(11)?,
+        triage_status: row.get(12)?,
+        temperature: row.get(13)?,
+        tags: row.get(14)?,
+        notes: row.get(15)?,
+        confidence: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
+    })
+}
+
+fn map_memory_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemoryLink> {
+    Ok(StoredMemoryLink {
+        id: row.get(0)?,
+        src_kind: row.get(1)?,
+        src_id: row.get(2)?,
+        dst_kind: row.get(3)?,
+        dst_id: row.get(4)?,
+        relation_type: row.get(5)?,
+        status: row.get(6)?,
+        created_at: row.get(7)?,
     })
 }
 
