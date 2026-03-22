@@ -13,7 +13,8 @@ use sha2::{Digest, Sha256};
 use crate::core::data_store::{
     DataStore, NewPromotionRecord, NewSourceArtifact, NewSourceIngestRun,
     SourceIngestRunCompletion, StoredPromotionRecord, StoredSourceArtifact, StoredSourceIngestRun,
-    UpsertCoffeeChatRecord, UpsertDocumentRecord, UpsertInstinctRecord, UpsertTodoRecord,
+    UpsertCoffeeChatRecord, UpsertDecisionRecord, UpsertDocumentRecord, UpsertInstinctRecord,
+    UpsertMemoryFragmentRecord, UpsertMemoryLinkRecord, UpsertTodoRecord, UpsertVisionRecord,
 };
 
 const RECOVERY_SEED_SOURCE_SYSTEM: &str = "recovery_seed";
@@ -33,6 +34,8 @@ const RECOVERY_SEED_TABLES: [&str; 10] = [
 ];
 const SAFE_RECOVERY_PROMOTION_TABLES: [&str; 4] =
     ["coffee_chats", "documents", "instincts", "todos"];
+const REMAINING_RECOVERY_PROMOTION_TABLES: [&str; 4] =
+    ["decisions", "memory_fragments", "memory_links", "visions"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RecoverySeedImportReport {
@@ -221,6 +224,109 @@ struct RecoverySeedCoffeeChatRow {
     temperature: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedDecisionRow {
+    id: i64,
+    title: String,
+    statement: String,
+    #[serde(default)]
+    rationale: String,
+    #[serde(default)]
+    decision_type: String,
+    #[serde(default = "default_accepted")]
+    decision_status: String,
+    #[serde(default)]
+    scope_type: String,
+    #[serde(default)]
+    scope_ref: String,
+    #[serde(default)]
+    source_ref: String,
+    #[serde(default)]
+    decided_by: String,
+    #[serde(default)]
+    enforcement_level: String,
+    #[serde(default)]
+    actor_scope: String,
+    #[serde(default = "default_unit_confidence")]
+    confidence: f64,
+    created_at: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedVisionRow {
+    id: i64,
+    title: String,
+    statement: String,
+    #[serde(default)]
+    horizon: String,
+    #[serde(default = "default_active")]
+    vision_status: String,
+    #[serde(default)]
+    scope_type: String,
+    #[serde(default)]
+    scope_ref: String,
+    #[serde(default)]
+    source_ref: String,
+    #[serde(default = "default_unit_confidence")]
+    confidence: f64,
+    created_at: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedMemoryFragmentRow {
+    id: i64,
+    title: String,
+    content: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    source_type: String,
+    #[serde(default)]
+    source_ref: String,
+    #[serde(default)]
+    source_hash: String,
+    #[serde(default)]
+    scope_type: String,
+    #[serde(default)]
+    scope_ref: String,
+    #[serde(default)]
+    target_table: String,
+    #[serde(default)]
+    target_ref: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    triage_status: String,
+    #[serde(default = "default_warm")]
+    temperature: String,
+    #[serde(default)]
+    tags: String,
+    #[serde(default)]
+    notes: String,
+    #[serde(default = "default_unit_confidence")]
+    confidence: f64,
+    created_at: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecoverySeedMemoryLinkRow {
+    id: i64,
+    src_kind: String,
+    src_id: i64,
+    dst_kind: String,
+    dst_id: i64,
+    relation_type: String,
+    #[serde(default = "default_active")]
+    status: String,
+    created_at: String,
+}
+
 pub fn import_recovery_seed(
     data_store: &DataStore,
     artifact_path: impl AsRef<Path>,
@@ -383,147 +489,28 @@ pub fn promote_safe_recovery_seed_v0(
 ) -> Result<RecoverySeedPromotionReport> {
     let ingest_run = resolve_recovery_seed_run(data_store, query.ingest_run_id)?;
     let requested_table = normalized_optional_table_name(query.table_name.as_deref());
-    if let Some(requested_table) = requested_table {
-        if !SAFE_RECOVERY_PROMOTION_TABLES.contains(&requested_table) {
-            return Err(anyhow!(
-                "unsupported safe recovery promotion table `{requested_table}`; use one of: {}",
-                SAFE_RECOVERY_PROMOTION_TABLES.join(", ")
-            ));
-        }
-    }
-
-    let rows = collect_recovery_seed_rows(data_store, ingest_run.run.id, requested_table)?
-        .into_iter()
-        .filter(|row| SAFE_RECOVERY_PROMOTION_TABLES.contains(&row.source_table.as_str()))
-        .collect::<Vec<_>>();
-    let latest_promotions = latest_promotion_map(data_store.list_promotion_records()?);
-    let mut promoted_tables = Vec::new();
-    let mut rows_by_table = BTreeMap::new();
-    let mut new_promotion_record_count = 0i64;
-
-    for row in &rows {
-        match row.source_table.as_str() {
-            "documents" => {
-                let payload: RecoverySeedDocumentRow =
-                    serde_json::from_value(row.source_row.clone())
-                        .context("failed to parse recovery document row")?;
-                data_store.upsert_document_record(UpsertDocumentRecord {
-                    id: payload.id,
-                    slug: &payload.slug,
-                    title: &payload.title,
-                    content: &payload.content,
-                    category: &payload.category,
-                    created_at: &payload.created_at,
-                    updated_at: &payload.updated_at,
-                })?;
-            }
-            "todos" => {
-                let payload: RecoverySeedTodoRow = serde_json::from_value(row.source_row.clone())
-                    .context("failed to parse recovery todo row")?;
-                data_store.upsert_todo_record(UpsertTodoRecord {
-                    id: payload.id,
-                    title: &payload.title,
-                    status: &payload.status,
-                    priority: payload.priority,
-                    project: &payload.project,
-                    created_at: &payload.created_at,
-                    done_at: payload.done_at.as_deref(),
-                    temperature: &payload.temperature,
-                    due_on: &payload.due_on,
-                    remind_every_days: payload.remind_every_days,
-                    remind_next_on: &payload.remind_next_on,
-                    last_reminded_at: &payload.last_reminded_at,
-                    reminder_status: &payload.reminder_status,
-                })?;
-            }
-            "instincts" => {
-                let payload: RecoverySeedInstinctRow =
-                    serde_json::from_value(row.source_row.clone())
-                        .context("failed to parse recovery instinct row")?;
-                let updated_at = if payload.updated_at.trim().is_empty() {
-                    payload.created_at.as_str()
-                } else {
-                    payload.updated_at.as_str()
-                };
-                data_store.upsert_instinct_record(UpsertInstinctRecord {
-                    id: payload.id,
-                    pattern: &payload.pattern,
-                    action: &payload.action,
-                    confidence: payload.confidence,
-                    source: &payload.source,
-                    reference: &payload.reference,
-                    created_at: &payload.created_at,
-                    status: &payload.status,
-                    surfaced_to: &payload.surfaced_to,
-                    review_status: &payload.review_status,
-                    origin_type: &payload.origin_type,
-                    lifecycle_status: &payload.lifecycle_status,
-                    temperature: &payload.temperature,
-                    updated_at,
-                })?;
-            }
-            "coffee_chats" => {
-                let payload: RecoverySeedCoffeeChatRow =
-                    serde_json::from_value(row.source_row.clone())
-                        .context("failed to parse recovery coffee chat row")?;
-                data_store.upsert_coffee_chat_record(UpsertCoffeeChatRecord {
-                    id: payload.id,
-                    project: &payload.project,
-                    stage: &payload.stage,
-                    retro: &payload.retro,
-                    forward: &payload.forward,
-                    priorities: &payload.priorities,
-                    created_at: &payload.created_at,
-                    temperature: &payload.temperature,
-                })?;
-            }
-            other => {
-                return Err(anyhow!(
-                    "safe recovery promotion does not support source table `{other}`"
-                ));
-            }
-        }
-
-        let latest_state = latest_promotions
-            .get(&("source_artifact".to_string(), row.artifact.id))
-            .map(|record| record.promotion_state.as_str());
-        if latest_state != Some("cold_promoted") {
-            data_store.append_promotion_record(NewPromotionRecord {
-                subject_kind: "source_artifact",
-                subject_id: row.artifact.id,
-                promotion_state: "cold_promoted",
-                reason: Some(match row.source_table.as_str() {
-                    "documents" => "promoted recovery seed row into canonical documents table",
-                    "todos" => "promoted recovery seed row into canonical todos table",
-                    "instincts" => "promoted recovery seed row into canonical instincts table",
-                    "coffee_chats" => {
-                        "promoted recovery seed row into canonical coffee_chats table"
-                    }
-                    _ => "promoted recovery seed row into canonical runtime memory table",
-                }),
-                source_ingest_run_id: Some(ingest_run.run.id),
-            })?;
-            new_promotion_record_count += 1;
-        }
-
-        *rows_by_table.entry(row.source_table.clone()).or_insert(0) += 1;
-        if !promoted_tables
-            .iter()
-            .any(|table| table == &row.source_table)
-        {
-            promoted_tables.push(row.source_table.clone());
-        }
-    }
-
-    Ok(RecoverySeedPromotionReport {
+    promote_recovery_seed_tables(
+        data_store,
         ingest_run,
-        requested_table: requested_table.map(str::to_string),
-        promoted_tables,
-        total_candidate_rows: rows.len() as i64,
-        upserted_row_count: rows.len() as i64,
-        new_promotion_record_count,
-        rows_by_table,
-    })
+        requested_table,
+        &SAFE_RECOVERY_PROMOTION_TABLES,
+        "safe recovery promotion",
+    )
+}
+
+pub fn promote_remaining_recovery_seed_v0(
+    data_store: &DataStore,
+    query: RecoverySeedPromotionQuery,
+) -> Result<RecoverySeedPromotionReport> {
+    let ingest_run = resolve_recovery_seed_run(data_store, query.ingest_run_id)?;
+    let requested_table = normalized_optional_table_name(query.table_name.as_deref());
+    promote_recovery_seed_tables(
+        data_store,
+        ingest_run,
+        requested_table,
+        &REMAINING_RECOVERY_PROMOTION_TABLES,
+        "remaining recovery promotion",
+    )
 }
 
 fn import_recovery_seed_snapshot(
@@ -739,6 +726,263 @@ fn append_storage_only_promotion(
     Ok(())
 }
 
+fn promote_recovery_seed_tables(
+    data_store: &DataStore,
+    ingest_run: RecoverySeedRunSummary,
+    requested_table: Option<&str>,
+    allowed_tables: &[&str],
+    promotion_label: &str,
+) -> Result<RecoverySeedPromotionReport> {
+    if let Some(requested_table) = requested_table {
+        if !allowed_tables.contains(&requested_table) {
+            return Err(anyhow!(
+                "unsupported {promotion_label} table `{requested_table}`; use one of: {}",
+                allowed_tables.join(", ")
+            ));
+        }
+    }
+
+    let rows = collect_recovery_seed_rows(data_store, ingest_run.run.id, requested_table)?
+        .into_iter()
+        .filter(|row| allowed_tables.contains(&row.source_table.as_str()))
+        .collect::<Vec<_>>();
+    let latest_promotions = latest_promotion_map(data_store.list_promotion_records()?);
+    let mut promoted_tables = Vec::new();
+    let mut rows_by_table = BTreeMap::new();
+    let mut new_promotion_record_count = 0i64;
+
+    for row in &rows {
+        promote_recovery_seed_row(data_store, row)?;
+
+        let latest_state = latest_promotions
+            .get(&("source_artifact".to_string(), row.artifact.id))
+            .map(|record| record.promotion_state.as_str());
+        if latest_state != Some("cold_promoted") {
+            data_store.append_promotion_record(NewPromotionRecord {
+                subject_kind: "source_artifact",
+                subject_id: row.artifact.id,
+                promotion_state: "cold_promoted",
+                reason: Some(match row.source_table.as_str() {
+                    "documents" => "promoted recovery seed row into canonical documents table",
+                    "todos" => "promoted recovery seed row into canonical todos table",
+                    "instincts" => "promoted recovery seed row into canonical instincts table",
+                    "coffee_chats" => {
+                        "promoted recovery seed row into canonical coffee_chats table"
+                    }
+                    "decisions" => "promoted recovery seed row into canonical decisions table",
+                    "visions" => "promoted recovery seed row into canonical visions table",
+                    "memory_fragments" => {
+                        "promoted recovery seed row into canonical memory_fragments table"
+                    }
+                    "memory_links" => {
+                        "promoted recovery seed row into canonical memory_links table"
+                    }
+                    _ => "promoted recovery seed row into canonical runtime memory table",
+                }),
+                source_ingest_run_id: Some(ingest_run.run.id),
+            })?;
+            new_promotion_record_count += 1;
+        }
+
+        *rows_by_table.entry(row.source_table.clone()).or_insert(0) += 1;
+        if !promoted_tables
+            .iter()
+            .any(|table| table == &row.source_table)
+        {
+            promoted_tables.push(row.source_table.clone());
+        }
+    }
+
+    Ok(RecoverySeedPromotionReport {
+        ingest_run,
+        requested_table: requested_table.map(str::to_string),
+        promoted_tables,
+        total_candidate_rows: rows.len() as i64,
+        upserted_row_count: rows.len() as i64,
+        new_promotion_record_count,
+        rows_by_table,
+    })
+}
+
+fn promote_recovery_seed_row(data_store: &DataStore, row: &RecoverySeedRowSummary) -> Result<()> {
+    match row.source_table.as_str() {
+        "documents" => {
+            let payload: RecoverySeedDocumentRow =
+                serde_json::from_value(row.source_row.clone())
+                    .context("failed to parse recovery document row")?;
+            data_store.upsert_document_record(UpsertDocumentRecord {
+                id: payload.id,
+                slug: &payload.slug,
+                title: &payload.title,
+                content: &payload.content,
+                category: &payload.category,
+                created_at: &payload.created_at,
+                updated_at: &payload.updated_at,
+            })?;
+        }
+        "todos" => {
+            let payload: RecoverySeedTodoRow = serde_json::from_value(row.source_row.clone())
+                .context("failed to parse recovery todo row")?;
+            data_store.upsert_todo_record(UpsertTodoRecord {
+                id: payload.id,
+                title: &payload.title,
+                status: &payload.status,
+                priority: payload.priority,
+                project: &payload.project,
+                created_at: &payload.created_at,
+                done_at: payload.done_at.as_deref(),
+                temperature: &payload.temperature,
+                due_on: &payload.due_on,
+                remind_every_days: payload.remind_every_days,
+                remind_next_on: &payload.remind_next_on,
+                last_reminded_at: &payload.last_reminded_at,
+                reminder_status: &payload.reminder_status,
+            })?;
+        }
+        "instincts" => {
+            let payload: RecoverySeedInstinctRow =
+                serde_json::from_value(row.source_row.clone())
+                    .context("failed to parse recovery instinct row")?;
+            let updated_at = if payload.updated_at.trim().is_empty() {
+                payload.created_at.as_str()
+            } else {
+                payload.updated_at.as_str()
+            };
+            data_store.upsert_instinct_record(UpsertInstinctRecord {
+                id: payload.id,
+                pattern: &payload.pattern,
+                action: &payload.action,
+                confidence: payload.confidence,
+                source: &payload.source,
+                reference: &payload.reference,
+                created_at: &payload.created_at,
+                status: &payload.status,
+                surfaced_to: &payload.surfaced_to,
+                review_status: &payload.review_status,
+                origin_type: &payload.origin_type,
+                lifecycle_status: &payload.lifecycle_status,
+                temperature: &payload.temperature,
+                updated_at,
+            })?;
+        }
+        "coffee_chats" => {
+            let payload: RecoverySeedCoffeeChatRow = serde_json::from_value(row.source_row.clone())
+                .context("failed to parse recovery coffee chat row")?;
+            data_store.upsert_coffee_chat_record(UpsertCoffeeChatRecord {
+                id: payload.id,
+                project: &payload.project,
+                stage: &payload.stage,
+                retro: &payload.retro,
+                forward: &payload.forward,
+                priorities: &payload.priorities,
+                created_at: &payload.created_at,
+                temperature: &payload.temperature,
+            })?;
+        }
+        "decisions" => {
+            let payload: RecoverySeedDecisionRow =
+                serde_json::from_value(row.source_row.clone())
+                    .context("failed to parse recovery decision row")?;
+            let updated_at = if payload.updated_at.trim().is_empty() {
+                payload.created_at.as_str()
+            } else {
+                payload.updated_at.as_str()
+            };
+            data_store.upsert_decision_record(UpsertDecisionRecord {
+                id: payload.id,
+                title: &payload.title,
+                statement: &payload.statement,
+                rationale: &payload.rationale,
+                decision_type: &payload.decision_type,
+                decision_status: &payload.decision_status,
+                scope_type: &payload.scope_type,
+                scope_ref: &payload.scope_ref,
+                source_ref: &payload.source_ref,
+                decided_by: &payload.decided_by,
+                enforcement_level: &payload.enforcement_level,
+                actor_scope: &payload.actor_scope,
+                confidence: payload.confidence,
+                created_at: &payload.created_at,
+                updated_at,
+            })?;
+        }
+        "visions" => {
+            let payload: RecoverySeedVisionRow = serde_json::from_value(row.source_row.clone())
+                .context("failed to parse recovery vision row")?;
+            let updated_at = if payload.updated_at.trim().is_empty() {
+                payload.created_at.as_str()
+            } else {
+                payload.updated_at.as_str()
+            };
+            data_store.upsert_vision_record(UpsertVisionRecord {
+                id: payload.id,
+                title: &payload.title,
+                statement: &payload.statement,
+                horizon: &payload.horizon,
+                vision_status: &payload.vision_status,
+                scope_type: &payload.scope_type,
+                scope_ref: &payload.scope_ref,
+                source_ref: &payload.source_ref,
+                confidence: payload.confidence,
+                created_at: &payload.created_at,
+                updated_at,
+            })?;
+        }
+        "memory_fragments" => {
+            let payload: RecoverySeedMemoryFragmentRow =
+                serde_json::from_value(row.source_row.clone())
+                    .context("failed to parse recovery memory fragment row")?;
+            let updated_at = if payload.updated_at.trim().is_empty() {
+                payload.created_at.as_str()
+            } else {
+                payload.updated_at.as_str()
+            };
+            data_store.upsert_memory_fragment_record(UpsertMemoryFragmentRecord {
+                id: payload.id,
+                title: &payload.title,
+                content: &payload.content,
+                kind: &payload.kind,
+                source_type: &payload.source_type,
+                source_ref: &payload.source_ref,
+                source_hash: &payload.source_hash,
+                scope_type: &payload.scope_type,
+                scope_ref: &payload.scope_ref,
+                target_table: &payload.target_table,
+                target_ref: &payload.target_ref,
+                status: &payload.status,
+                triage_status: &payload.triage_status,
+                temperature: &payload.temperature,
+                tags: &payload.tags,
+                notes: &payload.notes,
+                confidence: payload.confidence,
+                created_at: &payload.created_at,
+                updated_at,
+            })?;
+        }
+        "memory_links" => {
+            let payload: RecoverySeedMemoryLinkRow = serde_json::from_value(row.source_row.clone())
+                .context("failed to parse recovery memory link row")?;
+            data_store.upsert_memory_link_record(UpsertMemoryLinkRecord {
+                id: payload.id,
+                src_kind: &payload.src_kind,
+                src_id: payload.src_id,
+                dst_kind: &payload.dst_kind,
+                dst_id: payload.dst_id,
+                relation_type: &payload.relation_type,
+                status: &payload.status,
+                created_at: &payload.created_at,
+            })?;
+        }
+        other => {
+            return Err(anyhow!(
+                "recovery promotion does not support source table `{other}`"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn resolve_recovery_seed_run(
     data_store: &DataStore,
     ingest_run_id: Option<i64>,
@@ -927,4 +1171,12 @@ fn default_warm() -> String {
 
 fn default_none() -> String {
     "none".to_string()
+}
+
+fn default_accepted() -> String {
+    "accepted".to_string()
+}
+
+fn default_unit_confidence() -> f64 {
+    1.0
 }

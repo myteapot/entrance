@@ -30,7 +30,8 @@ use core::{
     plugin_manager::PluginManager,
     recovery::{
         import_recovery_seed, list_recovery_seed_rows, list_recovery_seed_runs,
-        promote_safe_recovery_seed_v0, RecoverySeedPromotionQuery, RecoverySeedRowsQuery,
+        promote_remaining_recovery_seed_v0, promote_safe_recovery_seed_v0,
+        RecoverySeedPromotionQuery, RecoverySeedRowsQuery,
     },
     resolve_app_data_dir,
     theme::ThemeSystem,
@@ -257,8 +258,15 @@ fn run_recovery_cli(args: &[String]) -> Result<()> {
             let query = parse_recovery_promotion_args(rest)?;
             print_json(&promote_safe_recovery_seed_v0(&startup.data_store(), query)?)
         }
+        [command, rest @ ..] if command == "promote-remaining-v0" => {
+            let query = parse_recovery_promotion_args(rest)?;
+            print_json(&promote_remaining_recovery_seed_v0(
+                &startup.data_store(),
+                query,
+            )?)
+        }
         _ => bail!(
-            "unsupported recovery command, expected `entrance recovery import-seed --file <path>`, `entrance recovery runs`, `entrance recovery rows [--ingest-run-id <id>] [--table <name>] [--limit <n>]`, or `entrance recovery promote-safe-v0 [--ingest-run-id <id>] [--table <name>]`"
+            "unsupported recovery command, expected `entrance recovery import-seed --file <path>`, `entrance recovery runs`, `entrance recovery rows [--ingest-run-id <id>] [--table <name>] [--limit <n>]`, `entrance recovery promote-safe-v0 [--ingest-run-id <id>] [--table <name>]`, or `entrance recovery promote-remaining-v0 [--ingest-run-id <id>] [--table <name>]`"
         ),
     }
 }

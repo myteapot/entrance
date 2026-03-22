@@ -236,6 +236,55 @@ fn recovery_promote_safe_v0_cli_promotes_stable_memory_families_idempotently() -
     Ok(())
 }
 
+#[test]
+fn recovery_promote_remaining_v0_cli_promotes_remaining_memory_families_idempotently() -> Result<()>
+{
+    let temp_dir = TempDir::new("promote-remaining-v0-runtime-db")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+    seed_preexisting_runtime_db(&app_data_dir.join("entrance.db"))?;
+
+    let recovery_seed_path = write_remaining_promotable_recovery_seed(temp_dir.path())?;
+    run_recovery_cli(
+        &app_data_dir,
+        &[
+            "recovery",
+            "import-seed",
+            "--file",
+            recovery_seed_path
+                .to_str()
+                .context("recovery seed path should be valid UTF-8")?,
+        ],
+    )?;
+
+    let promote_output = run_recovery_cli(&app_data_dir, &["recovery", "promote-remaining-v0"])?;
+    let report: Value = serde_json::from_str(&promote_output)
+        .context("recovery promote-remaining-v0 output should be valid JSON")?;
+    assert_eq!(report["total_candidate_rows"], 4);
+    assert_eq!(report["upserted_row_count"], 4);
+    assert_eq!(report["new_promotion_record_count"], 4);
+    assert_eq!(report["rows_by_table"]["decisions"], 1);
+    assert_eq!(report["rows_by_table"]["visions"], 1);
+    assert_eq!(report["rows_by_table"]["memory_fragments"], 1);
+    assert_eq!(report["rows_by_table"]["memory_links"], 1);
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "decisions")?, 1);
+    assert_eq!(count_rows(&connection, "visions")?, 1);
+    assert_eq!(count_rows(&connection, "memory_fragments")?, 1);
+    assert_eq!(count_rows(&connection, "memory_links")?, 1);
+
+    let rerun_output = run_recovery_cli(&app_data_dir, &["recovery", "promote-remaining-v0"])?;
+    let rerun: Value = serde_json::from_str(&rerun_output)
+        .context("recovery promote-remaining-v0 rerun output should be valid JSON")?;
+    assert_eq!(rerun["upserted_row_count"], 4);
+    assert_eq!(rerun["new_promotion_record_count"], 0);
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(
@@ -727,6 +776,182 @@ fn write_promotable_recovery_seed(root: &Path) -> Result<PathBuf> {
             "documents,todos",
             "2026-03-23T00:30:00Z",
             "warm",
+        ),
+    )?;
+
+    Ok(db_path)
+}
+
+fn write_remaining_promotable_recovery_seed(root: &Path) -> Result<PathBuf> {
+    let db_path = root.join("promotable-remaining-recovery-seed.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute_batch(
+        r#"
+        CREATE TABLE schema_meta (
+            version INTEGER,
+            applied_at TEXT
+        );
+        CREATE TABLE decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            statement TEXT NOT NULL,
+            rationale TEXT NOT NULL DEFAULT '',
+            decision_type TEXT NOT NULL DEFAULT '',
+            decision_status TEXT NOT NULL DEFAULT 'accepted',
+            scope_type TEXT NOT NULL DEFAULT '',
+            scope_ref TEXT NOT NULL DEFAULT '',
+            source_ref TEXT NOT NULL DEFAULT '',
+            decided_by TEXT NOT NULL DEFAULT '',
+            enforcement_level TEXT NOT NULL DEFAULT '',
+            actor_scope TEXT NOT NULL DEFAULT '',
+            confidence REAL NOT NULL DEFAULT 1.0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE visions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            statement TEXT NOT NULL,
+            horizon TEXT NOT NULL DEFAULT '',
+            vision_status TEXT NOT NULL DEFAULT 'active',
+            scope_type TEXT NOT NULL DEFAULT '',
+            scope_ref TEXT NOT NULL DEFAULT '',
+            source_ref TEXT NOT NULL DEFAULT '',
+            confidence REAL NOT NULL DEFAULT 1.0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE memory_fragments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT '',
+            source_type TEXT NOT NULL DEFAULT '',
+            source_ref TEXT NOT NULL DEFAULT '',
+            source_hash TEXT NOT NULL DEFAULT '',
+            scope_type TEXT NOT NULL DEFAULT '',
+            scope_ref TEXT NOT NULL DEFAULT '',
+            target_table TEXT NOT NULL DEFAULT '',
+            target_ref TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            triage_status TEXT NOT NULL DEFAULT '',
+            temperature TEXT NOT NULL DEFAULT 'warm',
+            tags TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            confidence REAL NOT NULL DEFAULT 0.0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE memory_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            src_kind TEXT NOT NULL,
+            src_id INTEGER NOT NULL,
+            dst_kind TEXT NOT NULL,
+            dst_id INTEGER NOT NULL,
+            relation_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL
+        );
+        "#,
+    )?;
+
+    connection.execute(
+        "INSERT INTO schema_meta (version, applied_at) VALUES (?1, ?2)",
+        (9, "2026-03-23T00:00:00Z"),
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO decisions (
+            id, title, statement, rationale, decision_type, decision_status, scope_type,
+            scope_ref, source_ref, decided_by, enforcement_level, actor_scope,
+            confidence, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+        "#,
+        (
+            1,
+            "Single runtime db",
+            "Entrance should converge on one runtime db.",
+            "Avoid split truth between repo root and app data.",
+            "storage",
+            "accepted",
+            "project",
+            "Entrance",
+            "memory_fragments:1",
+            "Human+NOTA",
+            "hard",
+            "system",
+            0.95f64,
+            "2026-03-23T00:00:00Z",
+            "2026-03-23T00:05:00Z",
+        ),
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO visions (
+            id, title, statement, horizon, vision_status, scope_type, scope_ref,
+            source_ref, confidence, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+        (
+            1,
+            "NOTA control plane",
+            "Human should primarily interact through NOTA.",
+            "long",
+            "active",
+            "system",
+            "nota-control-plane",
+            "memory_fragments:2",
+            0.92f64,
+            "2026-03-23T00:10:00Z",
+            "2026-03-23T00:15:00Z",
+        ),
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO memory_fragments (
+            id, title, content, kind, source_type, source_ref, source_hash, scope_type,
+            scope_ref, target_table, target_ref, status, triage_status, temperature,
+            tags, notes, confidence, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+        "#,
+        params![
+            1,
+            "Delete directory safety",
+            "Raw directory deletion is forbidden.",
+            "decision",
+            "human-chat",
+            "chat:2026-03-21/raw-directory-delete-policy",
+            "seed-hash",
+            "system",
+            "filesystem",
+            "decisions",
+            "1",
+            "promoted",
+            "promoted",
+            "hot",
+            "safety",
+            "Recovered and clarified.",
+            1.0f64,
+            "2026-03-23T00:20:00Z",
+            "2026-03-23T00:25:00Z",
+        ],
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO memory_links (
+            id, src_kind, src_id, dst_kind, dst_id, relation_type, status, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+        (
+            1,
+            "decision",
+            1,
+            "memory_fragments",
+            1,
+            "derived_from",
+            "active",
+            "2026-03-23T00:30:00Z",
         ),
     )?;
 
