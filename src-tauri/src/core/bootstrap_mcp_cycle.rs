@@ -4,7 +4,10 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::core::{action::ActorRole, mcp_stdio_client::SpawnedMcpStdioClient};
+use crate::{
+    core::{action::ActorRole, mcp_stdio_client::SpawnedMcpStdioClient},
+    plugins::forge::allocate_agent_slot_worktree,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct ForgeBootstrapMcpCycleOptions {
@@ -28,9 +31,11 @@ pub struct ForgeBootstrapMcpSurfaceSummary {
 pub struct ForgeBootstrapMcpCycleReport {
     pub bootstrap_surface: ForgeBootstrapMcpSurfaceSummary,
     pub requested_agent_count: usize,
+    pub agent_worktree_mode: &'static str,
     pub shared_worktree_boundary: Option<String>,
     pub dev_assignment: Value,
     pub agent_prepare: Value,
+    pub agent_prepares: Vec<Value>,
     pub agent_dispatches: Vec<Value>,
     pub parent_status: Value,
 }
@@ -47,7 +52,7 @@ pub fn run_forge_bootstrap_mcp_cycle(
     let initialize_dev = dev_surface.initialize()?;
     assert_surface_role(&initialize_dev, "dev")?;
 
-    let project_arguments = project_dir_tool_arguments(options.project_dir.as_deref());
+    let project_arguments = project_dir_tool_arguments(options.project_dir.as_deref(), None);
     let dev_assignment = arch_surface
         .call_tool("forge_verify_dev_dispatch", project_arguments.clone())?
         .get("structuredContent")
@@ -61,32 +66,53 @@ pub fn run_forge_bootstrap_mcp_cycle(
         .get("structuredContent")
         .cloned()
         .context("forge_prepare_agent_dispatch should return structuredContent")?;
-    let issue_id = json_string(&prepared_agent, &["issue_id"])
-        .context("forge_prepare_agent_dispatch should return issue_id")?;
     let worktree_path = json_string(&prepared_agent, &["worktree_path"])
         .context("forge_prepare_agent_dispatch should return worktree_path")?;
-    let prompt = json_string(&prepared_agent, &["prompt"])
-        .context("forge_prepare_agent_dispatch should return prompt")?;
-    let shared_worktree_boundary = (options.agent_count > 1).then(|| {
-        format!(
-            "Current bootstrap cut fans out {count} agent children through one Dev surface, but all child agents still share resolved worktree `{worktree}`. This is transport-level fan-out, not a per-agent worktree allocator yet.",
-            count = options.agent_count,
-            worktree = worktree_path,
-        )
-    });
+    let agent_worktree_mode = if options.agent_count > 1 {
+        "per_agent_slot_worktree"
+    } else {
+        "single_managed_worktree"
+    };
+    let shared_worktree_boundary = None;
 
+    let mut prepared_agents = Vec::with_capacity(options.agent_count);
     let mut dispatched_agents = Vec::with_capacity(options.agent_count);
     let mut child_task_ids = Vec::with_capacity(options.agent_count);
     for index in 0..options.agent_count {
         let slot = format!("agent-{}", index + 1);
+        let child_prepare = if options.agent_count > 1 {
+            let child_worktree =
+                allocate_agent_slot_worktree(&worktree_path, &slot).map_err(anyhow::Error::msg)?;
+            let prepare_arguments = project_dir_tool_arguments(
+                options.project_dir.as_deref(),
+                Some(child_worktree.as_str()),
+            );
+            dev_surface
+                .call_tool("forge_prepare_agent_dispatch", prepare_arguments)?
+                .get("structuredContent")
+                .cloned()
+                .context(
+                    "forge_prepare_agent_dispatch should return structuredContent for child worktree",
+                )?
+        } else {
+            prepared_agent.clone()
+        };
+        let issue_id = json_string(&child_prepare, &["issue_id"])
+            .context("forge_prepare_agent_dispatch should return issue_id")?;
+        let child_worktree_path = json_string(&child_prepare, &["worktree_path"])
+            .context("forge_prepare_agent_dispatch should return worktree_path")?;
+        let prompt = json_string(&child_prepare, &["prompt"])
+            .context("forge_prepare_agent_dispatch should return prompt")?;
+        prepared_agents.push(strip_prompt_fields(with_child_slot(child_prepare, &slot)));
+
         let mut dispatch_arguments = json!({
             "issue_id": issue_id.clone(),
-            "worktree_path": worktree_path.clone(),
+            "worktree_path": child_worktree_path,
             "model": options.model.clone(),
-            "prompt": prompt.clone(),
+            "prompt": prompt,
             "parent_task_id": parent_task_id,
             "supervision_strategy": "one_for_one",
-            "child_slot": slot,
+            "child_slot": slot.clone(),
         });
         if let Some(agent_command) = options.agent_command.as_ref() {
             dispatch_arguments["agent_command"] = Value::String(agent_command.clone());
@@ -130,20 +156,31 @@ pub fn run_forge_bootstrap_mcp_cycle(
             agent_wait_mode: "fanout_then_wait",
         },
         requested_agent_count: options.agent_count,
+        agent_worktree_mode,
         shared_worktree_boundary,
         dev_assignment: strip_prompt_fields(dev_assignment),
-        agent_prepare: strip_prompt_fields(prepared_agent),
+        agent_prepare: prepared_agents
+            .first()
+            .cloned()
+            .context("bootstrap cycle should collect at least one prepared agent dispatch")?,
+        agent_prepares: prepared_agents,
         agent_dispatches,
         parent_status,
     })
 }
 
-fn project_dir_tool_arguments(project_dir: Option<&str>) -> Value {
+fn project_dir_tool_arguments(project_dir: Option<&str>, worktree_path: Option<&str>) -> Value {
     let mut arguments = serde_json::Map::new();
     if let Some(project_dir) = project_dir {
         arguments.insert(
             "project_dir".to_string(),
             Value::String(project_dir.to_string()),
+        );
+    }
+    if let Some(worktree_path) = worktree_path {
+        arguments.insert(
+            "worktree_path".to_string(),
+            Value::String(worktree_path.to_string()),
         );
     }
     Value::Object(arguments)
@@ -232,6 +269,16 @@ fn strip_prompt_fields(mut value: Value) -> Value {
         if let Some(dispatch) = object.get_mut("dispatch").and_then(Value::as_object_mut) {
             dispatch.insert("prompt".to_string(), Value::Null);
         }
+    }
+    value
+}
+
+fn with_child_slot(mut value: Value, child_slot: &str) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "child_slot".to_string(),
+            Value::String(child_slot.to_string()),
+        );
     }
     value
 }

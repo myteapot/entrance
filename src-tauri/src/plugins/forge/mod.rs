@@ -400,6 +400,28 @@ pub async fn prepare_agent_dispatch(
     build_prepared_agent_dispatch(paths, issue_summary).await
 }
 
+pub async fn prepare_agent_dispatch_for_worktree(
+    data_store: DataStore,
+    project_dir: Option<String>,
+    worktree_path: String,
+) -> Result<PreparedAgentDispatch, String> {
+    let project_dir_for_resolve = project_dir.clone();
+    let worktree_path_for_resolve = worktree_path.clone();
+    let paths = tauri::async_runtime::spawn_blocking(move || {
+        let worktree_roots = resolve_dispatch_worktree_roots()?;
+        resolve_dispatch_paths_for_explicit_worktree(
+            project_dir_for_resolve.as_deref(),
+            &worktree_path_for_resolve,
+            &worktree_roots,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
+    build_prepared_agent_dispatch(paths, issue_summary).await
+}
+
 pub fn prepare_agent_dispatch_blocking(
     data_store: DataStore,
     project_dir: Option<String>,
@@ -410,6 +432,23 @@ pub fn prepare_agent_dispatch_blocking(
         .map_err(|error| format!("failed to build Tokio runtime for Forge dispatch: {error}"))?;
 
     runtime.block_on(prepare_agent_dispatch(data_store, project_dir))
+}
+
+pub fn prepare_agent_dispatch_for_worktree_blocking(
+    data_store: DataStore,
+    project_dir: Option<String>,
+    worktree_path: String,
+) -> Result<PreparedAgentDispatch, String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to build Tokio runtime for Forge dispatch: {error}"))?;
+
+    runtime.block_on(prepare_agent_dispatch_for_worktree(
+        data_store,
+        project_dir,
+        worktree_path,
+    ))
 }
 
 pub fn verify_agent_dispatch(
@@ -776,6 +815,113 @@ fn resolve_dispatch_worktree_roots() -> Result<Vec<PathBuf>, String> {
     Ok(vec![managed_worktrees_root_for_app_data_dir(&app_data_dir)])
 }
 
+pub(crate) fn allocate_agent_slot_worktree(
+    base_worktree_path: &str,
+    child_slot: &str,
+) -> Result<String, String> {
+    let base_worktree_path = PathBuf::from(base_worktree_path);
+    if !base_worktree_path.exists() {
+        return Err(format!(
+            "Base worktree `{}` does not exist",
+            normalize_display_path(&base_worktree_path)
+        ));
+    }
+
+    let sanitized_slot = sanitize_child_slot(child_slot)?;
+    let base_branch = run_git_command(&base_worktree_path, ["branch", "--show-current"])?;
+    let issue_id = parse_issue_id_from_branch(&base_branch)?;
+    let repo_root = resolve_repo_root_from_worktree(&base_worktree_path)?;
+    let child_worktree_path = base_worktree_path
+        .parent()
+        .ok_or_else(|| {
+            format!(
+                "Unable to derive managed project directory from `{}`",
+                normalize_display_path(&base_worktree_path)
+            )
+        })?
+        .join("slots")
+        .join(&issue_id)
+        .join(&sanitized_slot);
+
+    if run_git_command(&child_worktree_path, ["rev-parse", "--show-toplevel"]).is_ok() {
+        return Ok(normalize_display_path(&child_worktree_path));
+    }
+
+    if child_worktree_path.exists() {
+        return Err(format!(
+            "Slot worktree path `{}` already exists but is not a valid git worktree",
+            normalize_display_path(&child_worktree_path)
+        ));
+    }
+
+    let child_parent = child_worktree_path.parent().ok_or_else(|| {
+        format!(
+            "Unable to derive parent directory for slot worktree `{}`",
+            normalize_display_path(&child_worktree_path)
+        )
+    })?;
+    std::fs::create_dir_all(child_parent).map_err(|error| {
+        format!(
+            "Failed to create slot worktree parent `{}`: {error}",
+            normalize_display_path(child_parent)
+        )
+    })?;
+
+    let child_branch = format!("slot/{sanitized_slot}/feat-{issue_id}");
+    let add_output = if git_branch_exists(&repo_root, &child_branch)? {
+        Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "--quiet",
+                child_worktree_path
+                    .to_str()
+                    .ok_or_else(|| "slot worktree path is not valid UTF-8".to_string())?,
+                child_branch.as_str(),
+            ])
+            .current_dir(&repo_root)
+            .output()
+            .map_err(|error| error.to_string())?
+    } else {
+        Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                child_branch.as_str(),
+                child_worktree_path
+                    .to_str()
+                    .ok_or_else(|| "slot worktree path is not valid UTF-8".to_string())?,
+                base_branch.as_str(),
+            ])
+            .current_dir(&repo_root)
+            .output()
+            .map_err(|error| error.to_string())?
+    };
+
+    if !add_output.status.success() {
+        let stderr = String::from_utf8_lossy(&add_output.stderr)
+            .trim()
+            .to_string();
+        return Err(if stderr.is_empty() {
+            format!(
+                "Failed to allocate slot worktree `{}` from `{}`",
+                normalize_display_path(&child_worktree_path),
+                normalize_display_path(&repo_root)
+            )
+        } else {
+            format!(
+                "Failed to allocate slot worktree `{}` from `{}`: {stderr}",
+                normalize_display_path(&child_worktree_path),
+                normalize_display_path(&repo_root)
+            )
+        });
+    }
+
+    Ok(normalize_display_path(&child_worktree_path))
+}
+
 fn resolve_dispatch_paths(project_dir: Option<&str>) -> Result<DispatchPaths, String> {
     if let Some(project_dir) = project_dir {
         let worktree_roots = resolve_dispatch_worktree_roots()?;
@@ -801,6 +947,81 @@ fn resolve_dispatch_paths(project_dir: Option<&str>) -> Result<DispatchPaths, St
         issue_id,
         project_root: project_root.to_string_lossy().replace('\\', "/"),
         worktree_path: worktree_path.to_string_lossy().replace('\\', "/"),
+    })
+}
+
+fn resolve_dispatch_paths_for_explicit_worktree(
+    project_dir: Option<&str>,
+    worktree_path: &str,
+    worktree_roots: &[PathBuf],
+) -> Result<DispatchPaths, String> {
+    let requested_worktree_path = PathBuf::from(worktree_path);
+    if !requested_worktree_path.exists() {
+        return Err(format!(
+            "Explicit worktree `{}` does not exist",
+            worktree_path
+        ));
+    }
+
+    let resolved_worktree = normalize_command_path(
+        &requested_worktree_path,
+        &run_git_command(&requested_worktree_path, ["rev-parse", "--show-toplevel"])?,
+    );
+    let derived_project_root = resolve_repo_root_from_worktree(&resolved_worktree)?;
+    let branch = run_git_command(&resolved_worktree, ["branch", "--show-current"])?;
+    let issue_id = parse_issue_id_from_branch(&branch)?;
+
+    let project_root = if let Some(project_dir) = project_dir {
+        let explicit_project_root = PathBuf::from(project_dir);
+        if !explicit_project_root.exists() {
+            return Err(format!(
+                "Project directory `{}` does not exist",
+                project_dir
+            ));
+        }
+
+        let explicit_project_root = canonicalize_for_compare(&explicit_project_root)?;
+        let derived_project_root = canonicalize_for_compare(&derived_project_root)?;
+        if explicit_project_root != derived_project_root {
+            return Err(format!(
+                "Explicit project directory `{}` does not match worktree repository `{}`",
+                normalize_display_path(&explicit_project_root),
+                normalize_display_path(&derived_project_root)
+            ));
+        }
+
+        explicit_project_root
+    } else {
+        derived_project_root
+    };
+
+    let project_name = project_root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let allowed_root = worktree_roots
+        .iter()
+        .map(|root| root.join(&project_name))
+        .find(|candidate| resolved_worktree.starts_with(candidate))
+        .ok_or_else(|| {
+            let expected_roots = worktree_roots
+                .iter()
+                .map(|root| format!("`{}`", root.join(&project_name).display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Explicit worktree `{}` is outside the managed Forge roots for project `{}`. Expected under {}.",
+                normalize_display_path(&resolved_worktree),
+                project_name,
+                expected_roots
+            )
+        })?;
+    let _ = allowed_root;
+
+    Ok(DispatchPaths {
+        issue_id,
+        project_root: normalize_display_path(&project_root),
+        worktree_path: normalize_display_path(&resolved_worktree),
     })
 }
 
@@ -904,6 +1125,41 @@ fn run_git_command<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String
         .map_err(|error| error.to_string())
 }
 
+fn git_branch_exists(repo_root: &Path, branch_name: &str) -> Result<bool, String> {
+    let output = Command::new("git")
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch_name}"),
+        ])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|error| error.to_string())?;
+
+    Ok(output.status.success())
+}
+
+fn resolve_repo_root_from_worktree(worktree_path: &Path) -> Result<PathBuf, String> {
+    let git_common_dir = run_git_command(worktree_path, ["rev-parse", "--git-common-dir"])?;
+    let common_dir = normalize_command_path(worktree_path, &git_common_dir);
+    common_dir.parent().map(Path::to_path_buf).ok_or_else(|| {
+        format!(
+            "Unable to resolve repository root from git common dir `{}`",
+            normalize_display_path(&common_dir)
+        )
+    })
+}
+
+fn canonicalize_for_compare(path: &Path) -> Result<PathBuf, String> {
+    std::fs::canonicalize(path).map_err(|error| {
+        format!(
+            "Failed to canonicalize `{}`: {error}",
+            normalize_display_path(path)
+        )
+    })
+}
+
 fn normalize_command_path(cwd: &Path, raw: &str) -> PathBuf {
     let candidate = PathBuf::from(raw.trim());
     if candidate.is_absolute() {
@@ -925,6 +1181,24 @@ fn parse_issue_id_from_branch(branch: &str) -> Result<String, String> {
             "Current branch `{}` is not an issue worktree branch. Open Entrance from a `feat-<ISSUE>` worktree to use auto-dispatch.",
             branch.trim()
         )),
+    }
+}
+
+fn sanitize_child_slot(child_slot: &str) -> Result<String, String> {
+    let trimmed = child_slot.trim();
+    if trimmed.is_empty() {
+        return Err("child slot must not be empty".to_string());
+    }
+
+    if trimmed
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        Ok(trimmed.to_string())
+    } else {
+        Err(format!(
+            "child slot `{trimmed}` contains unsupported characters; use only ASCII letters, digits, `-`, or `_`"
+        ))
     }
 }
 
@@ -1176,7 +1450,7 @@ impl Plugin for ForgePlugin {
             },
             McpToolDefinition {
                 name: "forge.prepare_agent_dispatch",
-                description: "Prepare an Entrance-owned agent-lane dispatch from the current worktree context",
+                description: "Prepare an Entrance-owned agent-lane dispatch from the current or explicit managed worktree context",
             },
             McpToolDefinition {
                 name: "forge.verify_agent_dispatch",
@@ -1246,11 +1520,11 @@ mod tests {
     };
 
     use super::{
-        build_agent_task_request, build_dev_task_request, build_prepared_agent_dispatch,
-        build_prepared_dev_dispatch, generate_agent_prompt, generate_dev_prompt,
-        managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
-        prepare_agent_dispatch, prepare_dev_dispatch, resolve_dispatch_paths_for_project,
-        ForgePlugin, ForgeTaskMetadata,
+        allocate_agent_slot_worktree, build_agent_task_request, build_dev_task_request,
+        build_prepared_agent_dispatch, build_prepared_dev_dispatch, generate_agent_prompt,
+        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
+        prepare_agent_dispatch, prepare_agent_dispatch_for_worktree, prepare_dev_dispatch,
+        resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
     };
 
     static FORGE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1323,6 +1597,63 @@ mod tests {
         assert!(
             output.status.success(),
             "git init should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo_with_commit(path: &Path) {
+        init_git_repo(path);
+
+        let add = Command::new("git")
+            .args(["add", "."])
+            .current_dir(path)
+            .output()
+            .expect("git add should run");
+        assert!(
+            add.status.success(),
+            "git add should succeed: {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+
+        let commit = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Entrance Test",
+                "-c",
+                "user.email=entrance@example.com",
+                "commit",
+                "--quiet",
+                "-m",
+                "initial commit",
+            ])
+            .current_dir(path)
+            .output()
+            .expect("git commit should run");
+        assert!(
+            commit.status.success(),
+            "git commit should succeed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+    }
+
+    fn add_git_worktree(repo_root: &Path, worktree_path: &Path, branch: &str) {
+        let output = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                branch,
+                worktree_path
+                    .to_str()
+                    .expect("worktree path should be valid UTF-8"),
+            ])
+            .current_dir(repo_root)
+            .output()
+            .expect("git worktree add should run");
+        assert!(
+            output.status.success(),
+            "git worktree add should succeed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -1449,6 +1780,61 @@ mod tests {
         assert_eq!(
             paths.worktree_path,
             managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+    }
+
+    #[test]
+    fn slot_worktree_is_allocated_under_managed_project_slots_root() {
+        let temp_dir = TestDir::new("dispatch-slot-worktree");
+        let project_root = temp_dir.path().join("Entrance");
+        fs::create_dir_all(&project_root).expect("project root should exist");
+        fs::write(project_root.join("README.md"), "slot worktree test\n")
+            .expect("repo file should be written");
+        init_git_repo_with_commit(&project_root);
+
+        let managed_root = temp_dir.path().join("appdata").join("worktrees");
+        let managed_worktree = managed_root.join("Entrance").join("feat-MYT-48");
+        fs::create_dir_all(
+            managed_worktree
+                .parent()
+                .expect("managed worktree parent should exist"),
+        )
+        .expect("managed worktree parent should be created");
+        add_git_worktree(&project_root, &managed_worktree, "feat-MYT-48");
+
+        let slot_worktree = allocate_agent_slot_worktree(
+            managed_worktree
+                .to_str()
+                .expect("managed worktree path should be valid UTF-8"),
+            "agent-1",
+        )
+        .expect("slot worktree should be allocated");
+
+        let slot_worktree = PathBuf::from(&slot_worktree);
+        assert_eq!(
+            slot_worktree,
+            managed_root
+                .join("Entrance")
+                .join("slots")
+                .join("MYT-48")
+                .join("agent-1")
+        );
+
+        let top_level = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&slot_worktree)
+            .output()
+            .expect("git rev-parse should run for slot worktree");
+        assert!(top_level.status.success());
+        let branch = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&slot_worktree)
+            .output()
+            .expect("git branch should run for slot worktree");
+        assert!(branch.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&branch.stdout).trim(),
+            "slot/agent-1/feat-MYT-48"
         );
     }
 
@@ -1840,6 +2226,79 @@ mod tests {
             metadata.dispatch_tool_name.as_deref(),
             Some("forge_dispatch_agent")
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_agent_dispatch_can_target_an_explicit_slot_worktree() -> Result<()> {
+        let _guard = forge_test_guard();
+
+        let temp_dir = TestDir::new("dispatch-slot-prepare");
+        let app_data_dir = temp_dir.path().join("appdata");
+        let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+        let _linear_api_key_guard = EnvVarGuard::remove("LINEAR_API_KEY");
+        let _linear_token_guard = EnvVarGuard::remove("LINEAR_TOKEN");
+
+        fs::create_dir_all(&app_data_dir)?;
+        let mut config = EntranceConfig::default();
+        config.plugins.forge.enabled = true;
+        fs::write(app_data_dir.join("entrance.toml"), render_config(&config)?)?;
+
+        let startup = bootstrap_for_paths(AppPaths::new(app_data_dir.clone()))?;
+        assert!(startup.forge_enabled());
+
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        fs::create_dir_all(&bootstrap_skill)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(project_root.join("README.md"), "slot dispatch test\n")?;
+        init_git_repo_with_commit(&project_root);
+
+        let managed_worktree = app_data_dir
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
+        fs::create_dir_all(
+            managed_worktree
+                .parent()
+                .expect("managed worktree parent should exist"),
+        )?;
+        add_git_worktree(&project_root, &managed_worktree, "feat-MYT-48");
+
+        let slot_worktree = allocate_agent_slot_worktree(
+            managed_worktree
+                .to_str()
+                .expect("managed worktree path should be valid UTF-8"),
+            "agent-1",
+        )
+        .map_err(anyhow::Error::msg)?;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let dispatch = runtime
+            .block_on(async {
+                prepare_agent_dispatch_for_worktree(
+                    startup.data_store(),
+                    Some(
+                        project_root
+                            .to_str()
+                            .expect("project path should be valid UTF-8")
+                            .to_string(),
+                    ),
+                    slot_worktree.clone(),
+                )
+                .await
+            })
+            .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.dispatch_role, ActorRole::Agent);
+        assert_eq!(dispatch.dispatch_tool_name, "forge_dispatch_agent");
+        assert_eq!(dispatch.worktree_path, slot_worktree.replace('\\', "/"));
+        assert!(dispatch.prompt.contains(&slot_worktree.replace('\\', "/")));
+        assert!(!dispatch.prompt.contains(".agents"));
 
         Ok(())
     }
