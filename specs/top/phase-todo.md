@@ -27,7 +27,7 @@
 - the new hot root is canonical for navigation now
 - numbered docs remain in place only as mounted transitional detail with local detail or mounted links
 - landing `v0` currently proves external capture plus seeded planning shells, not completed internal roadmap ownership
-- repo-root `entrance.db` remains a copy-only recovery seed; the verified landing import currently lives in `.tmp/landing-appdata/entrance.db`
+- live runtime storage now lives at `%LOCALAPPDATA%/Entrance/entrance.db`, which carries both the landed Linear import and the absorbed repo-root recovery seed as runtime-owned storage truth
 - physical relocation of transitional detail is optional future cleanup, not a prerequisite for the compressed root
 
 ## Active Chunks

@@ -18,12 +18,23 @@
   - `imported_document_count = 1`
   - `imported_milestone_count = 0`
   - `imported_planning_item_count = 50`
-- Post-import landing state in the verification DB:
+- Post-import landing state now carried by the live runtime DB:
   - `external_issue_mirrors = 50`
   - `planning_items = 50`
   - `planning_item_links = 52`
   - `promotion_records = 100`
   - `unreconciled_planning_items = 50`
+- Real recovery-seed absorption has now been executed from:
+  - `A:\Agent\Entrance\entrance.db`
+- Real recovery import checkpoint:
+  - `ingest_run_id = 2`
+  - `artifact_sha256 = 3314b5ca35ff6c41f0b0038b221f0f45a52b326387fdd8d7e9672aedaa85fcda`
+  - `imported_table_count = 10`
+  - `imported_row_count = 340`
+  - `imported_artifact_count = 342`
+- Live runtime storage now carries:
+  - landing evidence plus seeded planning shells from the Linear import
+  - repo-root recovery seed rows plus the adjacent seed manifest as `recovery_seed` storage artifacts
 - The next real phase is not another architecture rewrite; it remains `Landing / Reconciliation`.
 - The first cold reconciliation cut is now landed:
   - `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
@@ -83,9 +94,9 @@
   - `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
   - `specs/cold/3.1-learning-truth-system/minimal_truth_plane.md`
 - `pending.md` should now be read as "no active architecture or operational blocker in hot view"; prior GitLab MCP token notes are fallback history, not active pending.
-- Repo-root `entrance.db` and `entrance.db.manifest.json` remain copy-only recovery seed artifacts and do not currently carry the landed landing tables.
-- The verified landing import currently lives in `.tmp/landing-appdata/entrance.db`; treat it as evidence of the import path, not as canonical production truth.
-- Do not churn either DB for editorial cleanup only.
+- `%LOCALAPPDATA%/Entrance/entrance.db` is now the canonical runtime storage owner for both landing truth and absorbed repo-root recovery seed truth.
+- `.tmp/landing-appdata/entrance.db` remains only as sandbox proof residue for the original landing import path.
+- Repo-root `entrance.db` and `entrance.db.manifest.json` are no longer required as active storage carriers once their absorbed runtime copy is verified.
 - Local repo caution:
   - `.tmp/` exists as local verification residue and currently includes landing-layer temp appdata.
 
@@ -132,7 +143,7 @@
   - `cargo test landing_tables_round_trip --lib --config "build.rustc-wrapper=''" `
   - `cargo test imports_linear_snapshot_into_landing_tables --lib --config "build.rustc-wrapper=''" `
 - Real import was exercised against the exported snapshot, not just fixtures.
-- The temp verification DB lives under `.tmp/landing-appdata/` and should be treated as a sandbox proof point rather than canonical production data.
+- The original temp verification DB lives under `.tmp/landing-appdata/`, but the live runtime DB now also carries the landed Linear import and the absorbed repo-root recovery seed.
 
 ### What It Means
 
@@ -274,7 +285,7 @@ What is still open:
 Local caution:
 
 - do not treat `.tmp/landing-appdata/entrance.db` as production truth
-- do not mistake repo-root `entrance.db` for landing truth; it is still a copy-only recovery seed
+- do not mistake repo-root `entrance.db` for a current owner DB after runtime absorption; it is historical seed residue only
 - do not casually revert `src-tauri/src/plugins/forge/mod.rs`; it is unrelated local state in the current worktree
 
 ## Self-Cycle Protocol For The Next Agent
@@ -312,7 +323,7 @@ Local caution:
 6. If the work produces a new oracle:
    - update the relevant hot trunk
    - write DB decision or memory records
-   - sync `entrance.db.manifest.json`
+   - keep the runtime storage copy reconstructable without reviving repo-root seed carriers
 7. If ambiguity remains unresolved after local critique:
    - park it in cold or `pending.md`
    - do not bloat the hot root with speculative text

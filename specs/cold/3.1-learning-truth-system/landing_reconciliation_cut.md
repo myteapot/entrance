@@ -11,14 +11,21 @@
 ## Evidence Boundary
 
 - Source snapshot: `A:\Agent\linear-entrance-snapshot-2026-03-22.json`
-- Verified landing DB: `A:\Agent\Entrance\.tmp\landing-appdata\entrance.db`
-- Verified landing counts from that DB:
+- Original landing proof DB: `A:\Agent\Entrance\.tmp\landing-appdata\entrance.db`
+- Live runtime DB after real landing import and recovery-seed absorption: `%LOCALAPPDATA%/Entrance/entrance.db`
+- Verified landing counts now present in the live runtime DB:
   - `external_issue_mirrors = 50`
   - `planning_items = 50`
   - `planning_item_links = 52`
   - `promotion_records = 100`
   - all `planning_items.status = seeded`
   - all `planning_items.reconciliation_status = unreconciled`
+- Verified recovery-seed storage import now present in the live runtime DB:
+  - `source_system = recovery_seed`
+  - `ingest_run_id = 2`
+  - `imported_table_count = 10`
+  - `imported_row_count = 340`
+  - `imported_artifact_count = 342`
 - Landing code currently stores only:
   - external capture in `external_issue_mirrors`
   - seeded internal shells in `planning_items`
@@ -27,9 +34,9 @@
 
 ## Storage Fact That Must Not Be Blurred
 
-- The verified landing import currently lives in `.tmp/landing-appdata/entrance.db`; this is evidence for the landed import path, not the production truth DB.
-- The repo-root `entrance.db` remains a copy-only recovery seed and does not currently contain the landing tables from `0005_create_core_landing_tables.sql`.
-- Therefore the first reconciliation cut below is a cold-truth classification pass over verified imported evidence, not a claim that repo-root storage has already absorbed the cut.
+- `.tmp/landing-appdata/entrance.db` remains useful only as original proof residue for the landing path; it is not the production truth DB.
+- The repo-root recovery seed has now been absorbed into live runtime storage as `recovery_seed` artifacts plus storage-only promotion markers.
+- Therefore the first reconciliation cut below is a cold-truth classification pass over evidence that is now carried by the live runtime DB, not by a separate repo-root owner DB.
 
 ## Reconciliation Rule
 
