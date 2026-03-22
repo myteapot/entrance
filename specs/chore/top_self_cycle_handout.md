@@ -57,6 +57,11 @@
   - this uses real CLI bootstrap plus `prepare_agent_dispatch()` and prints the prepared Forge dispatch payload as JSON
   - it provides a repeatable runtime verification path outside internal-only Rust tests
   - it still does not replace full GUI/app-level `.agents`-absent verification
+- A stronger headless CLI verification entrypoint is now landed:
+  - `entrance forge verify-dispatch --project-dir <path>`
+  - this uses real CLI bootstrap plus `prepare_agent_dispatch()`, translates the result into a default Codex task request, and persists a Pending Forge task
+  - it provides an operator-visible verification path for dispatch preparation plus Forge task persistence without active `.agents` runtime dependencies
+  - it still does not replace full GUI/app-level `.agents`-absent verification
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
   - `specs/top/control.md`

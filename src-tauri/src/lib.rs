@@ -28,7 +28,10 @@ use core::{
     AppPaths, StartupState,
 };
 use plugins::{
-    forge::{prepare_agent_dispatch as prepare_forge_agent_dispatch, PreparedAgentDispatch},
+    forge::{
+        build_agent_task_request, prepare_agent_dispatch as prepare_forge_agent_dispatch,
+        PreparedAgentDispatch,
+    },
     forge::commands::{
         forge_cancel_task, forge_create_task, forge_dispatch_agent, forge_get_task,
         forge_get_task_details, forge_list_tasks, forge_prepare_agent_dispatch,
@@ -69,6 +72,16 @@ struct DashboardSummary {
     token_count: usize,
     mcp_config_count: usize,
     enabled_mcp_count: usize,
+}
+
+#[derive(Clone, Serialize)]
+struct ForgeDispatchVerificationReport {
+    dispatch: PreparedAgentDispatch,
+    task_id: i64,
+    task_status: String,
+    task_command: String,
+    task_working_dir: Option<String>,
+    prompt_via_stdin: bool,
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -221,8 +234,14 @@ fn run_forge_cli(args: &[String]) -> Result<()> {
         [command, flag, value] if command == "prepare-dispatch" && flag == "--project-dir" => {
             print_json(&prepare_forge_dispatch_cli(Some(value.to_string()))?)
         }
+        [command] if command == "verify-dispatch" => {
+            print_json(&verify_forge_dispatch_cli(None)?)
+        }
+        [command, flag, value] if command == "verify-dispatch" && flag == "--project-dir" => {
+            print_json(&verify_forge_dispatch_cli(Some(value.to_string()))?)
+        }
         _ => bail!(
-            "unsupported forge command, expected `entrance forge prepare-dispatch` or `entrance forge prepare-dispatch --project-dir <path>`"
+            "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, or `entrance forge verify-dispatch --project-dir <path>`"
         ),
     }
 }
@@ -296,11 +315,19 @@ fn bootstrap_cli_state() -> Result<StartupState> {
     bootstrap_for_paths(app_paths)
 }
 
-fn prepare_forge_dispatch_cli(project_dir: Option<String>) -> Result<PreparedAgentDispatch> {
+fn bootstrap_forge_cli_state() -> Result<StartupState> {
     let startup = bootstrap_cli_state()?;
     if !startup.forge_enabled() {
         bail!("Forge is disabled in entrance.toml");
     }
+
+    Ok(startup)
+}
+
+fn prepare_forge_dispatch_with_startup(
+    startup: &StartupState,
+    project_dir: Option<String>,
+) -> Result<PreparedAgentDispatch> {
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -310,6 +337,41 @@ fn prepare_forge_dispatch_cli(project_dir: Option<String>) -> Result<PreparedAge
     runtime
         .block_on(prepare_forge_agent_dispatch(startup.data_store(), project_dir))
         .map_err(anyhow::Error::msg)
+}
+
+fn prepare_forge_dispatch_cli(project_dir: Option<String>) -> Result<PreparedAgentDispatch> {
+    let startup = bootstrap_forge_cli_state()?;
+    prepare_forge_dispatch_with_startup(&startup, project_dir)
+}
+
+fn verify_forge_dispatch_cli(project_dir: Option<String>) -> Result<ForgeDispatchVerificationReport> {
+    let startup = bootstrap_forge_cli_state()?;
+    let dispatch = prepare_forge_dispatch_with_startup(&startup, project_dir)?;
+
+    let request = build_agent_task_request(
+        dispatch.issue_id.clone(),
+        dispatch.worktree_path.clone(),
+        "codex".to_string(),
+        dispatch.prompt.clone(),
+        Vec::new(),
+        None,
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
+    let task_id = forge_plugin.create_task(request)?;
+    let task = forge_plugin
+        .get_task(task_id)?
+        .context("stored Forge verification task should exist")?;
+
+    Ok(ForgeDispatchVerificationReport {
+        dispatch,
+        task_id,
+        task_status: task.status,
+        task_command: task.command,
+        task_working_dir: task.working_dir,
+        prompt_via_stdin: task.stdin_text.is_some(),
+    })
 }
 
 fn build_mcp_server(startup: &StartupState, transport: McpTransport) -> Result<McpServer> {
@@ -524,7 +586,7 @@ mod tests {
 
     use crate::core::config_store::{render_config, EntranceConfig};
 
-    use super::prepare_forge_dispatch_cli;
+    use super::{prepare_forge_dispatch_cli, verify_forge_dispatch_cli};
 
     static CLI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -675,6 +737,59 @@ mod tests {
 
         let error = prepare_forge_dispatch_cli(None).expect_err("forge-disabled CLI should fail");
         assert!(error.to_string().contains("Forge is disabled"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn verify_forge_dispatch_cli_persists_task_without_agents_runtime() -> Result<()> {
+        let _guard = cli_test_guard();
+
+        let temp_dir = TestDir::new("forge-cli-verify-no-agents");
+        let app_data_dir = temp_dir.path().join("appdata");
+        let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+        let _linear_api_key_guard = EnvVarGuard::remove("LINEAR_API_KEY");
+        let _linear_token_guard = EnvVarGuard::remove("LINEAR_TOKEN");
+
+        fs::create_dir_all(&app_data_dir)?;
+        let mut config = EntranceConfig::default();
+        config.plugins.forge.enabled = true;
+        fs::write(
+            app_data_dir.join("entrance.toml"),
+            render_config(&config)?,
+        )?;
+
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        fs::create_dir_all(&bootstrap_skill)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+        let managed_worktree = app_data_dir.join("worktrees").join("Entrance").join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree)?;
+        init_git_repo(&managed_worktree);
+
+        let report = verify_forge_dispatch_cli(Some(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8")
+                .to_string(),
+        ))?;
+
+        assert_eq!(report.dispatch.issue_id, "MYT-48");
+        assert_eq!(report.dispatch.issue_status, "Todo");
+        assert_eq!(
+            report.dispatch.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+        assert!(!report.dispatch.prompt.contains(".agents"));
+        assert!(report.task_id > 0);
+        assert_eq!(report.task_status, "Pending");
+        assert_eq!(report.task_command, "codex");
+        assert_eq!(
+            report.task_working_dir.as_deref(),
+            Some(report.dispatch.worktree_path.as_str())
+        );
+        assert!(report.prompt_via_stdin);
 
         Ok(())
     }

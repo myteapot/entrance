@@ -233,6 +233,13 @@ A runtime-facing headless verification entrypoint is now also available:
 - it gives Entrance an operator-visible verification path outside internal-only Rust tests
 - it still does not replace the full GUI/app-level `.agents`-absent verification run above
 
+A stronger runtime-facing headless verification entrypoint is now also available:
+
+- `entrance forge verify-dispatch --project-dir <path>`
+- this uses real CLI bootstrap plus `prepare_agent_dispatch()`, translates the result into a default Codex task request, and persists a Pending Forge task
+- it gives Entrance an operator-visible verification path for dispatch preparation plus Forge task persistence outside internal-only Rust tests
+- it still does not replace the full GUI/app-level `.agents`-absent verification run above
+
 Only after that verification should manual `.agents` cleanup even be considered.
 
 ## 8. Work Streams Required
