@@ -101,6 +101,7 @@ pub struct ForgeTaskMetadata {
 #[derive(Debug, Clone, Serialize)]
 pub struct PreparedAgentDispatch {
     pub dispatch_role: ActorRole,
+    pub dispatch_tool_name: String,
     pub issue_id: String,
     pub issue_status: String,
     pub issue_status_source: String,
@@ -471,6 +472,7 @@ async fn build_prepared_agent_dispatch(
 
     Ok(PreparedAgentDispatch {
         dispatch_role: FORGE_AGENT_DISPATCH_ROLE,
+        dispatch_tool_name: FORGE_AGENT_DISPATCH_TOOL_NAME.to_string(),
         issue_id: paths.issue_id,
         issue_status,
         issue_status_source,
@@ -1528,6 +1530,7 @@ mod tests {
 
         assert_eq!(dispatch.issue_id, "MYT-48");
         assert_eq!(dispatch.dispatch_role, ActorRole::Agent);
+        assert_eq!(dispatch.dispatch_tool_name, "forge_dispatch_agent");
         assert_eq!(dispatch.issue_status, "Todo");
         assert_eq!(dispatch.issue_status_source, "fallback");
         assert!(dispatch.issue_title.is_none());
@@ -1708,6 +1711,7 @@ mod tests {
 
         assert_eq!(dispatch.issue_id, "MYT-48");
         assert_eq!(dispatch.dispatch_role, ActorRole::Agent);
+        assert_eq!(dispatch.dispatch_tool_name, "forge_dispatch_agent");
         assert_eq!(dispatch.issue_status, "Todo");
         assert_eq!(dispatch.issue_status_source, "fallback");
         assert!(dispatch.issue_title.is_none());

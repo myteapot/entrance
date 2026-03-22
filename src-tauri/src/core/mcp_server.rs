@@ -433,6 +433,7 @@ impl McpServer {
 
         Ok(json!({
             "dispatch_role": "agent",
+            "dispatch_tool_name": "forge_dispatch_agent",
             "task_id": task.id,
             "task": task,
         }))

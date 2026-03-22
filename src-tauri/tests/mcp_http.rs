@@ -441,6 +441,10 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
         "agent"
     );
     assert_eq!(
+        prepare["result"]["structuredContent"]["dispatch_tool_name"],
+        "forge_dispatch_agent"
+    );
+    assert_eq!(
         prepare["result"]["structuredContent"]["issue_status"],
         "Todo"
     );
@@ -488,6 +492,10 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
     assert_eq!(
         verify["result"]["structuredContent"]["dispatch"]["dispatch_role"],
         "agent"
+    );
+    assert_eq!(
+        verify["result"]["structuredContent"]["dispatch"]["dispatch_tool_name"],
+        "forge_dispatch_agent"
     );
     assert_eq!(
         verify["result"]["structuredContent"]["dispatch"]["worktree_path"],
@@ -771,6 +779,10 @@ fn external_client_can_dispatch_agent_over_http_with_agent_lane_runtime() -> Res
     assert_eq!(
         dispatch["result"]["structuredContent"]["dispatch_role"],
         "agent"
+    );
+    assert_eq!(
+        dispatch["result"]["structuredContent"]["dispatch_tool_name"],
+        "forge_dispatch_agent"
     );
 
     let task_id = dispatch["result"]["structuredContent"]["task_id"]
