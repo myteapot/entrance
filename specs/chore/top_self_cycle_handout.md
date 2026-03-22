@@ -52,6 +52,11 @@
   - this boots fresh app-data config with Forge enabled, resolves the managed worktree through `prepare_agent_dispatch()`, and persists the resulting task request without active `.agents` runtime dependencies
   - Forge's Linear token fallback now tolerates fresh-bootstrap stores where `plugin_vault_tokens` has not been migrated because Vault is disabled
   - this still does not replace full GUI/app-level `.agents`-absent verification
+- A new headless CLI verification entrypoint is now landed:
+  - `entrance forge prepare-dispatch --project-dir <path>`
+  - this uses real CLI bootstrap plus `prepare_agent_dispatch()` and prints the prepared Forge dispatch payload as JSON
+  - it provides a repeatable runtime verification path outside internal-only Rust tests
+  - it still does not replace full GUI/app-level `.agents`-absent verification
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
   - `specs/top/control.md`

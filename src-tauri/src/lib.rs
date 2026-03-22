@@ -28,6 +28,7 @@ use core::{
     AppPaths, StartupState,
 };
 use plugins::{
+    forge::{prepare_agent_dispatch as prepare_forge_agent_dispatch, PreparedAgentDispatch},
     forge::commands::{
         forge_cancel_task, forge_create_task, forge_dispatch_agent, forge_get_task,
         forge_get_task_details, forge_list_tasks, forge_prepare_agent_dispatch,
@@ -169,6 +170,7 @@ pub fn dispatch_cli_or_run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
         [command, rest @ ..] if command == "landing" => run_landing_cli(rest),
+        [command, rest @ ..] if command == "forge" => run_forge_cli(rest),
         [command, transport] if command == "mcp" && transport == "stdio" => run_mcp_stdio(),
         [command, transport, rest @ ..] if command == "mcp" && transport == "http" => {
             run_mcp_http(rest)
@@ -207,6 +209,20 @@ fn run_landing_cli(args: &[String]) -> Result<()> {
         }
         _ => bail!(
             "unsupported landing command, expected one of `entrance landing import --file <path>`, `entrance landing runs`, `entrance landing mirrors`, `entrance landing planning`, or `entrance landing unreconciled`"
+        ),
+    }
+}
+
+fn run_forge_cli(args: &[String]) -> Result<()> {
+    match args {
+        [command] if command == "prepare-dispatch" => {
+            print_json(&prepare_forge_dispatch_cli(None)?)
+        }
+        [command, flag, value] if command == "prepare-dispatch" && flag == "--project-dir" => {
+            print_json(&prepare_forge_dispatch_cli(Some(value.to_string()))?)
+        }
+        _ => bail!(
+            "unsupported forge command, expected `entrance forge prepare-dispatch` or `entrance forge prepare-dispatch --project-dir <path>`"
         ),
     }
 }
@@ -278,6 +294,22 @@ fn bootstrap_headless() -> Result<StartupState> {
 fn bootstrap_cli_state() -> Result<StartupState> {
     let app_paths = AppPaths::new(resolve_app_data_dir()?);
     bootstrap_for_paths(app_paths)
+}
+
+fn prepare_forge_dispatch_cli(project_dir: Option<String>) -> Result<PreparedAgentDispatch> {
+    let startup = bootstrap_cli_state()?;
+    if !startup.forge_enabled() {
+        bail!("Forge is disabled in entrance.toml");
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to build Tokio runtime for Forge CLI")?;
+
+    runtime
+        .block_on(prepare_forge_agent_dispatch(startup.data_store(), project_dir))
+        .map_err(anyhow::Error::msg)
 }
 
 fn build_mcp_server(startup: &StartupState, transport: McpTransport) -> Result<McpServer> {
@@ -475,4 +507,175 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Entrance application");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        env,
+        ffi::{OsStr, OsString},
+        fs,
+        path::{Path, PathBuf},
+        sync::{Mutex, OnceLock},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use anyhow::Result;
+
+    use crate::core::config_store::{render_config, EntranceConfig};
+
+    use super::prepare_forge_dispatch_cli;
+
+    static CLI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "entrance-lib-{label}-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("test temp directory should be created");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = env::var_os(key);
+            env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = env::var_os(key);
+            env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                env::set_var(self.key, value);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn cli_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        CLI_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("CLI test lock should not be poisoned")
+    }
+
+    fn init_git_repo(path: &Path) {
+        let output = std::process::Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .current_dir(path)
+            .output()
+            .expect("git init should run");
+        assert!(
+            output.status.success(),
+            "git init should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn prepare_forge_dispatch_cli_works_without_agents_runtime() -> Result<()> {
+        let _guard = cli_test_guard();
+
+        let temp_dir = TestDir::new("forge-cli-no-agents");
+        let app_data_dir = temp_dir.path().join("appdata");
+        let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+        let _linear_api_key_guard = EnvVarGuard::remove("LINEAR_API_KEY");
+        let _linear_token_guard = EnvVarGuard::remove("LINEAR_TOKEN");
+
+        fs::create_dir_all(&app_data_dir)?;
+        let mut config = EntranceConfig::default();
+        config.plugins.forge.enabled = true;
+        fs::write(
+            app_data_dir.join("entrance.toml"),
+            render_config(&config)?,
+        )?;
+
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        fs::create_dir_all(&bootstrap_skill)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+        let managed_worktree = app_data_dir.join("worktrees").join("Entrance").join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree)?;
+        init_git_repo(&managed_worktree);
+
+        let dispatch = prepare_forge_dispatch_cli(Some(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8")
+                .to_string(),
+        ))?;
+
+        assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.issue_status, "Todo");
+        assert_eq!(dispatch.issue_status_source, "fallback");
+        assert!(dispatch.issue_title.is_none());
+        assert_eq!(
+            dispatch.prompt_source,
+            "Entrance-owned harness/bootstrap prompt"
+        );
+        assert_eq!(
+            dispatch.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+        assert!(dispatch.prompt.contains("harness/bootstrap/duet/SKILL.md"));
+        assert!(!dispatch.prompt.contains(".agents"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_forge_dispatch_cli_requires_enabled_forge_plugin() -> Result<()> {
+        let _guard = cli_test_guard();
+
+        let temp_dir = TestDir::new("forge-cli-disabled");
+        let app_data_dir = temp_dir.path().join("appdata");
+        let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+
+        fs::create_dir_all(&app_data_dir)?;
+        fs::write(
+            app_data_dir.join("entrance.toml"),
+            render_config(&EntranceConfig::default())?,
+        )?;
+
+        let error = prepare_forge_dispatch_cli(None).expect_err("forge-disabled CLI should fail");
+        assert!(error.to_string().contains("Forge is disabled"));
+
+        Ok(())
+    }
 }

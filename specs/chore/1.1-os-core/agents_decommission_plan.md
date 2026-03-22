@@ -226,6 +226,13 @@ A stronger bootstrapped headless verification cut is now also landed:
 - it also proves Forge's Linear token fallback tolerates fresh-bootstrap stores where Vault tables are absent
 - it still does not replace the full GUI/app-level `.agents`-absent verification run above
 
+A runtime-facing headless verification entrypoint is now also available:
+
+- `entrance forge prepare-dispatch --project-dir <path>`
+- this uses real CLI bootstrap plus `prepare_agent_dispatch()` and prints the prepared Forge dispatch payload as JSON
+- it gives Entrance an operator-visible verification path outside internal-only Rust tests
+- it still does not replace the full GUI/app-level `.agents`-absent verification run above
+
 Only after that verification should manual `.agents` cleanup even be considered.
 
 ## 8. Work Streams Required
