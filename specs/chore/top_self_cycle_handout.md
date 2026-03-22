@@ -4,9 +4,10 @@
 
 ## Current Snapshot
 
-- Branch: `codex/docs-compressed-hot-root-20260322`
-- Commit checkpoint: `0569d14a44d726ffb843bc0f63943a2da4cfc4a7`
-- Active MR: `http://server:9311/pub/entrance/-/merge_requests/2`
+- Branch: `codex/docs-top-self-cycle-handout-20260322`
+- Commit checkpoint: `b2d44853aa4f735475bda9c7c05bd944fc486dfe`
+- Active MR: `http://server:9311/pub/entrance/-/merge_requests/3`
+- Previously merged checkpoint MR: `http://server:9311/pub/entrance/-/merge_requests/2`
 - The compressed hot root is now canonical:
   - `specs/top/machine.md`
   - `specs/top/control.md`
@@ -14,6 +15,10 @@
   - `specs/top/phase-todo.md`
   - `specs/top/pending.md`
 - The numbered top docs remain mounted transitional detail only; they must not grow back into a second hot root.
+- Codex now has a configured `GitLab MCP` server entry:
+  - name: `gitlab`
+  - url: `http://server:9311/api/v4/mcp`
+  - auth mode: bearer token via `GITLAB_MCP_BEARER_TOKEN`
 - Cold local-detail drafts now exist for the heaviest remaining machine/truth/control cuts:
   - `specs/cold/1.2-hierarchical-state-machine/minimal_top_graph.md`
   - `specs/cold/1.3-compiler-action-ir/minimal_registry_cut.md`
@@ -21,7 +26,14 @@
   - `specs/cold/2.3-control-tree-node-lte-3/minimal_hot_control_tree.md`
   - `specs/cold/3.1-learning-truth-system/minimal_truth_plane.md`
 - `pending.md` is empty on purpose; there is no active architecture ambiguity currently registered in hot view.
+- `pending.md` should now be read as "no active architecture ambiguity", but one operational pending item exists for GitLab MCP token provisioning and live validation.
 - `entrance.db` and `entrance.db.manifest.json` were synced in the MR checkpoint; do not churn DB for editorial cleanup only.
+
+## Runtime Connector Note
+
+- `GitLab MCP` is installed at Codex-config level, but not yet proven live in-session because no `GITLAB_MCP_BEARER_TOKEN` is currently provisioned here.
+- The OAuth path is presently unusable on this machine because GitLab's OAuth discovery advertises `issuer/registration_endpoint = http://9123126222e6`, and that host is not resolvable locally.
+- Until that instance metadata is fixed or local hostname resolution is provided outside Codex, bearer-token auth is the stable workaround.
 
 ## State-Machine Reading Of The Program
 
