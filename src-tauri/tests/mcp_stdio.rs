@@ -1024,6 +1024,200 @@ fn external_client_can_dispatch_dev_over_stdio_with_dev_lane_runtime() -> Result
     Ok(())
 }
 
+#[test]
+fn external_client_can_observe_dispatch_supervision_receipts_over_stdio() -> Result<()> {
+    let app_dir = TempAppDir::new("forge-supervision-stdio")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?
+        .to_string_lossy()
+        .to_string();
+
+    let mut arch_server =
+        spawn_mcp_stdio_with_actor_role(app_dir.path(), Some("test-openai-token"), Some("arch"))?;
+    arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-arch",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    let _ = arch_server.read_response()?;
+    arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }))?;
+
+    let mut dev_server =
+        spawn_mcp_stdio_with_actor_role(app_dir.path(), Some("test-openai-token"), Some("dev"))?;
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-dev",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    let _ = dev_server.read_response()?;
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }))?;
+
+    arch_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-verify-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_verify_dev_dispatch",
+            "arguments": {
+                "projectDir": project_root
+            }
+        }
+    }))?;
+    let parent = arch_server.read_response()?;
+    let parent_task_id = parent["result"]["structuredContent"]["task_id"]
+        .as_i64()
+        .context("forge_verify_dev_dispatch should return a parent task id")?;
+
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-prepare-agent",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_prepare_agent_dispatch",
+            "arguments": {
+                "project_dir": project_root
+            }
+        }
+    }))?;
+    let prepare = dev_server.read_response()?;
+    let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
+    let prompt = prepare["result"]["structuredContent"]["prompt"]
+        .as_str()
+        .context("prepared agent dispatch prompt should be a string")?;
+
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-dispatch-agent",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_dispatch_agent",
+            "arguments": {
+                "issue_id": "MYT-48",
+                "worktree_path": worktree_path,
+                "model": "codex",
+                "prompt": prompt,
+                "agent_command": agent_command,
+                "parent_task_id": parent_task_id,
+                "supervision_strategy": "one_for_one",
+                "child_slot": "agent-1"
+            }
+        }
+    }))?;
+    let child = dev_server.read_response()?;
+    let child_task_id = child["result"]["structuredContent"]["task_id"]
+        .as_i64()
+        .context("forge_dispatch_agent should return a child task id")?;
+    assert_eq!(
+        child["result"]["structuredContent"]["supervision"]["parent_receipt"]["parent_task_id"],
+        parent_task_id
+    );
+    assert_eq!(
+        child["result"]["structuredContent"]["supervision"]["parent_receipt"]["supervision_strategy"],
+        "one_for_one"
+    );
+    assert_eq!(
+        child["result"]["structuredContent"]["supervision"]["parent_receipt"]["child_slot"],
+        "agent-1"
+    );
+
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-status-parent",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_status",
+            "arguments": {
+                "task_id": parent_task_id
+            }
+        }
+    }))?;
+    let parent_status = dev_server.read_response()?;
+    assert!(parent_status["result"]["structuredContent"]["supervision"]["parent_receipt"].is_null());
+    let child_receipts = parent_status["result"]["structuredContent"]["supervision"]["child_receipts"]
+        .as_array()
+        .context("parent supervision child_receipts should be an array")?;
+    assert_eq!(child_receipts.len(), 1);
+    assert_eq!(child_receipts[0]["child_task_id"], child_task_id);
+    assert_eq!(child_receipts[0]["child_dispatch_role"], "agent");
+    assert_eq!(child_receipts[0]["child_dispatch_tool_name"], "forge_dispatch_agent");
+    assert_eq!(child_receipts[0]["child_slot"], "agent-1");
+
+    dev_server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-status-child",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_status",
+            "arguments": {
+                "task_id": child_task_id
+            }
+        }
+    }))?;
+    let child_status = dev_server.read_response()?;
+    assert_eq!(
+        child_status["result"]["structuredContent"]["supervision"]["parent_receipt"]["parent_task_id"],
+        parent_task_id
+    );
+    assert_eq!(
+        child_status["result"]["structuredContent"]["supervision"]["child_receipts"],
+        json!([])
+    );
+
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let stored_receipt = connection.query_row(
+        "SELECT parent_task_id, child_task_id, supervision_scope, supervision_strategy, child_dispatch_role, child_dispatch_tool_name, child_slot FROM plugin_forge_dispatch_receipts WHERE child_task_id = ?1",
+        [child_task_id],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        },
+    )?;
+    assert_eq!(stored_receipt.0, parent_task_id);
+    assert_eq!(stored_receipt.1, child_task_id);
+    assert_eq!(stored_receipt.2, "dispatch_pipeline");
+    assert_eq!(stored_receipt.3, "one_for_one");
+    assert_eq!(stored_receipt.4, "agent");
+    assert_eq!(stored_receipt.5, "forge_dispatch_agent");
+    assert_eq!(stored_receipt.6.as_deref(), Some("agent-1"));
+
+    let _ = wait_for_terminal_status_stdio(&mut dev_server, child_task_id)?;
+
+    Ok(())
+}
+
 fn seed_app_state(app_dir: &PathBuf) -> Result<()> {
     fs::write(
         app_dir.join("entrance.toml"),

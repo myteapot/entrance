@@ -13,8 +13,12 @@ use std::{
 use crate::{
     core::{
         action::ActorRole,
-        data_store::{DataStore, MigrationStep, StoredForgeTask, StoredForgeTaskLog},
+        data_store::{
+            DataStore, MigrationStep, NewForgeDispatchReceipt, StoredForgeDispatchReceipt,
+            StoredForgeTask, StoredForgeTaskLog,
+        },
         event_bus::EventBus,
+        supervision::SupervisionStrategy,
     },
     plugins::vault::VaultCipher,
     plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
@@ -31,7 +35,7 @@ const MANIFEST: Manifest = Manifest {
     description: "Agent task management and execution engine.",
 };
 
-const MIGRATIONS: [MigrationStep; 2] = [
+const MIGRATIONS: [MigrationStep; 3] = [
     MigrationStep {
         name: "0002_create_plugin_forge_tasks",
         sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
@@ -39,6 +43,10 @@ const MIGRATIONS: [MigrationStep; 2] = [
     MigrationStep {
         name: "0004_create_plugin_forge_task_logs",
         sql: include_str!("../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+    },
+    MigrationStep {
+        name: "0006_create_plugin_forge_dispatch_receipts",
+        sql: include_str!("../../../migrations/0006_create_plugin_forge_dispatch_receipts.sql"),
     },
 ];
 
@@ -51,6 +59,7 @@ const FORGE_AGENT_DISPATCH_ROLE: ActorRole = ActorRole::Agent;
 const FORGE_DEV_DISPATCH_ROLE: ActorRole = ActorRole::Dev;
 const FORGE_AGENT_DISPATCH_TOOL_NAME: &str = "forge_dispatch_agent";
 const FORGE_DEV_DISPATCH_TOOL_NAME: &str = "forge_dispatch_dev";
+const FORGE_DISPATCH_PIPELINE_SCOPE: &str = "dispatch_pipeline";
 
 pub fn migrations() -> &'static [MigrationStep] {
     &MIGRATIONS
@@ -72,6 +81,21 @@ pub struct ForgeTaskDetails {
     pub logs: Vec<StoredForgeTaskLog>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ForgeTaskSupervisionSnapshot {
+    pub parent_receipt: Option<StoredForgeDispatchReceipt>,
+    pub child_receipts: Vec<StoredForgeDispatchReceipt>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DispatchReceiptRequest {
+    pub parent_task_id: i64,
+    pub supervision_strategy: SupervisionStrategy,
+    pub child_dispatch_role: ActorRole,
+    pub child_dispatch_tool_name: String,
+    pub child_slot: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateTaskRequest {
     pub name: String,
@@ -81,6 +105,7 @@ pub struct CreateTaskRequest {
     pub stdin_text: Option<String>,
     pub required_tokens: String,
     pub metadata: String,
+    pub dispatch_receipt: Option<DispatchReceiptRequest>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -246,15 +271,38 @@ impl ForgePlugin {
     }
 
     pub fn create_task(&self, request: CreateTaskRequest) -> Result<i64> {
-        self.data_store.insert_forge_task(
-            &request.name,
-            &request.command,
-            &request.args,
-            request.working_dir.as_deref(),
-            request.stdin_text.as_deref(),
-            &request.required_tokens,
-            &request.metadata,
-        )
+        if let Some(dispatch_receipt) = request.dispatch_receipt.as_ref() {
+            let (task_id, _) = self.data_store.insert_forge_task_with_dispatch_receipt(
+                &request.name,
+                &request.command,
+                &request.args,
+                request.working_dir.as_deref(),
+                request.stdin_text.as_deref(),
+                &request.required_tokens,
+                &request.metadata,
+                &NewForgeDispatchReceipt {
+                    parent_task_id: dispatch_receipt.parent_task_id,
+                    supervision_scope: FORGE_DISPATCH_PIPELINE_SCOPE,
+                    supervision_strategy: supervision_strategy_slug(
+                        dispatch_receipt.supervision_strategy,
+                    ),
+                    child_dispatch_role: actor_role_slug(dispatch_receipt.child_dispatch_role),
+                    child_dispatch_tool_name: &dispatch_receipt.child_dispatch_tool_name,
+                    child_slot: dispatch_receipt.child_slot.as_deref(),
+                },
+            )?;
+            Ok(task_id)
+        } else {
+            self.data_store.insert_forge_task(
+                &request.name,
+                &request.command,
+                &request.args,
+                request.working_dir.as_deref(),
+                request.stdin_text.as_deref(),
+                &request.required_tokens,
+                &request.metadata,
+            )
+        }
     }
 
     pub fn list_tasks(&self) -> Result<Vec<StoredForgeTask>> {
@@ -276,6 +324,13 @@ impl ForgePlugin {
 
         let logs = self.list_task_logs(id)?;
         Ok(Some(ForgeTaskDetails { task, logs }))
+    }
+
+    pub fn get_task_supervision(&self, id: i64) -> Result<ForgeTaskSupervisionSnapshot> {
+        Ok(ForgeTaskSupervisionSnapshot {
+            parent_receipt: self.data_store.get_forge_dispatch_parent_receipt(id)?,
+            child_receipts: self.data_store.list_forge_dispatch_child_receipts(id)?,
+        })
     }
 
     pub fn cancel_task(&self, id: i64) -> Result<()> {
@@ -671,7 +726,25 @@ fn build_dispatch_task_request(
         required_tokens: serde_json::to_string(&required_tokens)
             .map_err(|error| error.to_string())?,
         metadata,
+        dispatch_receipt: None,
     })
+}
+
+fn actor_role_slug(role: ActorRole) -> &'static str {
+    match role {
+        ActorRole::Nota => "nota",
+        ActorRole::Arch => "arch",
+        ActorRole::Dev => "dev",
+        ActorRole::Agent => "agent",
+    }
+}
+
+fn supervision_strategy_slug(strategy: SupervisionStrategy) -> &'static str {
+    match strategy {
+        SupervisionStrategy::OneForOne => "one_for_one",
+        SupervisionStrategy::RestForOne => "rest_for_one",
+        SupervisionStrategy::OneForAll => "one_for_all",
+    }
 }
 
 fn push_required_token(required_tokens: &mut Vec<String>, token: &str) {

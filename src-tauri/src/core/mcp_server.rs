@@ -19,12 +19,13 @@ use serde_json::{json, Value};
 use crate::core::{
     action::ActorRole,
     permission::{permission_for_mcp_tool, McpToolPermission},
+    supervision::SupervisionStrategy,
 };
 use crate::plugins::{
     forge::{
         build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
-        prepare_dev_dispatch_blocking, verify_agent_dispatch, verify_dev_dispatch,
-        CreateTaskRequest, ForgePlugin,
+        prepare_dev_dispatch_blocking, verify_agent_dispatch, verify_dev_dispatch, CreateTaskRequest,
+        DispatchReceiptRequest, ForgePlugin,
     },
     launcher::LauncherPlugin,
     vault::VaultPlugin,
@@ -323,6 +324,7 @@ impl McpServer {
             stdin_text: None,
             required_tokens,
             metadata: "{}".to_string(),
+            dispatch_receipt: None,
         })?;
         forge
             .engine()
@@ -410,8 +412,21 @@ impl McpServer {
         let agent_command = optional_string(arguments, "agent_command")
             .or_else(|| optional_string(arguments, "agentCommand"))
             .map(str::to_string);
+        let dispatch_receipt = parse_dispatch_receipt_request(
+            arguments,
+            "forge_dispatch_agent",
+            ActorRole::Agent,
+        )?;
+        if let Some(receipt) = dispatch_receipt.as_ref() {
+            forge.get_task(receipt.parent_task_id)?.ok_or_else(|| {
+                anyhow!(
+                    "parent forge task `{}` was not found for dispatch supervision",
+                    receipt.parent_task_id
+                )
+            })?;
+        }
 
-        let request = build_agent_task_request(
+        let mut request = build_agent_task_request(
             issue_id.to_string(),
             worktree_path.to_string(),
             model.to_string(),
@@ -420,6 +435,7 @@ impl McpServer {
             agent_command,
         )
         .map_err(anyhow::Error::msg)?;
+        request.dispatch_receipt = dispatch_receipt;
 
         let task_id = forge.create_task(request).map_err(anyhow::Error::msg)?;
         forge
@@ -430,12 +446,14 @@ impl McpServer {
         let task = forge
             .get_task(task_id)?
             .ok_or_else(|| anyhow!("forge task `{task_id}` disappeared after creation"))?;
+        let supervision = forge.get_task_supervision(task_id)?;
 
         Ok(json!({
             "dispatch_role": "agent",
             "dispatch_tool_name": "forge_dispatch_agent",
             "task_id": task.id,
             "task": task,
+            "supervision": supervision,
         }))
     }
 
@@ -454,8 +472,18 @@ impl McpServer {
         let agent_command = optional_string(arguments, "agent_command")
             .or_else(|| optional_string(arguments, "agentCommand"))
             .map(str::to_string);
+        let dispatch_receipt =
+            parse_dispatch_receipt_request(arguments, "forge_dispatch_dev", ActorRole::Dev)?;
+        if let Some(receipt) = dispatch_receipt.as_ref() {
+            forge.get_task(receipt.parent_task_id)?.ok_or_else(|| {
+                anyhow!(
+                    "parent forge task `{}` was not found for dispatch supervision",
+                    receipt.parent_task_id
+                )
+            })?;
+        }
 
-        let request = build_dev_task_request(
+        let mut request = build_dev_task_request(
             issue_id.to_string(),
             worktree_path.to_string(),
             model.to_string(),
@@ -464,6 +492,7 @@ impl McpServer {
             agent_command,
         )
         .map_err(anyhow::Error::msg)?;
+        request.dispatch_receipt = dispatch_receipt;
 
         let task_id = forge.create_task(request).map_err(anyhow::Error::msg)?;
         forge
@@ -474,12 +503,14 @@ impl McpServer {
         let task = forge
             .get_task(task_id)?
             .ok_or_else(|| anyhow!("forge task `{task_id}` disappeared after creation"))?;
+        let supervision = forge.get_task_supervision(task_id)?;
 
         Ok(json!({
             "dispatch_role": "dev",
             "dispatch_tool_name": "forge_dispatch_dev",
             "task_id": task.id,
             "task": task,
+            "supervision": supervision,
         }))
     }
 
@@ -493,9 +524,11 @@ impl McpServer {
         let task = forge
             .get_task(task_id)?
             .ok_or_else(|| anyhow!("forge task `{task_id}` was not found"))?;
+        let supervision = forge.get_task_supervision(task_id)?;
         Ok(json!({
             "task_id": task.id,
             "task": task,
+            "supervision": supervision,
         }))
     }
 
@@ -929,6 +962,18 @@ fn optional_string<'a>(arguments: &'a Value, field: &str) -> Option<&'a str> {
     arguments.get(field).and_then(Value::as_str)
 }
 
+fn optional_string_any<'a>(arguments: &'a Value, fields: &[&str]) -> Option<&'a str> {
+    fields
+        .iter()
+        .find_map(|field| arguments.get(*field).and_then(Value::as_str))
+}
+
+fn optional_i64(arguments: &Value, fields: &[&str]) -> Option<i64> {
+    fields
+        .iter()
+        .find_map(|field| arguments.get(*field).and_then(Value::as_i64))
+}
+
 fn require_i64(arguments: &Value, fields: &[&str]) -> Result<i64> {
     for field in fields {
         if let Some(value) = arguments.get(*field).and_then(Value::as_i64) {
@@ -937,6 +982,47 @@ fn require_i64(arguments: &Value, fields: &[&str]) -> Result<i64> {
     }
 
     bail!("tool arguments require one of: {}", fields.join(", "))
+}
+
+fn parse_dispatch_receipt_request(
+    arguments: &Value,
+    child_dispatch_tool_name: &str,
+    child_dispatch_role: ActorRole,
+) -> Result<Option<DispatchReceiptRequest>> {
+    let parent_task_id = optional_i64(arguments, &["parent_task_id", "parentTaskId"]);
+    let supervision_strategy = optional_string_any(
+        arguments,
+        &["supervision_strategy", "supervisionStrategy"],
+    );
+    let child_slot = optional_string_any(arguments, &["child_slot", "childSlot"]);
+
+    if parent_task_id.is_none() {
+        if supervision_strategy.is_some() || child_slot.is_some() {
+            bail!(
+                "dispatch supervision fields require `parent_task_id`/`parentTaskId` to be set"
+            );
+        }
+        return Ok(None);
+    }
+
+    let supervision_strategy = match supervision_strategy.unwrap_or("one_for_one") {
+        "one_for_one" => SupervisionStrategy::OneForOne,
+        "rest_for_one" => SupervisionStrategy::RestForOne,
+        "one_for_all" => SupervisionStrategy::OneForAll,
+        other => {
+            bail!(
+                "unsupported `supervision_strategy`: `{other}`; use `one_for_one`, `rest_for_one`, or `one_for_all`"
+            )
+        }
+    };
+
+    Ok(Some(DispatchReceiptRequest {
+        parent_task_id: parent_task_id.expect("parent task id should be present"),
+        supervision_strategy,
+        child_dispatch_role,
+        child_dispatch_tool_name: child_dispatch_tool_name.to_string(),
+        child_slot: child_slot.map(str::to_string),
+    }))
 }
 
 fn serialize_forge_args(arguments: Option<&Value>) -> Result<String> {

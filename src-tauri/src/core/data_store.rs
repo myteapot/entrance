@@ -91,6 +91,19 @@ pub struct StoredForgeTaskLog {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StoredForgeDispatchReceipt {
+    pub id: i64,
+    pub parent_task_id: i64,
+    pub child_task_id: i64,
+    pub supervision_scope: String,
+    pub supervision_strategy: String,
+    pub child_dispatch_role: String,
+    pub child_dispatch_tool_name: String,
+    pub child_slot: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredVaultToken {
     pub id: i64,
     pub name: String,
@@ -318,6 +331,16 @@ pub struct NewPromotionRecord<'a> {
     pub promotion_state: &'a str,
     pub reason: Option<&'a str>,
     pub source_ingest_run_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewForgeDispatchReceipt<'a> {
+    pub parent_task_id: i64,
+    pub supervision_scope: &'a str,
+    pub supervision_strategy: &'a str,
+    pub child_dispatch_role: &'a str,
+    pub child_dispatch_tool_name: &'a str,
+    pub child_slot: Option<&'a str>,
 }
 
 #[derive(Clone)]
@@ -602,6 +625,81 @@ impl DataStore {
         })
     }
 
+    pub fn insert_forge_task_with_dispatch_receipt(
+        &self,
+        name: &str,
+        command: &str,
+        args: &str,
+        working_dir: Option<&str>,
+        stdin_text: Option<&str>,
+        required_tokens: &str,
+        metadata: &str,
+        dispatch_receipt: &NewForgeDispatchReceipt<'_>,
+    ) -> Result<(i64, StoredForgeDispatchReceipt)> {
+        let now = Utc::now().to_rfc3339();
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            r#"
+            INSERT INTO plugin_forge_tasks (
+                name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL)
+            "#,
+            params![
+                name,
+                command,
+                args,
+                working_dir,
+                stdin_text,
+                required_tokens,
+                metadata,
+                now
+            ],
+        )?;
+        let child_task_id = transaction.last_insert_rowid();
+        transaction.execute(
+            r#"
+            INSERT INTO plugin_forge_dispatch_receipts (
+                parent_task_id,
+                child_task_id,
+                supervision_scope,
+                supervision_strategy,
+                child_dispatch_role,
+                child_dispatch_tool_name,
+                child_slot,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            params![
+                dispatch_receipt.parent_task_id,
+                child_task_id,
+                dispatch_receipt.supervision_scope,
+                dispatch_receipt.supervision_strategy,
+                dispatch_receipt.child_dispatch_role,
+                dispatch_receipt.child_dispatch_tool_name,
+                dispatch_receipt.child_slot,
+                now,
+            ],
+        )?;
+        let receipt_id = transaction.last_insert_rowid();
+        transaction.commit()?;
+
+        Ok((
+            child_task_id,
+            StoredForgeDispatchReceipt {
+                id: receipt_id,
+                parent_task_id: dispatch_receipt.parent_task_id,
+                child_task_id,
+                supervision_scope: dispatch_receipt.supervision_scope.to_string(),
+                supervision_strategy: dispatch_receipt.supervision_strategy.to_string(),
+                child_dispatch_role: dispatch_receipt.child_dispatch_role.to_string(),
+                child_dispatch_tool_name: dispatch_receipt.child_dispatch_tool_name.to_string(),
+                child_slot: dispatch_receipt.child_slot.map(str::to_string),
+                created_at: now,
+            },
+        ))
+    }
+
     pub fn update_forge_task_status(
         &self,
         id: i64,
@@ -700,6 +798,79 @@ impl DataStore {
             let rows = stmt.query_map([task_id], map_forge_log_row)?;
             let logs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(logs)
+        })
+    }
+
+    pub fn get_forge_dispatch_parent_receipt(
+        &self,
+        child_task_id: i64,
+    ) -> Result<Option<StoredForgeDispatchReceipt>> {
+        self.with_connection(|conn| {
+            match conn
+                .query_row(
+                    r#"
+                    SELECT
+                        id,
+                        parent_task_id,
+                        child_task_id,
+                        supervision_scope,
+                        supervision_strategy,
+                        child_dispatch_role,
+                        child_dispatch_tool_name,
+                        child_slot,
+                        created_at
+                    FROM plugin_forge_dispatch_receipts
+                    WHERE child_task_id = ?1
+                    "#,
+                    [child_task_id],
+                    map_forge_dispatch_receipt_row,
+                )
+                .optional()
+            {
+                Ok(receipt) => Ok(receipt),
+                Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                    if message.contains("no such table: plugin_forge_dispatch_receipts") =>
+                {
+                    Ok(None)
+                }
+                Err(error) => Err(error.into()),
+            }
+        })
+    }
+
+    pub fn list_forge_dispatch_child_receipts(
+        &self,
+        parent_task_id: i64,
+    ) -> Result<Vec<StoredForgeDispatchReceipt>> {
+        self.with_connection(|conn| {
+            let mut statement = match conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    parent_task_id,
+                    child_task_id,
+                    supervision_scope,
+                    supervision_strategy,
+                    child_dispatch_role,
+                    child_dispatch_tool_name,
+                    child_slot,
+                    created_at
+                FROM plugin_forge_dispatch_receipts
+                WHERE parent_task_id = ?1
+                ORDER BY id ASC
+                "#,
+            ) {
+                Ok(statement) => statement,
+                Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                    if message.contains("no such table: plugin_forge_dispatch_receipts") =>
+                {
+                    return Ok(Vec::new());
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let rows = statement.query_map([parent_task_id], map_forge_dispatch_receipt_row)?;
+            let receipts = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(receipts)
         })
     }
 
@@ -1547,6 +1718,22 @@ fn map_forge_log_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTas
     })
 }
 
+fn map_forge_dispatch_receipt_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredForgeDispatchReceipt> {
+    Ok(StoredForgeDispatchReceipt {
+        id: row.get(0)?,
+        parent_task_id: row.get(1)?,
+        child_task_id: row.get(2)?,
+        supervision_scope: row.get(3)?,
+        supervision_strategy: row.get(4)?,
+        child_dispatch_role: row.get(5)?,
+        child_dispatch_tool_name: row.get(6)?,
+        child_slot: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
 fn map_vault_token_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultToken> {
     Ok(StoredVaultToken {
         id: row.get(0)?,
@@ -2054,6 +2241,58 @@ mod tests {
         assert_eq!(logs[0].line, "hello");
         assert_eq!(logs[1].stream, "stderr");
         assert_eq!(logs[1].line, "warn");
+
+        Ok(())
+    }
+
+    #[test]
+    fn forge_dispatch_receipts_round_trip() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0006_create_plugin_forge_dispatch_receipts",
+                sql: include_str!("../../migrations/0006_create_plugin_forge_dispatch_receipts.sql"),
+            },
+        ]))?;
+
+        let parent_task_id =
+            store.insert_forge_task("Parent", "echo", r#"["hello"]"#, None, None, "[]", "{}")?;
+        let (child_task_id, receipt) = store.insert_forge_task_with_dispatch_receipt(
+            "Child",
+            "echo",
+            r#"["world"]"#,
+            None,
+            None,
+            "[]",
+            "{}",
+            &NewForgeDispatchReceipt {
+                parent_task_id,
+                supervision_scope: "dispatch_pipeline",
+                supervision_strategy: "one_for_one",
+                child_dispatch_role: "agent",
+                child_dispatch_tool_name: "forge_dispatch_agent",
+                child_slot: Some("agent-1"),
+            },
+        )?;
+
+        assert!(child_task_id > parent_task_id);
+        assert_eq!(receipt.parent_task_id, parent_task_id);
+        assert_eq!(receipt.child_task_id, child_task_id);
+        assert_eq!(receipt.supervision_strategy, "one_for_one");
+
+        let parent_receipt = store
+            .get_forge_dispatch_parent_receipt(child_task_id)?
+            .expect("child task should have a parent receipt");
+        assert_eq!(parent_receipt.parent_task_id, parent_task_id);
+        assert_eq!(parent_receipt.child_dispatch_tool_name, "forge_dispatch_agent");
+
+        let child_receipts = store.list_forge_dispatch_child_receipts(parent_task_id)?;
+        assert_eq!(child_receipts.len(), 1);
+        assert_eq!(child_receipts[0].child_task_id, child_task_id);
+        assert_eq!(child_receipts[0].child_slot.as_deref(), Some("agent-1"));
 
         Ok(())
     }
