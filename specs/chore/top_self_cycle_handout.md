@@ -72,7 +72,7 @@ Then descend only into the single selected trunk for the current cycle.
 
 Current state:
 
-- `CYCLE + READY`
+- `CYCLE + low-motion`
 
 What is already landed:
 
@@ -81,10 +81,12 @@ What is already landed:
 - cold machine-side drafts now cover the whole-system graph, registry cut, and supervision binding
 - packet resolution now stays explicitly runtime-routed, with sender re-entry derived from returned objects rather than packet mutation
 - phase remains projection and cadence remains Human-window protocol rather than peer machine state
+- boundary intake now stays boundary-specific at v0, with `Policy` as the default internal ingress target when project lineage begins
 
 What is still open:
 
-- remaining narrow strategy-mapping and stronger replacement-path detail in supervision binding
+- no active machine-side document ambiguity is currently mounted
+- later machine work should stay implementation-facing and land below the root unless a new oracle appears
 
 ### Truth
 
@@ -182,7 +184,8 @@ What is still open:
 
 ## Recommended Priority Rule
 
-- Prefer `Machine` for the next self-cycle.
+- No semantic trunk currently requires forced wake-up by default.
+- Prefer the narrowest implementation-facing cold detail if runtime work later exposes a real gap.
 - Keep `Truth` parked unless runtime implementation exposes a genuine new truth-plane gap.
 - Keep `Control` parked unless compression pressure, naming cleanup, or legacy-pruning work creates a stronger reason to move it.
 - Never advance more than one semantic trunk in the same self-cycle unless a newly discovered oracle forces a cross-trunk promotion.

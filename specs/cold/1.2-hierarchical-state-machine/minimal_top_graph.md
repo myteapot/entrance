@@ -193,6 +193,19 @@ Graph edge:
 - `NOTA` does not directly mutate `Policy` truth
 - once admitted inward, the lineage follows the same reusable owned-node graph as every internal slot
 
+## Boundary Intake Rule
+
+### v0 rule
+
+- the default internal ingress target for admitted `INTAKE_BUNDLE` lineage is `Policy`
+- some NOTA-local work may still close entirely at the boundary without spawning project-internal lineage
+- `INTAKE_BUNDLE` remains boundary-specific at v0; do not introduce a separate canonical packet lane for it unless boundary routing later needs stronger shared machinery
+
+### Consequence
+
+- boundary-local continuity and internal project execution remain distinguishable
+- the machine keeps one reusable internal packet model without inflating boundary ingress into a new peer transport family
+
 ## Supervision Attachment
 
 ### Rule
@@ -271,5 +284,4 @@ Supervision: projected from runtime facts, not a peer canonical family
 
 ## Open Questions
 
-- Should `NOTA` inward routing target only `Policy` at v0, or should some NOTA-local work close without internal lineage spawn.
-- Should `INTAKE_BUNDLE` admission into `Policy` be modeled as its own explicit packet lane or remain boundary-specific at v0.
+- none mounted at v0; reopen only if boundary ingress later needs a stronger shared transport model

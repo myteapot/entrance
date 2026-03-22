@@ -29,7 +29,7 @@
 ## Active Chunks
 
 - `Machine`
-  finish the remaining narrow supervision mapping between restartable child scope and stronger replacement paths while keeping packet-resolution and phase/cadence rules stable below the root.
+  keep the machine trunk stable; only reopen it if runtime implementation exposes a genuine gap in boundary ingress, runtime routing, or replacement activation.
 - `Truth`
   keep the truth trunk stable; only reopen it if runtime implementation exposes a genuine gap in admission landing, retrieval attachment, or reconstructability.
 - `Control`
