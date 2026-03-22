@@ -68,11 +68,12 @@ continuous-learning = true
 > modules/ (ralph-loop, continuous-learning, evolution) 已归档至 DB (`db.py doc get <slug>`)。
 > Linear MCP 指南已归档至 DB (`db.py doc get linear-tool`)。
 
-**Arch 启动路径**: `nota/identity.md` + `nota/rules.md` + `duet/roles/arch.md` + `db.py list instincts`
-**Agent/Dev 启动路径**: `duet/SKILL.md` → `duet/roles/{角色}.md`
-**DB 查询**: `python .agents/nota/scripts/db.py doc list`
-**Agent Prompt 生成**: `python .agents/nota/scripts/control.py prompt ...`
-**Git 操作**: `python .agents/nota/scripts/control.py [check|init|commit|worktree|merge] ...`
+**Arch 启动路径**: `harness/bootstrap/nota/identity.md` + `harness/bootstrap/nota/rules.md` + `harness/bootstrap/duet/roles/arch.md` + legacy memory bridge (`db.py list instincts`)
+**Agent/Dev 启动路径**: `harness/bootstrap/duet/SKILL.md` → `harness/bootstrap/duet/roles/{角色}.md`
+**Legacy Memory Bridge**: `db.py` remains a preserved historical bridge for docs/instincts until memory ownership is absorbed into Entrance local state
+**Agent Prompt 生成**: Entrance Forge runtime owns prompt preparation via `entrance forge prepare-dispatch [--project-dir <path>]`
+**Dispatch Verification**: use `entrance forge verify-dispatch [--project-dir <path>]` to persist a Pending Forge task without requiring `.agents`
+**Worktree Owner**: `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}`
 
 ### Linear 状态速查 (摘要)
 
@@ -199,15 +200,15 @@ Arch (策略层):
   - 区分逻辑依赖和执行依赖
   - 默认目标: 单次可执行并行度 >= 3；除非问题图本身确实不允许
   - 检查 Stage 完成度，决定是否推进
-  - ❌ 不建 worktree、不生成 prompt、不跑 control.py
+  - ❌ 不建 worktree、不生成 prompt、不直接拥有 Forge dispatch runtime
 
 Dev (执行管理层):
   - primitive set = prepare / dispatch / review / integrate / repair
-  - 创建 Worktree (control.py worktree add)
-  - 生成 Agent Prompt (control.py prompt)
+  - 创建 Entrance-managed worktree
+  - 通过 Entrance Forge 准备 Agent Prompt
   - 派发 Agent (通过 Forge 或 Human 粘贴)
   - 审核 Agent 产出 (代码质量 + 构建验证)
-  - 合并代码 (control.py merge)
+  - 合并代码 (在 managed worktree 内完成 Git 集成)
   - 解决合并冲突
   - ❌ 不创建 Linear issue、不决定 Stage 推进
 
@@ -338,3 +339,4 @@ V9: Forge auto-dispatch (PTY引擎+forge_dispatch MCP) + Session关闭SOP + stal
   - ordered downstream pipeline → `rest_for_one`
   - tightly coupled session bundle → `one_for_all`
 - Arch 设计 failure domain，Dev 执行和审核 visibility，Agent 不得自定义 supervision policy
+
