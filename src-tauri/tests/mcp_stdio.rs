@@ -3,6 +3,8 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{Child, ChildStderr, ChildStdout, Command, Stdio},
+    thread,
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -96,7 +98,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
     let app_dir = TempAppDir::new("integration")?;
     seed_app_state(app_dir.path())?;
 
-    let mut server = spawn_mcp_stdio(app_dir.path())?;
+    let mut server = spawn_mcp_stdio(app_dir.path(), None)?;
     server.send(json!({
         "jsonrpc": "2.0",
         "id": "initialize",
@@ -130,6 +132,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
             "forge_run",
             "forge_prepare_dispatch",
             "forge_verify_dispatch",
+            "forge_dispatch_agent",
             "forge_status",
             "forge_cancel",
             "vault_get_token",
@@ -189,7 +192,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
     fs::create_dir_all(&managed_worktree)?;
     init_git_repo(&managed_worktree)?;
 
-    let mut server = spawn_mcp_stdio(app_dir.path())?;
+    let mut server = spawn_mcp_stdio(app_dir.path(), None)?;
     server.send(json!({
         "jsonrpc": "2.0",
         "id": "initialize",
@@ -321,6 +324,134 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
     Ok(())
 }
 
+#[test]
+fn external_client_can_dispatch_agent_over_stdio_with_agent_lane_runtime() -> Result<()> {
+    let app_dir = TempAppDir::new("forge-dispatch-agent")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    fs::create_dir_all(&bootstrap_skill)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?
+        .to_string_lossy()
+        .to_string();
+
+    let mut server = spawn_mcp_stdio(app_dir.path(), Some("test-openai-token"))?;
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    let initialize = server.read_response()?;
+    assert_eq!(initialize["id"], "initialize");
+    assert_eq!(initialize["result"]["protocolVersion"], "2024-11-05");
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }))?;
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-prepare",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_prepare_dispatch",
+            "arguments": {
+                "project_dir": project_root
+            }
+        }
+    }))?;
+    let prepare = server.read_response()?;
+    assert_eq!(prepare["result"]["isError"], false);
+
+    let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
+    let prompt = prepare["result"]["structuredContent"]["prompt"]
+        .as_str()
+        .context("prepared dispatch prompt should be a string")?;
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-dispatch-agent",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_dispatch_agent",
+            "arguments": {
+                "issue_id": "MYT-48",
+                "worktree_path": worktree_path,
+                "model": "codex",
+                "prompt": prompt,
+                "agent_command": agent_command
+            }
+        }
+    }))?;
+    let dispatch = server.read_response()?;
+    assert_eq!(dispatch["id"], "forge-dispatch-agent");
+    assert_eq!(dispatch["result"]["isError"], false);
+    assert_eq!(
+        dispatch["result"]["structuredContent"]["dispatch_role"],
+        "agent"
+    );
+
+    let task_id = dispatch["result"]["structuredContent"]["task_id"]
+        .as_i64()
+        .context("forge_dispatch_agent should return a numeric task_id")?;
+    assert!(task_id > 0);
+
+    let task = &dispatch["result"]["structuredContent"]["task"];
+    assert_eq!(task["working_dir"], worktree_path);
+    let metadata = task["metadata"]
+        .as_str()
+        .context("forge_dispatch_agent task metadata should be a string")?;
+    let metadata: Value =
+        serde_json::from_str(metadata).context("forge_dispatch_agent metadata should be JSON")?;
+    assert_eq!(metadata["dispatch_role"], "agent");
+    assert_eq!(metadata["kind"], "agent_dispatch");
+
+    let status = wait_for_terminal_status_stdio(&mut server, task_id)?;
+    assert_eq!(
+        status["result"]["structuredContent"]["task"]["status"],
+        "Done"
+    );
+
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let stored = connection.query_row(
+        "SELECT status, command, working_dir, metadata FROM plugin_forge_tasks WHERE id = ?1",
+        [task_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    )?;
+
+    assert_eq!(stored.0, "Done");
+    assert_eq!(stored.1, agent_command);
+    assert_eq!(stored.2.as_deref(), Some(worktree_path.as_str()));
+    let metadata: Value =
+        serde_json::from_str(&stored.3).context("task metadata should be JSON")?;
+    assert_eq!(metadata["dispatch_role"], "agent");
+    assert_eq!(metadata["issue_id"], "MYT-48");
+
+    Ok(())
+}
+
 fn seed_app_state(app_dir: &PathBuf) -> Result<()> {
     fs::write(
         app_dir.join("entrance.toml"),
@@ -346,15 +477,75 @@ enabled = true
     Ok(())
 }
 
-fn spawn_mcp_stdio(app_dir: &PathBuf) -> Result<SpawnedMcp> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_entrance"))
+fn wait_for_terminal_status_stdio(server: &mut SpawnedMcp, task_id: i64) -> Result<Value> {
+    for _ in 0..200 {
+        server.send(json!({
+            "jsonrpc": "2.0",
+            "id": "forge-status",
+            "method": "tools/call",
+            "params": {
+                "name": "forge_status",
+                "arguments": {
+                    "task_id": task_id
+                }
+            }
+        }))?;
+        let status = server.read_response()?;
+        let task_status = status["result"]["structuredContent"]["task"]["status"]
+            .as_str()
+            .context("forge_status should return a task status string")?;
+        if matches!(task_status, "Done" | "Failed" | "Cancelled" | "Blocked") {
+            return Ok(status);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    anyhow::bail!("timed out waiting for forge task {task_id} to reach a terminal state")
+}
+
+fn write_stub_agent_command(root: &PathBuf) -> Result<PathBuf> {
+    let path = if cfg!(windows) {
+        root.join("noop-agent.cmd")
+    } else {
+        root.join("noop-agent.sh")
+    };
+    let contents = if cfg!(windows) {
+        "@echo off\r\nexit /b 0\r\n"
+    } else {
+        "#!/bin/sh\nexit 0\n"
+    };
+    fs::write(&path, contents)
+        .with_context(|| format!("failed to write stub agent command at {}", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions)?;
+    }
+
+    Ok(path)
+}
+
+fn spawn_mcp_stdio(app_dir: &PathBuf, openai_api_key: Option<&str>) -> Result<SpawnedMcp> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_entrance"));
+    command
         .args(["mcp", "stdio"])
         .env("ENTRANCE_APP_DATA_DIR", app_dir)
         .env_remove("LINEAR_API_KEY")
         .env_remove("LINEAR_TOKEN")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(openai_api_key) = openai_api_key {
+        command.env("OPENAI_API_KEY", openai_api_key);
+    } else {
+        command.env_remove("OPENAI_API_KEY");
+    }
+
+    let mut child = command
         .spawn()
         .context("failed to spawn `entrance mcp stdio`")?;
 

@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 
 use crate::plugins::{
     forge::{
-        prepare_agent_dispatch_blocking, verify_agent_dispatch, CreateTaskRequest, ForgePlugin,
+        build_agent_task_request, prepare_agent_dispatch_blocking, verify_agent_dispatch,
+        CreateTaskRequest, ForgePlugin,
     },
     launcher::LauncherPlugin,
     vault::VaultPlugin,
@@ -191,6 +192,7 @@ impl McpServer {
             "forge_run" => self.handle_forge_run(arguments),
             "forge_prepare_dispatch" => self.handle_forge_prepare_dispatch(arguments),
             "forge_verify_dispatch" => self.handle_forge_verify_dispatch(arguments),
+            "forge_dispatch_agent" => self.handle_forge_dispatch_agent(arguments),
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
@@ -262,6 +264,49 @@ impl McpServer {
         let report = verify_agent_dispatch(forge, project_dir).map_err(anyhow::Error::msg)?;
         serde_json::to_value(report)
             .context("failed to serialize forge dispatch verification report")
+    }
+
+    fn handle_forge_dispatch_agent(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let issue_id = require_string_any(arguments, &["issue_id", "issueId"])?;
+        let worktree_path = require_string_any(arguments, &["worktree_path", "worktreePath"])?;
+        let model = require_string(arguments, "model")?;
+        let prompt = require_string(arguments, "prompt")?;
+        let required_tokens =
+            require_string_list(arguments, &["required_tokens", "requiredTokens"])?;
+        let agent_command = optional_string(arguments, "agent_command")
+            .or_else(|| optional_string(arguments, "agentCommand"))
+            .map(str::to_string);
+
+        let request = build_agent_task_request(
+            issue_id.to_string(),
+            worktree_path.to_string(),
+            model.to_string(),
+            prompt.to_string(),
+            required_tokens,
+            agent_command,
+        )
+        .map_err(anyhow::Error::msg)?;
+
+        let task_id = forge.create_task(request).map_err(anyhow::Error::msg)?;
+        forge
+            .engine()
+            .spawn_task(task_id)
+            .with_context(|| format!("failed to start forge task `{task_id}`"))?;
+
+        let task = forge
+            .get_task(task_id)?
+            .ok_or_else(|| anyhow!("forge task `{task_id}` disappeared after creation"))?;
+
+        Ok(json!({
+            "dispatch_role": "agent",
+            "task_id": task.id,
+            "task": task,
+        }))
     }
 
     fn handle_forge_status(&self, arguments: &Value) -> Result<Value> {
@@ -495,6 +540,34 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
             }),
         });
         tools.push(McpToolDescriptor {
+            name: "forge_dispatch_agent",
+            description: "Create and start an agent-lane Forge dispatch from issue, worktree, model, and prompt inputs.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "issue_id": { "type": "string", "description": "Issue identifier for the agent dispatch." },
+                    "issueId": { "type": "string", "description": "CamelCase alias for issue_id." },
+                    "worktree_path": { "type": "string", "description": "Managed worktree path where the agent should run." },
+                    "worktreePath": { "type": "string", "description": "CamelCase alias for worktree_path." },
+                    "model": { "type": "string", "description": "Agent runner or runner:model string such as codex or codex:gpt-5-codex." },
+                    "prompt": { "type": "string", "description": "Prompt sent to the agent." },
+                    "required_tokens": {
+                        "type": "array",
+                        "description": "Optional provider tokens that must be available before launch.",
+                        "items": { "type": "string" }
+                    },
+                    "requiredTokens": {
+                        "type": "array",
+                        "description": "CamelCase alias for required_tokens.",
+                        "items": { "type": "string" }
+                    },
+                    "agent_command": { "type": "string", "description": "Optional executable path overriding the default agent CLI." },
+                    "agentCommand": { "type": "string", "description": "CamelCase alias for agent_command." }
+                },
+                "required": ["issue_id", "worktree_path", "model", "prompt"]
+            }),
+        });
+        tools.push(McpToolDescriptor {
             name: "forge_status",
             description: "Fetch a Forge task and its latest execution status.",
             input_schema: json!({
@@ -578,6 +651,19 @@ fn require_string<'a>(arguments: &'a Value, field: &str) -> Result<&'a str> {
         .with_context(|| format!("tool arguments require a string `{field}` field"))
 }
 
+fn require_string_any<'a>(arguments: &'a Value, fields: &[&str]) -> Result<&'a str> {
+    for field in fields {
+        if let Some(value) = arguments.get(*field).and_then(Value::as_str) {
+            return Ok(value);
+        }
+    }
+
+    bail!(
+        "tool arguments require one of these string fields: {}",
+        fields.join(", ")
+    )
+}
+
 fn optional_string<'a>(arguments: &'a Value, field: &str) -> Option<&'a str> {
     arguments.get(field).and_then(Value::as_str)
 }
@@ -616,6 +702,47 @@ fn serialize_forge_args(arguments: Option<&Value>) -> Result<String> {
             serde_json::to_string(&parsed).context("failed to serialize forge args")
         }
         _ => bail!("forge_run args must be either an array or JSON string"),
+    }
+}
+
+fn require_string_list(arguments: &Value, fields: &[&str]) -> Result<Vec<String>> {
+    for field in fields {
+        if let Some(value) = arguments.get(*field) {
+            return parse_string_list(value, field);
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+fn parse_string_list(value: &Value, field: &str) -> Result<Vec<String>> {
+    match value {
+        Value::Null => Ok(Vec::new()),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| anyhow!("tool argument `{field}` must be an array of strings"))
+            })
+            .collect(),
+        Value::String(raw) => {
+            let parsed =
+                serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.clone()));
+            match parsed {
+                Value::Array(items) => items
+                    .iter()
+                    .map(|item| {
+                        item.as_str().map(str::to_string).ok_or_else(|| {
+                            anyhow!("tool argument `{field}` must decode to an array of strings")
+                        })
+                    })
+                    .collect(),
+                Value::String(value) => Ok(vec![value]),
+                _ => bail!("tool argument `{field}` string must decode to a JSON string array"),
+            }
+        }
+        _ => bail!("tool argument `{field}` must be either an array or a JSON string"),
     }
 }
 
@@ -714,6 +841,7 @@ mod tests {
                 "forge_run",
                 "forge_prepare_dispatch",
                 "forge_verify_dispatch",
+                "forge_dispatch_agent",
                 "forge_status",
                 "forge_cancel",
                 "vault_get_token",
