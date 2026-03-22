@@ -18,8 +18,8 @@ use serde_json::{json, Value};
 
 use crate::plugins::{
     forge::{
-        build_agent_task_request, prepare_agent_dispatch_blocking, verify_agent_dispatch,
-        CreateTaskRequest, ForgePlugin,
+        build_agent_task_request, prepare_agent_dispatch_blocking, prepare_dev_dispatch_blocking,
+        verify_agent_dispatch, verify_dev_dispatch, CreateTaskRequest, ForgePlugin,
     },
     launcher::LauncherPlugin,
     vault::VaultPlugin,
@@ -192,6 +192,8 @@ impl McpServer {
             "forge_run" => self.handle_forge_run(arguments),
             "forge_prepare_dispatch" => self.handle_forge_prepare_dispatch(arguments),
             "forge_verify_dispatch" => self.handle_forge_verify_dispatch(arguments),
+            "forge_prepare_dev_dispatch" => self.handle_forge_prepare_dev_dispatch(arguments),
+            "forge_verify_dev_dispatch" => self.handle_forge_verify_dev_dispatch(arguments),
             "forge_dispatch_agent" => self.handle_forge_dispatch_agent(arguments),
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
@@ -264,6 +266,34 @@ impl McpServer {
         let report = verify_agent_dispatch(forge, project_dir).map_err(anyhow::Error::msg)?;
         serde_json::to_value(report)
             .context("failed to serialize forge dispatch verification report")
+    }
+
+    fn handle_forge_prepare_dev_dispatch(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let dispatch = prepare_dev_dispatch_blocking(forge.data_store(), project_dir)
+            .map_err(anyhow::Error::msg)?;
+        serde_json::to_value(dispatch).context("failed to serialize forge dev dispatch")
+    }
+
+    fn handle_forge_verify_dev_dispatch(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let report = verify_dev_dispatch(forge, project_dir).map_err(anyhow::Error::msg)?;
+        serde_json::to_value(report)
+            .context("failed to serialize forge dev dispatch verification report")
     }
 
     fn handle_forge_dispatch_agent(&self, arguments: &Value) -> Result<Value> {
@@ -531,6 +561,28 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
         tools.push(McpToolDescriptor {
             name: "forge_verify_dispatch",
             description: "Prepare and persist a Pending agent-lane Forge dispatch without starting agent execution.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                }
+            }),
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_prepare_dev_dispatch",
+            description: "Prepare an Entrance-owned dev-lane Forge dispatch from the managed worktree for a project.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                }
+            }),
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_verify_dev_dispatch",
+            description: "Prepare and persist a Pending dev-lane Forge dispatch without starting execution.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -841,6 +893,8 @@ mod tests {
                 "forge_run",
                 "forge_prepare_dispatch",
                 "forge_verify_dispatch",
+                "forge_prepare_dev_dispatch",
+                "forge_verify_dev_dispatch",
                 "forge_dispatch_agent",
                 "forge_status",
                 "forge_cancel",

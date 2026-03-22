@@ -132,6 +132,8 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
             "forge_run",
             "forge_prepare_dispatch",
             "forge_verify_dispatch",
+            "forge_prepare_dev_dispatch",
+            "forge_verify_dev_dispatch",
             "forge_dispatch_agent",
             "forge_status",
             "forge_cancel",
@@ -320,6 +322,161 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_stdio_without_agen
     let metadata: Value =
         serde_json::from_str(&stored.4).context("task metadata should be JSON")?;
     assert_eq!(metadata["dispatch_role"], "agent");
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_stdio_without_agents_runtime(
+) -> Result<()> {
+    let app_dir = TempAppDir::new("forge-dev-dispatch")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let mut server = spawn_mcp_stdio(app_dir.path(), None)?;
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    let initialize = server.read_response()?;
+    assert_eq!(initialize["id"], "initialize");
+    assert_eq!(initialize["result"]["protocolVersion"], "2024-11-05");
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }))?;
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-prepare-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_prepare_dev_dispatch",
+            "arguments": {
+                "project_dir": project_root
+            }
+        }
+    }))?;
+    let prepare = server.read_response()?;
+    assert_eq!(prepare["id"], "forge-prepare-dev");
+    assert_eq!(prepare["result"]["isError"], false);
+    assert_eq!(prepare["result"]["structuredContent"]["issue_id"], "MYT-48");
+    assert_eq!(
+        prepare["result"]["structuredContent"]["dispatch_role"],
+        "dev"
+    );
+    assert_eq!(
+        prepare["result"]["structuredContent"]["issue_status"],
+        "Todo"
+    );
+    assert_eq!(
+        prepare["result"]["structuredContent"]["issue_status_source"],
+        "fallback"
+    );
+    assert_eq!(
+        prepare["result"]["structuredContent"]["prompt_source"],
+        "Entrance-owned harness/bootstrap dev prompt"
+    );
+
+    let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
+    let prompt = prepare["result"]["structuredContent"]["prompt"]
+        .as_str()
+        .context("prepared dev dispatch prompt should be a string")?;
+    assert_eq!(
+        prepare["result"]["structuredContent"]["worktree_path"],
+        worktree_path
+    );
+    assert!(prompt.contains("harness/bootstrap/duet/SKILL.md"));
+    assert!(prompt.contains("harness/bootstrap/duet/roles/dev.md"));
+    assert!(!prompt.contains(".agents"));
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "forge-verify-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "forge_verify_dev_dispatch",
+            "arguments": {
+                "projectDir": project_root
+            }
+        }
+    }))?;
+    let verify = server.read_response()?;
+    assert_eq!(verify["id"], "forge-verify-dev");
+    assert_eq!(verify["result"]["isError"], false);
+    assert_eq!(
+        verify["result"]["structuredContent"]["dispatch"]["issue_id"],
+        "MYT-48"
+    );
+    assert_eq!(
+        verify["result"]["structuredContent"]["dispatch"]["dispatch_role"],
+        "dev"
+    );
+    assert_eq!(
+        verify["result"]["structuredContent"]["dispatch"]["worktree_path"],
+        worktree_path
+    );
+    assert_eq!(
+        verify["result"]["structuredContent"]["task_status"],
+        "Pending"
+    );
+    assert_eq!(
+        verify["result"]["structuredContent"]["task_command"],
+        "codex"
+    );
+    assert_eq!(
+        verify["result"]["structuredContent"]["prompt_via_stdin"],
+        true
+    );
+
+    let task_id = verify["result"]["structuredContent"]["task_id"]
+        .as_i64()
+        .context("forge_verify_dev_dispatch should return a numeric task_id")?;
+    assert!(task_id > 0);
+
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let stored = connection.query_row(
+        "SELECT status, command, working_dir, stdin_text, metadata FROM plugin_forge_tasks WHERE id = ?1",
+        [task_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        },
+    )?;
+
+    assert_eq!(stored.0, "Pending");
+    assert_eq!(stored.1, "codex");
+    assert_eq!(stored.2.as_deref(), Some(worktree_path.as_str()));
+    assert_eq!(stored.3.as_deref(), Some(prompt));
+    let metadata: Value =
+        serde_json::from_str(&stored.4).context("task metadata should be JSON")?;
+    assert_eq!(metadata["dispatch_role"], "dev");
+    assert_eq!(metadata["kind"], "dev_dispatch");
+    assert!(!stored.3.as_deref().unwrap_or_default().contains(".agents"));
 
     Ok(())
 }
