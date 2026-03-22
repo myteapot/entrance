@@ -287,6 +287,138 @@ fn forge_prepare_dispatch_cli_reports_managed_worktree_boundary_without_legacy_f
     Ok(())
 }
 
+#[test]
+fn forge_bootstrap_mcp_cycle_cli_runs_single_agent_bootstrap_without_human_data_bus() -> Result<()>
+{
+    let temp_dir = TempDir::new("bootstrap-mcp-cycle")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_mcp_app_state(&app_data_dir)?;
+
+    let project_root = temp_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(temp_dir.path())?;
+    let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
+        .args([
+            "forge",
+            "bootstrap-mcp-cycle",
+            "--project-dir",
+            project_root
+                .to_str()
+                .context("project path should be valid UTF-8")?,
+            "--agent-command",
+            agent_command
+                .to_str()
+                .context("agent command path should be valid UTF-8")?,
+        ])
+        .env("ENTRANCE_APP_DATA_DIR", &app_data_dir)
+        .env("OPENAI_API_KEY", "test-openai-token")
+        .env_remove("LINEAR_API_KEY")
+        .env_remove("LINEAR_TOKEN")
+        .output()
+        .context("failed to spawn `entrance forge bootstrap-mcp-cycle`")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "`entrance forge bootstrap-mcp-cycle` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("CLI stdout should be valid UTF-8")?;
+    let report: Value = serde_json::from_str(&stdout).context("CLI stdout should be valid JSON")?;
+
+    assert_eq!(report["bootstrap_surface"]["coordinator_role"], "nota");
+    assert_eq!(report["bootstrap_surface"]["arch_surface_role"], "arch");
+    assert_eq!(report["bootstrap_surface"]["dev_surface_role"], "dev");
+    assert_eq!(
+        report["bootstrap_surface"]["dev_assignment_surface"],
+        "forge_verify_dev_dispatch"
+    );
+    assert_eq!(
+        report["bootstrap_surface"]["agent_dispatch_surface"],
+        "forge_dispatch_agent"
+    );
+
+    let parent_task_id = report["dev_assignment"]["task_id"]
+        .as_i64()
+        .context("dev assignment should include a task id")?;
+    assert!(parent_task_id > 0);
+    assert_eq!(report["dev_assignment"]["dispatch"]["dispatch_role"], "dev");
+    assert_eq!(
+        report["dev_assignment"]["dispatch"]["prompt_source"],
+        "Entrance-owned harness/bootstrap dev prompt"
+    );
+    assert_eq!(report["dev_assignment"]["task_status"], "Pending");
+    assert!(report["dev_assignment"]["dispatch"]["prompt"].is_null());
+
+    assert_eq!(
+        report["agent_prepare"]["prompt_source"],
+        "Entrance-owned harness/bootstrap prompt"
+    );
+    assert_eq!(report["agent_prepare"]["issue_id"], "MYT-48");
+    let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
+    assert_eq!(report["agent_prepare"]["worktree_path"], worktree_path);
+    assert!(report["agent_prepare"]["prompt"].is_null());
+
+    let agent_dispatches = report["agent_dispatches"]
+        .as_array()
+        .context("agent_dispatches should be an array")?;
+    assert_eq!(agent_dispatches.len(), 1);
+    assert_eq!(
+        agent_dispatches[0]["dispatch"]["dispatch_role"],
+        "agent"
+    );
+    assert_eq!(
+        agent_dispatches[0]["dispatch"]["dispatch_tool_name"],
+        "forge_dispatch_agent"
+    );
+    assert_eq!(
+        agent_dispatches[0]["dispatch"]["supervision"]["parent_receipt"]["parent_task_id"],
+        parent_task_id
+    );
+    assert_eq!(
+        agent_dispatches[0]["dispatch"]["supervision"]["parent_receipt"]["child_slot"],
+        "agent-1"
+    );
+    assert_eq!(
+        agent_dispatches[0]["final_status"]["task"]["status"],
+        "Done"
+    );
+
+    let child_receipts = report["parent_status"]["supervision"]["child_receipts"]
+        .as_array()
+        .context("parent_status should expose child receipts")?;
+    assert_eq!(child_receipts.len(), 1);
+    assert_eq!(child_receipts[0]["parent_task_id"], parent_task_id);
+    assert_eq!(child_receipts[0]["child_dispatch_role"], "agent");
+    assert_eq!(child_receipts[0]["child_dispatch_tool_name"], "forge_dispatch_agent");
+    assert_eq!(child_receipts[0]["child_slot"], "agent-1");
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let stored = connection.query_row(
+        "SELECT COUNT(*) FROM plugin_forge_dispatch_receipts WHERE parent_task_id = ?1",
+        [parent_task_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    assert_eq!(stored, 1);
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(
@@ -295,6 +427,32 @@ fn seed_app_state(app_data_dir: &Path) -> Result<()> {
 theme = "dark"
 log_level = "info"
 mcp_enabled = false
+
+[plugins.launcher]
+enabled = false
+hotkey = "Alt+Space"
+scan_paths = []
+
+[plugins.forge]
+enabled = true
+http_port = 9721
+
+[plugins.vault]
+enabled = false
+"#,
+    )?;
+
+    Ok(())
+}
+
+fn seed_mcp_app_state(app_data_dir: &Path) -> Result<()> {
+    fs::create_dir_all(app_data_dir)?;
+    fs::write(
+        app_data_dir.join("entrance.toml"),
+        r#"[core]
+theme = "dark"
+log_level = "info"
+mcp_enabled = true
 
 [plugins.launcher]
 enabled = false
@@ -394,4 +552,30 @@ fn add_git_worktree(repo_root: &Path, worktree_path: &Path, branch: &str) -> Res
     }
 
     Ok(())
+}
+
+fn write_stub_agent_command(root: &Path) -> Result<PathBuf> {
+    let path = if cfg!(windows) {
+        root.join("noop-agent.cmd")
+    } else {
+        root.join("noop-agent.sh")
+    };
+    let contents = if cfg!(windows) {
+        "@echo off\r\nexit /b 0\r\n"
+    } else {
+        "#!/bin/sh\nexit 0\n"
+    };
+    fs::write(&path, contents)
+        .with_context(|| format!("failed to write stub agent command at {}", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions)?;
+    }
+
+    Ok(path)
 }

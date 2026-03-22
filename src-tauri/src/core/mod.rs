@@ -17,6 +17,7 @@ pub mod hotkey;
 pub mod landing;
 pub mod logging;
 pub mod mcp_server;
+pub mod mcp_stdio_client;
 pub mod permission;
 pub mod plugin_manager;
 pub mod supervision;

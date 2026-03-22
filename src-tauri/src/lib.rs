@@ -4,15 +4,19 @@ mod plugins;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
+    thread,
+    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
+use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 
 use core::{
     action::ActorRole,
     bootstrap_for_paths,
+    mcp_stdio_client::SpawnedMcpStdioClient,
     landing::{
         import_linear_entrance_snapshot, list_landing_ingest_runs, list_landing_mirror_items,
         list_landing_planning_items, list_landing_unreconciled_items, LandingImportReport,
@@ -73,6 +77,31 @@ struct DashboardSummary {
     token_count: usize,
     mcp_config_count: usize,
     enabled_mcp_count: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ForgeBootstrapMcpCycleOptions {
+    project_dir: Option<String>,
+    model: String,
+    agent_command: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ForgeBootstrapMcpSurfaceSummary {
+    coordinator_role: &'static str,
+    arch_surface_role: &'static str,
+    dev_surface_role: &'static str,
+    dev_assignment_surface: &'static str,
+    agent_dispatch_surface: &'static str,
+}
+
+#[derive(Clone, Serialize)]
+struct ForgeBootstrapMcpCycleReport {
+    bootstrap_surface: ForgeBootstrapMcpSurfaceSummary,
+    dev_assignment: Value,
+    agent_prepare: Value,
+    agent_dispatches: Vec<Value>,
+    parent_status: Value,
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -233,8 +262,13 @@ fn run_forge_cli(args: &[String]) -> Result<()> {
         [command, flag, value] if command == "verify-dispatch" && flag == "--project-dir" => {
             print_json(&verify_forge_dispatch_cli(Some(value.to_string()))?)
         }
+        [command, rest @ ..] if command == "bootstrap-mcp-cycle" => {
+            print_json(&bootstrap_forge_mcp_cycle_cli(parse_forge_bootstrap_mcp_cycle_args(
+                rest,
+            )?)?)
+        }
         _ => bail!(
-            "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, or `entrance forge verify-dispatch --project-dir <path>`"
+            "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, `entrance forge verify-dispatch --project-dir <path>`, or `entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>]`"
         ),
     }
 }
@@ -343,6 +377,221 @@ fn verify_forge_dispatch_cli(project_dir: Option<String>) -> Result<ForgeDispatc
     let startup = bootstrap_forge_cli_state()?;
     let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
     verify_agent_dispatch(&forge_plugin, project_dir).map_err(anyhow::Error::msg)
+}
+
+fn bootstrap_forge_mcp_cli_state() -> Result<StartupState> {
+    let startup = bootstrap_headless()?;
+    if !startup.forge_enabled() {
+        bail!("Forge is disabled in entrance.toml");
+    }
+
+    Ok(startup)
+}
+
+fn parse_forge_bootstrap_mcp_cycle_args(
+    args: &[String],
+) -> Result<ForgeBootstrapMcpCycleOptions> {
+    let mut options = ForgeBootstrapMcpCycleOptions {
+        project_dir: None,
+        model: "codex".to_string(),
+        agent_command: None,
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--project-dir" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance forge bootstrap-mcp-cycle --project-dir` requires a value")?;
+                options.project_dir = Some(value.to_string());
+                index += 2;
+            }
+            "--model" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance forge bootstrap-mcp-cycle --model` requires a value")?;
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    bail!("`entrance forge bootstrap-mcp-cycle --model` must not be empty");
+                }
+                options.model = trimmed.to_string();
+                index += 2;
+            }
+            "--agent-command" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance forge bootstrap-mcp-cycle --agent-command` requires a value")?;
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    bail!(
+                        "`entrance forge bootstrap-mcp-cycle --agent-command` must not be empty"
+                    );
+                }
+                options.agent_command = Some(trimmed.to_string());
+                index += 2;
+            }
+            other => bail!("unsupported forge bootstrap-mcp-cycle argument `{other}`"),
+        }
+    }
+
+    Ok(options)
+}
+
+fn bootstrap_forge_mcp_cycle_cli(
+    options: ForgeBootstrapMcpCycleOptions,
+) -> Result<ForgeBootstrapMcpCycleReport> {
+    let startup = bootstrap_forge_mcp_cli_state()?;
+    let app_data_dir = startup.paths().app_data_dir().to_path_buf();
+    let mut arch_surface = SpawnedMcpStdioClient::spawn(&app_data_dir, ActorRole::Arch)?;
+    let initialize_arch = arch_surface.initialize()?;
+    assert_surface_role(&initialize_arch, "arch")?;
+
+    let mut dev_surface = SpawnedMcpStdioClient::spawn(&app_data_dir, ActorRole::Dev)?;
+    let initialize_dev = dev_surface.initialize()?;
+    assert_surface_role(&initialize_dev, "dev")?;
+
+    let project_arguments = project_dir_tool_arguments(options.project_dir.as_deref());
+    let dev_assignment = arch_surface
+        .call_tool("forge_verify_dev_dispatch", project_arguments.clone())?
+        .get("structuredContent")
+        .cloned()
+        .context("forge_verify_dev_dispatch should return structuredContent")?;
+    let parent_task_id = json_i64(&dev_assignment, &["task_id"])
+        .context("forge_verify_dev_dispatch should return a parent task id")?;
+
+    let prepared_agent = dev_surface
+        .call_tool("forge_prepare_agent_dispatch", project_arguments)?
+        .get("structuredContent")
+        .cloned()
+        .context("forge_prepare_agent_dispatch should return structuredContent")?;
+    let issue_id = json_string(&prepared_agent, &["issue_id"])
+        .context("forge_prepare_agent_dispatch should return issue_id")?;
+    let worktree_path = json_string(&prepared_agent, &["worktree_path"])
+        .context("forge_prepare_agent_dispatch should return worktree_path")?;
+    let prompt = json_string(&prepared_agent, &["prompt"])
+        .context("forge_prepare_agent_dispatch should return prompt")?;
+
+    let mut dispatch_arguments = json!({
+        "issue_id": issue_id,
+        "worktree_path": worktree_path,
+        "model": options.model,
+        "prompt": prompt,
+        "parent_task_id": parent_task_id,
+        "supervision_strategy": "one_for_one",
+        "child_slot": "agent-1",
+    });
+    if let Some(agent_command) = options.agent_command {
+        dispatch_arguments["agent_command"] = Value::String(agent_command);
+    }
+
+    let dispatched_agent = dev_surface
+        .call_tool("forge_dispatch_agent", dispatch_arguments)?
+        .get("structuredContent")
+        .cloned()
+        .context("forge_dispatch_agent should return structuredContent")?;
+    let child_task_id = json_i64(&dispatched_agent, &["task_id"])
+        .context("forge_dispatch_agent should return a child task id")?;
+    let child_status = wait_for_terminal_forge_task(&mut dev_surface, child_task_id)?;
+    let parent_status = dev_surface
+        .call_tool("forge_status", json!({ "task_id": parent_task_id }))?
+        .get("structuredContent")
+        .cloned()
+        .context("forge_status should return structuredContent for parent task")?;
+
+    Ok(ForgeBootstrapMcpCycleReport {
+        bootstrap_surface: ForgeBootstrapMcpSurfaceSummary {
+            coordinator_role: "nota",
+            arch_surface_role: "arch",
+            dev_surface_role: "dev",
+            dev_assignment_surface: "forge_verify_dev_dispatch",
+            agent_dispatch_surface: "forge_dispatch_agent",
+        },
+        dev_assignment: strip_prompt_fields(dev_assignment),
+        agent_prepare: strip_prompt_fields(prepared_agent),
+        agent_dispatches: vec![json!({
+            "dispatch": strip_prompt_fields(dispatched_agent),
+            "final_status": child_status,
+        })],
+        parent_status,
+    })
+}
+
+fn project_dir_tool_arguments(project_dir: Option<&str>) -> Value {
+    let mut arguments = serde_json::Map::new();
+    if let Some(project_dir) = project_dir {
+        arguments.insert(
+            "project_dir".to_string(),
+            Value::String(project_dir.to_string()),
+        );
+    }
+    Value::Object(arguments)
+}
+
+fn wait_for_terminal_forge_task(
+    surface: &mut SpawnedMcpStdioClient,
+    task_id: i64,
+) -> Result<Value> {
+    for _ in 0..400 {
+        let status = surface
+            .call_tool("forge_status", json!({ "task_id": task_id }))?
+            .get("structuredContent")
+            .cloned()
+            .context("forge_status should return structuredContent while waiting")?;
+        let task_status = json_string(&status, &["task", "status"])
+            .context("forge_status should return a task.status string")?;
+        if matches!(task_status.as_str(), "Done" | "Failed" | "Cancelled" | "Blocked") {
+            return Ok(status);
+        }
+
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    bail!("timed out waiting for forge task `{task_id}` to reach a terminal state")
+}
+
+fn assert_surface_role(response: &Value, expected_role: &str) -> Result<()> {
+    let actual_role = response
+        .get("result")
+        .and_then(|value| value.get("entranceSurface"))
+        .and_then(|value| value.get("actorRole"))
+        .and_then(Value::as_str)
+        .context("MCP initialize should report entranceSurface.actorRole")?;
+    if actual_role != expected_role {
+        bail!(
+            "child MCP surface role mismatch: expected `{expected_role}`, got `{actual_role}`"
+        );
+    }
+
+    Ok(())
+}
+
+fn json_i64(value: &Value, path: &[&str]) -> Option<i64> {
+    json_value_at_path(value, path).and_then(Value::as_i64)
+}
+
+fn json_string(value: &Value, path: &[&str]) -> Option<String> {
+    json_value_at_path(value, path)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn json_value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
+}
+
+fn strip_prompt_fields(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("prompt");
+        if let Some(dispatch) = object.get_mut("dispatch").and_then(Value::as_object_mut) {
+            dispatch.remove("prompt");
+        }
+    }
+    value
 }
 
 fn build_mcp_server(
