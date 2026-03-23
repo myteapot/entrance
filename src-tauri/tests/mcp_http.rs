@@ -129,6 +129,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
             "forge_status",
             "forge_cancel",
             "nota_runtime_overview",
+            "nota_do",
             "nota_write_checkpoint",
             "recovery_list_seed_runs",
             "recovery_list_seed_rows",
@@ -157,6 +158,10 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
         .iter()
         .find(|tool| tool["name"] == "nota_runtime_overview")
         .context("nota_runtime_overview should be listed")?;
+    let nota_do = tools
+        .iter()
+        .find(|tool| tool["name"] == "nota_do")
+        .context("nota_do should be listed")?;
     let nota_checkpoint = tools
         .iter()
         .find(|tool| tool["name"] == "nota_write_checkpoint")
@@ -180,6 +185,11 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
     assert_eq!(nota_overview["permission"]["room"], "surface");
     assert_eq!(nota_overview["permission"]["targetLayer"], "cold");
     assert!(nota_overview["dispatchRole"].is_null());
+    assert_eq!(nota_do["permission"]["actorRole"], "nota");
+    assert_eq!(nota_do["permission"]["primitive"], "assign");
+    assert_eq!(nota_do["permission"]["room"], "strategy");
+    assert_eq!(nota_do["permission"]["targetLayer"], "hot");
+    assert!(nota_do["dispatchRole"].is_null());
     assert_eq!(nota_checkpoint["permission"]["actorRole"], "nota");
     assert_eq!(nota_checkpoint["permission"]["primitive"], "learn");
     assert_eq!(nota_checkpoint["permission"]["room"], "memory");
@@ -448,6 +458,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
             "forge_status",
             "forge_cancel",
             "nota_runtime_overview",
+            "nota_do",
             "nota_write_checkpoint",
             "recovery_list_seed_runs",
             "recovery_list_seed_rows",
@@ -669,6 +680,126 @@ fn external_client_can_write_nota_runtime_checkpoint_over_http() -> Result<()> {
     assert_eq!(
         overview["checkpoints"]["checkpoints"][0]["payload"]["next_start_hints"][0],
         "Call nota_runtime_overview before other MCP work."
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-do")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    fs::create_dir_all(&bootstrap_skill)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?;
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota-do",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let do_report = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-do",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_do",
+            "arguments": {
+                "project_dir": project_root,
+                "model": "codex",
+                "agent_command": agent_command,
+                "title": "MCP Do dispatch MYT-48"
+            }
+        }
+    }))?;
+
+    assert_eq!(do_report["result"]["isError"], false);
+    assert_eq!(do_report["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(do_report["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(do_report["result"]["permission"]["primitive"], "assign");
+    assert_eq!(do_report["result"]["permission"]["room"], "strategy");
+    assert_eq!(do_report["result"]["permission"]["targetLayer"], "hot");
+    assert_eq!(
+        do_report["result"]["structuredContent"]["transaction"]["surface_action"],
+        "do"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["transaction"]["transaction_kind"],
+        "forge_agent_dispatch"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["dispatch"]["issue_id"],
+        "MYT-48"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["checkpoint"]["cadence_kind"],
+        "CADENCE_CHECKPOINT"
+    );
+    assert_eq!(do_report["result"]["structuredContent"]["spawn_error"], Value::Null);
+    assert_eq!(
+        do_report["result"]["structuredContent"]["receipts"]
+            .as_array()
+            .context("nota_do receipts should be an array")?
+            .len(),
+        4
+    );
+
+    let overview = run_entrance_cli(app_dir.path(), &["nota", "overview"])?;
+    let overview: Value =
+        serde_json::from_str(&overview).context("nota overview output should be valid JSON")?;
+    assert_eq!(overview["transactions"]["transaction_count"], 1);
+    assert_eq!(overview["transactions"]["transactions"][0]["surface_action"], "do");
+    assert_eq!(overview["checkpoints"]["checkpoint_count"], 1);
+    assert_eq!(
+        overview["checkpoints"]["checkpoints"][0]["title"],
+        "Do receipt: MYT-48"
+    );
+
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_transactions", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        1
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        4
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM cadence_objects", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        1
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM plugin_forge_tasks", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        1
     );
 
     Ok(())
