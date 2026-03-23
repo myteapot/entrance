@@ -16,6 +16,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::build_nota_runtime_overview;
 use crate::core::{
     action::ActorRole,
     bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
@@ -283,6 +284,7 @@ impl McpServer {
             "forge_bootstrap_mcp_cycle" => self.handle_forge_bootstrap_mcp_cycle(arguments),
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
+            "nota_runtime_overview" => self.handle_nota_runtime_overview(),
             "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
             "recovery_list_seed_rows" => self.handle_recovery_list_seed_rows(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
@@ -617,6 +619,15 @@ impl McpServer {
             .as_ref()
             .context("core data store is not available on the current MCP surface")?;
         Ok(json!(list_recovery_seed_runs(data_store)?))
+    }
+
+    fn handle_nota_runtime_overview(&self) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        Ok(json!(build_nota_runtime_overview(data_store)?))
     }
 
     fn handle_recovery_list_seed_rows(&self, arguments: &Value) -> Result<Value> {
@@ -980,6 +991,16 @@ fn build_tool_descriptors(
     }
 
     if plugins.core_data_store.is_some() {
+        tools.push(McpToolDescriptor {
+            name: "nota_runtime_overview",
+            description: "Read the current NOTA runtime continuity bundle that powers `entrance nota overview`.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
         tools.push(McpToolDescriptor {
             name: "recovery_list_seed_runs",
             description: "List recovery-seed imports that have been absorbed into the runtime DB storage plane.",
@@ -1430,6 +1451,7 @@ mod tests {
                 "forge_bootstrap_mcp_cycle",
                 "forge_status",
                 "forge_cancel",
+                "nota_runtime_overview",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
                 "vault_get_token",
@@ -1454,6 +1476,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "forge_bootstrap_mcp_cycle")
             .expect("forge_bootstrap_mcp_cycle should exist");
+        let nota_overview = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_runtime_overview")
+            .expect("nota_runtime_overview should exist");
         let prepare_agent = tools
             .iter()
             .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
@@ -1468,6 +1494,11 @@ mod tests {
         assert_eq!(bootstrap_cycle["permission"]["primitive"], "assign");
         assert_eq!(bootstrap_cycle["permission"]["room"], "strategy");
         assert!(bootstrap_cycle["dispatchRole"].is_null());
+        assert_eq!(nota_overview["permission"]["actorRole"], "nota");
+        assert_eq!(nota_overview["permission"]["primitive"], "chat");
+        assert_eq!(nota_overview["permission"]["room"], "surface");
+        assert_eq!(nota_overview["permission"]["targetLayer"], "cold");
+        assert!(nota_overview["dispatchRole"].is_null());
         assert_eq!(prepare_agent["dispatchRole"], "agent");
 
         Ok(())
@@ -1515,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn nota_surface_lists_only_bootstrap_allocator_plus_neutral_tools() -> Result<()> {
+    fn nota_surface_lists_bootstrap_allocator_and_continuity_tools() -> Result<()> {
         let server = build_test_server_with_actor_role(Some(ActorRole::Nota))?;
         let response = server
             .handle_json_rpc_value(json!({
@@ -1539,6 +1570,7 @@ mod tests {
                 "forge_bootstrap_mcp_cycle",
                 "forge_status",
                 "forge_cancel",
+                "nota_runtime_overview",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
                 "vault_get_token",
@@ -1548,11 +1580,22 @@ mod tests {
             ]
         );
         assert_eq!(response["result"]["entranceSurface"]["actorRole"], "nota");
-        assert!(response["result"]["tools"][1]["dispatchRole"].is_null());
-        assert_eq!(
-            response["result"]["tools"][1]["permission"]["actorRole"],
-            "nota"
-        );
+        let tools = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array");
+        let bootstrap_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "forge_bootstrap_mcp_cycle")
+            .expect("forge_bootstrap_mcp_cycle should exist on nota surface");
+        let overview_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_runtime_overview")
+            .expect("nota_runtime_overview should exist on nota surface");
+        assert!(bootstrap_tool["dispatchRole"].is_null());
+        assert_eq!(bootstrap_tool["permission"]["actorRole"], "nota");
+        assert_eq!(overview_tool["permission"]["primitive"], "chat");
+        assert_eq!(overview_tool["permission"]["room"], "surface");
+        assert_eq!(overview_tool["permission"]["targetLayer"], "cold");
 
         Ok(())
     }
@@ -1790,6 +1833,31 @@ mod tests {
         assert_eq!(
             response["structuredContent"]["servers"][0]["transport"],
             "stdio"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn nota_surface_can_read_runtime_overview() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Nota))?;
+
+        let response = call_tool(&server, "nota_runtime_overview", json!({}))?;
+
+        assert_eq!(response["isError"], false);
+        assert_eq!(response["entranceSurface"]["actorRole"], "nota");
+        assert_eq!(response["permission"]["actorRole"], "nota");
+        assert_eq!(response["permission"]["primitive"], "chat");
+        assert_eq!(response["permission"]["room"], "surface");
+        assert_eq!(response["permission"]["targetLayer"], "cold");
+        assert!(response["dispatchRole"].is_null());
+        assert_eq!(
+            response["structuredContent"]["checkpoints"]["checkpoint_count"],
+            0
+        );
+        assert_eq!(
+            response["structuredContent"]["transactions"]["transaction_count"],
+            0
         );
 
         Ok(())

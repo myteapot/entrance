@@ -102,7 +102,7 @@ struct DashboardSummary {
 }
 
 #[derive(Clone, Serialize)]
-struct NotaRuntimeOverview {
+pub(crate) struct NotaRuntimeOverview {
     chat_policy: ChatArchivePolicyReport,
     checkpoints: NotaCheckpointListReport,
     transactions: NotaRuntimeTransactionsReport,
@@ -1180,7 +1180,7 @@ fn dashboard_summary(
     })
 }
 
-fn build_nota_runtime_overview(
+pub(crate) fn build_nota_runtime_overview(
     data_store: &core::data_store::DataStore,
 ) -> Result<NotaRuntimeOverview> {
     Ok(NotaRuntimeOverview {

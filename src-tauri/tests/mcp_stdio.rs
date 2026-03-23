@@ -141,6 +141,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
             "forge_bootstrap_mcp_cycle",
             "forge_status",
             "forge_cancel",
+            "nota_runtime_overview",
             "recovery_list_seed_runs",
             "recovery_list_seed_rows",
             "vault_get_token",
@@ -164,6 +165,10 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
         .iter()
         .find(|tool| tool["name"] == "forge_bootstrap_mcp_cycle")
         .context("forge_bootstrap_mcp_cycle should be listed")?;
+    let nota_overview = tools
+        .iter()
+        .find(|tool| tool["name"] == "nota_runtime_overview")
+        .context("nota_runtime_overview should be listed")?;
     let prepare_agent = tools
         .iter()
         .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
@@ -178,6 +183,11 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
     assert_eq!(bootstrap_cycle["permission"]["primitive"], "assign");
     assert_eq!(bootstrap_cycle["permission"]["room"], "strategy");
     assert!(bootstrap_cycle["dispatchRole"].is_null());
+    assert_eq!(nota_overview["permission"]["actorRole"], "nota");
+    assert_eq!(nota_overview["permission"]["primitive"], "chat");
+    assert_eq!(nota_overview["permission"]["room"], "surface");
+    assert_eq!(nota_overview["permission"]["targetLayer"], "cold");
+    assert!(nota_overview["dispatchRole"].is_null());
     assert_eq!(prepare_agent["dispatchRole"], "agent");
 
     server.send(json!({
@@ -457,6 +467,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
             "forge_bootstrap_mcp_cycle",
             "forge_status",
             "forge_cancel",
+            "nota_runtime_overview",
             "recovery_list_seed_runs",
             "recovery_list_seed_rows",
             "vault_get_token",
@@ -551,6 +562,72 @@ fn external_client_can_read_recovery_seed_runtime_surface_over_stdio() -> Result
     assert_eq!(
         rows["result"]["structuredContent"]["rows"][0]["promotion_state"],
         "storage_only"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_read_nota_runtime_overview_over_stdio() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-overview")?;
+    seed_app_state(app_dir.path())?;
+    seed_nota_runtime_overview(app_dir.path())?;
+
+    let mut server = spawn_mcp_stdio_with_actor_role(app_dir.path(), None, Some("nota"))?;
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota-overview",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    let initialize = server.read_response()?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }))?;
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-overview",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_overview",
+            "arguments": {}
+        }
+    }))?;
+    let overview = server.read_response()?;
+
+    assert_eq!(overview["result"]["isError"], false);
+    assert_eq!(overview["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(overview["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(overview["result"]["permission"]["primitive"], "chat");
+    assert_eq!(overview["result"]["permission"]["room"], "surface");
+    assert_eq!(overview["result"]["permission"]["targetLayer"], "cold");
+    assert_eq!(
+        overview["result"]["structuredContent"]["checkpoints"]["checkpoint_count"],
+        1
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["decisions"]["decision_count"],
+        1
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["chat_captures"]["capture_count"],
+        1
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["transactions"]["transaction_count"],
+        0
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["chat_policy"]["setting"]["archive_policy"],
+        "full"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["checkpoints"]["checkpoints"][0]["payload"]
+            ["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host"
     );
 
     Ok(())
@@ -1614,6 +1691,59 @@ fn seed_recovery_runtime_surface(app_dir: &PathBuf) -> Result<()> {
                 .context("recovery seed path should be valid UTF-8")?,
         ],
     )?;
+    Ok(())
+}
+
+fn seed_nota_runtime_overview(app_dir: &PathBuf) -> Result<()> {
+    run_entrance_cli(
+        app_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--stable-level",
+            "single-ingress, checkpointed, DB-first NOTA host",
+            "--landed",
+            "cadence cut landed",
+            "--remaining",
+            "headless continuity bundle",
+            "--human-continuity-bus",
+            "reduced but still present",
+        ],
+    )?;
+    run_entrance_cli(
+        app_dir,
+        &[
+            "nota",
+            "decision",
+            "--title",
+            "Chat is the continuity surface",
+            "--statement",
+            "Chat should read the runtime DB continuity bundle instead of replaying raw chat.",
+            "--rationale",
+            "Resume should start from canonical runtime state.",
+            "--decision-type",
+            "ui_surface",
+            "--scope-type",
+            "project",
+            "--scope-ref",
+            "Entrance",
+            "--source-ref",
+            "nota:test:mcp-stdio-overview",
+        ],
+    )?;
+    run_entrance_cli(app_dir, &["nota", "chat-policy", "--policy", "full"])?;
+    run_entrance_cli(
+        app_dir,
+        &[
+            "nota",
+            "capture-chat",
+            "--role",
+            "nota",
+            "--content",
+            "Overview should expose checkpoint, decision, and archive state together.",
+        ],
+    )?;
+
     Ok(())
 }
 

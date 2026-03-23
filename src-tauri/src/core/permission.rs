@@ -64,8 +64,16 @@ const HOT_ASSIGN_NOTA: McpToolPermission = McpToolPermission::new(
     KnowledgeLayer::Hot,
 );
 
+const COLD_CHAT_NOTA: McpToolPermission = McpToolPermission::new(
+    ActorRole::Nota,
+    ActionPrimitive::Chat,
+    ActionRoom::Surface,
+    KnowledgeLayer::Cold,
+);
+
 pub fn permission_for_mcp_tool(name: &str) -> Option<McpToolPermission> {
     match name {
+        "nota_runtime_overview" => Some(COLD_CHAT_NOTA),
         "forge_prepare_dispatch"
         | "forge_verify_dispatch"
         | "forge_prepare_agent_dispatch"
@@ -86,6 +94,7 @@ mod tests {
     #[test]
     fn current_dispatch_tools_are_mapped_into_valid_action_records() {
         for name in [
+            "nota_runtime_overview",
             "forge_prepare_dispatch",
             "forge_verify_dispatch",
             "forge_prepare_agent_dispatch",
@@ -157,6 +166,19 @@ mod tests {
                 ActionPrimitive::Assign,
                 ActionRoom::Strategy,
                 KnowledgeLayer::Hot,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_runtime_overview_is_nota_owned_cold_surface_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_runtime_overview"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Chat,
+                ActionRoom::Surface,
+                KnowledgeLayer::Cold,
             ))
         );
     }
