@@ -1088,16 +1088,16 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
         .context("blocked terminal outcome message should be present")?;
     assert_eq!(
         blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["stable_level"],
-        "single-ingress, checkpointed, DB-first NOTA host with single-lane honest allocator truth checkpointed into runtime continuity"
+        "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned agent escalation boundary checkpointed into runtime continuity"
     );
     assert_eq!(
         blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["selected_trunk"],
-        "single-lane honest allocator continuity"
+        "agent escalation continuity"
     );
     assert_eq!(
         blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["landed"][0],
         format!(
-            "Single-lane NOTA allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+            "NOTA-owned agent allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
             allocation_id, lineage_ref, transaction_id, task_id
         )
     );
@@ -1118,7 +1118,7 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
     assert_eq!(
         blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["next_start_hints"][2],
         format!(
-            "Treat lineage `{}` as the canonical single-lane allocator thread until the blocked gate is cleared.",
+            "Treat lineage `{}` as the current agent escalation boundary until the Blocked gate is cleared.",
             lineage_ref
         )
     );
