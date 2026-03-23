@@ -396,6 +396,11 @@ pub struct NotaRuntimeReceiptsReport {
     pub receipts: Vec<StoredNotaRuntimeReceipt>,
 }
 
+struct RecommendedCheckpointCandidate {
+    allocation_id: i64,
+    request: NotaCheckpointRequest,
+}
+
 pub fn write_runtime_checkpoint(
     data_store: &DataStore,
     request: NotaCheckpointRequest,
@@ -1298,11 +1303,39 @@ fn build_dev_checkpoint_hints(
     hints
 }
 
-pub fn recommend_single_lane_allocator_checkpoint(
+pub fn recommend_runtime_closure_checkpoint(
     data_store: &DataStore,
     allocations: &[StoredNotaRuntimeAllocation],
     current_checkpoint: Option<&NotaCheckpointRecord>,
 ) -> Result<Option<NotaCheckpointRequest>> {
+    let mut candidates = Vec::new();
+    if let Some(candidate) =
+        recommend_single_lane_allocator_checkpoint_candidate(data_store, allocations)?
+    {
+        candidates.push(candidate);
+    }
+    if let Some(candidate) = recommend_dev_return_checkpoint_candidate(data_store, allocations)? {
+        candidates.push(candidate);
+    }
+
+    let Some(candidate) = candidates
+        .into_iter()
+        .max_by_key(|candidate| candidate.allocation_id)
+    else {
+        return Ok(None);
+    };
+
+    if checkpoint_request_matches_current(current_checkpoint, &candidate.request) {
+        return Ok(None);
+    }
+
+    Ok(Some(candidate.request))
+}
+
+fn recommend_single_lane_allocator_checkpoint_candidate(
+    data_store: &DataStore,
+    allocations: &[StoredNotaRuntimeAllocation],
+) -> Result<Option<RecommendedCheckpointCandidate>> {
     let Some(latest_allocation) = allocations
         .iter()
         .filter(|allocation| {
@@ -1414,11 +1447,118 @@ pub fn recommend_single_lane_allocator_checkpoint(
         project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
     };
 
-    if checkpoint_request_matches_current(current_checkpoint, &recommendation) {
+    Ok(Some(RecommendedCheckpointCandidate {
+        allocation_id: latest_allocation.id,
+        request: recommendation,
+    }))
+}
+
+fn recommend_dev_return_checkpoint_candidate(
+    data_store: &DataStore,
+    allocations: &[StoredNotaRuntimeAllocation],
+) -> Result<Option<RecommendedCheckpointCandidate>> {
+    let Some(latest_allocation) = allocations
+        .iter()
+        .filter(|allocation| {
+            allocation.allocator_role == "nota"
+                && allocation.allocation_kind == "forge_dev_dispatch"
+                && allocation.child_execution_kind == "forge_task"
+        })
+        .max_by_key(|allocation| allocation.id)
+    else {
+        return Ok(None);
+    };
+
+    let allocation_payload: NotaDoAllocationPayload =
+        serde_json::from_str(&latest_allocation.payload_json).with_context(|| {
+            format!(
+                "failed to parse latest dev closure payload for allocation {}",
+                latest_allocation.id
+            )
+        })?;
+    let Some(outcome) = allocation_payload.terminal_outcome.as_ref() else {
+        return Ok(None);
+    };
+    if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
         return Ok(None);
     }
 
-    Ok(Some(recommendation))
+    let transaction_id = latest_allocation.source_transaction_id;
+    let receipts = data_store.list_nota_runtime_receipts(Some(transaction_id))?;
+    let receipt_count = receipts.len();
+    let Some(latest_terminal_receipt) =
+        latest_terminal_receipt_for_allocation(&receipts, latest_allocation)?
+    else {
+        return Ok(None);
+    };
+
+    let recommendation = NotaCheckpointRequest {
+        title: Some(format!(
+            "Checkpoint: dev return acceptance truth for {}",
+            allocation_payload.issue_id
+        )),
+        stable_level:
+            "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned dev return boundary surfaced as storage-backed acceptance truth"
+                .to_string(),
+        landed: vec![
+            format!(
+                "NOTA-owned dev allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+                latest_allocation.id,
+                latest_allocation.lineage_ref,
+                transaction_id,
+                latest_allocation.child_execution_ref
+            ),
+            format!(
+                "Dev allocation {} terminal outcome is return / Done back to {} {}.",
+                latest_allocation.id,
+                outcome.target_kind,
+                outcome.target_ref
+            ),
+            format!(
+                "Transaction {transaction_id} receipt history now has {receipt_count} receipts, with latest terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
+                latest_allocation.id,
+                latest_terminal_receipt.target_kind,
+                latest_terminal_receipt.target_ref
+            ),
+            format!(
+                "Runtime payloads keep execution_host `{}` and child_dispatch_role `{}` visible for transaction {} / allocation {}.",
+                allocation_payload.execution_host,
+                allocation_payload.child_dispatch_role,
+                transaction_id,
+                latest_allocation.id
+            ),
+        ],
+        remaining: vec![
+            "This is a returned dev child boundary, not a completed review / integrate / repair loop; M9 return closure is still open."
+                .to_string(),
+            "Keep this cut scoped to dev return acceptance truth; V0 closure, multi-role allocator, and fuller acceptance/finalization surfaces are still not landed."
+                .to_string(),
+        ],
+        human_continuity_bus:
+            "reduced but still required for acceptance and follow-on integration".to_string(),
+        selected_trunk: Some("dev return acceptance truth".to_string()),
+        next_start_hints: vec![
+            format!(
+                "Start from `entrance nota status`, then `entrance nota allocations`, then `entrance nota receipts --transaction-id {transaction_id}`."
+            ),
+            format!(
+                "Confirm allocation {} still carries child_dispatch_role `{}`, execution_host `{}`, and terminal_outcome return / Done before any acceptance write.",
+                latest_allocation.id,
+                allocation_payload.child_dispatch_role,
+                allocation_payload.execution_host
+            ),
+            format!(
+                "Treat lineage `{}` as a returned dev boundary only; do not collapse it into full V0 closure or a complete allocator.",
+                latest_allocation.lineage_ref
+            ),
+        ],
+        project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
+    };
+
+    Ok(Some(RecommendedCheckpointCandidate {
+        allocation_id: latest_allocation.id,
+        request: recommendation,
+    }))
 }
 
 fn latest_terminal_receipt_for_allocation(
@@ -1589,9 +1729,10 @@ mod tests {
     };
 
     use super::{
-        list_nota_runtime_allocations, list_nota_runtime_receipts, list_runtime_checkpoints,
-        write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload,
-        NotaCheckpointRequest, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
+        default_nota_dispatch_execution_host, list_nota_runtime_allocations,
+        list_nota_runtime_receipts, list_runtime_checkpoints, recommend_runtime_closure_checkpoint,
+        write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
+        NotaDispatchExecutionHost, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
         ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
     };
 
@@ -2023,6 +2164,171 @@ mod tests {
         assert!(verify_store
             .list_nota_runtime_receipts(Some(transaction.id))?
             .is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_closure_recommendation_prefers_newer_dev_return_boundary() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+
+        let do_transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "do",
+            transaction_kind: "forge_agent_dispatch",
+            title: "Older agent continuity",
+            payload_json: "{}",
+            status: "checkpointed",
+            forge_task_id: None,
+            cadence_checkpoint_id: None,
+        })?;
+        let do_payload = NotaDoAllocationPayload {
+            issue_id: "MYT-48".to_string(),
+            issue_status: "Todo".to_string(),
+            issue_status_source: "fallback".to_string(),
+            issue_title: None,
+            project_root: "A:/Agent/Entrance".to_string(),
+            worktree_path: "A:/Agent/Entrance/worktrees/feat-MYT-48".to_string(),
+            prompt_source: "test".to_string(),
+            model: "codex".to_string(),
+            agent_command: None,
+            execution_host: default_nota_dispatch_execution_host(),
+            child_dispatch_role: "agent".to_string(),
+            child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
+            terminal_outcome: Some(NotaDoAllocationTerminalOutcome {
+                boundary_kind: "escalation".to_string(),
+                child_execution_status: "Blocked".to_string(),
+                child_execution_status_message: Some("add openai to Vault first".to_string()),
+                target_kind: "nota_runtime_transaction".to_string(),
+                target_ref: do_transaction.id.to_string(),
+            }),
+        };
+        let do_allocation = store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_do",
+            allocation_kind: "forge_agent_dispatch",
+            source_transaction_id: do_transaction.id,
+            lineage_ref: "nota/do/transaction/1/forge-task/11",
+            child_execution_kind: "forge_task",
+            child_execution_ref: "11",
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: &do_transaction.id.to_string(),
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: &do_transaction.id.to_string(),
+            status: "escalated_blocked",
+            payload_json: &serde_json::to_string(&do_payload)?,
+        })?;
+        store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: do_transaction.id,
+            receipt_kind: ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
+            payload_json: &serde_json::to_string(&AllocationTerminalOutcomeReceiptPayload {
+                allocation_id: do_allocation.id,
+                lineage_ref: do_allocation.lineage_ref.clone(),
+                boundary_kind: "escalation".to_string(),
+                child_execution_status: "Blocked".to_string(),
+                child_execution_status_message: Some("add openai to Vault first".to_string()),
+                target_kind: "nota_runtime_transaction".to_string(),
+                target_ref: do_transaction.id.to_string(),
+                allocation_status: "escalated_blocked".to_string(),
+            })?,
+            status: "recorded",
+        })?;
+
+        let dev_transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "dev",
+            transaction_kind: "forge_dev_dispatch",
+            title: "Newer dev return",
+            payload_json: "{}",
+            status: "checkpointed",
+            forge_task_id: None,
+            cadence_checkpoint_id: None,
+        })?;
+        let dev_payload = NotaDoAllocationPayload {
+            issue_id: "MYT-1048".to_string(),
+            issue_status: "Todo".to_string(),
+            issue_status_source: "fallback".to_string(),
+            issue_title: None,
+            project_root: "A:/Agent/Entrance".to_string(),
+            worktree_path: "A:/Agent/Entrance/worktrees/feat-MYT-1048".to_string(),
+            prompt_source: "test".to_string(),
+            model: "codex".to_string(),
+            agent_command: None,
+            execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor
+                .as_str()
+                .to_string(),
+            child_dispatch_role: "dev".to_string(),
+            child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
+            terminal_outcome: Some(NotaDoAllocationTerminalOutcome {
+                boundary_kind: "return".to_string(),
+                child_execution_status: "Done".to_string(),
+                child_execution_status_message: None,
+                target_kind: "nota_runtime_transaction".to_string(),
+                target_ref: dev_transaction.id.to_string(),
+            }),
+        };
+        let dev_allocation = store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_dev",
+            allocation_kind: "forge_dev_dispatch",
+            source_transaction_id: dev_transaction.id,
+            lineage_ref: "nota/dev/transaction/2/forge-task/28",
+            child_execution_kind: "forge_task",
+            child_execution_ref: "28",
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: &dev_transaction.id.to_string(),
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: &dev_transaction.id.to_string(),
+            status: "return_ready",
+            payload_json: &serde_json::to_string(&dev_payload)?,
+        })?;
+        store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: dev_transaction.id,
+            receipt_kind: ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
+            payload_json: &serde_json::to_string(&AllocationTerminalOutcomeReceiptPayload {
+                allocation_id: dev_allocation.id,
+                lineage_ref: dev_allocation.lineage_ref.clone(),
+                boundary_kind: "return".to_string(),
+                child_execution_status: "Done".to_string(),
+                child_execution_status_message: None,
+                target_kind: "nota_runtime_transaction".to_string(),
+                target_ref: dev_transaction.id.to_string(),
+                allocation_status: "return_ready".to_string(),
+            })?,
+            status: "recorded",
+        })?;
+
+        let report = list_nota_runtime_allocations(&store)?;
+        let recommendation =
+            recommend_runtime_closure_checkpoint(&store, &report.allocations, None)?
+                .expect("newer dev return should become the recommended closure");
+
+        assert_eq!(
+            recommendation.selected_trunk.as_deref(),
+            Some("dev return acceptance truth")
+        );
+        assert_eq!(
+            recommendation.landed[0],
+            format!(
+                "NOTA-owned dev allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+                dev_allocation.id,
+                dev_allocation.lineage_ref,
+                dev_transaction.id,
+                dev_allocation.child_execution_ref
+            )
+        );
+        assert_eq!(
+            recommendation.landed[3],
+            format!(
+                "Runtime payloads keep execution_host `detached_forge_cli_supervisor` and child_dispatch_role `dev` visible for transaction {} / allocation {}.",
+                dev_transaction.id,
+                dev_allocation.id
+            )
+        );
+        assert_eq!(
+            recommendation.remaining[0],
+            "This is a returned dev child boundary, not a completed review / integrate / repair loop; M9 return closure is still open."
+        );
 
         Ok(())
     }

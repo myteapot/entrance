@@ -44,7 +44,7 @@ use core::{
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
         list_nota_runtime_allocations, list_nota_runtime_receipts, list_nota_runtime_transactions,
-        list_runtime_checkpoints, recommend_single_lane_allocator_checkpoint,
+        list_runtime_checkpoints, recommend_runtime_closure_checkpoint,
         run_nota_dev_dispatch, run_nota_do_agent_dispatch, write_runtime_checkpoint,
         NotaCheckpointListReport, NotaCheckpointRequest, NotaDevDispatchRequest,
         NotaDispatchExecutionHost, NotaDoAgentDispatchRequest, NotaRuntimeAllocationsReport,
@@ -1344,7 +1344,7 @@ pub(crate) fn build_nota_runtime_overview(
 ) -> Result<NotaRuntimeOverview> {
     let checkpoints = list_runtime_checkpoints(data_store)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
-    let recommended_checkpoint = recommend_single_lane_allocator_checkpoint(
+    let recommended_checkpoint = recommend_runtime_closure_checkpoint(
         data_store,
         &allocations.allocations,
         checkpoints
@@ -1378,7 +1378,7 @@ pub(crate) fn build_nota_runtime_status(
     let receipts = list_nota_runtime_receipts(data_store, None)?;
     let decisions = list_design_decisions(data_store)?;
     let chat_captures = list_chat_captures(data_store)?;
-    let recommended_checkpoint = recommend_single_lane_allocator_checkpoint(
+    let recommended_checkpoint = recommend_runtime_closure_checkpoint(
         data_store,
         &allocations.allocations,
         current_checkpoint.as_ref(),

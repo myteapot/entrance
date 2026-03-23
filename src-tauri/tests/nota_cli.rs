@@ -495,8 +495,7 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
 }
 
 #[test]
-fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoint() -> Result<()>
-{
+fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoint() -> Result<()> {
     let temp_dir = TempDir::new("dev-dispatch")?;
     let app_data_dir = temp_dir.path().join("appdata");
     seed_forge_app_state(&app_data_dir)?;
@@ -548,7 +547,10 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
     assert_eq!(report["dispatch"]["issue_id"], "MYT-48");
     assert_eq!(report["allocation"]["allocator_role"], "nota");
     assert_eq!(report["allocation"]["allocator_surface"], "nota_dev");
-    assert_eq!(report["allocation"]["allocation_kind"], "forge_dev_dispatch");
+    assert_eq!(
+        report["allocation"]["allocation_kind"],
+        "forge_dev_dispatch"
+    );
     assert_eq!(
         report["allocation"]["source_transaction_id"],
         report["transaction"]["id"]
@@ -616,7 +618,10 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
     let receipts: Value = serde_json::from_str(&receipts_output)
         .context("nota dev receipts output should be valid JSON")?;
     assert_eq!(receipts["receipt_count"], 5);
-    assert_eq!(receipts["receipts"][4]["receipt_kind"], "CADENCE_CHECKPOINT_WRITTEN");
+    assert_eq!(
+        receipts["receipts"][4]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
 
     let allocations_output = run_nota_cli(&app_data_dir, &["nota", "allocations"])?;
     let allocations: Value = serde_json::from_str(&allocations_output)
@@ -633,13 +638,19 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
     let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
     let status: Value =
         serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
-    assert_eq!(status["current_checkpoint"]["title"], "Dev allocation: MYT-48");
+    assert_eq!(
+        status["current_checkpoint"]["title"],
+        "Dev allocation: MYT-48"
+    );
     assert_eq!(
         status["latest_transaction"]["transaction_kind"],
         "forge_dev_dispatch"
     );
     assert_eq!(status["latest_allocation"]["allocator_surface"], "nota_dev");
-    assert_eq!(status["latest_receipt"]["receipt_kind"], "CADENCE_CHECKPOINT_WRITTEN");
+    assert_eq!(
+        status["latest_receipt"]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
     assert!(status["recommended_checkpoint"].is_null());
 
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
@@ -821,7 +832,75 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
         .context("terminal receipt payload_json should be valid JSON")?;
     assert_eq!(terminal_receipt_payload["boundary_kind"], "return");
     assert_eq!(terminal_receipt_payload["child_execution_status"], "Done");
-    assert_eq!(terminal_receipt_payload["allocation_status"], "return_ready");
+    assert_eq!(
+        terminal_receipt_payload["allocation_status"],
+        "return_ready"
+    );
+
+    let overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let overview: Value = serde_json::from_str(&overview_output)
+        .context("detached supervisor overview should be valid JSON")?;
+    let lineage_ref = report["allocation"]["lineage_ref"]
+        .as_str()
+        .context("allocation lineage_ref should be present")?;
+    assert_eq!(
+        overview["recommended_checkpoint"]["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned dev return boundary surfaced as storage-backed acceptance truth"
+    );
+    assert_eq!(
+        overview["recommended_checkpoint"]["selected_trunk"],
+        "dev return acceptance truth"
+    );
+    assert_eq!(
+        overview["recommended_checkpoint"]["landed"][0],
+        format!(
+            "NOTA-owned dev allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+            allocation_id,
+            lineage_ref,
+            transaction_id,
+            task_id
+        )
+    );
+    assert_eq!(
+        overview["recommended_checkpoint"]["landed"][2],
+        format!(
+            "Transaction {transaction_id} receipt history now has 6 receipts, with latest terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
+            allocation_id,
+            transaction_id
+        )
+    );
+    assert_eq!(
+        overview["recommended_checkpoint"]["landed"][3],
+        format!(
+            "Runtime payloads keep execution_host `detached_forge_cli_supervisor` and child_dispatch_role `dev` visible for transaction {} / allocation {}.",
+            transaction_id,
+            allocation_id
+        )
+    );
+    assert_eq!(
+        overview["recommended_checkpoint"]["remaining"][0],
+        "This is a returned dev child boundary, not a completed review / integrate / repair loop; M9 return closure is still open."
+    );
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value = serde_json::from_str(&status_output)
+        .context("detached supervisor status should be valid JSON")?;
+    assert_eq!(status["latest_allocation"]["status"], "return_ready");
+    assert_eq!(
+        status["latest_receipt"]["receipt_kind"],
+        "ALLOCATION_TERMINAL_OUTCOME_RECORDED"
+    );
+    assert_eq!(
+        status["recommended_checkpoint"]["selected_trunk"],
+        "dev return acceptance truth"
+    );
+    assert_eq!(
+        status["recommended_checkpoint"]["next_start_hints"][2],
+        format!(
+            "Treat lineage `{}` as a returned dev boundary only; do not collapse it into full V0 closure or a complete allocator.",
+            lineage_ref
+        )
+    );
 
     Ok(())
 }
@@ -1139,7 +1218,9 @@ fn run_nota_cli_with_env(
     extra_env: &[(&str, &str)],
 ) -> Result<String> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_entrance"));
-    command.args(args).env("ENTRANCE_APP_DATA_DIR", app_data_dir);
+    command
+        .args(args)
+        .env("ENTRANCE_APP_DATA_DIR", app_data_dir);
     for (key, value) in extra_env {
         command.env(key, value);
     }
@@ -1178,7 +1259,10 @@ fn wait_for_forge_task_terminal(db_path: &Path, task_id: i64) -> Result<ForgeTas
                 })
             },
         )?;
-        if matches!(task.status.as_str(), "Done" | "Failed" | "Cancelled" | "Blocked") {
+        if matches!(
+            task.status.as_str(),
+            "Done" | "Failed" | "Cancelled" | "Blocked"
+        ) {
             return Ok(task);
         }
         if Instant::now() >= deadline {
@@ -1198,7 +1282,9 @@ fn write_delayed_success_agent(temp_root: &Path, completion_marker: &Path) -> Re
             .context("completion marker path should be valid UTF-8")?;
         fs::write(
             &script_path,
-            format!("@echo off\r\nping -n 4 127.0.0.1 > nul\r\necho done>\"{marker}\"\r\nexit /b 0\r\n"),
+            format!(
+                "@echo off\r\nping -n 4 127.0.0.1 > nul\r\necho done>\"{marker}\"\r\nexit /b 0\r\n"
+            ),
         )?;
         Ok(script_path)
     }
