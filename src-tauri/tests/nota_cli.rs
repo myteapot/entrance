@@ -766,6 +766,12 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     )?;
     let report: Value =
         serde_json::from_str(&output).context("nota dev output should be valid JSON")?;
+    let transaction_id = report["transaction"]["id"]
+        .as_i64()
+        .context("transaction id should be present")?;
+    let allocation_id = report["allocation"]["id"]
+        .as_i64()
+        .context("allocation id should be present")?;
     let task_id = report["task_id"]
         .as_i64()
         .context("task id should be present")?;
@@ -784,6 +790,38 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     assert_eq!(task.status, "Done");
     assert!(task.heartbeat_at.is_some());
     assert!(completion_marker.exists());
+
+    let allocations_output = run_nota_cli(&app_data_dir, &["nota", "allocations"])?;
+    let allocations: Value = serde_json::from_str(&allocations_output)
+        .context("detached supervisor allocations should be valid JSON")?;
+    assert_eq!(allocations["allocation_count"], 1);
+    assert_eq!(allocations["allocations"][0]["id"], allocation_id);
+    assert_eq!(allocations["allocations"][0]["status"], "return_ready");
+
+    let receipts_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "receipts",
+            "--transaction-id",
+            &transaction_id.to_string(),
+        ],
+    )?;
+    let receipts: Value = serde_json::from_str(&receipts_output)
+        .context("detached supervisor receipts should be valid JSON")?;
+    assert_eq!(receipts["receipt_count"], 6);
+    assert_eq!(
+        receipts["receipts"][5]["receipt_kind"],
+        "ALLOCATION_TERMINAL_OUTCOME_RECORDED"
+    );
+    let terminal_receipt_payload_json = receipts["receipts"][5]["payload_json"]
+        .as_str()
+        .context("terminal receipt payload_json should be present")?;
+    let terminal_receipt_payload: Value = serde_json::from_str(terminal_receipt_payload_json)
+        .context("terminal receipt payload_json should be valid JSON")?;
+    assert_eq!(terminal_receipt_payload["boundary_kind"], "return");
+    assert_eq!(terminal_receipt_payload["child_execution_status"], "Done");
+    assert_eq!(terminal_receipt_payload["allocation_status"], "return_ready");
 
     Ok(())
 }
