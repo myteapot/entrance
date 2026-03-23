@@ -8,8 +8,8 @@ use serde_json::json;
 use crate::core::data_store::{
     DataStore, NewCadenceLink, NewCadenceObject, NewNotaRuntimeAllocation, NewNotaRuntimeReceipt,
     NewNotaRuntimeTransaction, NotaRuntimeAllocationUpdate, NotaRuntimeTransactionUpdate,
-    StoredCadenceLink, StoredCadenceObject, StoredNotaRuntimeAllocation, StoredNotaRuntimeReceipt,
-    StoredNotaRuntimeTransaction,
+    StoredCadenceLink, StoredCadenceObject, StoredForgeTask, StoredNotaRuntimeAllocation,
+    StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
 };
 use crate::plugins::forge::{
     build_agent_task_request, prepare_agent_dispatch_blocking, ForgePlugin, PreparedAgentDispatch,
@@ -108,6 +108,17 @@ pub struct NotaDoAllocationPayload {
     pub agent_command: Option<String>,
     pub child_dispatch_role: String,
     pub child_dispatch_tool_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_outcome: Option<NotaDoAllocationTerminalOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotaDoAllocationTerminalOutcome {
+    pub boundary_kind: String,
+    pub child_execution_status: String,
+    pub child_execution_status_message: Option<String>,
+    pub target_kind: String,
+    pub target_ref: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -329,6 +340,7 @@ pub fn run_nota_do_agent_dispatch(
         agent_command: request.agent_command.clone(),
         child_dispatch_role: actor_role_slug(dispatch.dispatch_role).to_string(),
         child_dispatch_tool_name: dispatch.dispatch_tool_name.clone(),
+        terminal_outcome: None,
     };
     let allocation_payload_json = serde_json::to_string(&allocation_payload)
         .context("failed to serialize nota allocation payload")?;
@@ -413,6 +425,7 @@ pub fn run_nota_do_agent_dispatch(
         allocation.id,
         NotaRuntimeAllocationUpdate {
             status: transaction_status,
+            payload_json: None,
         },
     )?;
     let launch_receipt_kind = if spawn_error.is_some() {
@@ -439,7 +452,7 @@ pub fn run_nota_do_agent_dispatch(
         data_store,
         NotaCheckpointRequest {
             title: Some(format!("Do allocation: {}", dispatch.issue_id)),
-            stable_level: "single-ingress, checkpointed, DB-first NOTA host with a minimal Do allocation object".to_string(),
+            stable_level: "single-ingress, checkpointed, DB-first NOTA host with a minimal Do allocation object and allocation-owned terminal outcome boundary".to_string(),
             landed: build_do_checkpoint_landed_items(
                 transaction.id,
                 &allocation,
@@ -513,11 +526,126 @@ pub fn list_nota_runtime_transactions(
 pub fn list_nota_runtime_allocations(
     data_store: &DataStore,
 ) -> Result<NotaRuntimeAllocationsReport> {
+    materialize_terminal_allocation_outcomes(data_store)?;
     let allocations = data_store.list_nota_runtime_allocations()?;
     Ok(NotaRuntimeAllocationsReport {
         allocation_count: allocations.len(),
         allocations,
     })
+}
+
+fn materialize_terminal_allocation_outcomes(data_store: &DataStore) -> Result<()> {
+    let allocations = data_store.list_nota_runtime_allocations()?;
+    for allocation in allocations {
+        materialize_terminal_allocation_outcome(data_store, &allocation)?;
+    }
+
+    Ok(())
+}
+
+fn materialize_terminal_allocation_outcome(
+    data_store: &DataStore,
+    allocation: &StoredNotaRuntimeAllocation,
+) -> Result<()> {
+    if allocation.allocation_kind != "forge_agent_dispatch"
+        || allocation.child_execution_kind != "forge_task"
+    {
+        return Ok(());
+    }
+
+    let task_id = allocation
+        .child_execution_ref
+        .parse::<i64>()
+        .with_context(|| {
+            format!(
+                "failed to parse forge task id `{}` for allocation {}",
+                allocation.child_execution_ref, allocation.id
+            )
+        })?;
+    let Some(task) = data_store.get_forge_task(task_id)? else {
+        return Ok(());
+    };
+
+    let Some((status, outcome)) = build_terminal_allocation_outcome(allocation, &task) else {
+        return Ok(());
+    };
+
+    let mut payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse nota allocation payload for allocation {}",
+                allocation.id
+            )
+        })?;
+    if allocation.status == status && payload.terminal_outcome.as_ref() == Some(&outcome) {
+        return Ok(());
+    }
+
+    payload.terminal_outcome = Some(outcome);
+    let payload_json = serde_json::to_string(&payload).with_context(|| {
+        format!(
+            "failed to serialize allocation {} terminal outcome",
+            allocation.id
+        )
+    })?;
+    data_store.update_nota_runtime_allocation(
+        allocation.id,
+        NotaRuntimeAllocationUpdate {
+            status,
+            payload_json: Some(&payload_json),
+        },
+    )?;
+
+    Ok(())
+}
+
+fn build_terminal_allocation_outcome<'a>(
+    allocation: &'a StoredNotaRuntimeAllocation,
+    task: &'a StoredForgeTask,
+) -> Option<(&'static str, NotaDoAllocationTerminalOutcome)> {
+    match task.status.as_str() {
+        "Done" => Some((
+            "return_ready",
+            NotaDoAllocationTerminalOutcome {
+                boundary_kind: "return".to_string(),
+                child_execution_status: task.status.clone(),
+                child_execution_status_message: task.status_message.clone(),
+                target_kind: allocation.return_target_kind.clone(),
+                target_ref: allocation.return_target_ref.clone(),
+            },
+        )),
+        "Blocked" => Some((
+            "escalated_blocked",
+            NotaDoAllocationTerminalOutcome {
+                boundary_kind: "escalation".to_string(),
+                child_execution_status: task.status.clone(),
+                child_execution_status_message: task.status_message.clone(),
+                target_kind: allocation.escalation_target_kind.clone(),
+                target_ref: allocation.escalation_target_ref.clone(),
+            },
+        )),
+        "Failed" => Some((
+            "escalated_failed",
+            NotaDoAllocationTerminalOutcome {
+                boundary_kind: "escalation".to_string(),
+                child_execution_status: task.status.clone(),
+                child_execution_status_message: task.status_message.clone(),
+                target_kind: allocation.escalation_target_kind.clone(),
+                target_ref: allocation.escalation_target_ref.clone(),
+            },
+        )),
+        "Cancelled" => Some((
+            "escalated_cancelled",
+            NotaDoAllocationTerminalOutcome {
+                boundary_kind: "escalation".to_string(),
+                child_execution_status: task.status.clone(),
+                child_execution_status_message: task.status_message.clone(),
+                target_kind: allocation.escalation_target_kind.clone(),
+                target_ref: allocation.escalation_target_ref.clone(),
+            },
+        )),
+        _ => None,
+    }
 }
 
 pub fn admission_policy_for_kind(cadence_kind: &str) -> &'static str {
@@ -591,10 +719,10 @@ fn build_do_checkpoint_remaining_items(
         vec![
             format!("Review Forge task {task_id} output and terminal status."),
             format!(
-                "Expose allocation {allocation_id} through a persistent NOTA read surface without relying on the immediate `Do` response."
+                "Read allocation {allocation_id} back through the persistent NOTA overview surface once the child reaches a terminal state."
             ),
             format!(
-                "Separate return completion and escalation outcomes for allocation {allocation_id} beyond the shared transaction target."
+                "Prove allocation {allocation_id} terminal outcome against a live runtime task without relying on chat reconstruction."
             ),
         ]
     }

@@ -898,6 +898,66 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
         1
     );
 
+    let task_id = do_report["result"]["structuredContent"]["task_id"]
+        .as_i64()
+        .context("nota_do should return a task id")?;
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = ?3, finished_at = ?4 WHERE id = ?1",
+        rusqlite::params![
+            task_id,
+            "Blocked",
+            "请先在 Vault 添加 openai",
+            "2026-03-23T00:00:00Z"
+        ],
+    )?;
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-overview-terminal",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_overview",
+            "arguments": {}
+        }
+    }))?;
+    let blocked_overview = server.read_response()?;
+    assert_eq!(blocked_overview["result"]["isError"], false);
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["allocations"]["allocations"][0]["status"],
+        "escalated_blocked"
+    );
+    let blocked_payload_json = blocked_overview["result"]["structuredContent"]["allocations"]
+        ["allocations"][0]["payload_json"]
+        .as_str()
+        .context("allocation payload_json should be present")?;
+    let blocked_payload: Value = serde_json::from_str(blocked_payload_json)
+        .context("allocation payload_json should stay valid JSON")?;
+    assert_eq!(
+        blocked_payload["terminal_outcome"]["boundary_kind"],
+        "escalation"
+    );
+    assert_eq!(
+        blocked_payload["terminal_outcome"]["child_execution_status"],
+        "Blocked"
+    );
+    assert_eq!(
+        blocked_payload["terminal_outcome"]["child_execution_status_message"],
+        "请先在 Vault 添加 openai"
+    );
+
+    let stored_allocation_outcome = connection.query_row(
+        "SELECT status, payload_json FROM nota_runtime_allocations",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    assert_eq!(stored_allocation_outcome.0, "escalated_blocked");
+    let stored_payload: Value = serde_json::from_str(&stored_allocation_outcome.1)
+        .context("stored allocation payload_json should be valid JSON")?;
+    assert_eq!(
+        stored_payload["terminal_outcome"]["target_kind"],
+        "nota_runtime_transaction"
+    );
+
     Ok(())
 }
 

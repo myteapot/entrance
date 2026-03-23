@@ -772,6 +772,7 @@ pub struct NewNotaRuntimeAllocation<'a> {
 #[derive(Debug, Clone)]
 pub struct NotaRuntimeAllocationUpdate<'a> {
     pub status: &'a str,
+    pub payload_json: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -2552,10 +2553,11 @@ impl DataStore {
                 r#"
                 UPDATE nota_runtime_allocations
                 SET status = ?2,
-                    updated_at = ?3
+                    payload_json = COALESCE(?3, payload_json),
+                    updated_at = ?4
                 WHERE id = ?1
                 "#,
-                params![id, update.status, now],
+                params![id, update.status, update.payload_json, now],
             )?;
 
             fetch_nota_runtime_allocation(conn, id)?
