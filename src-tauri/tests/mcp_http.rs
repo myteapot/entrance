@@ -129,6 +129,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
             "forge_status",
             "forge_cancel",
             "nota_runtime_overview",
+            "nota_runtime_status",
             "nota_runtime_allocations",
             "nota_runtime_receipts",
             "nota_do",
@@ -469,6 +470,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
             "forge_status",
             "forge_cancel",
             "nota_runtime_overview",
+            "nota_runtime_status",
             "nota_runtime_allocations",
             "nota_runtime_receipts",
             "nota_do",
@@ -629,6 +631,76 @@ fn external_client_can_read_nota_runtime_overview_over_http() -> Result<()> {
             ["stable_level"],
         "single-ingress, checkpointed, DB-first NOTA host"
     );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_read_nota_runtime_status_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-status")?;
+    seed_app_state(app_dir.path())?;
+    seed_nota_runtime_overview(app_dir.path())?;
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota-status",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+
+    assert_eq!(status["result"]["isError"], false);
+    assert_eq!(status["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(status["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(status["result"]["permission"]["primitive"], "chat");
+    assert_eq!(status["result"]["permission"]["room"], "surface");
+    assert_eq!(status["result"]["permission"]["targetLayer"], "cold");
+    assert_eq!(status["result"]["structuredContent"]["checkpoint_count"], 1);
+    assert_eq!(
+        status["result"]["structuredContent"]["current_checkpoint_id"],
+        1
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["current_checkpoint"]["payload"]["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["transaction_count"],
+        0
+    );
+    assert!(status["result"]["structuredContent"]["latest_transaction"].is_null());
+    assert_eq!(status["result"]["structuredContent"]["allocation_count"], 0);
+    assert!(status["result"]["structuredContent"]["latest_allocation"].is_null());
+    assert_eq!(status["result"]["structuredContent"]["receipt_count"], 0);
+    assert!(status["result"]["structuredContent"]["latest_receipt"].is_null());
+    assert_eq!(status["result"]["structuredContent"]["decision_count"], 1);
+    assert_eq!(
+        status["result"]["structuredContent"]["latest_decision"]["title"],
+        "Chat is the continuity surface"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["chat_capture_count"],
+        1
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["chat_policy"]["setting"]["archive_policy"],
+        "full"
+    );
+    assert!(status["result"]["structuredContent"]["recommended_checkpoint"].is_null());
 
     Ok(())
 }

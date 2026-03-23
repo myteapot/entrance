@@ -270,6 +270,34 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     );
     assert!(overview["recommended_checkpoint"].is_null());
 
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["checkpoint_count"], 1);
+    assert_eq!(status["current_checkpoint_id"], report["checkpoint"]["id"]);
+    assert_eq!(
+        status["current_checkpoint"]["payload"]["selected_trunk"],
+        "Do allocation storage cut"
+    );
+    assert_eq!(status["transaction_count"], 1);
+    assert_eq!(
+        status["latest_transaction"]["id"],
+        report["transaction"]["id"]
+    );
+    assert_eq!(status["allocation_count"], 1);
+    assert_eq!(
+        status["latest_allocation"]["id"],
+        report["allocation"]["id"]
+    );
+    assert_eq!(status["receipt_count"], 5);
+    assert_eq!(
+        status["latest_receipt"]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
+    assert_eq!(status["decision_count"], 0);
+    assert_eq!(status["chat_capture_count"], 0);
+    assert!(status["recommended_checkpoint"].is_null());
+
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
     assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
     assert_eq!(count_rows(&connection, "nota_runtime_allocations")?, 1);
@@ -431,6 +459,22 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
             "Treat lineage `{}` as the canonical single-lane allocator thread until the blocked gate is cleared.",
             lineage_ref
         )
+    );
+
+    let blocked_status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let blocked_status: Value = serde_json::from_str(&blocked_status_output)
+        .context("blocked nota status output should be valid JSON")?;
+    assert_eq!(
+        blocked_status["latest_allocation"]["status"],
+        "escalated_blocked"
+    );
+    assert_eq!(
+        blocked_status["latest_receipt"]["receipt_kind"],
+        "ALLOCATION_TERMINAL_OUTCOME_RECORDED"
+    );
+    assert_eq!(
+        blocked_status["recommended_checkpoint"]["selected_trunk"],
+        "single-lane honest allocator continuity"
     );
 
     let stored_allocation_outcome = connection.query_row(

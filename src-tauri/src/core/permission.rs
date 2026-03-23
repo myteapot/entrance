@@ -87,7 +87,7 @@ const COLD_LEARN_NOTA: McpToolPermission = McpToolPermission::new(
 
 pub fn permission_for_mcp_tool(name: &str) -> Option<McpToolPermission> {
     match name {
-        "nota_runtime_overview" => Some(COLD_CHAT_NOTA),
+        "nota_runtime_overview" | "nota_runtime_status" => Some(COLD_CHAT_NOTA),
         "nota_do" => Some(HOT_DO_NOTA),
         "nota_write_checkpoint" => Some(COLD_LEARN_NOTA),
         "forge_prepare_dispatch"
@@ -111,6 +111,7 @@ mod tests {
     fn current_dispatch_tools_are_mapped_into_valid_action_records() {
         for name in [
             "nota_runtime_overview",
+            "nota_runtime_status",
             "nota_do",
             "nota_write_checkpoint",
             "forge_prepare_dispatch",
@@ -192,6 +193,19 @@ mod tests {
     fn nota_runtime_overview_is_nota_owned_cold_surface_tool() {
         assert_eq!(
             permission_for_mcp_tool("nota_runtime_overview"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Chat,
+                ActionRoom::Surface,
+                KnowledgeLayer::Cold,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_runtime_status_is_nota_owned_cold_surface_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_runtime_status"),
             Some(super::McpToolPermission::new(
                 ActorRole::Nota,
                 ActionPrimitive::Chat,

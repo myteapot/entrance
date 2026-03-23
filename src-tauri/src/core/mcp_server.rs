@@ -16,7 +16,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::build_nota_runtime_overview;
 use crate::core::{
     action::ActorRole,
     bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
@@ -40,6 +39,7 @@ use crate::plugins::{
     launcher::LauncherPlugin,
     vault::VaultPlugin,
 };
+use crate::{build_nota_runtime_overview, build_nota_runtime_status};
 
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -289,6 +289,7 @@ impl McpServer {
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
             "nota_runtime_overview" => self.handle_nota_runtime_overview(),
+            "nota_runtime_status" => self.handle_nota_runtime_status(),
             "nota_runtime_allocations" => self.handle_nota_runtime_allocations(),
             "nota_runtime_receipts" => self.handle_nota_runtime_receipts(arguments),
             "nota_do" => self.handle_nota_do(arguments),
@@ -636,6 +637,15 @@ impl McpServer {
             .as_ref()
             .context("core data store is not available on the current MCP surface")?;
         Ok(json!(build_nota_runtime_overview(data_store)?))
+    }
+
+    fn handle_nota_runtime_status(&self) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        Ok(json!(build_nota_runtime_status(data_store)?))
     }
 
     fn handle_nota_runtime_allocations(&self) -> Result<Value> {
@@ -1056,6 +1066,17 @@ fn build_tool_descriptors(
         tools.push(McpToolDescriptor {
             name: "nota_runtime_overview",
             description: "Read the current NOTA runtime continuity bundle that powers `entrance nota overview`.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "nota_runtime_status",
+            description:
+                "Read the compact NOTA runtime status panel that powers `entrance nota status`.",
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -1649,6 +1670,7 @@ mod tests {
                 "forge_status",
                 "forge_cancel",
                 "nota_runtime_overview",
+                "nota_runtime_status",
                 "nota_runtime_allocations",
                 "nota_runtime_receipts",
                 "nota_do",
@@ -1681,6 +1703,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_overview")
             .expect("nota_runtime_overview should exist");
+        let nota_status = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_runtime_status")
+            .expect("nota_runtime_status should exist");
         let nota_allocations = tools
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_allocations")
@@ -1716,6 +1742,11 @@ mod tests {
         assert_eq!(nota_overview["permission"]["room"], "surface");
         assert_eq!(nota_overview["permission"]["targetLayer"], "cold");
         assert!(nota_overview["dispatchRole"].is_null());
+        assert_eq!(nota_status["permission"]["actorRole"], "nota");
+        assert_eq!(nota_status["permission"]["primitive"], "chat");
+        assert_eq!(nota_status["permission"]["room"], "surface");
+        assert_eq!(nota_status["permission"]["targetLayer"], "cold");
+        assert!(nota_status["dispatchRole"].is_null());
         assert_eq!(nota_allocations["permission"]["actorRole"], "nota");
         assert_eq!(nota_allocations["permission"]["primitive"], "chat");
         assert_eq!(nota_allocations["permission"]["room"], "surface");
@@ -1808,6 +1839,7 @@ mod tests {
                 "forge_status",
                 "forge_cancel",
                 "nota_runtime_overview",
+                "nota_runtime_status",
                 "nota_runtime_allocations",
                 "nota_runtime_receipts",
                 "nota_do",
@@ -1832,6 +1864,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_overview")
             .expect("nota_runtime_overview should exist on nota surface");
+        let status_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_runtime_status")
+            .expect("nota_runtime_status should exist on nota surface");
         let allocations_tool = tools
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_allocations")
@@ -1853,6 +1889,9 @@ mod tests {
         assert_eq!(overview_tool["permission"]["primitive"], "chat");
         assert_eq!(overview_tool["permission"]["room"], "surface");
         assert_eq!(overview_tool["permission"]["targetLayer"], "cold");
+        assert_eq!(status_tool["permission"]["primitive"], "chat");
+        assert_eq!(status_tool["permission"]["room"], "surface");
+        assert_eq!(status_tool["permission"]["targetLayer"], "cold");
         assert_eq!(allocations_tool["permission"]["actorRole"], "nota");
         assert_eq!(allocations_tool["permission"]["primitive"], "chat");
         assert_eq!(allocations_tool["permission"]["room"], "surface");

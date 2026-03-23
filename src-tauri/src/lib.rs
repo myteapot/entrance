@@ -24,7 +24,10 @@ use core::{
         ChatArchivePolicyReport, ChatArchivePolicyRequest, ChatCaptureListReport,
         ChatCaptureRequest,
     },
-    data_store::StoredSourceIngestRun,
+    data_store::{
+        StoredDecisionRecord, StoredNotaRuntimeAllocation, StoredNotaRuntimeReceipt,
+        StoredNotaRuntimeTransaction, StoredSourceIngestRun,
+    },
     design_governance::{
         list_design_decisions, record_design_decision, DesignDecisionListReport,
         DesignDecisionRequest,
@@ -113,6 +116,30 @@ pub(crate) struct NotaRuntimeOverview {
     recommended_checkpoint: Option<NotaCheckpointRequest>,
     decisions: DesignDecisionListReport,
     chat_captures: ChatCaptureListReport,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct NotaRuntimeStatus {
+    chat_policy: ChatArchivePolicyReport,
+    checkpoint_count: usize,
+    current_checkpoint_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_checkpoint: Option<core::nota_runtime::NotaCheckpointRecord>,
+    transaction_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_transaction: Option<StoredNotaRuntimeTransaction>,
+    allocation_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_allocation: Option<StoredNotaRuntimeAllocation>,
+    receipt_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_receipt: Option<StoredNotaRuntimeReceipt>,
+    decision_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_decision: Option<StoredDecisionRecord>,
+    chat_capture_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recommended_checkpoint: Option<NotaCheckpointRequest>,
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -435,6 +462,9 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "overview" => {
             print_json(&build_nota_runtime_overview(&startup.data_store())?)
         }
+        [command] if command == "status" => {
+            print_json(&build_nota_runtime_status(&startup.data_store())?)
+        }
         [command] if command == "chat-policy" => {
             print_json(&get_chat_archive_policy(&startup.data_store(), None, None)?)
         }
@@ -505,7 +535,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&write_runtime_checkpoint(&startup.data_store(), request)?)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -1249,11 +1279,56 @@ pub(crate) fn build_nota_runtime_overview(
     })
 }
 
+pub(crate) fn build_nota_runtime_status(
+    data_store: &core::data_store::DataStore,
+) -> Result<NotaRuntimeStatus> {
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    let current_checkpoint = checkpoints
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+        .cloned();
+    let transactions = list_nota_runtime_transactions(data_store)?;
+    let allocations = list_nota_runtime_allocations(data_store)?;
+    let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let decisions = list_design_decisions(data_store)?;
+    let chat_captures = list_chat_captures(data_store)?;
+    let recommended_checkpoint = recommend_single_lane_allocator_checkpoint(
+        data_store,
+        &allocations.allocations,
+        current_checkpoint.as_ref(),
+    )?;
+
+    Ok(NotaRuntimeStatus {
+        chat_policy: get_chat_archive_policy(data_store, None, None)?,
+        checkpoint_count: checkpoints.checkpoint_count,
+        current_checkpoint_id: checkpoints.current_checkpoint_id,
+        current_checkpoint,
+        transaction_count: transactions.transaction_count,
+        latest_transaction: transactions.transactions.first().cloned(),
+        allocation_count: allocations.allocation_count,
+        latest_allocation: allocations.allocations.first().cloned(),
+        receipt_count: receipts.receipt_count,
+        latest_receipt: receipts.receipts.last().cloned(),
+        decision_count: decisions.decision_count,
+        latest_decision: decisions.decisions.first().cloned(),
+        chat_capture_count: chat_captures.capture_count,
+        recommended_checkpoint,
+    })
+}
+
 #[tauri::command]
 fn nota_runtime_overview(
     data_store: tauri::State<'_, core::data_store::DataStore>,
 ) -> Result<NotaRuntimeOverview, String> {
     build_nota_runtime_overview(&data_store).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn nota_runtime_status(
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<NotaRuntimeStatus, String> {
+    build_nota_runtime_status(&data_store).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1334,6 +1409,7 @@ pub fn run() {
             launcher_hotkey,
             dashboard_summary,
             nota_runtime_overview,
+            nota_runtime_status,
             landing_import_snapshot,
             landing_list_ingest_runs,
             landing_list_mirror_items,
