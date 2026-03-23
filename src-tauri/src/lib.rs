@@ -26,7 +26,7 @@ use core::{
     },
     data_store::{
         StoredDecisionRecord, StoredNotaRuntimeAllocation, StoredNotaRuntimeReceipt,
-        StoredNotaRuntimeTransaction, StoredSourceIngestRun,
+        StoredNotaRuntimeTransaction, StoredSourceIngestRun, StoredTodoRecord, StoredVisionRecord,
     },
     design_governance::{
         list_design_decisions, record_design_decision, DesignDecisionListReport,
@@ -45,11 +45,10 @@ use core::{
     nota_runtime::{
         list_nota_runtime_allocations, list_nota_runtime_receipts, list_nota_runtime_transactions,
         list_runtime_checkpoints, materialize_runtime_closure_checkpoint,
-        recommend_runtime_closure_checkpoint, run_nota_dev_dispatch,
-        run_nota_do_agent_dispatch, write_runtime_checkpoint,
-        NotaCheckpointListReport, NotaCheckpointRequest, NotaDevDispatchRequest,
-        NotaDispatchExecutionHost, NotaDoAgentDispatchRequest, NotaRuntimeAllocationsReport,
-        NotaRuntimeTransactionsReport,
+        recommend_runtime_closure_checkpoint, run_nota_dev_dispatch, run_nota_do_agent_dispatch,
+        write_runtime_checkpoint, NotaCheckpointListReport, NotaCheckpointRequest,
+        NotaDevDispatchRequest, NotaDispatchExecutionHost, NotaDoAgentDispatchRequest,
+        NotaRuntimeAllocationsReport, NotaRuntimeTransactionsReport,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -142,6 +141,18 @@ pub(crate) struct NotaRuntimeStatus {
     chat_capture_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct NotaTodoListReport {
+    todo_count: usize,
+    todos: Vec<StoredTodoRecord>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct NotaVisionListReport {
+    vision_count: usize,
+    visions: Vec<StoredVisionRecord>,
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -482,6 +493,8 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "decisions" => {
             print_json(&list_design_decisions(&startup.data_store())?)
         }
+        [command] if command == "visions" => print_json(&list_nota_visions(&startup.data_store())?),
+        [command] if command == "todos" => print_json(&list_nota_todos(&startup.data_store())?),
         [command] if command == "allocations" => {
             print_json(&list_nota_runtime_allocations(&startup.data_store())?)
         }
@@ -570,7 +583,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             &materialize_runtime_closure_checkpoint(&startup.data_store())?,
         ),
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -820,10 +833,13 @@ fn run_forge_supervise_task_cli(task_id: i64) -> Result<()> {
     forge_plugin.engine().spawn_task(task_id)?;
 
     loop {
-        let task = forge_plugin
-            .get_task(task_id)?
-            .ok_or_else(|| anyhow::anyhow!("forge task `{task_id}` disappeared during supervision"))?;
-        if matches!(task.status.as_str(), "Done" | "Failed" | "Cancelled" | "Blocked") {
+        let task = forge_plugin.get_task(task_id)?.ok_or_else(|| {
+            anyhow::anyhow!("forge task `{task_id}` disappeared during supervision")
+        })?;
+        if matches!(
+            task.status.as_str(),
+            "Done" | "Failed" | "Cancelled" | "Blocked"
+        ) {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -924,38 +940,30 @@ fn parse_nota_dispatch_args(
     while index < args.len() {
         match args[index].as_str() {
             "--project-dir" => {
-                let value = args
-                    .get(index + 1)
-                    .with_context(|| {
-                        format!("`entrance nota {command_name} --project-dir` requires a value")
-                    })?;
+                let value = args.get(index + 1).with_context(|| {
+                    format!("`entrance nota {command_name} --project-dir` requires a value")
+                })?;
                 request.project_dir = Some(value.to_string());
                 index += 2;
             }
             "--model" => {
-                let value = args
-                    .get(index + 1)
-                    .with_context(|| {
-                        format!("`entrance nota {command_name} --model` requires a value")
-                    })?;
+                let value = args.get(index + 1).with_context(|| {
+                    format!("`entrance nota {command_name} --model` requires a value")
+                })?;
                 request.model = value.to_string();
                 index += 2;
             }
             "--agent-command" => {
-                let value = args
-                    .get(index + 1)
-                    .with_context(|| {
-                        format!("`entrance nota {command_name} --agent-command` requires a value")
-                    })?;
+                let value = args.get(index + 1).with_context(|| {
+                    format!("`entrance nota {command_name} --agent-command` requires a value")
+                })?;
                 request.agent_command = Some(value.to_string());
                 index += 2;
             }
             "--title" => {
-                let value = args
-                    .get(index + 1)
-                    .with_context(|| {
-                        format!("`entrance nota {command_name} --title` requires a value")
-                    })?;
+                let value = args.get(index + 1).with_context(|| {
+                    format!("`entrance nota {command_name} --title` requires a value")
+                })?;
                 request.title = Some(value.to_string());
                 index += 2;
             }
@@ -1403,6 +1411,26 @@ pub(crate) fn build_nota_runtime_status(
         latest_decision: decisions.decisions.first().cloned(),
         chat_capture_count: chat_captures.capture_count,
         recommended_checkpoint,
+    })
+}
+
+pub(crate) fn list_nota_todos(
+    data_store: &core::data_store::DataStore,
+) -> Result<NotaTodoListReport> {
+    let todos = data_store.list_todo_records()?;
+    Ok(NotaTodoListReport {
+        todo_count: todos.len(),
+        todos,
+    })
+}
+
+pub(crate) fn list_nota_visions(
+    data_store: &core::data_store::DataStore,
+) -> Result<NotaVisionListReport> {
+    let visions = data_store.list_vision_records()?;
+    Ok(NotaVisionListReport {
+        vision_count: visions.len(),
+        visions,
     })
 }
 

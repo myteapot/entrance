@@ -1300,6 +1300,91 @@ fn nota_overview_cli_returns_db_first_continuity_bundle() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn nota_cli_reads_canonical_vision_and_todo_surfaces() -> Result<()> {
+    let temp_dir = TempDir::new("vision-todo-surfaces")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(&app_data_dir, &["nota", "status"])?;
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute(
+        r#"
+        INSERT INTO visions (
+            id, title, statement, horizon, vision_status, scope_type, scope_ref,
+            source_ref, confidence, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+        rusqlite::params![
+            1,
+            "Headless NOTA planning surface",
+            "Vision and todo truth should be readable without reopening recovery tables.",
+            "v0",
+            "active",
+            "project",
+            "Entrance",
+            "nota:test:vision-surface",
+            0.97,
+            "2026-03-24T00:00:00Z",
+            "2026-03-24T00:05:00Z"
+        ],
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO todos (
+            id, title, status, priority, project, created_at, done_at, temperature,
+            due_on, remind_every_days, remind_next_on, last_reminded_at, reminder_status
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12)
+        "#,
+        rusqlite::params![
+            1,
+            "Land the first nota vision/todo read surface",
+            "pending",
+            1,
+            "Entrance",
+            "2026-03-24T00:10:00Z",
+            "warm",
+            "",
+            0,
+            "",
+            "",
+            "none"
+        ],
+    )?;
+
+    let visions_output = run_nota_cli(&app_data_dir, &["nota", "visions"])?;
+    let visions: Value = serde_json::from_str(&visions_output)
+        .context("nota visions output should be valid JSON")?;
+    assert_eq!(visions["vision_count"], 1);
+    assert_eq!(
+        visions["visions"][0]["title"],
+        "Headless NOTA planning surface"
+    );
+    assert_eq!(visions["visions"][0]["vision_status"], "active");
+    assert_eq!(visions["visions"][0]["scope_ref"], "Entrance");
+    assert_eq!(
+        visions["visions"][0]["source_ref"],
+        "nota:test:vision-surface"
+    );
+
+    let todos_output = run_nota_cli(&app_data_dir, &["nota", "todos"])?;
+    let todos: Value =
+        serde_json::from_str(&todos_output).context("nota todos output should be valid JSON")?;
+    assert_eq!(todos["todo_count"], 1);
+    assert_eq!(
+        todos["todos"][0]["title"],
+        "Land the first nota vision/todo read surface"
+    );
+    assert_eq!(todos["todos"][0]["status"], "pending");
+    assert_eq!(todos["todos"][0]["priority"], 1);
+    assert_eq!(todos["todos"][0]["project"], "Entrance");
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(

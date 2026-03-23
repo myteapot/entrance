@@ -408,6 +408,38 @@ pub struct StoredChatCaptureRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StoredTodoRecord {
+    pub id: i64,
+    pub title: String,
+    pub status: String,
+    pub priority: i64,
+    pub project: String,
+    pub created_at: String,
+    pub done_at: Option<String>,
+    pub temperature: String,
+    pub due_on: String,
+    pub remind_every_days: i64,
+    pub remind_next_on: String,
+    pub last_reminded_at: String,
+    pub reminder_status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredVisionRecord {
+    pub id: i64,
+    pub title: String,
+    pub statement: String,
+    pub horizon: String,
+    pub vision_status: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub source_ref: String,
+    pub confidence: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredMemoryFragment {
     pub id: i64,
     pub title: String,
@@ -2773,6 +2805,34 @@ impl DataStore {
         })
     }
 
+    pub fn list_todo_records(&self) -> Result<Vec<StoredTodoRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    title,
+                    status,
+                    priority,
+                    project,
+                    created_at,
+                    done_at,
+                    temperature,
+                    due_on,
+                    remind_every_days,
+                    remind_next_on,
+                    last_reminded_at,
+                    reminder_status
+                FROM todos
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_todo_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_instinct_record(&self, record: UpsertInstinctRecord<'_>) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute(
@@ -3195,6 +3255,32 @@ impl DataStore {
                 ],
             )?;
             Ok(())
+        })
+    }
+
+    pub fn list_vision_records(&self) -> Result<Vec<StoredVisionRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    title,
+                    statement,
+                    horizon,
+                    vision_status,
+                    scope_type,
+                    scope_ref,
+                    source_ref,
+                    confidence,
+                    created_at,
+                    updated_at
+                FROM visions
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_vision_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
         })
     }
 
@@ -3666,6 +3752,40 @@ fn map_chat_capture_record_row(
         linked_decision_id: row.get(9)?,
         status: row.get(10)?,
         created_at: row.get(11)?,
+    })
+}
+
+fn map_todo_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTodoRecord> {
+    Ok(StoredTodoRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        status: row.get(2)?,
+        priority: row.get(3)?,
+        project: row.get(4)?,
+        created_at: row.get(5)?,
+        done_at: row.get(6)?,
+        temperature: row.get(7)?,
+        due_on: row.get(8)?,
+        remind_every_days: row.get(9)?,
+        remind_next_on: row.get(10)?,
+        last_reminded_at: row.get(11)?,
+        reminder_status: row.get(12)?,
+    })
+}
+
+fn map_vision_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVisionRecord> {
+    Ok(StoredVisionRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        statement: row.get(2)?,
+        horizon: row.get(3)?,
+        vision_status: row.get(4)?,
+        scope_type: row.get(5)?,
+        scope_ref: row.get(6)?,
+        source_ref: row.get(7)?,
+        confidence: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 
