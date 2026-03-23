@@ -25,10 +25,16 @@ const CORE_NOTA_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0007_create_core_nota_runtime_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 3] = [
+const CORE_NOTA_DO_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
+    name: "0008_create_core_nota_do_runtime_tables",
+    sql: include_str!("../../migrations/0008_create_core_nota_do_runtime_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 4] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
+    CORE_NOTA_DO_RUNTIME_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -277,6 +283,31 @@ pub struct StoredCadenceLink {
     pub src_cadence_object_id: i64,
     pub dst_cadence_object_id: i64,
     pub relation_type: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredNotaRuntimeTransaction {
+    pub id: i64,
+    pub actor_role: String,
+    pub surface_action: String,
+    pub transaction_kind: String,
+    pub title: String,
+    pub payload_json: String,
+    pub status: String,
+    pub forge_task_id: Option<i64>,
+    pub cadence_checkpoint_id: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredNotaRuntimeReceipt {
+    pub id: i64,
+    pub transaction_id: i64,
+    pub receipt_kind: String,
+    pub payload_json: String,
     pub status: String,
     pub created_at: String,
 }
@@ -554,6 +585,33 @@ pub struct NewCadenceLink<'a> {
     pub src_cadence_object_id: i64,
     pub dst_cadence_object_id: i64,
     pub relation_type: &'a str,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewNotaRuntimeTransaction<'a> {
+    pub actor_role: &'a str,
+    pub surface_action: &'a str,
+    pub transaction_kind: &'a str,
+    pub title: &'a str,
+    pub payload_json: &'a str,
+    pub status: &'a str,
+    pub forge_task_id: Option<i64>,
+    pub cadence_checkpoint_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaRuntimeTransactionUpdate<'a> {
+    pub status: &'a str,
+    pub forge_task_id: Option<i64>,
+    pub cadence_checkpoint_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewNotaRuntimeReceipt<'a> {
+    pub transaction_id: i64,
+    pub receipt_kind: &'a str,
+    pub payload_json: &'a str,
     pub status: &'a str,
 }
 
@@ -2097,6 +2155,184 @@ impl DataStore {
         })
     }
 
+    pub fn insert_nota_runtime_transaction(
+        &self,
+        record: NewNotaRuntimeTransaction<'_>,
+    ) -> Result<StoredNotaRuntimeTransaction> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO nota_runtime_transactions (
+                    actor_role,
+                    surface_action,
+                    transaction_kind,
+                    title,
+                    payload_json,
+                    status,
+                    forge_task_id,
+                    cadence_checkpoint_id,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                "#,
+                params![
+                    record.actor_role,
+                    record.surface_action,
+                    record.transaction_kind,
+                    record.title,
+                    record.payload_json,
+                    record.status,
+                    record.forge_task_id,
+                    record.cadence_checkpoint_id,
+                    now,
+                ],
+            )?;
+
+            fetch_nota_runtime_transaction(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("nota runtime transaction disappeared after insert"))
+        })
+    }
+
+    pub fn update_nota_runtime_transaction(
+        &self,
+        id: i64,
+        update: NotaRuntimeTransactionUpdate<'_>,
+    ) -> Result<StoredNotaRuntimeTransaction> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                UPDATE nota_runtime_transactions
+                SET status = ?2,
+                    forge_task_id = COALESCE(?3, forge_task_id),
+                    cadence_checkpoint_id = COALESCE(?4, cadence_checkpoint_id),
+                    updated_at = ?5
+                WHERE id = ?1
+                "#,
+                params![
+                    id,
+                    update.status,
+                    update.forge_task_id,
+                    update.cadence_checkpoint_id,
+                    now,
+                ],
+            )?;
+
+            fetch_nota_runtime_transaction(conn, id)?
+                .ok_or_else(|| anyhow!("nota runtime transaction `{id}` does not exist"))
+        })
+    }
+
+    pub fn get_nota_runtime_transaction(
+        &self,
+        id: i64,
+    ) -> Result<Option<StoredNotaRuntimeTransaction>> {
+        self.with_connection(|conn| fetch_nota_runtime_transaction(conn, id))
+    }
+
+    pub fn list_nota_runtime_transactions(&self) -> Result<Vec<StoredNotaRuntimeTransaction>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    actor_role,
+                    surface_action,
+                    transaction_kind,
+                    title,
+                    payload_json,
+                    status,
+                    forge_task_id,
+                    cadence_checkpoint_id,
+                    created_at,
+                    updated_at
+                FROM nota_runtime_transactions
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_nota_runtime_transaction_row)?;
+            let transactions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(transactions)
+        })
+    }
+
+    pub fn append_nota_runtime_receipt(
+        &self,
+        record: NewNotaRuntimeReceipt<'_>,
+    ) -> Result<StoredNotaRuntimeReceipt> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO nota_runtime_receipts (
+                    transaction_id,
+                    receipt_kind,
+                    payload_json,
+                    status,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    record.transaction_id,
+                    record.receipt_kind,
+                    record.payload_json,
+                    record.status,
+                    now,
+                ],
+            )?;
+
+            fetch_nota_runtime_receipt(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("nota runtime receipt disappeared after insert"))
+        })
+    }
+
+    pub fn list_nota_runtime_receipts(
+        &self,
+        transaction_id: Option<i64>,
+    ) -> Result<Vec<StoredNotaRuntimeReceipt>> {
+        self.with_connection(|conn| {
+            let mut stmt = if transaction_id.is_some() {
+                conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        transaction_id,
+                        receipt_kind,
+                        payload_json,
+                        status,
+                        created_at
+                    FROM nota_runtime_receipts
+                    WHERE transaction_id = ?1
+                    ORDER BY id ASC
+                    "#,
+                )?
+            } else {
+                conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        transaction_id,
+                        receipt_kind,
+                        payload_json,
+                        status,
+                        created_at
+                    FROM nota_runtime_receipts
+                    ORDER BY id ASC
+                    "#,
+                )?
+            };
+
+            let rows = if let Some(transaction_id) = transaction_id {
+                stmt.query_map([transaction_id], map_nota_runtime_receipt_row)?
+            } else {
+                stmt.query_map([], map_nota_runtime_receipt_row)?
+            };
+            let receipts = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(receipts)
+        })
+    }
+
     pub fn list_memory_fragment_records(&self) -> Result<Vec<StoredMemoryFragment>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
@@ -2739,6 +2975,37 @@ fn map_cadence_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCaden
     })
 }
 
+fn map_nota_runtime_transaction_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredNotaRuntimeTransaction> {
+    Ok(StoredNotaRuntimeTransaction {
+        id: row.get(0)?,
+        actor_role: row.get(1)?,
+        surface_action: row.get(2)?,
+        transaction_kind: row.get(3)?,
+        title: row.get(4)?,
+        payload_json: row.get(5)?,
+        status: row.get(6)?,
+        forge_task_id: row.get(7)?,
+        cadence_checkpoint_id: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn map_nota_runtime_receipt_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredNotaRuntimeReceipt> {
+    Ok(StoredNotaRuntimeReceipt {
+        id: row.get(0)?,
+        transaction_id: row.get(1)?,
+        receipt_kind: row.get(2)?,
+        payload_json: row.get(3)?,
+        status: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
 fn map_memory_fragment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemoryFragment> {
     Ok(StoredMemoryFragment {
         id: row.get(0)?,
@@ -3104,6 +3371,59 @@ fn fetch_cadence_link(
             "#,
             params![src_cadence_object_id, dst_cadence_object_id, relation_type],
             map_cadence_link_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_nota_runtime_transaction(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredNotaRuntimeTransaction>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                actor_role,
+                surface_action,
+                transaction_kind,
+                title,
+                payload_json,
+                status,
+                forge_task_id,
+                cadence_checkpoint_id,
+                created_at,
+                updated_at
+            FROM nota_runtime_transactions
+            WHERE id = ?1
+            "#,
+            [id],
+            map_nota_runtime_transaction_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_nota_runtime_receipt(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredNotaRuntimeReceipt>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                transaction_id,
+                receipt_kind,
+                payload_json,
+                status,
+                created_at
+            FROM nota_runtime_receipts
+            WHERE id = ?1
+            "#,
+            [id],
+            map_nota_runtime_receipt_row,
         )
         .optional()
         .map_err(Into::into)

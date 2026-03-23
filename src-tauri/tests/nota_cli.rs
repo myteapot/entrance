@@ -119,6 +119,81 @@ fn nota_checkpoint_cli_persists_cadence_checkpoint_without_memory_fragment_fallb
     Ok(())
 }
 
+#[test]
+fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<()> {
+    let temp_dir = TempDir::new("do-dispatch")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_forge_app_state(&app_data_dir)?;
+
+    let project_root = temp_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    fs::create_dir_all(&bootstrap_skill)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let fake_agent = temp_dir.path().join("fake-agent.cmd");
+    fs::write(&fake_agent, "@echo off\r\nexit /b 0\r\n")?;
+
+    let output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "do",
+            "--project-dir",
+            project_root
+                .to_str()
+                .context("project root should be valid UTF-8")?,
+            "--model",
+            "codex",
+            "--agent-command",
+            fake_agent
+                .to_str()
+                .context("fake agent path should be valid UTF-8")?,
+            "--title",
+            "Do dispatch MYT-48",
+        ],
+    )?;
+    let report: Value =
+        serde_json::from_str(&output).context("nota do output should be valid JSON")?;
+    assert_eq!(report["transaction"]["surface_action"], "do");
+    assert_eq!(
+        report["transaction"]["transaction_kind"],
+        "forge_agent_dispatch"
+    );
+    assert_eq!(report["dispatch"]["issue_id"], "MYT-48");
+    assert_eq!(report["checkpoint"]["cadence_kind"], "CADENCE_CHECKPOINT");
+    assert_eq!(report["spawn_error"], Value::Null);
+    assert_eq!(
+        report["receipts"]
+            .as_array()
+            .context("receipts should be an array")?
+            .len(),
+        4
+    );
+
+    let transactions_output = run_nota_cli(&app_data_dir, &["nota", "transactions"])?;
+    let transactions: Value = serde_json::from_str(&transactions_output)
+        .context("nota transactions output should be valid JSON")?;
+    assert_eq!(transactions["transaction_count"], 1);
+    assert_eq!(transactions["transactions"][0]["surface_action"], "do");
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
+    assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 4);
+    assert_eq!(count_rows(&connection, "cadence_objects")?, 1);
+    assert_eq!(count_rows(&connection, "plugin_forge_tasks")?, 1);
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(
@@ -141,6 +216,50 @@ http_port = 9721
 enabled = false
 "#,
     )?;
+
+    Ok(())
+}
+
+fn seed_forge_app_state(app_data_dir: &Path) -> Result<()> {
+    fs::create_dir_all(app_data_dir)?;
+    fs::write(
+        app_data_dir.join("entrance.toml"),
+        r#"[core]
+theme = "dark"
+log_level = "info"
+mcp_enabled = false
+
+[plugins.launcher]
+enabled = false
+hotkey = "Alt+Space"
+scan_paths = []
+
+[plugins.forge]
+enabled = true
+http_port = 9721
+
+[plugins.vault]
+enabled = false
+"#,
+    )?;
+
+    Ok(())
+}
+
+fn init_git_repo(path: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(path)
+        .output()
+        .with_context(|| format!("failed to initialize git repo at {}", path.display()))?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "git init failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
 
     Ok(())
 }

@@ -31,7 +31,8 @@ use core::{
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
-        list_runtime_checkpoints, write_runtime_checkpoint, NotaCheckpointRequest,
+        list_nota_runtime_transactions, list_runtime_checkpoints, run_nota_do_agent_dispatch,
+        write_runtime_checkpoint, NotaCheckpointRequest, NotaDoAgentDispatchRequest,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -410,12 +411,40 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "checkpoints" => {
             print_json(&list_runtime_checkpoints(&startup.data_store())?)
         }
+        [command] if command == "transactions" => {
+            print_json(&list_nota_runtime_transactions(&startup.data_store())?)
+        }
+        [command, rest @ ..] if command == "do" => {
+            if !startup.forge_enabled() {
+                bail!("Forge is disabled in entrance.toml");
+            }
+
+            let request = parse_nota_do_args(rest)?;
+            let config = startup.config_store();
+            let forge_config = &config.config().plugins.forge;
+            let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
+            let project_dir = request.project_dir.or_else(|| forge_config.project_dir.clone());
+            let agent_command = request
+                .agent_command
+                .or_else(|| forge_config.agent_command.clone());
+
+            print_json(&run_nota_do_agent_dispatch(
+                &startup.data_store(),
+                &forge_plugin,
+                NotaDoAgentDispatchRequest {
+                    project_dir,
+                    model: request.model,
+                    agent_command,
+                    title: request.title,
+                },
+            )?)
+        }
         [command, rest @ ..] if command == "checkpoint" => {
             let request = parse_nota_checkpoint_args(rest)?;
             print_json(&write_runtime_checkpoint(&startup.data_store(), request)?)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]` or `entrance nota checkpoints`"
+            "unsupported nota command, expected `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, or `entrance nota transactions`"
         ),
     }
 }
@@ -679,6 +708,52 @@ fn parse_nota_checkpoint_args(args: &[String]) -> Result<NotaCheckpointRequest> 
                 index += 2;
             }
             other => bail!("unsupported nota checkpoint argument `{other}`"),
+        }
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_do_args(args: &[String]) -> Result<NotaDoAgentDispatchRequest> {
+    let mut request = NotaDoAgentDispatchRequest {
+        project_dir: None,
+        model: "codex".to_string(),
+        agent_command: None,
+        title: None,
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--project-dir" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota do --project-dir` requires a value")?;
+                request.project_dir = Some(value.to_string());
+                index += 2;
+            }
+            "--model" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota do --model` requires a value")?;
+                request.model = value.to_string();
+                index += 2;
+            }
+            "--agent-command" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota do --agent-command` requires a value")?;
+                request.agent_command = Some(value.to_string());
+                index += 2;
+            }
+            "--title" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota do --title` requires a value")?;
+                request.title = Some(value.to_string());
+                index += 2;
+            }
+            other => bail!("unsupported nota do argument `{other}`"),
         }
     }
 
