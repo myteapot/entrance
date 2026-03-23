@@ -203,6 +203,15 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     assert_eq!(transactions["transaction_count"], 1);
     assert_eq!(transactions["transactions"][0]["surface_action"], "do");
 
+    let allocations_output = run_nota_cli(&app_data_dir, &["nota", "allocations"])?;
+    let allocations: Value = serde_json::from_str(&allocations_output)
+        .context("nota allocations output should be valid JSON")?;
+    assert_eq!(allocations["allocation_count"], 1);
+    assert_eq!(
+        allocations["allocations"][0]["source_transaction_id"],
+        report["transaction"]["id"]
+    );
+
     let overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
     let overview: Value = serde_json::from_str(&overview_output)
         .context("nota overview output should be valid JSON")?;
@@ -262,14 +271,14 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
         ],
     )?;
 
-    let blocked_overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
-    let blocked_overview: Value = serde_json::from_str(&blocked_overview_output)
-        .context("blocked nota overview output should be valid JSON")?;
+    let blocked_allocations_output = run_nota_cli(&app_data_dir, &["nota", "allocations"])?;
+    let blocked_allocations: Value = serde_json::from_str(&blocked_allocations_output)
+        .context("blocked nota allocations output should be valid JSON")?;
     assert_eq!(
-        blocked_overview["allocations"]["allocations"][0]["status"],
+        blocked_allocations["allocations"][0]["status"],
         "escalated_blocked"
     );
-    let blocked_payload_json = blocked_overview["allocations"]["allocations"][0]["payload_json"]
+    let blocked_payload_json = blocked_allocations["allocations"][0]["payload_json"]
         .as_str()
         .context("allocation payload_json should be present")?;
     let blocked_payload: Value = serde_json::from_str(blocked_payload_json)

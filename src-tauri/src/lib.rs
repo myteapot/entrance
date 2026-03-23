@@ -444,6 +444,9 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "decisions" => {
             print_json(&list_design_decisions(&startup.data_store())?)
         }
+        [command] if command == "allocations" => {
+            print_json(&list_nota_runtime_allocations(&startup.data_store())?)
+        }
         [command] if command == "transactions" => {
             print_json(&list_nota_runtime_transactions(&startup.data_store())?)
         }
@@ -489,7 +492,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&write_runtime_checkpoint(&startup.data_store(), request)?)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota chat-captures`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota chat-captures`, `entrance nota allocations`, or `entrance nota transactions`"
         ),
     }
 }
