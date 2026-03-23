@@ -810,6 +810,15 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
         do_report["result"]["structuredContent"]["receipts"][2]["receipt_kind"],
         "ALLOCATION_RECORDED"
     );
+    let transaction_id = do_report["result"]["structuredContent"]["transaction"]["id"]
+        .as_i64()
+        .context("nota_do should return a transaction id")?;
+    let allocation_id = do_report["result"]["structuredContent"]["allocation"]["id"]
+        .as_i64()
+        .context("nota_do should return an allocation id")?;
+    let lineage_ref = do_report["result"]["structuredContent"]["allocation"]["lineage_ref"]
+        .as_str()
+        .context("nota_do should return an allocation lineage_ref")?;
     let db_path = app_dir.path().join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
@@ -866,6 +875,7 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
         overview["checkpoints"]["checkpoints"][0]["title"],
         "Do allocation: MYT-48"
     );
+    assert!(overview["recommended_checkpoint"].is_null());
     assert_eq!(
         connection.query_row(
             "SELECT COUNT(*) FROM nota_runtime_transactions",
@@ -937,6 +947,42 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
         blocked_payload["terminal_outcome"]["child_execution_status_message"],
         blocked_message
     );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host with single-lane honest allocator truth checkpointed into runtime continuity"
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["selected_trunk"],
+        "single-lane honest allocator continuity"
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["landed"][0],
+        format!(
+            "Single-lane NOTA allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+            allocation_id, lineage_ref, transaction_id, task_id
+        )
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["landed"][2],
+        format!(
+            "Transaction {transaction_id} receipt history now has 6 receipts, with latest terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
+            allocation_id, transaction_id
+        )
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["remaining"][0],
+        format!(
+            "L3 remains open until the current Blocked gate is cleared: {}.",
+            blocked_message
+        )
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["next_start_hints"][2],
+        format!(
+            "Treat lineage `{}` as the canonical single-lane allocator thread until the blocked gate is cleared.",
+            lineage_ref
+        )
+    );
 
     let blocked_allocations = server.send(json!({
         "jsonrpc": "2.0",
@@ -998,7 +1044,7 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
     );
     assert_eq!(
         blocked_receipts["result"]["structuredContent"]["requested_transaction_id"],
-        do_report["result"]["structuredContent"]["transaction"]["id"]
+        transaction_id
     );
     assert_eq!(
         blocked_receipts["result"]["structuredContent"]["receipt_count"],

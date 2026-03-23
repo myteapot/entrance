@@ -200,6 +200,12 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     let transaction_id = report["transaction"]["id"]
         .as_i64()
         .context("transaction id should be present")?;
+    let allocation_id = report["allocation"]["id"]
+        .as_i64()
+        .context("allocation id should be present")?;
+    let lineage_ref = report["allocation"]["lineage_ref"]
+        .as_str()
+        .context("allocation lineage_ref should be present")?;
     let receipts_output = run_nota_cli(&app_data_dir, &["nota", "receipts"])?;
     let receipts: Value = serde_json::from_str(&receipts_output)
         .context("nota receipts output should be valid JSON")?;
@@ -262,6 +268,7 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
         overview["allocations"]["allocations"][0]["source_transaction_id"],
         report["transaction"]["id"]
     );
+    assert!(overview["recommended_checkpoint"].is_null());
 
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
     assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
@@ -342,6 +349,9 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
         blocked_payload["terminal_outcome"]["target_ref"],
         report["transaction"]["id"].to_string()
     );
+    let blocked_message = blocked_payload["terminal_outcome"]["child_execution_status_message"]
+        .as_str()
+        .context("blocked terminal outcome message should be present")?;
 
     let blocked_receipts_output = run_nota_cli(
         &app_data_dir,
@@ -377,6 +387,50 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     assert_eq!(
         blocked_receipt_payload["target_ref"],
         report["transaction"]["id"].to_string()
+    );
+
+    let blocked_overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let blocked_overview: Value = serde_json::from_str(&blocked_overview_output)
+        .context("blocked nota overview output should be valid JSON")?;
+    assert_eq!(
+        blocked_overview["recommended_checkpoint"]["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host with single-lane honest allocator truth checkpointed into runtime continuity"
+    );
+    assert_eq!(
+        blocked_overview["recommended_checkpoint"]["selected_trunk"],
+        "single-lane honest allocator continuity"
+    );
+    assert_eq!(
+        blocked_overview["recommended_checkpoint"]["landed"][0],
+        format!(
+            "Single-lane NOTA allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+            allocation_id,
+            lineage_ref,
+            transaction_id,
+            task_id
+        )
+    );
+    assert_eq!(
+        blocked_overview["recommended_checkpoint"]["landed"][2],
+        format!(
+            "Transaction {transaction_id} receipt history now has 6 receipts, with latest terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
+            allocation_id,
+            transaction_id
+        )
+    );
+    assert_eq!(
+        blocked_overview["recommended_checkpoint"]["remaining"][0],
+        format!(
+            "L3 remains open until the current Blocked gate is cleared: {}.",
+            blocked_message
+        )
+    );
+    assert_eq!(
+        blocked_overview["recommended_checkpoint"]["next_start_hints"][2],
+        format!(
+            "Treat lineage `{}` as the canonical single-lane allocator thread until the blocked gate is cleared.",
+            lineage_ref
+        )
     );
 
     let stored_allocation_outcome = connection.query_row(

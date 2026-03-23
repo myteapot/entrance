@@ -41,9 +41,10 @@ use core::{
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
         list_nota_runtime_allocations, list_nota_runtime_receipts, list_nota_runtime_transactions,
-        list_runtime_checkpoints, run_nota_do_agent_dispatch, write_runtime_checkpoint,
-        NotaCheckpointListReport, NotaCheckpointRequest, NotaDoAgentDispatchRequest,
-        NotaRuntimeAllocationsReport, NotaRuntimeTransactionsReport,
+        list_runtime_checkpoints, recommend_single_lane_allocator_checkpoint,
+        run_nota_do_agent_dispatch, write_runtime_checkpoint, NotaCheckpointListReport,
+        NotaCheckpointRequest, NotaDoAgentDispatchRequest, NotaRuntimeAllocationsReport,
+        NotaRuntimeTransactionsReport,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -108,6 +109,8 @@ pub(crate) struct NotaRuntimeOverview {
     checkpoints: NotaCheckpointListReport,
     transactions: NotaRuntimeTransactionsReport,
     allocations: NotaRuntimeAllocationsReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recommended_checkpoint: Option<NotaCheckpointRequest>,
     decisions: DesignDecisionListReport,
     chat_captures: ChatCaptureListReport,
 }
@@ -1224,11 +1227,23 @@ fn dashboard_summary(
 pub(crate) fn build_nota_runtime_overview(
     data_store: &core::data_store::DataStore,
 ) -> Result<NotaRuntimeOverview> {
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    let allocations = list_nota_runtime_allocations(data_store)?;
+    let recommended_checkpoint = recommend_single_lane_allocator_checkpoint(
+        data_store,
+        &allocations.allocations,
+        checkpoints
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.cadence_object.is_current),
+    )?;
+
     Ok(NotaRuntimeOverview {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
-        checkpoints: list_runtime_checkpoints(data_store)?,
+        checkpoints,
         transactions: list_nota_runtime_transactions(data_store)?,
-        allocations: list_nota_runtime_allocations(data_store)?,
+        allocations,
+        recommended_checkpoint,
         decisions: list_design_decisions(data_store)?,
         chat_captures: list_chat_captures(data_store)?,
     })

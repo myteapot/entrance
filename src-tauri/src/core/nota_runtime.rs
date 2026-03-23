@@ -25,7 +25,7 @@ const NOTA_RUNTIME_SCOPE_REF: &str = "Entrance";
 const ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND: &str =
     "ALLOCATION_TERMINAL_OUTCOME_RECORDED";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NotaCheckpointRequest {
     pub title: Option<String>,
     pub stable_level: String,
@@ -901,6 +901,176 @@ fn build_do_checkpoint_hints(
     }
 
     hints
+}
+
+pub fn recommend_single_lane_allocator_checkpoint(
+    data_store: &DataStore,
+    allocations: &[StoredNotaRuntimeAllocation],
+    current_checkpoint: Option<&NotaCheckpointRecord>,
+) -> Result<Option<NotaCheckpointRequest>> {
+    let Some(latest_allocation) = allocations
+        .iter()
+        .filter(|allocation| {
+            allocation.allocator_role == "nota"
+                && allocation.allocation_kind == "forge_agent_dispatch"
+                && allocation.child_execution_kind == "forge_task"
+        })
+        .max_by_key(|allocation| allocation.id)
+    else {
+        return Ok(None);
+    };
+
+    let allocation_payload: NotaDoAllocationPayload =
+        serde_json::from_str(&latest_allocation.payload_json).with_context(|| {
+            format!(
+                "failed to parse latest allocator continuity payload for allocation {}",
+                latest_allocation.id
+            )
+        })?;
+    let Some(outcome) = allocation_payload.terminal_outcome.as_ref() else {
+        return Ok(None);
+    };
+
+    let transaction_id = latest_allocation.source_transaction_id;
+    let receipts = data_store.list_nota_runtime_receipts(Some(transaction_id))?;
+    let receipt_count = receipts.len();
+    let Some(latest_terminal_receipt) =
+        latest_terminal_receipt_for_allocation(&receipts, latest_allocation)?
+    else {
+        return Ok(None);
+    };
+
+    let outcome_fact = match outcome.child_execution_status_message.as_deref() {
+        Some(message) => format!(
+            "Allocation {} terminal outcome is {} / {} back to {} {} with status message `{message}`.",
+            latest_allocation.id,
+            outcome.boundary_kind,
+            outcome.child_execution_status,
+            outcome.target_kind,
+            outcome.target_ref
+        ),
+        None => format!(
+            "Allocation {} terminal outcome is {} / {} back to {} {}.",
+            latest_allocation.id,
+            outcome.boundary_kind,
+            outcome.child_execution_status,
+            outcome.target_kind,
+            outcome.target_ref
+        ),
+    };
+    let current_gate = match outcome.child_execution_status_message.as_deref() {
+        Some(message) => format!(
+            "L3 remains open until the current {} gate is cleared: {message}.",
+            outcome.child_execution_status
+        ),
+        None => format!(
+            "L3 remains open until the current {} gate is cleared.",
+            outcome.child_execution_status
+        ),
+    };
+
+    let recommendation = NotaCheckpointRequest {
+        title: Some(format!(
+            "Checkpoint: single-lane honest allocator continuity for {}",
+            allocation_payload.issue_id
+        )),
+        stable_level:
+            "single-ingress, checkpointed, DB-first NOTA host with single-lane honest allocator truth checkpointed into runtime continuity"
+                .to_string(),
+        landed: vec![
+            format!(
+                "Single-lane NOTA allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+                latest_allocation.id,
+                latest_allocation.lineage_ref,
+                transaction_id,
+                latest_allocation.child_execution_ref
+            ),
+            outcome_fact,
+            format!(
+                "Transaction {transaction_id} receipt history now has {receipt_count} receipts, with latest terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
+                latest_allocation.id,
+                latest_terminal_receipt.target_kind,
+                latest_terminal_receipt.target_ref
+            ),
+            "Dedicated headless CLI and MCP read boundaries now expose the same runtime slice through `entrance nota overview` / `allocations` / `receipts` and `nota_runtime_overview` / `nota_runtime_allocations` / `nota_runtime_receipts`.".to_string(),
+        ],
+        remaining: vec![
+            current_gate,
+            "Keep this checkpoint scoped to the single-lane honest allocator cut; dev lane, permission wiring, and a fuller allocator/router are still not landed.".to_string(),
+        ],
+        human_continuity_bus: if outcome.boundary_kind == "escalation" {
+            "reduced but still required for escalation resolution".to_string()
+        } else {
+            "reduced but still required for return integration".to_string()
+        },
+        selected_trunk: Some("single-lane honest allocator continuity".to_string()),
+        next_start_hints: vec![
+            format!(
+                "Start from `entrance nota overview`, then `entrance nota allocations`, then `entrance nota receipts --transaction-id {transaction_id}`."
+            ),
+            format!(
+                "If you are on MCP, read `nota_runtime_overview`, `nota_runtime_allocations`, and `nota_runtime_receipts` for transaction {transaction_id} before any new write."
+            ),
+            format!(
+                "Treat lineage `{}` as the canonical single-lane allocator thread until the blocked gate is cleared.",
+                latest_allocation.lineage_ref
+            ),
+        ],
+        project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
+    };
+
+    if checkpoint_request_matches_current(current_checkpoint, &recommendation) {
+        return Ok(None);
+    }
+
+    Ok(Some(recommendation))
+}
+
+fn latest_terminal_receipt_for_allocation(
+    receipts: &[StoredNotaRuntimeReceipt],
+    allocation: &StoredNotaRuntimeAllocation,
+) -> Result<Option<AllocationTerminalOutcomeReceiptPayload>> {
+    Ok(receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND
+        })
+        .map(|receipt| {
+            let payload: AllocationTerminalOutcomeReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!(
+                        "failed to parse allocation terminal outcome receipt {}",
+                        receipt.id
+                    )
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            payload.allocation_id == allocation.id && payload.lineage_ref == allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+        .map(|(_, payload)| payload))
+}
+
+fn checkpoint_request_matches_current(
+    current_checkpoint: Option<&NotaCheckpointRecord>,
+    request: &NotaCheckpointRequest,
+) -> bool {
+    let Some(current_checkpoint) = current_checkpoint else {
+        return false;
+    };
+
+    current_checkpoint.payload.stable_level == request.stable_level.trim()
+        && current_checkpoint.payload.landed == normalize_list(request.landed.clone())
+        && current_checkpoint.payload.remaining == normalize_list(request.remaining.clone())
+        && current_checkpoint.payload.human_continuity_bus
+            == request.human_continuity_bus.trim()
+        && current_checkpoint.payload.selected_trunk
+            == normalize_optional(request.selected_trunk.as_deref())
+        && current_checkpoint.payload.next_start_hints
+            == normalize_list(request.next_start_hints.clone())
 }
 
 fn parse_checkpoint_record(object: StoredCadenceObject) -> Result<NotaCheckpointRecord> {
