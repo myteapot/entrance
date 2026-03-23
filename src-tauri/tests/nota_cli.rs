@@ -733,6 +733,196 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
 }
 
 #[test]
+fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result<()> {
+    let temp_dir = TempDir::new("do-return-acceptance")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_forge_app_state(&app_data_dir)?;
+
+    let project_root = temp_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    fs::create_dir_all(&bootstrap_skill)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-50");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let completion_marker = temp_dir.path().join("do-child-finished.txt");
+    let fake_agent = write_delayed_success_agent(temp_dir.path(), &completion_marker)?;
+
+    let output = run_nota_cli_with_env(
+        &app_data_dir,
+        &[
+            "nota",
+            "do",
+            "--project-dir",
+            project_root
+                .to_str()
+                .context("project root should be valid UTF-8")?,
+            "--model",
+            "codex",
+            "--agent-command",
+            fake_agent
+                .to_str()
+                .context("fake delayed agent path should be valid UTF-8")?,
+            "--title",
+            "Do dispatch MYT-50",
+        ],
+        &[("OPENAI_API_KEY", "test-openai-token")],
+    )?;
+    let report: Value =
+        serde_json::from_str(&output).context("nota do output should be valid JSON")?;
+    let transaction_id = report["transaction"]["id"]
+        .as_i64()
+        .context("transaction id should be present")?;
+    let allocation_id = report["allocation"]["id"]
+        .as_i64()
+        .context("allocation id should be present")?;
+    let task_id = report["task_id"]
+        .as_i64()
+        .context("task id should be present")?;
+    let lineage_ref = report["allocation"]["lineage_ref"]
+        .as_str()
+        .context("allocation lineage_ref should be present")?;
+    let allocation_payload_json = report["allocation"]["payload_json"]
+        .as_str()
+        .context("allocation payload_json should be present")?;
+    let allocation_payload: Value = serde_json::from_str(allocation_payload_json)
+        .context("allocation payload_json should be valid JSON")?;
+    assert_eq!(
+        allocation_payload["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(allocation_payload["child_dispatch_role"], "agent");
+    assert_eq!(report["task_status"], "Running");
+
+    let task = wait_for_forge_task_terminal(&app_data_dir.join("entrance.db"), task_id)?;
+    assert_eq!(task.status, "Done");
+    assert!(completion_marker.exists());
+
+    let receipts_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "receipts",
+            "--transaction-id",
+            &transaction_id.to_string(),
+        ],
+    )?;
+    let receipts: Value = serde_json::from_str(&receipts_output)
+        .context("do return receipts output should be valid JSON")?;
+    assert_eq!(receipts["receipt_count"], 6);
+    assert_eq!(
+        receipts["receipts"][5]["receipt_kind"],
+        "ALLOCATION_TERMINAL_OUTCOME_RECORDED"
+    );
+    let terminal_receipt_payload_json = receipts["receipts"][5]["payload_json"]
+        .as_str()
+        .context("terminal receipt payload_json should be present")?;
+    let terminal_receipt_payload: Value = serde_json::from_str(terminal_receipt_payload_json)
+        .context("terminal receipt payload_json should be valid JSON")?;
+    assert_eq!(terminal_receipt_payload["allocation_id"], allocation_id);
+    assert_eq!(terminal_receipt_payload["lineage_ref"], lineage_ref);
+    assert_eq!(terminal_receipt_payload["boundary_kind"], "return");
+    assert_eq!(terminal_receipt_payload["child_execution_status"], "Done");
+    assert_eq!(
+        terminal_receipt_payload["target_ref"],
+        transaction_id.to_string()
+    );
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value = serde_json::from_str(&status_output)
+        .context("do return status output should be valid JSON")?;
+    assert_eq!(status["latest_allocation"]["status"], "return_ready");
+    assert_eq!(
+        status["latest_receipt"]["receipt_kind"],
+        "ALLOCATION_TERMINAL_OUTCOME_RECORDED"
+    );
+    assert_eq!(
+        status["recommended_checkpoint"]["selected_trunk"],
+        "single-lane honest allocator continuity"
+    );
+
+    let checkpoint_runtime_closure_output =
+        run_nota_cli(&app_data_dir, &["nota", "checkpoint-runtime-closure"])?;
+    let checkpoint_runtime_closure: Value =
+        serde_json::from_str(&checkpoint_runtime_closure_output)
+            .context("checkpoint-runtime-closure output should be valid JSON")?;
+    assert_eq!(checkpoint_runtime_closure["status"], "applied");
+    assert_eq!(
+        checkpoint_runtime_closure["source_recommendation"]["selected_trunk"],
+        "single-lane honest allocator continuity"
+    );
+
+    let post_materialization_status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let post_materialization_status: Value =
+        serde_json::from_str(&post_materialization_status_output)
+            .context("post-materialization status output should be valid JSON")?;
+    assert_eq!(
+        post_materialization_status["latest_transaction"]["cadence_checkpoint_id"],
+        checkpoint_runtime_closure["checkpoint"]["id"]
+    );
+    assert!(post_materialization_status["recommended_checkpoint"].is_null());
+    assert_eq!(
+        post_materialization_status["latest_receipt"]["receipt_kind"],
+        "AGENT_RETURN_ACCEPTED"
+    );
+
+    let post_materialization_receipts_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "receipts",
+            "--transaction-id",
+            &transaction_id.to_string(),
+        ],
+    )?;
+    let post_materialization_receipts: Value =
+        serde_json::from_str(&post_materialization_receipts_output)
+            .context("post-materialization receipts output should be valid JSON")?;
+    assert_eq!(post_materialization_receipts["receipt_count"], 8);
+    assert_eq!(
+        post_materialization_receipts["receipts"][6]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
+    assert_eq!(
+        post_materialization_receipts["receipts"][7]["receipt_kind"],
+        "AGENT_RETURN_ACCEPTED"
+    );
+    let agent_return_accepted_payload_json = post_materialization_receipts["receipts"][7]
+        ["payload_json"]
+        .as_str()
+        .context("agent return accepted receipt payload should be present")?;
+    let agent_return_accepted_payload: Value =
+        serde_json::from_str(agent_return_accepted_payload_json)
+            .context("agent return accepted receipt payload should be valid JSON")?;
+    assert_eq!(agent_return_accepted_payload["allocation_id"], allocation_id);
+    assert_eq!(agent_return_accepted_payload["lineage_ref"], lineage_ref);
+    assert_eq!(
+        agent_return_accepted_payload["checkpoint_id"],
+        checkpoint_runtime_closure["checkpoint"]["id"]
+    );
+    assert_eq!(agent_return_accepted_payload["child_dispatch_role"], "agent");
+    assert_eq!(
+        agent_return_accepted_payload["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(
+        agent_return_accepted_payload["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        agent_return_accepted_payload["target_ref"],
+        transaction_id.to_string()
+    );
+
+    Ok(())
+}
+
+#[test]
 fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<()> {
     let temp_dir = TempDir::new("dev-detached-supervisor")?;
     let app_data_dir = temp_dir.path().join("appdata");

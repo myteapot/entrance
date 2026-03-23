@@ -27,6 +27,7 @@ const NOTA_RUNTIME_SOURCE_TYPE: &str = "nota_runtime";
 const NOTA_RUNTIME_SCOPE_TYPE: &str = "runtime";
 const NOTA_RUNTIME_SCOPE_REF: &str = "Entrance";
 const CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND: &str = "CADENCE_CHECKPOINT_WRITTEN";
+const AGENT_RETURN_ACCEPTED_RECEIPT_KIND: &str = "AGENT_RETURN_ACCEPTED";
 const DEV_RETURN_ACCEPTED_RECEIPT_KIND: &str = "DEV_RETURN_ACCEPTED";
 const ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND: &str =
     "ALLOCATION_TERMINAL_OUTCOME_RECORDED";
@@ -175,6 +176,17 @@ struct AllocationTerminalOutcomeReceiptPayload {
     target_kind: String,
     target_ref: String,
     allocation_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AgentReturnAcceptedReceiptPayload {
+    allocation_id: i64,
+    lineage_ref: String,
+    checkpoint_id: i64,
+    child_dispatch_role: String,
+    execution_host: String,
+    target_kind: String,
+    target_ref: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1568,11 +1580,82 @@ fn ensure_runtime_closure_acceptance_receipt(
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
     match candidate.kind {
-        RecommendedCheckpointCandidateKind::SingleLaneAllocatorContinuity => Ok(()),
+        RecommendedCheckpointCandidateKind::SingleLaneAllocatorContinuity => {
+            ensure_agent_return_accepted_receipt(data_store, candidate, checkpoint)
+        }
         RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
             ensure_dev_return_accepted_receipt(data_store, candidate, checkpoint)
         }
     }
+}
+
+fn ensure_agent_return_accepted_receipt(
+    data_store: &DataStore,
+    candidate: &RecommendedCheckpointCandidate,
+    checkpoint: &NotaCheckpointRecord,
+) -> Result<()> {
+    let Some(allocation) = data_store
+        .list_nota_runtime_allocations()?
+        .into_iter()
+        .find(|allocation| allocation.id == candidate.allocation_id)
+    else {
+        return Ok(());
+    };
+    if allocation.allocation_kind != "forge_agent_dispatch" {
+        return Ok(());
+    }
+
+    let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse agent return acceptance payload for allocation {}",
+                allocation.id
+            )
+        })?;
+    let Some(outcome) = payload.terminal_outcome.as_ref() else {
+        return Ok(());
+    };
+    if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
+        return Ok(());
+    }
+
+    let receipt_payload = AgentReturnAcceptedReceiptPayload {
+        allocation_id: allocation.id,
+        lineage_ref: allocation.lineage_ref.clone(),
+        checkpoint_id: checkpoint.cadence_object.id,
+        child_dispatch_role: payload.child_dispatch_role,
+        execution_host: payload.execution_host,
+        target_kind: outcome.target_kind.clone(),
+        target_ref: outcome.target_ref.clone(),
+    };
+    let has_receipt = data_store
+        .list_nota_runtime_receipts(Some(candidate.source_transaction_id))?
+        .into_iter()
+        .any(|receipt| {
+            if receipt.receipt_kind != AGENT_RETURN_ACCEPTED_RECEIPT_KIND {
+                return false;
+            }
+
+            let Ok(payload) =
+                serde_json::from_str::<AgentReturnAcceptedReceiptPayload>(&receipt.payload_json)
+            else {
+                return false;
+            };
+            payload == receipt_payload
+        });
+    if has_receipt {
+        return Ok(());
+    }
+
+    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+        transaction_id: candidate.source_transaction_id,
+        receipt_kind: AGENT_RETURN_ACCEPTED_RECEIPT_KIND,
+        payload_json: &serde_json::to_string(&receipt_payload)
+            .context("failed to serialize agent return accepted receipt payload")?,
+        status: "recorded",
+    })?;
+
+    Ok(())
 }
 
 fn ensure_dev_return_accepted_receipt(
@@ -2042,8 +2125,8 @@ mod tests {
         list_nota_runtime_receipts, list_runtime_checkpoints, recommend_runtime_closure_checkpoint,
         write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
         NotaDispatchExecutionHost, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
-        ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND, CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
-        DEV_RETURN_ACCEPTED_RECEIPT_KIND,
+        AGENT_RETURN_ACCEPTED_RECEIPT_KIND, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
+        CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND, DEV_RETURN_ACCEPTED_RECEIPT_KIND,
     };
 
     struct TempDbPath {
@@ -2499,6 +2582,132 @@ mod tests {
             accepted_payload["execution_host"],
             "detached_forge_cli_supervisor"
         );
+        assert_eq!(accepted_payload["target_kind"], "nota_runtime_transaction");
+        assert_eq!(accepted_payload["target_ref"], transaction.id.to_string());
+
+        let second_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
+        assert_eq!(second_report.receipt_count, 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_surface_backfills_agent_return_acceptance_for_current_checkpoint() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+        let task_id =
+            store.insert_forge_task("Agent child", "echo", "[]", None, None, "[]", "{}")?;
+
+        let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "do",
+            transaction_kind: "forge_agent_dispatch",
+            title: "Agent return acceptance backflow",
+            payload_json: "{}",
+            status: "checkpointed",
+            forge_task_id: Some(task_id),
+            cadence_checkpoint_id: None,
+        })?;
+        let allocation_payload = NotaDoAllocationPayload {
+            issue_id: "MYT-48".to_string(),
+            issue_status: "Todo".to_string(),
+            issue_status_source: "fallback".to_string(),
+            issue_title: Some("Agent return acceptance".to_string()),
+            project_root: "A:/Agent/Entrance".to_string(),
+            worktree_path: "A:/Agent/Entrance/worktrees/feat-MYT-48".to_string(),
+            prompt_source: "Entrance-owned harness/bootstrap agent prompt".to_string(),
+            model: "codex".to_string(),
+            agent_command: None,
+            execution_host: default_nota_dispatch_execution_host(),
+            child_dispatch_role: "agent".to_string(),
+            child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
+            terminal_outcome: Some(NotaDoAllocationTerminalOutcome {
+                boundary_kind: "return".to_string(),
+                child_execution_status: "Done".to_string(),
+                child_execution_status_message: None,
+                target_kind: "nota_runtime_transaction".to_string(),
+                target_ref: transaction.id.to_string(),
+            }),
+        };
+        let lineage_ref = format!(
+            "nota/do/transaction/{}/forge-task/{task_id}",
+            transaction.id
+        );
+        let allocation = store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_do",
+            allocation_kind: "forge_agent_dispatch",
+            source_transaction_id: transaction.id,
+            lineage_ref: &lineage_ref,
+            child_execution_kind: "forge_task",
+            child_execution_ref: &task_id.to_string(),
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: &transaction.id.to_string(),
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: &transaction.id.to_string(),
+            status: "return_ready",
+            payload_json: &serde_json::to_string(&allocation_payload)?,
+        })?;
+        store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: transaction.id,
+            receipt_kind: ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
+            payload_json: &serde_json::to_string(&AllocationTerminalOutcomeReceiptPayload {
+                allocation_id: allocation.id,
+                lineage_ref: allocation.lineage_ref.clone(),
+                boundary_kind: "return".to_string(),
+                child_execution_status: "Done".to_string(),
+                child_execution_status_message: None,
+                target_kind: "nota_runtime_transaction".to_string(),
+                target_ref: transaction.id.to_string(),
+                allocation_status: "return_ready".to_string(),
+            })?,
+            status: "recorded",
+        })?;
+
+        let allocations = list_nota_runtime_allocations(&store)?;
+        let recommendation =
+            recommend_runtime_closure_checkpoint(&store, &allocations.allocations, None)?
+                .context("agent return checkpoint recommendation should exist")?;
+        let checkpoint_report = write_runtime_checkpoint(&store, recommendation.clone())?;
+        store.update_nota_runtime_transaction(
+            transaction.id,
+            NotaRuntimeTransactionUpdate {
+                status: "checkpointed",
+                forge_task_id: Some(task_id),
+                cadence_checkpoint_id: Some(checkpoint_report.checkpoint.cadence_object.id),
+            },
+        )?;
+        store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: transaction.id,
+            receipt_kind: CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
+            payload_json: &serde_json::to_string(&serde_json::json!({
+                "checkpoint_id": checkpoint_report.checkpoint.cadence_object.id,
+                "selected_trunk": checkpoint_report.checkpoint.payload.selected_trunk,
+            }))?,
+            status: "recorded",
+        })?;
+
+        let seeded_receipts = store.list_nota_runtime_receipts(Some(transaction.id))?;
+        assert_eq!(seeded_receipts.len(), 2);
+        assert!(seeded_receipts
+            .iter()
+            .all(|receipt| receipt.receipt_kind != AGENT_RETURN_ACCEPTED_RECEIPT_KIND));
+
+        let report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
+        assert_eq!(report.receipt_count, 3);
+        assert_eq!(
+            report.receipts[2].receipt_kind,
+            AGENT_RETURN_ACCEPTED_RECEIPT_KIND
+        );
+
+        let accepted_payload: Value = serde_json::from_str(&report.receipts[2].payload_json)?;
+        assert_eq!(accepted_payload["allocation_id"], allocation.id);
+        assert_eq!(accepted_payload["lineage_ref"], allocation.lineage_ref);
+        assert_eq!(
+            accepted_payload["checkpoint_id"],
+            checkpoint_report.checkpoint.cadence_object.id
+        );
+        assert_eq!(accepted_payload["child_dispatch_role"], "agent");
+        assert_eq!(accepted_payload["execution_host"], "in_process");
         assert_eq!(accepted_payload["target_kind"], "nota_runtime_transaction");
         assert_eq!(accepted_payload["target_ref"], transaction.id.to_string());
 
