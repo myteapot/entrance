@@ -26,6 +26,7 @@ const CADENCE_POLICY_NOTE_KIND: &str = "CADENCE_POLICY_NOTE";
 const NOTA_RUNTIME_SOURCE_TYPE: &str = "nota_runtime";
 const NOTA_RUNTIME_SCOPE_TYPE: &str = "runtime";
 const NOTA_RUNTIME_SCOPE_REF: &str = "Entrance";
+const CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND: &str = "CADENCE_CHECKPOINT_WRITTEN";
 const ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND: &str =
     "ALLOCATION_TERMINAL_OUTCOME_RECORDED";
 
@@ -78,6 +79,15 @@ pub struct NotaCheckpointListReport {
     pub checkpoint_count: usize,
     pub current_checkpoint_id: Option<i64>,
     pub checkpoints: Vec<NotaCheckpointRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaRuntimeClosureCheckpointMaterializationReport {
+    pub status: String,
+    pub checkpoint: Option<NotaCheckpointRecord>,
+    pub source_recommendation: Option<NotaCheckpointRequest>,
+    pub superseded_checkpoint_id: Option<i64>,
+    pub supersession_link: Option<StoredCadenceLink>,
 }
 
 #[derive(Debug, Clone)]
@@ -398,6 +408,7 @@ pub struct NotaRuntimeReceiptsReport {
 
 struct RecommendedCheckpointCandidate {
     allocation_id: i64,
+    source_transaction_id: i64,
     request: NotaCheckpointRequest,
 }
 
@@ -1308,6 +1319,83 @@ pub fn recommend_runtime_closure_checkpoint(
     allocations: &[StoredNotaRuntimeAllocation],
     current_checkpoint: Option<&NotaCheckpointRecord>,
 ) -> Result<Option<NotaCheckpointRequest>> {
+    let Some(candidate) = latest_runtime_closure_checkpoint_candidate(data_store, allocations)?
+    else {
+        return Ok(None);
+    };
+
+    if checkpoint_request_matches_current(current_checkpoint, &candidate.request) {
+        return Ok(None);
+    }
+
+    Ok(Some(candidate.request))
+}
+
+pub fn materialize_runtime_closure_checkpoint(
+    data_store: &DataStore,
+) -> Result<NotaRuntimeClosureCheckpointMaterializationReport> {
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    let current_checkpoint = checkpoints
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+        .cloned();
+    let allocations = list_nota_runtime_allocations(data_store)?;
+
+    let Some(candidate) =
+        latest_runtime_closure_checkpoint_candidate(data_store, &allocations.allocations)?
+    else {
+        return Ok(NotaRuntimeClosureCheckpointMaterializationReport {
+            status: "unavailable".to_string(),
+            checkpoint: current_checkpoint,
+            source_recommendation: None,
+            superseded_checkpoint_id: None,
+            supersession_link: None,
+        });
+    };
+
+    if checkpoint_request_matches_current(current_checkpoint.as_ref(), &candidate.request) {
+        if let Some(current_checkpoint) = current_checkpoint.as_ref() {
+            sync_runtime_closure_checkpoint_to_transaction(
+                data_store,
+                &candidate,
+                current_checkpoint,
+            )?;
+        }
+        return Ok(NotaRuntimeClosureCheckpointMaterializationReport {
+            status: "already_current".to_string(),
+            checkpoint: current_checkpoint,
+            source_recommendation: Some(candidate.request),
+            superseded_checkpoint_id: None,
+            supersession_link: None,
+        });
+    }
+
+    let source_recommendation = candidate.request.clone();
+    let source_transaction_id = candidate.source_transaction_id;
+    let write_report = write_runtime_checkpoint(data_store, candidate.request)?;
+    sync_runtime_closure_checkpoint_to_transaction(
+        data_store,
+        &RecommendedCheckpointCandidate {
+            allocation_id: candidate.allocation_id,
+            source_transaction_id,
+            request: source_recommendation.clone(),
+        },
+        &write_report.checkpoint,
+    )?;
+    Ok(NotaRuntimeClosureCheckpointMaterializationReport {
+        status: "applied".to_string(),
+        checkpoint: Some(write_report.checkpoint),
+        source_recommendation: Some(source_recommendation),
+        superseded_checkpoint_id: write_report.superseded_checkpoint_id,
+        supersession_link: write_report.supersession_link,
+    })
+}
+
+fn latest_runtime_closure_checkpoint_candidate(
+    data_store: &DataStore,
+    allocations: &[StoredNotaRuntimeAllocation],
+) -> Result<Option<RecommendedCheckpointCandidate>> {
     let mut candidates = Vec::new();
     if let Some(candidate) =
         recommend_single_lane_allocator_checkpoint_candidate(data_store, allocations)?
@@ -1325,11 +1413,69 @@ pub fn recommend_runtime_closure_checkpoint(
         return Ok(None);
     };
 
-    if checkpoint_request_matches_current(current_checkpoint, &candidate.request) {
-        return Ok(None);
+    Ok(Some(candidate))
+}
+
+fn sync_runtime_closure_checkpoint_to_transaction(
+    data_store: &DataStore,
+    candidate: &RecommendedCheckpointCandidate,
+    checkpoint: &NotaCheckpointRecord,
+) -> Result<()> {
+    let Some(transaction) =
+        data_store.get_nota_runtime_transaction(candidate.source_transaction_id)?
+    else {
+        return Ok(());
+    };
+
+    if transaction.cadence_checkpoint_id != Some(checkpoint.cadence_object.id) {
+        data_store.update_nota_runtime_transaction(
+            transaction.id,
+            NotaRuntimeTransactionUpdate {
+                status: &transaction.status,
+                forge_task_id: transaction.forge_task_id,
+                cadence_checkpoint_id: Some(checkpoint.cadence_object.id),
+            },
+        )?;
     }
 
-    Ok(Some(candidate.request))
+    ensure_checkpoint_written_receipt(data_store, transaction.id, checkpoint)
+}
+
+fn ensure_checkpoint_written_receipt(
+    data_store: &DataStore,
+    transaction_id: i64,
+    checkpoint: &NotaCheckpointRecord,
+) -> Result<()> {
+    let receipts = data_store.list_nota_runtime_receipts(Some(transaction_id))?;
+    let has_receipt = receipts.into_iter().any(|receipt| {
+        if receipt.receipt_kind != CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND {
+            return false;
+        }
+
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&receipt.payload_json) else {
+            return false;
+        };
+        payload
+            .get("checkpoint_id")
+            .and_then(|value| value.as_i64())
+            == Some(checkpoint.cadence_object.id)
+    });
+    if has_receipt {
+        return Ok(());
+    }
+
+    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+        transaction_id,
+        receipt_kind: CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
+        payload_json: &serde_json::to_string(&json!({
+            "checkpoint_id": checkpoint.cadence_object.id,
+            "selected_trunk": checkpoint.payload.selected_trunk,
+        }))
+        .context("failed to serialize checkpoint receipt payload")?,
+        status: "recorded",
+    })?;
+
+    Ok(())
 }
 
 fn recommend_single_lane_allocator_checkpoint_candidate(
@@ -1361,7 +1507,6 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
 
     let transaction_id = latest_allocation.source_transaction_id;
     let receipts = data_store.list_nota_runtime_receipts(Some(transaction_id))?;
-    let receipt_count = receipts.len();
     let Some(latest_terminal_receipt) =
         latest_terminal_receipt_for_allocation(&receipts, latest_allocation)?
     else {
@@ -1415,7 +1560,7 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
             ),
             outcome_fact,
             format!(
-                "Transaction {transaction_id} receipt history now has {receipt_count} receipts, with latest terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
+                "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
                 latest_allocation.id,
                 latest_terminal_receipt.target_kind,
                 latest_terminal_receipt.target_ref
@@ -1449,6 +1594,7 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
 
     Ok(Some(RecommendedCheckpointCandidate {
         allocation_id: latest_allocation.id,
+        source_transaction_id: transaction_id,
         request: recommendation,
     }))
 }
@@ -1485,7 +1631,6 @@ fn recommend_dev_return_checkpoint_candidate(
 
     let transaction_id = latest_allocation.source_transaction_id;
     let receipts = data_store.list_nota_runtime_receipts(Some(transaction_id))?;
-    let receipt_count = receipts.len();
     let Some(latest_terminal_receipt) =
         latest_terminal_receipt_for_allocation(&receipts, latest_allocation)?
     else {
@@ -1515,7 +1660,7 @@ fn recommend_dev_return_checkpoint_candidate(
                 outcome.target_ref
             ),
             format!(
-                "Transaction {transaction_id} receipt history now has {receipt_count} receipts, with latest terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
+                "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
                 latest_allocation.id,
                 latest_terminal_receipt.target_kind,
                 latest_terminal_receipt.target_ref
@@ -1557,6 +1702,7 @@ fn recommend_dev_return_checkpoint_candidate(
 
     Ok(Some(RecommendedCheckpointCandidate {
         allocation_id: latest_allocation.id,
+        source_transaction_id: transaction_id,
         request: recommendation,
     }))
 }

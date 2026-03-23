@@ -1048,7 +1048,7 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
     assert_eq!(
         blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["landed"][2],
         format!(
-            "Transaction {transaction_id} receipt history now has 6 receipts, with latest terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
+            "Transaction {transaction_id} receipt history includes terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
             allocation_id, transaction_id
         )
     );

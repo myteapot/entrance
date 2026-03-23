@@ -442,7 +442,7 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     assert_eq!(
         blocked_overview["recommended_checkpoint"]["landed"][2],
         format!(
-            "Transaction {transaction_id} receipt history now has 6 receipts, with latest terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
+            "Transaction {transaction_id} receipt history includes terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
             allocation_id,
             transaction_id
         )
@@ -836,6 +836,9 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
         terminal_receipt_payload["allocation_status"],
         "return_ready"
     );
+    let issue_id = report["dispatch"]["issue_id"]
+        .as_str()
+        .context("dispatch issue_id should be present")?;
 
     let overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
     let overview: Value = serde_json::from_str(&overview_output)
@@ -864,7 +867,7 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     assert_eq!(
         overview["recommended_checkpoint"]["landed"][2],
         format!(
-            "Transaction {transaction_id} receipt history now has 6 receipts, with latest terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
+            "Transaction {transaction_id} receipt history includes terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
             allocation_id,
             transaction_id
         )
@@ -901,6 +904,129 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
             lineage_ref
         )
     );
+
+    let checkpoint_runtime_closure_output =
+        run_nota_cli(&app_data_dir, &["nota", "checkpoint-runtime-closure"])?;
+    let checkpoint_runtime_closure: Value =
+        serde_json::from_str(&checkpoint_runtime_closure_output)
+            .context("checkpoint-runtime-closure output should be valid JSON")?;
+    assert_eq!(checkpoint_runtime_closure["status"], "applied");
+    assert_eq!(
+        checkpoint_runtime_closure["source_recommendation"]["selected_trunk"],
+        "dev return acceptance truth"
+    );
+    assert_eq!(
+        checkpoint_runtime_closure["checkpoint"]["title"],
+        format!("Checkpoint: dev return acceptance truth for {issue_id}")
+    );
+    assert_eq!(
+        checkpoint_runtime_closure["checkpoint"]["payload"]["selected_trunk"],
+        "dev return acceptance truth"
+    );
+    assert_eq!(
+        checkpoint_runtime_closure["superseded_checkpoint_id"],
+        report["checkpoint"]["id"]
+    );
+
+    let post_materialization_checkpoints_output =
+        run_nota_cli(&app_data_dir, &["nota", "checkpoints"])?;
+    let post_materialization_checkpoints: Value =
+        serde_json::from_str(&post_materialization_checkpoints_output)
+            .context("post-materialization checkpoints output should be valid JSON")?;
+    assert_eq!(post_materialization_checkpoints["checkpoint_count"], 2);
+    assert_eq!(
+        post_materialization_checkpoints["checkpoints"][0]["title"],
+        format!("Checkpoint: dev return acceptance truth for {issue_id}")
+    );
+    assert_eq!(
+        post_materialization_checkpoints["checkpoints"][0]["payload"]["selected_trunk"],
+        "dev return acceptance truth"
+    );
+
+    let post_materialization_status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let post_materialization_status: Value =
+        serde_json::from_str(&post_materialization_status_output)
+            .context("post-materialization status output should be valid JSON")?;
+    assert_eq!(post_materialization_status["checkpoint_count"], 2);
+    assert_eq!(
+        post_materialization_status["latest_transaction"]["cadence_checkpoint_id"],
+        checkpoint_runtime_closure["checkpoint"]["id"]
+    );
+    assert_eq!(
+        post_materialization_status["current_checkpoint"]["title"],
+        format!("Checkpoint: dev return acceptance truth for {issue_id}")
+    );
+    assert_eq!(
+        post_materialization_status["current_checkpoint"]["payload"]["selected_trunk"],
+        "dev return acceptance truth"
+    );
+    assert!(post_materialization_status["recommended_checkpoint"].is_null());
+    assert_eq!(
+        post_materialization_status["latest_allocation"]["status"],
+        "return_ready"
+    );
+    assert_eq!(
+        post_materialization_status["latest_receipt"]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
+
+    let post_materialization_receipts_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "receipts",
+            "--transaction-id",
+            &transaction_id.to_string(),
+        ],
+    )?;
+    let post_materialization_receipts: Value =
+        serde_json::from_str(&post_materialization_receipts_output)
+            .context("post-materialization receipts output should be valid JSON")?;
+    assert_eq!(post_materialization_receipts["receipt_count"], 7);
+    assert_eq!(
+        post_materialization_receipts["receipts"][6]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
+    let post_materialization_receipt_payload_json =
+        post_materialization_receipts["receipts"][6]["payload_json"]
+            .as_str()
+            .context("post-materialization checkpoint receipt payload should be present")?;
+    let post_materialization_receipt_payload: Value =
+        serde_json::from_str(post_materialization_receipt_payload_json)
+            .context("post-materialization checkpoint receipt payload should be valid JSON")?;
+    assert_eq!(
+        post_materialization_receipt_payload["checkpoint_id"],
+        checkpoint_runtime_closure["checkpoint"]["id"]
+    );
+    assert_eq!(
+        post_materialization_receipt_payload["selected_trunk"],
+        "dev return acceptance truth"
+    );
+
+    let checkpoint_runtime_closure_again_output =
+        run_nota_cli(&app_data_dir, &["nota", "checkpoint-runtime-closure"])?;
+    let checkpoint_runtime_closure_again: Value =
+        serde_json::from_str(&checkpoint_runtime_closure_again_output)
+            .context("second checkpoint-runtime-closure output should be valid JSON")?;
+    assert_eq!(checkpoint_runtime_closure_again["status"], "already_current");
+    assert_eq!(
+        checkpoint_runtime_closure_again["checkpoint"]["title"],
+        format!("Checkpoint: dev return acceptance truth for {issue_id}")
+    );
+
+    let post_second_materialization_receipts_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "receipts",
+            "--transaction-id",
+            &transaction_id.to_string(),
+        ],
+    )?;
+    let post_second_materialization_receipts: Value =
+        serde_json::from_str(&post_second_materialization_receipts_output)
+            .context("post-second-materialization receipts output should be valid JSON")?;
+    assert_eq!(post_second_materialization_receipts["receipt_count"], 7);
 
     Ok(())
 }
