@@ -142,6 +142,7 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
             "forge_status",
             "forge_cancel",
             "nota_runtime_overview",
+            "nota_write_checkpoint",
             "recovery_list_seed_runs",
             "recovery_list_seed_rows",
             "vault_get_token",
@@ -169,6 +170,10 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
         .iter()
         .find(|tool| tool["name"] == "nota_runtime_overview")
         .context("nota_runtime_overview should be listed")?;
+    let nota_checkpoint = tools
+        .iter()
+        .find(|tool| tool["name"] == "nota_write_checkpoint")
+        .context("nota_write_checkpoint should be listed")?;
     let prepare_agent = tools
         .iter()
         .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
@@ -188,6 +193,11 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
     assert_eq!(nota_overview["permission"]["room"], "surface");
     assert_eq!(nota_overview["permission"]["targetLayer"], "cold");
     assert!(nota_overview["dispatchRole"].is_null());
+    assert_eq!(nota_checkpoint["permission"]["actorRole"], "nota");
+    assert_eq!(nota_checkpoint["permission"]["primitive"], "learn");
+    assert_eq!(nota_checkpoint["permission"]["room"], "memory");
+    assert_eq!(nota_checkpoint["permission"]["targetLayer"], "cold");
+    assert!(nota_checkpoint["dispatchRole"].is_null());
     assert_eq!(prepare_agent["dispatchRole"], "agent");
 
     server.send(json!({
@@ -468,6 +478,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
             "forge_status",
             "forge_cancel",
             "nota_runtime_overview",
+            "nota_write_checkpoint",
             "recovery_list_seed_runs",
             "recovery_list_seed_rows",
             "vault_get_token",
@@ -628,6 +639,78 @@ fn external_client_can_read_nota_runtime_overview_over_stdio() -> Result<()> {
         overview["result"]["structuredContent"]["checkpoints"]["checkpoints"][0]["payload"]
             ["stable_level"],
         "single-ingress, checkpointed, DB-first NOTA host"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_write_nota_runtime_checkpoint_over_stdio() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-write-checkpoint")?;
+    seed_app_state(app_dir.path())?;
+
+    let mut server = spawn_mcp_stdio_with_actor_role(app_dir.path(), None, Some("nota"))?;
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota-write",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    let initialize = server.read_response()?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }))?;
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-write-checkpoint",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_write_checkpoint",
+            "arguments": {
+                "title": "MCP checkpoint write",
+                "stable_level": "single-ingress, checkpointed, DB-first NOTA host with MCP checkpoint write",
+                "landed": ["MCP checkpoint write landed"],
+                "remaining": ["Drive a real MCP/runtime Do transaction"],
+                "human_continuity_bus": "reduced but still partially required",
+                "selected_trunk": "MCP/runtime Do host proof",
+                "next_start_hints": [
+                    "Call nota_runtime_overview before other MCP work."
+                ]
+            }
+        }
+    }))?;
+    let checkpoint = server.read_response()?;
+
+    assert_eq!(checkpoint["result"]["isError"], false);
+    assert_eq!(checkpoint["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(checkpoint["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(checkpoint["result"]["permission"]["primitive"], "learn");
+    assert_eq!(checkpoint["result"]["permission"]["room"], "memory");
+    assert_eq!(checkpoint["result"]["permission"]["targetLayer"], "cold");
+    assert_eq!(
+        checkpoint["result"]["structuredContent"]["checkpoint"]["title"],
+        "MCP checkpoint write"
+    );
+    assert_eq!(
+        checkpoint["result"]["structuredContent"]["checkpoint"]["payload"]["selected_trunk"],
+        "MCP/runtime Do host proof"
+    );
+
+    let overview = run_entrance_cli(app_dir.path(), &["nota", "overview"])?;
+    let overview: Value =
+        serde_json::from_str(&overview).context("nota overview output should be valid JSON")?;
+    assert_eq!(overview["checkpoints"]["checkpoint_count"], 1);
+    assert_eq!(overview["checkpoints"]["current_checkpoint_id"], 1);
+    assert_eq!(
+        overview["checkpoints"]["checkpoints"][0]["title"],
+        "MCP checkpoint write"
+    );
+    assert_eq!(
+        overview["checkpoints"]["checkpoints"][0]["payload"]["next_start_hints"][0],
+        "Call nota_runtime_overview before other MCP work."
     );
 
     Ok(())

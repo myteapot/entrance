@@ -71,9 +71,17 @@ const COLD_CHAT_NOTA: McpToolPermission = McpToolPermission::new(
     KnowledgeLayer::Cold,
 );
 
+const COLD_LEARN_NOTA: McpToolPermission = McpToolPermission::new(
+    ActorRole::Nota,
+    ActionPrimitive::Learn,
+    ActionRoom::Memory,
+    KnowledgeLayer::Cold,
+);
+
 pub fn permission_for_mcp_tool(name: &str) -> Option<McpToolPermission> {
     match name {
         "nota_runtime_overview" => Some(COLD_CHAT_NOTA),
+        "nota_write_checkpoint" => Some(COLD_LEARN_NOTA),
         "forge_prepare_dispatch"
         | "forge_verify_dispatch"
         | "forge_prepare_agent_dispatch"
@@ -95,6 +103,7 @@ mod tests {
     fn current_dispatch_tools_are_mapped_into_valid_action_records() {
         for name in [
             "nota_runtime_overview",
+            "nota_write_checkpoint",
             "forge_prepare_dispatch",
             "forge_verify_dispatch",
             "forge_prepare_agent_dispatch",
@@ -178,6 +187,19 @@ mod tests {
                 ActorRole::Nota,
                 ActionPrimitive::Chat,
                 ActionRoom::Surface,
+                KnowledgeLayer::Cold,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_write_checkpoint_is_nota_owned_cold_memory_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_write_checkpoint"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Learn,
+                ActionRoom::Memory,
                 KnowledgeLayer::Cold,
             ))
         );

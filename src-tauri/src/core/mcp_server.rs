@@ -21,6 +21,7 @@ use crate::core::{
     action::ActorRole,
     bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
     data_store::DataStore,
+    nota_runtime::{write_runtime_checkpoint, NotaCheckpointRequest},
     permission::{permission_for_mcp_tool, McpToolPermission},
     recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
     resolve_app_data_dir,
@@ -285,6 +286,7 @@ impl McpServer {
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
             "nota_runtime_overview" => self.handle_nota_runtime_overview(),
+            "nota_write_checkpoint" => self.handle_nota_write_checkpoint(arguments),
             "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
             "recovery_list_seed_rows" => self.handle_recovery_list_seed_rows(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
@@ -628,6 +630,16 @@ impl McpServer {
             .as_ref()
             .context("core data store is not available on the current MCP surface")?;
         Ok(json!(build_nota_runtime_overview(data_store)?))
+    }
+
+    fn handle_nota_write_checkpoint(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let request = parse_nota_checkpoint_request(arguments)?;
+        Ok(json!(write_runtime_checkpoint(data_store, request)?))
     }
 
     fn handle_recovery_list_seed_rows(&self, arguments: &Value) -> Result<Value> {
@@ -1002,6 +1014,47 @@ fn build_tool_descriptors(
             dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
+            name: "nota_write_checkpoint",
+            description: "Write a NOTA runtime checkpoint into the canonical continuity storage cut.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Optional checkpoint title." },
+                    "stable_level": { "type": "string", "description": "Stable-level summary for the checkpoint." },
+                    "stableLevel": { "type": "string", "description": "CamelCase alias for stable_level." },
+                    "landed": {
+                        "type": "array",
+                        "description": "One or more landed facts captured by this checkpoint.",
+                        "items": { "type": "string" }
+                    },
+                    "remaining": {
+                        "type": "array",
+                        "description": "One or more remaining gates after this checkpoint.",
+                        "items": { "type": "string" }
+                    },
+                    "human_continuity_bus": { "type": "string", "description": "Current human continuity-bus requirement." },
+                    "humanContinuityBus": { "type": "string", "description": "CamelCase alias for human_continuity_bus." },
+                    "selected_trunk": { "type": "string", "description": "Optional active trunk name." },
+                    "selectedTrunk": { "type": "string", "description": "CamelCase alias for selected_trunk." },
+                    "next_start_hints": {
+                        "type": "array",
+                        "description": "Optional next-window hints.",
+                        "items": { "type": "string" }
+                    },
+                    "nextStartHints": {
+                        "type": "array",
+                        "description": "CamelCase alias for next_start_hints.",
+                        "items": { "type": "string" }
+                    },
+                    "project_dir": { "type": "string", "description": "Optional project directory used to capture repo context." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                },
+                "required": ["stable_level", "landed", "remaining", "human_continuity_bus"]
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
             name: "recovery_list_seed_runs",
             description: "List recovery-seed imports that have been absorbed into the runtime DB storage plane.",
             input_schema: json!({
@@ -1218,6 +1271,17 @@ fn require_string_list(arguments: &Value, fields: &[&str]) -> Result<Vec<String>
     Ok(Vec::new())
 }
 
+fn require_nonempty_string_list(arguments: &Value, fields: &[&str]) -> Result<Vec<String>> {
+    let values = require_string_list(arguments, fields)?;
+    if values.is_empty() {
+        bail!(
+            "tool arguments require one of these non-empty string-array fields: {}",
+            fields.join(", ")
+        );
+    }
+    Ok(values)
+}
+
 fn parse_string_list(value: &Value, field: &str) -> Result<Vec<String>> {
     match value {
         Value::Null => Ok(Vec::new()),
@@ -1247,6 +1311,25 @@ fn parse_string_list(value: &Value, field: &str) -> Result<Vec<String>> {
         }
         _ => bail!("tool argument `{field}` must be either an array or a JSON string"),
     }
+}
+
+fn parse_nota_checkpoint_request(arguments: &Value) -> Result<NotaCheckpointRequest> {
+    Ok(NotaCheckpointRequest {
+        title: optional_string(arguments, "title").map(str::to_string),
+        stable_level: require_string_any(arguments, &["stable_level", "stableLevel"])?.to_string(),
+        landed: require_nonempty_string_list(arguments, &["landed"])?,
+        remaining: require_nonempty_string_list(arguments, &["remaining"])?,
+        human_continuity_bus: require_string_any(
+            arguments,
+            &["human_continuity_bus", "humanContinuityBus"],
+        )?
+        .to_string(),
+        selected_trunk: optional_string_any(arguments, &["selected_trunk", "selectedTrunk"])
+            .map(str::to_string),
+        next_start_hints: require_string_list(arguments, &["next_start_hints", "nextStartHints"])?,
+        project_dir: optional_string_any(arguments, &["project_dir", "projectDir"])
+            .map(str::to_string),
+    })
 }
 
 fn json_rpc_result(id: Value, result: Value) -> Value {
@@ -1452,6 +1535,7 @@ mod tests {
                 "forge_status",
                 "forge_cancel",
                 "nota_runtime_overview",
+                "nota_write_checkpoint",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
                 "vault_get_token",
@@ -1480,6 +1564,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_overview")
             .expect("nota_runtime_overview should exist");
+        let nota_checkpoint = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_write_checkpoint")
+            .expect("nota_write_checkpoint should exist");
         let prepare_agent = tools
             .iter()
             .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
@@ -1499,6 +1587,11 @@ mod tests {
         assert_eq!(nota_overview["permission"]["room"], "surface");
         assert_eq!(nota_overview["permission"]["targetLayer"], "cold");
         assert!(nota_overview["dispatchRole"].is_null());
+        assert_eq!(nota_checkpoint["permission"]["actorRole"], "nota");
+        assert_eq!(nota_checkpoint["permission"]["primitive"], "learn");
+        assert_eq!(nota_checkpoint["permission"]["room"], "memory");
+        assert_eq!(nota_checkpoint["permission"]["targetLayer"], "cold");
+        assert!(nota_checkpoint["dispatchRole"].is_null());
         assert_eq!(prepare_agent["dispatchRole"], "agent");
 
         Ok(())
@@ -1571,6 +1664,7 @@ mod tests {
                 "forge_status",
                 "forge_cancel",
                 "nota_runtime_overview",
+                "nota_write_checkpoint",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
                 "vault_get_token",
@@ -1591,11 +1685,18 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_overview")
             .expect("nota_runtime_overview should exist on nota surface");
+        let checkpoint_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_write_checkpoint")
+            .expect("nota_write_checkpoint should exist on nota surface");
         assert!(bootstrap_tool["dispatchRole"].is_null());
         assert_eq!(bootstrap_tool["permission"]["actorRole"], "nota");
         assert_eq!(overview_tool["permission"]["primitive"], "chat");
         assert_eq!(overview_tool["permission"]["room"], "surface");
         assert_eq!(overview_tool["permission"]["targetLayer"], "cold");
+        assert_eq!(checkpoint_tool["permission"]["primitive"], "learn");
+        assert_eq!(checkpoint_tool["permission"]["room"], "memory");
+        assert_eq!(checkpoint_tool["permission"]["targetLayer"], "cold");
 
         Ok(())
     }
@@ -1858,6 +1959,52 @@ mod tests {
         assert_eq!(
             response["structuredContent"]["transactions"]["transaction_count"],
             0
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn nota_surface_can_write_runtime_checkpoint() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Nota))?;
+
+        let response = call_tool(
+            &server,
+            "nota_write_checkpoint",
+            json!({
+                "title": "MCP checkpoint",
+                "stable_level": "single-ingress, checkpointed, DB-first NOTA host with MCP checkpoint write",
+                "landed": ["MCP checkpoint writer landed"],
+                "remaining": ["Drive a live runtime transaction"],
+                "human_continuity_bus": "reduced but still partially required",
+                "selected_trunk": "MCP continuity write primitive",
+                "next_start_hints": ["Call nota_runtime_overview before other MCP work."]
+            }),
+        )?;
+
+        assert_eq!(response["isError"], false);
+        assert_eq!(response["entranceSurface"]["actorRole"], "nota");
+        assert_eq!(response["permission"]["actorRole"], "nota");
+        assert_eq!(response["permission"]["primitive"], "learn");
+        assert_eq!(response["permission"]["room"], "memory");
+        assert_eq!(response["permission"]["targetLayer"], "cold");
+        assert_eq!(
+            response["structuredContent"]["checkpoint"]["title"],
+            "MCP checkpoint"
+        );
+        assert_eq!(
+            response["structuredContent"]["checkpoint"]["payload"]["selected_trunk"],
+            "MCP continuity write primitive"
+        );
+
+        let overview = call_tool(&server, "nota_runtime_overview", json!({}))?;
+        assert_eq!(
+            overview["structuredContent"]["checkpoints"]["checkpoint_count"],
+            1
+        );
+        assert_eq!(
+            overview["structuredContent"]["checkpoints"]["checkpoints"][0]["title"],
+            "MCP checkpoint"
         );
 
         Ok(())
