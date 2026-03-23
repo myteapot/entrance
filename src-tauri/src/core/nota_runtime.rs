@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::ops::Deref;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -430,9 +431,35 @@ pub struct NotaRuntimeTransactionsReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct NotaRuntimeAllocationReadRecord {
+    #[serde(flatten)]
+    pub allocation: StoredNotaRuntimeAllocation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_dispatch_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_dispatch_tool_name: Option<String>,
+}
+
+impl Deref for NotaRuntimeAllocationReadRecord {
+    type Target = StoredNotaRuntimeAllocation;
+
+    fn deref(&self) -> &Self::Target {
+        &self.allocation
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct NotaRuntimeAllocationsReport {
     pub allocation_count: usize,
-    pub allocations: Vec<StoredNotaRuntimeAllocation>,
+    pub allocations: Vec<NotaRuntimeAllocationReadRecord>,
+    #[serde(skip)]
+    stored_allocations: Vec<StoredNotaRuntimeAllocation>,
+}
+
+impl NotaRuntimeAllocationsReport {
+    pub fn stored_allocations(&self) -> &[StoredNotaRuntimeAllocation] {
+        &self.stored_allocations
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -897,11 +924,34 @@ pub fn list_nota_runtime_transactions(
 pub fn list_nota_runtime_allocations(
     data_store: &DataStore,
 ) -> Result<NotaRuntimeAllocationsReport> {
-    let allocations = materialize_terminal_allocation_outcomes(data_store)?;
+    let stored_allocations = materialize_terminal_allocation_outcomes(data_store)?;
+    let allocations = stored_allocations
+        .iter()
+        .cloned()
+        .map(project_nota_runtime_allocation_read_record)
+        .collect();
     Ok(NotaRuntimeAllocationsReport {
-        allocation_count: allocations.len(),
+        allocation_count: stored_allocations.len(),
         allocations,
+        stored_allocations,
     })
+}
+
+fn project_nota_runtime_allocation_read_record(
+    allocation: StoredNotaRuntimeAllocation,
+) -> NotaRuntimeAllocationReadRecord {
+    let dispatch_truth =
+        serde_json::from_str::<NotaDoAllocationPayload>(&allocation.payload_json).ok();
+
+    NotaRuntimeAllocationReadRecord {
+        child_dispatch_role: dispatch_truth
+            .as_ref()
+            .map(|payload| payload.child_dispatch_role.clone()),
+        child_dispatch_tool_name: dispatch_truth
+            .as_ref()
+            .map(|payload| payload.child_dispatch_tool_name.clone()),
+        allocation,
+    }
 }
 
 pub fn list_nota_runtime_receipts(
@@ -1438,7 +1488,7 @@ pub fn materialize_runtime_closure_checkpoint(
     let allocations = list_nota_runtime_allocations(data_store)?;
 
     let Some(candidate) =
-        latest_runtime_closure_checkpoint_candidate(data_store, &allocations.allocations)?
+        latest_runtime_closure_checkpoint_candidate(data_store, allocations.stored_allocations())?
     else {
         return Ok(NotaRuntimeClosureCheckpointMaterializationReport {
             status: "unavailable".to_string(),
@@ -2408,6 +2458,14 @@ mod tests {
 
         let report = list_nota_runtime_allocations(&store)?;
         assert_eq!(report.allocation_count, 1);
+        assert_eq!(
+            report.allocations[0].child_dispatch_role.as_deref(),
+            Some("agent")
+        );
+        assert_eq!(
+            report.allocations[0].child_dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_agent")
+        );
         let first_receipts = store.list_nota_runtime_receipts(Some(transaction.id))?;
         assert_eq!(first_receipts.len(), 1);
         assert_eq!(
@@ -2612,7 +2670,7 @@ mod tests {
 
         let allocations = list_nota_runtime_allocations(&store)?;
         let recommendation =
-            recommend_runtime_closure_checkpoint(&store, &allocations.allocations, None)?
+            recommend_runtime_closure_checkpoint(&store, allocations.stored_allocations(), None)?
                 .context("dev return checkpoint recommendation should exist")?;
         let checkpoint_report = write_runtime_checkpoint(&store, recommendation.clone())?;
         store.update_nota_runtime_transaction(
@@ -2741,7 +2799,7 @@ mod tests {
 
         let allocations = list_nota_runtime_allocations(&store)?;
         let recommendation =
-            recommend_runtime_closure_checkpoint(&store, &allocations.allocations, None)?
+            recommend_runtime_closure_checkpoint(&store, allocations.stored_allocations(), None)?
                 .context("agent return checkpoint recommendation should exist")?;
         assert_eq!(
             recommendation.selected_trunk.as_deref(),
@@ -2886,6 +2944,14 @@ mod tests {
         let readonly_report = list_nota_runtime_allocations(&readonly_store)?;
         assert_eq!(readonly_report.allocation_count, 1);
         assert_eq!(readonly_report.allocations[0].status, "escalated_blocked");
+        assert_eq!(
+            readonly_report.allocations[0].child_dispatch_role.as_deref(),
+            Some("agent")
+        );
+        assert_eq!(
+            readonly_report.allocations[0].child_dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_agent")
+        );
         let readonly_payload: NotaDoAllocationPayload =
             serde_json::from_str(&readonly_report.allocations[0].payload_json)?;
         let readonly_outcome = readonly_payload
@@ -3045,7 +3111,7 @@ mod tests {
 
         let report = list_nota_runtime_allocations(&store)?;
         let recommendation =
-            recommend_runtime_closure_checkpoint(&store, &report.allocations, None)?
+            recommend_runtime_closure_checkpoint(&store, report.stored_allocations(), None)?
                 .expect("newer dev return should become the recommended closure");
 
         assert_eq!(

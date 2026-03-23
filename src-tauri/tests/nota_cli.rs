@@ -260,6 +260,11 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
         allocations["allocations"][0]["source_transaction_id"],
         report["transaction"]["id"]
     );
+    assert_eq!(allocations["allocations"][0]["child_dispatch_role"], "agent");
+    assert_eq!(
+        allocations["allocations"][0]["child_dispatch_tool_name"],
+        "forge_dispatch_agent"
+    );
 
     let overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
     let overview: Value = serde_json::from_str(&overview_output)
@@ -268,6 +273,10 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     assert_eq!(
         overview["allocations"]["allocations"][0]["source_transaction_id"],
         report["transaction"]["id"]
+    );
+    assert_eq!(
+        overview["allocations"]["allocations"][0]["child_dispatch_role"],
+        "agent"
     );
     assert!(overview["recommended_checkpoint"].is_null());
 
@@ -289,6 +298,11 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     assert_eq!(
         status["latest_allocation"]["id"],
         report["allocation"]["id"]
+    );
+    assert_eq!(status["latest_allocation"]["child_dispatch_role"], "agent");
+    assert_eq!(
+        status["latest_allocation"]["child_dispatch_tool_name"],
+        "forge_dispatch_agent"
     );
     assert_eq!(status["receipt_count"], 5);
     assert_eq!(
@@ -628,6 +642,11 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
         .context("nota allocations output should be valid JSON")?;
     assert_eq!(allocations["allocation_count"], 1);
     assert_eq!(allocations["allocations"][0]["id"], allocation_id);
+    assert_eq!(allocations["allocations"][0]["child_dispatch_role"], "dev");
+    assert_eq!(
+        allocations["allocations"][0]["child_dispatch_tool_name"],
+        "forge_dispatch_dev"
+    );
     let listed_payload_json = allocations["allocations"][0]["payload_json"]
         .as_str()
         .context("listed allocation payload_json should be present")?;
@@ -647,6 +666,11 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
         "forge_dev_dispatch"
     );
     assert_eq!(status["latest_allocation"]["allocator_surface"], "nota_dev");
+    assert_eq!(status["latest_allocation"]["child_dispatch_role"], "dev");
+    assert_eq!(
+        status["latest_allocation"]["child_dispatch_tool_name"],
+        "forge_dispatch_dev"
+    );
     assert_eq!(
         status["latest_receipt"]["receipt_kind"],
         "CADENCE_CHECKPOINT_WRITTEN"

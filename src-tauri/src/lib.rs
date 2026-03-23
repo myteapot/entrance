@@ -25,8 +25,8 @@ use core::{
         ChatCaptureRequest,
     },
     data_store::{
-        StoredDecisionRecord, StoredNotaRuntimeAllocation, StoredNotaRuntimeReceipt,
-        StoredNotaRuntimeTransaction, StoredSourceIngestRun, StoredTodoRecord, StoredVisionRecord,
+        StoredDecisionRecord, StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
+        StoredSourceIngestRun, StoredTodoRecord, StoredVisionRecord,
     },
     design_governance::{
         list_design_decisions, record_design_decision, DesignDecisionListReport,
@@ -48,7 +48,8 @@ use core::{
         recommend_runtime_closure_checkpoint, run_nota_dev_dispatch, run_nota_do_agent_dispatch,
         write_runtime_checkpoint, NotaCheckpointListReport, NotaCheckpointRequest,
         NotaDevDispatchRequest, NotaDispatchExecutionHost, NotaDoAgentDispatchRequest,
-        NotaRuntimeAllocationsReport, NotaRuntimeTransactionsReport,
+        NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport,
+        NotaRuntimeTransactionsReport,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -133,7 +134,7 @@ pub(crate) struct NotaRuntimeStatus {
     latest_transaction: Option<StoredNotaRuntimeTransaction>,
     allocation_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    latest_allocation: Option<StoredNotaRuntimeAllocation>,
+    latest_allocation: Option<NotaRuntimeAllocationReadRecord>,
     receipt_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_receipt: Option<StoredNotaRuntimeReceipt>,
@@ -1364,7 +1365,7 @@ pub(crate) fn build_nota_runtime_overview(
     let todos = list_nota_todos(data_store)?;
     let recommended_checkpoint = recommend_runtime_closure_checkpoint(
         data_store,
-        &allocations.allocations,
+        allocations.stored_allocations(),
         checkpoints
             .checkpoints
             .iter()
@@ -1402,7 +1403,7 @@ pub(crate) fn build_nota_runtime_status(
     let todos = list_nota_todos(data_store)?;
     let recommended_checkpoint = recommend_runtime_closure_checkpoint(
         data_store,
-        &allocations.allocations,
+        allocations.stored_allocations(),
         current_checkpoint.as_ref(),
     )?;
 
