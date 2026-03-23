@@ -1622,12 +1622,7 @@ fn tool_name_from_params(params: Option<&Value>) -> Option<&str> {
 }
 
 fn permission_for_registered_tool(name: &str) -> Option<McpToolPermission> {
-    permission_for_mcp_tool(name).or_else(|| match name {
-        "nota_runtime_allocations" | "nota_runtime_receipts" => {
-            permission_for_mcp_tool("nota_runtime_overview")
-        }
-        _ => None,
-    })
+    permission_for_mcp_tool(name)
 }
 
 fn tool_dispatch_role_from_name(name: &str) -> Option<ActorRole> {
