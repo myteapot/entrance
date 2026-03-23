@@ -9,11 +9,12 @@
 
 ## Current State
 
-- The first cold reconciliation cut is now landed; the active absorption lane is `MYT-63 / MYT-64 / MYT-65`.
-- No active architecture pending items are currently registered in the DB-backed working set.
-- No active operational blocker is currently mounted in the hot root.
-- The runtime storage boundary has now collapsed onto `%LOCALAPPDATA%/Entrance/entrance.db`; remaining local DB files are historical residue or removable proof carriers rather than active owners.
-- `GitLab MCP` read access has been validated live in-session against `pub/entrance`; older token-scope and OAuth-host notes are now historical fallback rather than active pending.
+- No root-level architecture rewrite is pending; the current missing work is runtime completion.
+- `L3` remains unpassed because `Dev` runtime, permission wiring, and a real `DEV / AGENT` allocator are still absent.
+- `v0` continuation policy is still hardcoded; configurable semantic cycle budget remains future work.
+- Any attempt to let `Arch / Dev / Agent` run as peer continuation controllers would be drift, not progress.
+- A native `NOTA` surface remains future work and must reuse the same scheduler and runtime truth rather than creating a shadow control plane.
+- The runtime storage boundary remains `%LOCALAPPDATA%/Entrance/entrance.db`; repo-local DB residue is historical proof or cleanup material, not an active owner.
 
 ## Rule
 

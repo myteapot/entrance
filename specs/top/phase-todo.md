@@ -9,40 +9,44 @@
 
 ## Current Focus
 
-- keep the compressed hot root canonical while treating reconciliation detail as cold-truth work
-- use the first landing reconciliation cut to filter the 50 imported planning shells before any new UI, sync, or automation work
-- keep the active queue on `MYT-63`; `MYT-64` and `MYT-65` now have repo-side canonical copies under `harness/bootstrap/` and `specs/recovery/`
-- keep the rest of the imported backlog parked unless runtime fact forces promotion
+- keep the single-lane `NOTA -> agent` allocator slice honest, queryable, and explicitly incomplete
+- keep one persistent `NOTA` monitor/planner window as the only global continuation authority
+- keep long-term direction and current `v0` policy separated across `decisions` and `checkpoints`
+- keep the next implementation frontier ordered as `agent surface hardening -> dev lane -> permission wiring -> multi-role allocator`
+- keep human relay burden shrinking by resuming from DB-backed truth before replaying chat
 
-## Landing Sequence
+## Execution Strategy
 
-1. keep `machine.md / control.md / truth.md / phase-todo.md / pending.md` as the active hot root
-2. keep the first reconciliation cut in cold detail at `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
-3. use the landed bootstrap and recovery imports as the repo-side source for the next decoupling step under `MYT-63`
-4. only after the first reconciliation cut is absorbed decide whether storage needs an explicit owned reconciliation bucket beyond `unreconciled`
+1. start from `entrance nota checkpoints` for the active `v0` cut and `entrance nota decisions` for direction
+2. let the persistent `NOTA` monitor/planner choose one active milestone or state-expansion cut
+3. if worker windows are needed, keep them inside that one milestone and give each a single owned lane plus bounded exit criteria
+4. let workers land code, tests, receipts, or blockers, but do not let them self-promote the global level
+5. let `NOTA` audit the returned evidence, write the new checkpoint when the active cut changes, and write a decision only when direction changes
 
 ## Current Boundary
 
-- current default boundary is `root switched, paths unchanged`
-- the new hot root is canonical for navigation now
-- numbered docs remain in place only as mounted transitional detail with local detail or mounted links
-- landing `v0` currently proves external capture plus seeded planning shells, not completed internal roadmap ownership
-- live runtime storage now lives at `%LOCALAPPDATA%/Entrance/entrance.db`, which carries both the landed Linear import and the absorbed repo-root recovery seed as runtime-owned storage truth
-- physical relocation of transitional detail is optional future cleanup, not a prerequisite for the compressed root
+- the active hot root remains `machine.md / control.md / truth.md / phase-todo.md / pending.md`
+- live runtime continuity is `DB-first` under `%LOCALAPPDATA%/Entrance/entrance.db`
+- `L3` is still not passed: the active allocator slice is single-lane `NOTA -> agent`, not a full multi-role allocator
+- `Dev` runtime is not landed yet
+- role and permission wiring still are not fully enforced in runtime
+- semantic continuation policy is still hardcoded in `v0`; it is not yet human-configurable
 
 ## Active Chunks
 
-- `Landing / Reconciliation`
-  move only the de-`.agents` absorption lane now: `MYT-63`, with `MYT-64` and `MYT-65` landed as repo-side imports, `MYT-61` kept as a completed verification gate, and the rest of the imported shells preserved in cold backlog or historical residue.
-- `Machine`
-  keep the machine trunk stable; only reopen it if reconciliation exposes a genuine runtime-routing or ownership-boundary gap.
-- `Truth`
-  keep the truth trunk stable; only reopen it if reconciliation exposes a real storage/cold/hot mismatch that cannot be resolved locally.
-- `Control`
-  keep the control trunk parked; only reopen it if reconciliation exposes a real ownership-host conflict or hot-surface compression failure.
+- `Allocator v0 hardening`
+  keep the `NOTA -> agent` slice reconstructable from runtime allocations, transactions, receipts, and checkpoints.
+- `Dev lane`
+  land a real `Dev` runtime slice with storage-backed dispatch truth before claiming multi-role routing.
+- `Permission wiring`
+  connect the existing role or primitive or room contract to actual runtime admission and execution walls.
+- `Allocator expansion`
+  only after the prior three land, move to an honest `DEV / AGENT` allocator.
 
 ## Rule
 
 - items here should point back into one semantic trunk
 - this doc is a queue, not a fourth semantic architecture trunk
-- parked backlog stays parked until the active reconciliation lane stops being the narrowest hard next move
+- one active milestone exists at a time even if multiple worker windows execute inside it
+- parallelism is subordinate execution, not parallel global continuation
+- any strategy change should update `checkpoints`, and any longer-lived architectural direction change should update `decisions`
