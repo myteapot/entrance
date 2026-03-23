@@ -798,6 +798,16 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
         do_report["result"]["structuredContent"]["receipts"][2]["receipt_kind"],
         "ALLOCATION_RECORDED"
     );
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let task_id = do_report["result"]["structuredContent"]["task_id"]
+        .as_i64()
+        .context("nota_do should return a task id")?;
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = NULL, finished_at = NULL WHERE id = ?1",
+        rusqlite::params![task_id, "Running"],
+    )?;
 
     let allocations = server.send(json!({
         "jsonrpc": "2.0",
@@ -844,10 +854,6 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
         overview["checkpoints"]["checkpoints"][0]["title"],
         "Do allocation: MYT-48"
     );
-
-    let db_path = app_dir.path().join("entrance.db");
-    let connection = Connection::open(&db_path)
-        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(
         connection.query_row(
             "SELECT COUNT(*) FROM nota_runtime_transactions",
@@ -879,6 +885,142 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
             row.get::<_, i64>(0)
         })?,
         1
+    );
+
+    let blocked_message = "add openai to Vault first";
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = ?3, finished_at = ?4 WHERE id = ?1",
+        rusqlite::params![task_id, "Blocked", blocked_message, "2026-03-23T00:00:00Z"],
+    )?;
+
+    let blocked_overview = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-overview-terminal",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_overview",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(blocked_overview["result"]["isError"], false);
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["allocations"]["allocations"][0]["status"],
+        "escalated_blocked"
+    );
+    let blocked_payload_json = blocked_overview["result"]["structuredContent"]["allocations"]
+        ["allocations"][0]["payload_json"]
+        .as_str()
+        .context("allocation payload_json should be present")?;
+    let blocked_payload: Value = serde_json::from_str(blocked_payload_json)
+        .context("allocation payload_json should stay valid JSON")?;
+    assert_eq!(
+        blocked_payload["terminal_outcome"]["boundary_kind"],
+        "escalation"
+    );
+    assert_eq!(
+        blocked_payload["terminal_outcome"]["child_execution_status"],
+        "Blocked"
+    );
+    assert_eq!(
+        blocked_payload["terminal_outcome"]["child_execution_status_message"],
+        blocked_message
+    );
+
+    let blocked_allocations = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-allocations-terminal",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_allocations",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(blocked_allocations["result"]["isError"], false);
+    assert_eq!(
+        blocked_allocations["result"]["structuredContent"]["allocations"][0]["status"],
+        "escalated_blocked"
+    );
+    let blocked_allocations_payload_json = blocked_allocations["result"]["structuredContent"]
+        ["allocations"][0]["payload_json"]
+        .as_str()
+        .context("allocation payload_json should be present on dedicated MCP surface")?;
+    let blocked_allocations_payload: Value = serde_json::from_str(blocked_allocations_payload_json)
+        .context("dedicated MCP allocation payload_json should stay valid JSON")?;
+    assert_eq!(
+        blocked_allocations_payload["terminal_outcome"]["boundary_kind"],
+        "escalation"
+    );
+    assert_eq!(
+        blocked_allocations_payload["terminal_outcome"]["child_execution_status"],
+        "Blocked"
+    );
+    assert_eq!(
+        blocked_allocations_payload["terminal_outcome"]["child_execution_status_message"],
+        blocked_message
+    );
+
+    let stored_allocation_outcome = connection.query_row(
+        "SELECT status, payload_json FROM nota_runtime_allocations",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    assert_eq!(stored_allocation_outcome.0, "escalated_blocked");
+    let stored_payload: Value = serde_json::from_str(&stored_allocation_outcome.1)
+        .context("stored allocation payload_json should be valid JSON")?;
+    assert_eq!(
+        stored_payload["terminal_outcome"]["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        6
+    );
+    assert_eq!(
+        connection.query_row(
+            "SELECT COUNT(*) FROM nota_runtime_receipts WHERE receipt_kind = 'ALLOCATION_TERMINAL_OUTCOME_RECORDED'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )?,
+        1
+    );
+    let terminal_receipt = connection.query_row(
+        "SELECT payload_json, created_at FROM nota_runtime_receipts WHERE receipt_kind = 'ALLOCATION_TERMINAL_OUTCOME_RECORDED'",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    assert!(!terminal_receipt.1.is_empty());
+    let terminal_receipt_payload: Value = serde_json::from_str(&terminal_receipt.0)
+        .context("terminal outcome receipt payload_json should be valid JSON")?;
+    assert_eq!(
+        terminal_receipt_payload["allocation_id"],
+        do_report["result"]["structuredContent"]["allocation"]["id"]
+    );
+    assert_eq!(
+        terminal_receipt_payload["lineage_ref"],
+        do_report["result"]["structuredContent"]["allocation"]["lineage_ref"]
+    );
+    assert_eq!(terminal_receipt_payload["boundary_kind"], "escalation");
+    assert_eq!(
+        terminal_receipt_payload["child_execution_status"],
+        "Blocked"
+    );
+    assert_eq!(
+        terminal_receipt_payload["child_execution_status_message"],
+        blocked_message
+    );
+    assert_eq!(
+        terminal_receipt_payload["target_kind"],
+        stored_payload["terminal_outcome"]["target_kind"]
+    );
+    assert_eq!(
+        terminal_receipt_payload["target_ref"],
+        stored_payload["terminal_outcome"]["target_ref"]
+    );
+    assert_eq!(
+        terminal_receipt_payload["allocation_status"],
+        "escalated_blocked"
     );
 
     Ok(())
