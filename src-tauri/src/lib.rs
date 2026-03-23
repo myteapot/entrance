@@ -113,6 +113,8 @@ pub(crate) struct NotaRuntimeOverview {
     checkpoints: NotaCheckpointListReport,
     transactions: NotaRuntimeTransactionsReport,
     allocations: NotaRuntimeAllocationsReport,
+    visions: NotaVisionListReport,
+    todos: NotaTodoListReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
     decisions: DesignDecisionListReport,
@@ -1356,6 +1358,8 @@ pub(crate) fn build_nota_runtime_overview(
 ) -> Result<NotaRuntimeOverview> {
     let checkpoints = list_runtime_checkpoints(data_store)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
+    let visions = list_nota_visions(data_store)?;
+    let todos = list_nota_todos(data_store)?;
     let recommended_checkpoint = recommend_runtime_closure_checkpoint(
         data_store,
         &allocations.allocations,
@@ -1370,6 +1374,8 @@ pub(crate) fn build_nota_runtime_overview(
         checkpoints,
         transactions: list_nota_runtime_transactions(data_store)?,
         allocations,
+        visions,
+        todos,
         recommended_checkpoint,
         decisions: list_design_decisions(data_store)?,
         chat_captures: list_chat_captures(data_store)?,
