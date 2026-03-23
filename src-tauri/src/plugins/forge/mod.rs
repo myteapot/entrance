@@ -12,8 +12,13 @@ use std::{
 
 use crate::{
     core::{
-        data_store::{DataStore, MigrationStep, StoredForgeTask, StoredForgeTaskLog},
+        action::ActorRole,
+        data_store::{
+            DataStore, MigrationStep, NewForgeDispatchReceipt, StoredForgeDispatchReceipt,
+            StoredForgeTask, StoredForgeTaskLog,
+        },
         event_bus::EventBus,
+        supervision::SupervisionStrategy,
     },
     plugins::vault::VaultCipher,
     plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
@@ -30,7 +35,7 @@ const MANIFEST: Manifest = Manifest {
     description: "Agent task management and execution engine.",
 };
 
-const MIGRATIONS: [MigrationStep; 2] = [
+const MIGRATIONS: [MigrationStep; 3] = [
     MigrationStep {
         name: "0002_create_plugin_forge_tasks",
         sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
@@ -39,7 +44,22 @@ const MIGRATIONS: [MigrationStep; 2] = [
         name: "0004_create_plugin_forge_task_logs",
         sql: include_str!("../../../migrations/0004_create_plugin_forge_task_logs.sql"),
     },
+    MigrationStep {
+        name: "0006_create_plugin_forge_dispatch_receipts",
+        sql: include_str!("../../../migrations/0006_create_plugin_forge_dispatch_receipts.sql"),
+    },
 ];
+
+const ENTRANCE_BOOTSTRAP_SKILL_RELATIVE_PATH: &str = "harness/bootstrap/duet/SKILL.md";
+const ENTRANCE_BOOTSTRAP_PROMPT_SOURCE_LABEL: &str = "Entrance-owned harness/bootstrap prompt";
+const ENTRANCE_BOOTSTRAP_DEV_ROLE_RELATIVE_PATH: &str = "harness/bootstrap/duet/roles/dev.md";
+const ENTRANCE_BOOTSTRAP_DEV_PROMPT_SOURCE_LABEL: &str =
+    "Entrance-owned harness/bootstrap dev prompt";
+const FORGE_AGENT_DISPATCH_ROLE: ActorRole = ActorRole::Agent;
+const FORGE_DEV_DISPATCH_ROLE: ActorRole = ActorRole::Dev;
+const FORGE_AGENT_DISPATCH_TOOL_NAME: &str = "forge_dispatch_agent";
+const FORGE_DEV_DISPATCH_TOOL_NAME: &str = "forge_dispatch_dev";
+const FORGE_DISPATCH_PIPELINE_SCOPE: &str = "dispatch_pipeline";
 
 pub fn migrations() -> &'static [MigrationStep] {
     &MIGRATIONS
@@ -61,6 +81,21 @@ pub struct ForgeTaskDetails {
     pub logs: Vec<StoredForgeTaskLog>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ForgeTaskSupervisionSnapshot {
+    pub parent_receipt: Option<StoredForgeDispatchReceipt>,
+    pub child_receipts: Vec<StoredForgeDispatchReceipt>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DispatchReceiptRequest {
+    pub parent_task_id: i64,
+    pub supervision_strategy: SupervisionStrategy,
+    pub child_dispatch_role: ActorRole,
+    pub child_dispatch_tool_name: String,
+    pub child_slot: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateTaskRequest {
     pub name: String,
@@ -70,6 +105,7 @@ pub struct CreateTaskRequest {
     pub stdin_text: Option<String>,
     pub required_tokens: String,
     pub metadata: String,
+    pub dispatch_receipt: Option<DispatchReceiptRequest>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -82,17 +118,58 @@ pub struct ForgeTaskMetadata {
     pub worktree_path: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub dispatch_role: Option<ActorRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_tool_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PreparedAgentDispatch {
+    pub dispatch_role: ActorRole,
+    pub dispatch_tool_name: String,
     pub issue_id: String,
     pub issue_status: String,
     pub issue_status_source: String,
     pub issue_title: Option<String>,
     pub project_root: String,
     pub worktree_path: String,
+    pub prompt_source: String,
     pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForgeDispatchVerificationReport {
+    pub dispatch: PreparedAgentDispatch,
+    pub task_id: i64,
+    pub task_status: String,
+    pub task_command: String,
+    pub task_working_dir: Option<String>,
+    pub prompt_via_stdin: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreparedDevDispatch {
+    pub dispatch_role: ActorRole,
+    pub dispatch_tool_name: String,
+    pub issue_id: String,
+    pub issue_status: String,
+    pub issue_status_source: String,
+    pub issue_title: Option<String>,
+    pub project_root: String,
+    pub worktree_path: String,
+    pub prompt_source: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForgeDevDispatchVerificationReport {
+    pub dispatch: PreparedDevDispatch,
+    pub task_id: i64,
+    pub task_status: String,
+    pub task_command: String,
+    pub task_working_dir: Option<String>,
+    pub prompt_via_stdin: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -194,15 +271,38 @@ impl ForgePlugin {
     }
 
     pub fn create_task(&self, request: CreateTaskRequest) -> Result<i64> {
-        self.data_store.insert_forge_task(
-            &request.name,
-            &request.command,
-            &request.args,
-            request.working_dir.as_deref(),
-            request.stdin_text.as_deref(),
-            &request.required_tokens,
-            &request.metadata,
-        )
+        if let Some(dispatch_receipt) = request.dispatch_receipt.as_ref() {
+            let (task_id, _) = self.data_store.insert_forge_task_with_dispatch_receipt(
+                &request.name,
+                &request.command,
+                &request.args,
+                request.working_dir.as_deref(),
+                request.stdin_text.as_deref(),
+                &request.required_tokens,
+                &request.metadata,
+                &NewForgeDispatchReceipt {
+                    parent_task_id: dispatch_receipt.parent_task_id,
+                    supervision_scope: FORGE_DISPATCH_PIPELINE_SCOPE,
+                    supervision_strategy: supervision_strategy_slug(
+                        dispatch_receipt.supervision_strategy,
+                    ),
+                    child_dispatch_role: actor_role_slug(dispatch_receipt.child_dispatch_role),
+                    child_dispatch_tool_name: &dispatch_receipt.child_dispatch_tool_name,
+                    child_slot: dispatch_receipt.child_slot.as_deref(),
+                },
+            )?;
+            Ok(task_id)
+        } else {
+            self.data_store.insert_forge_task(
+                &request.name,
+                &request.command,
+                &request.args,
+                request.working_dir.as_deref(),
+                request.stdin_text.as_deref(),
+                &request.required_tokens,
+                &request.metadata,
+            )
+        }
     }
 
     pub fn list_tasks(&self) -> Result<Vec<StoredForgeTask>> {
@@ -226,12 +326,23 @@ impl ForgePlugin {
         Ok(Some(ForgeTaskDetails { task, logs }))
     }
 
+    pub fn get_task_supervision(&self, id: i64) -> Result<ForgeTaskSupervisionSnapshot> {
+        Ok(ForgeTaskSupervisionSnapshot {
+            parent_receipt: self.data_store.get_forge_dispatch_parent_receipt(id)?,
+            child_receipts: self.data_store.list_forge_dispatch_child_receipts(id)?,
+        })
+    }
+
     pub fn cancel_task(&self, id: i64) -> Result<()> {
         self.engine.cancel_task(id)
     }
 
     pub fn engine(&self) -> Arc<TaskEngine> {
         self.engine.clone()
+    }
+
+    pub fn data_store(&self) -> DataStore {
+        self.data_store.clone()
     }
 
     pub fn subscribe_events(
@@ -279,37 +390,245 @@ pub async fn prepare_agent_dispatch(
     data_store: DataStore,
     project_dir: Option<String>,
 ) -> Result<PreparedAgentDispatch, String> {
-    let paths = tauri::async_runtime::spawn_blocking(move || resolve_dispatch_paths(project_dir.as_deref()))
-        .await
-        .map_err(|error| error.to_string())??;
+    let paths = tauri::async_runtime::spawn_blocking(move || {
+        resolve_dispatch_paths(project_dir.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
 
     let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
+    build_prepared_agent_dispatch(paths, issue_summary).await
+}
+
+pub fn prepare_agent_dispatch_blocking(
+    data_store: DataStore,
+    project_dir: Option<String>,
+) -> Result<PreparedAgentDispatch, String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to build Tokio runtime for Forge dispatch: {error}"))?;
+
+    runtime.block_on(prepare_agent_dispatch(data_store, project_dir))
+}
+
+pub fn verify_agent_dispatch(
+    forge: &ForgePlugin,
+    project_dir: Option<String>,
+) -> Result<ForgeDispatchVerificationReport, String> {
+    let dispatch = prepare_agent_dispatch_blocking(forge.data_store(), project_dir)?;
+    let request = build_agent_task_request(
+        dispatch.issue_id.clone(),
+        dispatch.worktree_path.clone(),
+        "codex".to_string(),
+        dispatch.prompt.clone(),
+        Vec::new(),
+        None,
+    )?;
+
+    let task_id = forge
+        .create_task(request)
+        .map_err(|error| error.to_string())?;
+    let task = forge
+        .get_task(task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "stored Forge verification task should exist".to_string())?;
+
+    Ok(ForgeDispatchVerificationReport {
+        dispatch,
+        task_id,
+        task_status: task.status,
+        task_command: task.command,
+        task_working_dir: task.working_dir,
+        prompt_via_stdin: task.stdin_text.is_some(),
+    })
+}
+
+pub async fn prepare_dev_dispatch(
+    data_store: DataStore,
+    project_dir: Option<String>,
+) -> Result<PreparedDevDispatch, String> {
+    let paths = tauri::async_runtime::spawn_blocking(move || {
+        resolve_dispatch_paths(project_dir.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
+    build_prepared_dev_dispatch(paths, issue_summary).await
+}
+
+pub fn prepare_dev_dispatch_blocking(
+    data_store: DataStore,
+    project_dir: Option<String>,
+) -> Result<PreparedDevDispatch, String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to build Tokio runtime for Forge dispatch: {error}"))?;
+
+    runtime.block_on(prepare_dev_dispatch(data_store, project_dir))
+}
+
+pub fn verify_dev_dispatch(
+    forge: &ForgePlugin,
+    project_dir: Option<String>,
+) -> Result<ForgeDevDispatchVerificationReport, String> {
+    let dispatch = prepare_dev_dispatch_blocking(forge.data_store(), project_dir)?;
+    let request = build_dev_task_request(
+        dispatch.issue_id.clone(),
+        dispatch.worktree_path.clone(),
+        "codex".to_string(),
+        dispatch.prompt.clone(),
+        Vec::new(),
+        None,
+    )?;
+
+    let task_id = forge
+        .create_task(request)
+        .map_err(|error| error.to_string())?;
+    let task = forge
+        .get_task(task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "stored Forge verification task should exist".to_string())?;
+
+    Ok(ForgeDevDispatchVerificationReport {
+        dispatch,
+        task_id,
+        task_status: task.status,
+        task_command: task.command,
+        task_working_dir: task.working_dir,
+        prompt_via_stdin: task.stdin_text.is_some(),
+    })
+}
+
+async fn build_prepared_agent_dispatch(
+    paths: DispatchPaths,
+    issue_summary: Option<LinearIssueSummary>,
+) -> Result<PreparedAgentDispatch, String> {
     let (issue_status, issue_status_source) = match issue_summary.as_ref() {
         Some(summary) => (summary.issue_status.clone(), "linear".to_string()),
         None => ("Todo".to_string(), "fallback".to_string()),
     };
     let task = build_agent_task_text(&paths.issue_id, issue_summary.as_ref());
     let project_root = paths.project_root.clone();
+    let worktree_path_for_prompt = paths.worktree_path.clone();
     let issue_id = paths.issue_id.clone();
     let issue_status_for_prompt = issue_status.clone();
     let prompt = tauri::async_runtime::spawn_blocking(move || {
-        generate_agent_prompt(&project_root, &issue_id, &issue_status_for_prompt, &task)
+        generate_agent_prompt(
+            &project_root,
+            &worktree_path_for_prompt,
+            &issue_id,
+            &issue_status_for_prompt,
+            &task,
+        )
     })
     .await
     .map_err(|error| error.to_string())??;
 
     Ok(PreparedAgentDispatch {
+        dispatch_role: FORGE_AGENT_DISPATCH_ROLE,
+        dispatch_tool_name: FORGE_AGENT_DISPATCH_TOOL_NAME.to_string(),
         issue_id: paths.issue_id,
         issue_status,
         issue_status_source,
         issue_title: issue_summary.map(|summary| summary.issue_title),
         project_root: paths.project_root,
         worktree_path: paths.worktree_path,
+        prompt_source: ENTRANCE_BOOTSTRAP_PROMPT_SOURCE_LABEL.to_string(),
+        prompt,
+    })
+}
+
+async fn build_prepared_dev_dispatch(
+    paths: DispatchPaths,
+    issue_summary: Option<LinearIssueSummary>,
+) -> Result<PreparedDevDispatch, String> {
+    let (issue_status, issue_status_source) = match issue_summary.as_ref() {
+        Some(summary) => (summary.issue_status.clone(), "linear".to_string()),
+        None => ("Todo".to_string(), "fallback".to_string()),
+    };
+    let task = build_dev_task_text(&paths.issue_id, issue_summary.as_ref());
+    let project_root = paths.project_root.clone();
+    let worktree_path_for_prompt = paths.worktree_path.clone();
+    let issue_id = paths.issue_id.clone();
+    let issue_status_for_prompt = issue_status.clone();
+    let prompt = tauri::async_runtime::spawn_blocking(move || {
+        generate_dev_prompt(
+            &project_root,
+            &worktree_path_for_prompt,
+            &issue_id,
+            &issue_status_for_prompt,
+            &task,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    Ok(PreparedDevDispatch {
+        dispatch_role: FORGE_DEV_DISPATCH_ROLE,
+        dispatch_tool_name: FORGE_DEV_DISPATCH_TOOL_NAME.to_string(),
+        issue_id: paths.issue_id,
+        issue_status,
+        issue_status_source,
+        issue_title: issue_summary.map(|summary| summary.issue_title),
+        project_root: paths.project_root,
+        worktree_path: paths.worktree_path,
+        prompt_source: ENTRANCE_BOOTSTRAP_DEV_PROMPT_SOURCE_LABEL.to_string(),
         prompt,
     })
 }
 
 pub(crate) fn build_agent_task_request(
+    issue_id: String,
+    worktree_path: String,
+    model: String,
+    prompt: String,
+    required_tokens: Vec<String>,
+    agent_command: Option<String>,
+) -> Result<CreateTaskRequest, String> {
+    build_dispatch_task_request(
+        FORGE_AGENT_DISPATCH_ROLE,
+        "agent_dispatch",
+        "Agent",
+        Some(FORGE_AGENT_DISPATCH_TOOL_NAME),
+        issue_id,
+        worktree_path,
+        model,
+        prompt,
+        required_tokens,
+        agent_command,
+    )
+}
+
+pub(crate) fn build_dev_task_request(
+    issue_id: String,
+    worktree_path: String,
+    model: String,
+    prompt: String,
+    required_tokens: Vec<String>,
+    agent_command: Option<String>,
+) -> Result<CreateTaskRequest, String> {
+    build_dispatch_task_request(
+        FORGE_DEV_DISPATCH_ROLE,
+        "dev_dispatch",
+        "Dev",
+        Some(FORGE_DEV_DISPATCH_TOOL_NAME),
+        issue_id,
+        worktree_path,
+        model,
+        prompt,
+        required_tokens,
+        agent_command,
+    )
+}
+
+fn build_dispatch_task_request(
+    dispatch_role: ActorRole,
+    metadata_kind: &str,
+    task_name_prefix: &str,
+    dispatch_tool_name: Option<&str>,
     issue_id: String,
     worktree_path: String,
     model: String,
@@ -389,15 +708,17 @@ pub(crate) fn build_agent_task_request(
     push_required_token(&mut required_tokens, provider_token);
 
     let metadata = serde_json::to_string(&ForgeTaskMetadata {
-        kind: Some("agent_dispatch".to_string()),
+        kind: Some(metadata_kind.to_string()),
         issue_id: Some(issue_id.clone()),
         worktree_path: Some(worktree_path.clone()),
         model: Some(raw_model.clone()),
+        dispatch_role: Some(dispatch_role),
+        dispatch_tool_name: dispatch_tool_name.map(str::to_string),
     })
     .map_err(|error| error.to_string())?;
 
     Ok(CreateTaskRequest {
-        name: format!("Agent {issue_id}"),
+        name: format!("{task_name_prefix} {issue_id}"),
         command,
         args: serde_json::to_string(&args).map_err(|error| error.to_string())?,
         working_dir: Some(worktree_path),
@@ -405,7 +726,25 @@ pub(crate) fn build_agent_task_request(
         required_tokens: serde_json::to_string(&required_tokens)
             .map_err(|error| error.to_string())?,
         metadata,
+        dispatch_receipt: None,
     })
+}
+
+fn actor_role_slug(role: ActorRole) -> &'static str {
+    match role {
+        ActorRole::Nota => "nota",
+        ActorRole::Arch => "arch",
+        ActorRole::Dev => "dev",
+        ActorRole::Agent => "agent",
+    }
+}
+
+fn supervision_strategy_slug(strategy: SupervisionStrategy) -> &'static str {
+    match strategy {
+        SupervisionStrategy::OneForOne => "one_for_one",
+        SupervisionStrategy::RestForOne => "rest_for_one",
+        SupervisionStrategy::OneForAll => "one_for_all",
+    }
 }
 
 fn push_required_token(required_tokens: &mut Vec<String>, token: &str) {
@@ -428,45 +767,19 @@ fn split_runner_and_variant(model: &str) -> (&str, Option<&str>) {
     }
 }
 
+fn managed_worktrees_root_for_app_data_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("worktrees")
+}
+
+fn resolve_dispatch_worktree_roots() -> Result<Vec<PathBuf>, String> {
+    let app_data_dir = crate::core::resolve_app_data_dir().map_err(|error| error.to_string())?;
+    Ok(vec![managed_worktrees_root_for_app_data_dir(&app_data_dir)])
+}
+
 fn resolve_dispatch_paths(project_dir: Option<&str>) -> Result<DispatchPaths, String> {
-    // If project_dir is given, scan for worktrees under the agents directory
     if let Some(project_dir) = project_dir {
-        let project_root = PathBuf::from(project_dir);
-        if !project_root.exists() {
-            return Err(format!("Project directory `{}` does not exist", project_dir));
-        }
-
-        // Find the first feat-* worktree under .agents/.worktrees/<project_name>/
-        let project_name = project_root
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let worktrees_dir = PathBuf::from("A:/.agents/.worktrees").join(&project_name);
-
-        if worktrees_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&worktrees_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("feat-") && entry.path().is_dir() {
-                        let worktree_path = entry.path();
-                        let issue_id = parse_issue_id_from_branch(&name)?;
-                        // Verify it's a git worktree
-                        if run_git_command(&worktree_path, ["rev-parse", "--show-toplevel"]).is_ok() {
-                            return Ok(DispatchPaths {
-                                issue_id,
-                                project_root: project_dir.replace('\\', "/"),
-                                worktree_path: worktree_path.to_string_lossy().replace('\\', "/"),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        return Err(format!(
-            "No active worktree found for project `{}`. Create a worktree first with control.py.",
-            project_name
-        ));
+        let worktree_roots = resolve_dispatch_worktree_roots()?;
+        return resolve_dispatch_paths_for_project(project_dir, &worktree_roots);
     }
 
     // Fallback: detect from CWD
@@ -489,6 +802,84 @@ fn resolve_dispatch_paths(project_dir: Option<&str>) -> Result<DispatchPaths, St
         project_root: project_root.to_string_lossy().replace('\\', "/"),
         worktree_path: worktree_path.to_string_lossy().replace('\\', "/"),
     })
+}
+
+fn resolve_dispatch_paths_for_project(
+    project_dir: &str,
+    worktree_roots: &[PathBuf],
+) -> Result<DispatchPaths, String> {
+    let project_root = PathBuf::from(project_dir);
+    if !project_root.exists() {
+        return Err(format!(
+            "Project directory `{}` does not exist",
+            project_dir
+        ));
+    }
+
+    let project_name = project_root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    if let Some(worktree_path) = find_project_worktree(&project_name, worktree_roots)? {
+        let issue_id = parse_issue_id_from_branch(
+            &worktree_path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        )?;
+
+        return Ok(DispatchPaths {
+            issue_id,
+            project_root: project_dir.replace('\\', "/"),
+            worktree_path: worktree_path.to_string_lossy().replace('\\', "/"),
+        });
+    }
+
+    Err(format_missing_worktree_error(&project_name, worktree_roots))
+}
+
+fn find_project_worktree(
+    project_name: &str,
+    worktree_roots: &[PathBuf],
+) -> Result<Option<PathBuf>, String> {
+    for worktree_root in worktree_roots {
+        let project_worktrees_dir = worktree_root.join(project_name);
+        if !project_worktrees_dir.exists() {
+            continue;
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&project_worktrees_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("feat-") && entry.path().is_dir() {
+                    let worktree_path = entry.path();
+                    if run_git_command(&worktree_path, ["rev-parse", "--show-toplevel"]).is_ok() {
+                        return Ok(Some(worktree_path));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn format_missing_worktree_error(project_name: &str, worktree_roots: &[PathBuf]) -> String {
+    let searched_roots = worktree_roots
+        .iter()
+        .map(|root| format!("`{}`", root.join(project_name).display()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let managed_root = worktree_roots
+        .first()
+        .map(|root| root.join(project_name))
+        .unwrap_or_else(|| PathBuf::from(project_name));
+
+    format!(
+        "No active worktree found for project `{project_name}`. Forge looked under {searched_roots}. Create a `feat-<ISSUE>` worktree under `{}` and try again.",
+        managed_root.display()
+    )
 }
 
 fn run_git_command<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String, String> {
@@ -520,6 +911,10 @@ fn normalize_command_path(cwd: &Path, raw: &str) -> PathBuf {
     } else {
         cwd.join(candidate)
     }
+}
+
+fn normalize_display_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn parse_issue_id_from_branch(branch: &str) -> Result<String, String> {
@@ -622,74 +1017,101 @@ fn build_agent_task_text(issue_id: &str, issue_summary: Option<&LinearIssueSumma
     }
 }
 
+fn build_dev_task_text(issue_id: &str, issue_summary: Option<&LinearIssueSummary>) -> String {
+    match issue_summary {
+        Some(summary) if summary.issue_status.eq_ignore_ascii_case("In Review") => format!(
+            "以 Dev 身份审核并整合 Linear issue {issue_id}: {}",
+            summary.issue_title
+        ),
+        Some(summary) if summary.issue_status.eq_ignore_ascii_case("Request") => format!(
+            "以 Dev 身份处理返工并重新派发 Linear issue {issue_id}: {}",
+            summary.issue_title
+        ),
+        Some(summary) => format!(
+            "以 Dev 身份为 Linear issue {issue_id} 执行 prepare / dispatch: {}",
+            summary.issue_title
+        ),
+        None => {
+            format!("以 Dev 身份为 Linear issue {issue_id} 执行 prepare / dispatch，以 issue description、验收标准和最新评论为准")
+        }
+    }
+}
+
 fn generate_agent_prompt(
     project_root: &str,
+    worktree_path: &str,
     issue_id: &str,
     issue_status: &str,
     task: &str,
 ) -> Result<String, String> {
-    let output = Command::new("python")
-        .arg("A:/.agents/nota/scripts/control.py")
-        .arg("prompt")
-        .arg(project_root)
-        .arg(issue_id)
-        .arg(issue_status)
-        .arg(task)
-        .output()
-        .map_err(|error| error.to_string())?;
+    let project_root = PathBuf::from(project_root);
+    let worktree_path = PathBuf::from(worktree_path);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "Failed to generate Agent prompt with control.py".to_string()
-        } else {
-            format!("Failed to generate Agent prompt with control.py: {stderr}")
-        });
+    if !worktree_path.exists() {
+        return Err(format!(
+            "Resolved worktree `{}` does not exist",
+            normalize_display_path(&worktree_path)
+        ));
     }
 
-    let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
-    extract_generated_prompt(&stdout)
+    let bootstrap_skill_path = project_root.join(ENTRANCE_BOOTSTRAP_SKILL_RELATIVE_PATH);
+    if !bootstrap_skill_path.exists() {
+        return Err(format!(
+            "Entrance bootstrap skill file `{}` does not exist",
+            normalize_display_path(&bootstrap_skill_path)
+        ));
+    }
+
+    let project_root = normalize_display_path(&project_root);
+    let worktree_path = normalize_display_path(&worktree_path);
+    let bootstrap_skill_path = normalize_display_path(&bootstrap_skill_path);
+
+    Ok(format!(
+        "读 `{bootstrap_skill_path}`，以 Agent 身份启动。\n从 Linear 获取 `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/specs/`\n\n第一动作，在写任何代码前必须完成:\n1. 调用 Linear MCP，把 `{issue_id}` 标记为 `In Progress`\n2. 在 issue comment 留言:\n   `> Agent ({{当前模型名}}) 已领取，开始工作`\n\n这是硬约束:\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 Linear issue comment 中汇报结果。"
+    ))
 }
 
-fn extract_generated_prompt(output: &str) -> Result<String, String> {
-    const MARKER: &str = "GENERATED AGENT PROMPT";
+fn generate_dev_prompt(
+    project_root: &str,
+    worktree_path: &str,
+    issue_id: &str,
+    issue_status: &str,
+    task: &str,
+) -> Result<String, String> {
+    let project_root = PathBuf::from(project_root);
+    let worktree_path = PathBuf::from(worktree_path);
 
-    let mut marker_seen = false;
-    let mut collecting = false;
-    let mut buffer = Vec::new();
-
-    for line in output.lines() {
-        if !marker_seen {
-            if line.contains(MARKER) {
-                marker_seen = true;
-            }
-            continue;
-        }
-
-        if !collecting {
-            if line.starts_with('=') {
-                collecting = true;
-            }
-            continue;
-        }
-
-        if line.starts_with('=') {
-            break;
-        }
-
-        if buffer.is_empty() && line.trim().is_empty() {
-            continue;
-        }
-
-        buffer.push(line);
+    if !worktree_path.exists() {
+        return Err(format!(
+            "Resolved worktree `{}` does not exist",
+            normalize_display_path(&worktree_path)
+        ));
     }
 
-    let prompt = buffer.join("\n").trim().to_string();
-    if prompt.is_empty() {
-        Err("control.py did not return a generated Agent prompt".to_string())
-    } else {
-        Ok(prompt)
+    let bootstrap_skill_path = project_root.join(ENTRANCE_BOOTSTRAP_SKILL_RELATIVE_PATH);
+    if !bootstrap_skill_path.exists() {
+        return Err(format!(
+            "Entrance bootstrap skill file `{}` does not exist",
+            normalize_display_path(&bootstrap_skill_path)
+        ));
     }
+
+    let dev_role_path = project_root.join(ENTRANCE_BOOTSTRAP_DEV_ROLE_RELATIVE_PATH);
+    if !dev_role_path.exists() {
+        return Err(format!(
+            "Entrance bootstrap dev role file `{}` does not exist",
+            normalize_display_path(&dev_role_path)
+        ));
+    }
+
+    let project_root = normalize_display_path(&project_root);
+    let worktree_path = normalize_display_path(&worktree_path);
+    let bootstrap_skill_path = normalize_display_path(&bootstrap_skill_path);
+    let dev_role_path = normalize_display_path(&dev_role_path);
+
+    Ok(format!(
+        "读 `{bootstrap_skill_path}` 和 `{dev_role_path}`，以 Dev 身份启动。\n从 Linear 获取 `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/specs/`\n\n这是当前 dev dispatch cut 的边界:\n- 这次只落 `prepare / dispatch` 启动面，不把它当成完整的 Dev 状态机\n- 如需派发 Agent，优先使用 Entrance-owned Forge runtime，不手写 agent prompt\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n\n当前任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 Linear issue comment 中汇报 Dev 侧结果。"
+    ))
 }
 
 impl Plugin for ForgePlugin {
@@ -749,6 +1171,26 @@ impl Plugin for ForgePlugin {
                 description: "Launch an Agent task from issue, worktree and prompt",
             },
             McpToolDefinition {
+                name: "forge.run_dev",
+                description: "Launch a Dev task from issue, worktree and prompt",
+            },
+            McpToolDefinition {
+                name: "forge.prepare_agent_dispatch",
+                description: "Prepare an Entrance-owned agent-lane dispatch from the current worktree context",
+            },
+            McpToolDefinition {
+                name: "forge.verify_agent_dispatch",
+                description: "Prepare and persist a Pending agent-lane Forge dispatch without starting agent execution",
+            },
+            McpToolDefinition {
+                name: "forge.prepare_dev_dispatch",
+                description: "Prepare an Entrance-owned dev-lane dispatch from the current worktree context",
+            },
+            McpToolDefinition {
+                name: "forge.verify_dev_dispatch",
+                description: "Prepare and persist a Pending dev-lane Forge dispatch without starting execution",
+            },
+            McpToolDefinition {
                 name: "forge.list_tasks",
                 description: "List all forge tasks",
             },
@@ -779,13 +1221,124 @@ impl Plugin for ForgePlugin {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_agent_task_request, extract_generated_prompt, parse_issue_id_from_branch};
+    use std::{
+        env,
+        ffi::{OsStr, OsString},
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+        sync::{Mutex, OnceLock},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use anyhow::Result;
+
+    use crate::{
+        core::{
+            action::ActorRole,
+            bootstrap_for_paths,
+            config_store::{render_config, EntranceConfig},
+            data_store::MigrationPlan,
+            event_bus::EventBus,
+            AppPaths,
+        },
+        plugins::vault,
+    };
+
+    use super::{
+        build_agent_task_request, build_dev_task_request, build_prepared_agent_dispatch,
+        build_prepared_dev_dispatch, generate_agent_prompt, generate_dev_prompt,
+        managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
+        prepare_agent_dispatch, prepare_dev_dispatch, resolve_dispatch_paths_for_project,
+        ForgePlugin, ForgeTaskMetadata,
+    };
+
+    static FORGE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "entrance-forge-{label}-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("test temp directory should be created");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = env::var_os(key);
+            env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = env::var_os(key);
+            env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                env::set_var(self.key, value);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn init_git_repo(path: &Path) {
+        let output = Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .current_dir(path)
+            .output()
+            .expect("git init should run");
+        assert!(
+            output.status.success(),
+            "git init should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn forge_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        FORGE_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("forge test lock should not be poisoned")
+    }
 
     #[test]
     fn codex_agent_requests_are_translated_into_cli_tasks() {
         let request = build_agent_task_request(
             "MYT-48".to_string(),
-            "A:/.agents/.worktrees/Entrance/feat-MYT-48".to_string(),
+            "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48".to_string(),
             "codex:gpt-5-codex".to_string(),
             "implement the task".to_string(),
             vec!["openai".to_string()],
@@ -796,7 +1349,7 @@ mod tests {
         assert_eq!(request.command, "codex");
         assert_eq!(
             request.working_dir.as_deref(),
-            Some("A:/.agents/.worktrees/Entrance/feat-MYT-48")
+            Some("C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48")
         );
         assert_eq!(request.stdin_text.as_deref(), Some("implement the task"));
         assert!(request.args.contains("\"exec\""));
@@ -804,7 +1357,47 @@ mod tests {
         assert!(request.args.contains("\"gpt-5-codex\""));
         assert!(request.required_tokens.contains("openai"));
         assert!(!request.required_tokens.contains("linear"));
-        assert!(request.metadata.contains("\"issue_id\":\"MYT-48\""));
+        let metadata: ForgeTaskMetadata =
+            serde_json::from_str(&request.metadata).expect("request metadata should be valid JSON");
+        assert_eq!(metadata.kind.as_deref(), Some("agent_dispatch"));
+        assert_eq!(metadata.issue_id.as_deref(), Some("MYT-48"));
+        assert_eq!(metadata.dispatch_role, Some(ActorRole::Agent));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_agent")
+        );
+    }
+
+    #[test]
+    fn codex_dev_requests_are_translated_into_cli_tasks() {
+        let request = build_dev_task_request(
+            "MYT-48".to_string(),
+            "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48".to_string(),
+            "codex:gpt-5-codex".to_string(),
+            "manage the issue".to_string(),
+            vec!["openai".to_string()],
+            None,
+        )
+        .expect("dev request should be valid");
+
+        assert_eq!(request.command, "codex");
+        assert_eq!(
+            request.working_dir.as_deref(),
+            Some("C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48")
+        );
+        assert_eq!(request.stdin_text.as_deref(), Some("manage the issue"));
+        assert!(request.args.contains("\"exec\""));
+        assert!(request.args.contains("\"--model\""));
+        assert!(request.args.contains("\"gpt-5-codex\""));
+        let metadata: ForgeTaskMetadata =
+            serde_json::from_str(&request.metadata).expect("request metadata should be valid JSON");
+        assert_eq!(metadata.kind.as_deref(), Some("dev_dispatch"));
+        assert_eq!(metadata.issue_id.as_deref(), Some("MYT-48"));
+        assert_eq!(metadata.dispatch_role, Some(ActorRole::Dev));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_dev")
+        );
     }
 
     #[test]
@@ -821,12 +1414,536 @@ mod tests {
     }
 
     #[test]
-    fn generated_prompt_is_extracted_from_control_output() {
-        let prompt = extract_generated_prompt(
-            "============================================================\nGENERATED AGENT PROMPT\n============================================================\n\nprompt line 1\nprompt line 2\n============================================================\n\nCopy the prompt above into a new Agent window.\n",
-        )
-        .expect("prompt should be extracted");
+    fn managed_worktree_root_is_derived_from_app_data_dir() {
+        let app_data_dir = PathBuf::from("C:/Users/test/AppData/Local/Entrance");
+        assert_eq!(
+            managed_worktrees_root_for_app_data_dir(&app_data_dir),
+            app_data_dir.join("worktrees")
+        );
+    }
 
-        assert_eq!(prompt, "prompt line 1\nprompt line 2");
+    #[test]
+    fn project_dispatch_uses_managed_worktree_root() {
+        let temp_dir = TestDir::new("dispatch-managed");
+        let project_root = temp_dir.path().join("Entrance");
+        fs::create_dir_all(&project_root).expect("project root should exist");
+
+        let managed_root = temp_dir.path().join("appdata").join("worktrees");
+        let managed_worktree = managed_root.join("Entrance").join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree).expect("managed worktree should exist");
+        init_git_repo(&managed_worktree);
+
+        let paths = resolve_dispatch_paths_for_project(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            &[managed_root.clone()],
+        )
+        .expect("managed worktree should be used");
+
+        assert_eq!(paths.issue_id, "MYT-48");
+        assert_eq!(
+            paths.project_root,
+            project_root.to_string_lossy().replace('\\', "/")
+        );
+        assert_eq!(
+            paths.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+    }
+
+    #[test]
+    fn missing_project_worktree_error_points_to_managed_root() {
+        let temp_dir = TestDir::new("dispatch-missing");
+        let project_root = temp_dir.path().join("Entrance");
+        fs::create_dir_all(&project_root).expect("project root should exist");
+
+        let managed_root = temp_dir.path().join("appdata").join("worktrees");
+
+        let error = resolve_dispatch_paths_for_project(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            &[managed_root.clone()],
+        )
+        .expect_err("missing worktree should return an error");
+
+        assert!(error.contains(&managed_root.join("Entrance").display().to_string()));
+        assert!(!error.contains("control.py"));
+        assert!(!error.contains("legacy-agents"));
+    }
+
+    #[test]
+    fn generated_prompt_uses_entrance_bootstrap_skill() {
+        let temp_dir = TestDir::new("dispatch-prompt");
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        fs::create_dir_all(&bootstrap_skill).expect("bootstrap skill directory should exist");
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")
+            .expect("bootstrap skill should be written");
+
+        let worktree_path = temp_dir
+            .path()
+            .join("appdata")
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
+        fs::create_dir_all(&worktree_path).expect("worktree path should exist");
+
+        let prompt = generate_agent_prompt(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            worktree_path
+                .to_str()
+                .expect("worktree path should be valid UTF-8"),
+            "MYT-48",
+            "Todo",
+            "implement the task",
+        )
+        .expect("prompt should be generated");
+
+        assert!(prompt.contains("harness/bootstrap/duet/SKILL.md"));
+        assert!(prompt.contains(&worktree_path.to_string_lossy().replace('\\', "/")));
+        assert!(!prompt.contains(".agents/nota/scripts/control.py"));
+    }
+
+    #[test]
+    fn generated_dev_prompt_uses_entrance_bootstrap_dev_role() {
+        let temp_dir = TestDir::new("dispatch-dev-prompt");
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        let dev_role = bootstrap_skill.join("roles");
+        fs::create_dir_all(&dev_role).expect("bootstrap dev role directory should exist");
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")
+            .expect("bootstrap skill should be written");
+        fs::write(dev_role.join("dev.md"), "# test dev role\n")
+            .expect("bootstrap dev role should be written");
+
+        let worktree_path = temp_dir
+            .path()
+            .join("appdata")
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
+        fs::create_dir_all(&worktree_path).expect("worktree path should exist");
+
+        let prompt = generate_dev_prompt(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            worktree_path
+                .to_str()
+                .expect("worktree path should be valid UTF-8"),
+            "MYT-48",
+            "Todo",
+            "manage the issue",
+        )
+        .expect("prompt should be generated");
+
+        assert!(prompt.contains("harness/bootstrap/duet/SKILL.md"));
+        assert!(prompt.contains("harness/bootstrap/duet/roles/dev.md"));
+        assert!(prompt.contains("以 Dev 身份启动"));
+        assert!(!prompt.contains(".agents"));
+    }
+
+    #[test]
+    fn prompt_generation_requires_repo_bootstrap_skill() {
+        let temp_dir = TestDir::new("dispatch-prompt-missing-skill");
+        let project_root = temp_dir.path().join("Entrance");
+        fs::create_dir_all(&project_root).expect("project root should exist");
+
+        let worktree_path = temp_dir
+            .path()
+            .join("appdata")
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
+        fs::create_dir_all(&worktree_path).expect("worktree path should exist");
+
+        let error = generate_agent_prompt(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            worktree_path
+                .to_str()
+                .expect("worktree path should be valid UTF-8"),
+            "MYT-48",
+            "Todo",
+            "implement the task",
+        )
+        .expect_err("missing bootstrap skill should fail");
+
+        assert!(error.contains("harness/bootstrap/duet/SKILL.md"));
+    }
+
+    #[test]
+    fn prepare_dispatch_pipeline_builds_without_agents_runtime() -> Result<()> {
+        let _guard = forge_test_guard();
+
+        let temp_dir = TestDir::new("dispatch-pipeline-no-agents");
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        fs::create_dir_all(&bootstrap_skill)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+        let managed_root = temp_dir.path().join("appdata").join("worktrees");
+        let managed_worktree = managed_root.join("Entrance").join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree)?;
+        init_git_repo(&managed_worktree);
+
+        let paths = resolve_dispatch_paths_for_project(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            &[managed_root.clone()],
+        )
+        .expect("managed worktree should resolve");
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let dispatch = runtime
+            .block_on(async { build_prepared_agent_dispatch(paths, None).await })
+            .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.dispatch_role, ActorRole::Agent);
+        assert_eq!(dispatch.dispatch_tool_name, "forge_dispatch_agent");
+        assert_eq!(dispatch.issue_status, "Todo");
+        assert_eq!(dispatch.issue_status_source, "fallback");
+        assert!(dispatch.issue_title.is_none());
+        assert_eq!(
+            dispatch.prompt_source,
+            "Entrance-owned harness/bootstrap prompt"
+        );
+        assert_eq!(
+            dispatch.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+        assert!(dispatch.prompt.contains("harness/bootstrap/duet/SKILL.md"));
+        assert!(!dispatch.prompt.contains(".agents"));
+
+        let request = build_agent_task_request(
+            dispatch.issue_id.clone(),
+            dispatch.worktree_path.clone(),
+            "codex:gpt-5-codex".to_string(),
+            dispatch.prompt.clone(),
+            Vec::new(),
+            None,
+        )
+        .expect("dispatch payload should translate into an agent task");
+
+        assert_eq!(
+            request.working_dir.as_deref(),
+            Some(dispatch.worktree_path.as_str())
+        );
+        assert_eq!(
+            request.stdin_text.as_deref(),
+            Some(dispatch.prompt.as_str())
+        );
+        assert!(request.args.contains(&dispatch.worktree_path));
+        assert!(!request.args.contains(".agents"));
+        let metadata: ForgeTaskMetadata =
+            serde_json::from_str(&request.metadata).expect("request metadata should be valid JSON");
+        assert_eq!(metadata.dispatch_role, Some(ActorRole::Agent));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_agent")
+        );
+
+        let store =
+            crate::core::data_store::DataStore::in_memory(MigrationPlan::new(vault::migrations()))?;
+        assert!(
+            store.get_vault_token_by_provider("linear")?.is_none(),
+            "test store should not require a legacy `.agents` token source"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_dev_dispatch_pipeline_builds_without_agents_runtime() -> Result<()> {
+        let _guard = forge_test_guard();
+
+        let temp_dir = TestDir::new("dispatch-dev-pipeline-no-agents");
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        let dev_role = bootstrap_skill.join("roles");
+        fs::create_dir_all(&dev_role)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+        let managed_root = temp_dir.path().join("appdata").join("worktrees");
+        let managed_worktree = managed_root.join("Entrance").join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree)?;
+        init_git_repo(&managed_worktree);
+
+        let paths = resolve_dispatch_paths_for_project(
+            project_root
+                .to_str()
+                .expect("project path should be valid UTF-8"),
+            &[managed_root.clone()],
+        )
+        .expect("managed worktree should resolve");
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let dispatch = runtime
+            .block_on(async { build_prepared_dev_dispatch(paths, None).await })
+            .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.dispatch_role, ActorRole::Dev);
+        assert_eq!(dispatch.dispatch_tool_name, "forge_dispatch_dev");
+        assert_eq!(dispatch.issue_status, "Todo");
+        assert_eq!(dispatch.issue_status_source, "fallback");
+        assert!(dispatch.issue_title.is_none());
+        assert_eq!(
+            dispatch.prompt_source,
+            "Entrance-owned harness/bootstrap dev prompt"
+        );
+        assert_eq!(
+            dispatch.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+        assert!(dispatch.prompt.contains("harness/bootstrap/duet/SKILL.md"));
+        assert!(dispatch
+            .prompt
+            .contains("harness/bootstrap/duet/roles/dev.md"));
+        assert!(!dispatch.prompt.contains(".agents"));
+
+        let request = build_dev_task_request(
+            dispatch.issue_id.clone(),
+            dispatch.worktree_path.clone(),
+            "codex:gpt-5-codex".to_string(),
+            dispatch.prompt.clone(),
+            Vec::new(),
+            None,
+        )
+        .expect("dispatch payload should translate into a dev task");
+
+        assert_eq!(
+            request.working_dir.as_deref(),
+            Some(dispatch.worktree_path.as_str())
+        );
+        assert_eq!(
+            request.stdin_text.as_deref(),
+            Some(dispatch.prompt.as_str())
+        );
+        let metadata: ForgeTaskMetadata =
+            serde_json::from_str(&request.metadata).expect("request metadata should be valid JSON");
+        assert_eq!(metadata.dispatch_role, Some(ActorRole::Dev));
+        assert_eq!(metadata.kind.as_deref(), Some("dev_dispatch"));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_dev")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_agent_dispatch_works_after_bootstrap_without_agents_runtime() -> Result<()> {
+        let _guard = forge_test_guard();
+
+        let temp_dir = TestDir::new("dispatch-bootstrap-no-agents");
+        let app_data_dir = temp_dir.path().join("appdata");
+        let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+        let _linear_api_key_guard = EnvVarGuard::remove("LINEAR_API_KEY");
+        let _linear_token_guard = EnvVarGuard::remove("LINEAR_TOKEN");
+
+        fs::create_dir_all(&app_data_dir)?;
+        let mut config = EntranceConfig::default();
+        config.plugins.forge.enabled = true;
+        fs::write(app_data_dir.join("entrance.toml"), render_config(&config)?)?;
+
+        let startup = bootstrap_for_paths(AppPaths::new(app_data_dir.clone()))?;
+        assert_eq!(startup.paths().app_data_dir(), app_data_dir.as_path());
+        assert!(startup.forge_enabled());
+
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        fs::create_dir_all(&bootstrap_skill)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+        let managed_worktree = app_data_dir
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree)?;
+        init_git_repo(&managed_worktree);
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let dispatch = runtime
+            .block_on(async {
+                prepare_agent_dispatch(
+                    startup.data_store(),
+                    Some(
+                        project_root
+                            .to_str()
+                            .expect("project path should be valid UTF-8")
+                            .to_string(),
+                    ),
+                )
+                .await
+            })
+            .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.dispatch_role, ActorRole::Agent);
+        assert_eq!(dispatch.dispatch_tool_name, "forge_dispatch_agent");
+        assert_eq!(dispatch.issue_status, "Todo");
+        assert_eq!(dispatch.issue_status_source, "fallback");
+        assert!(dispatch.issue_title.is_none());
+        assert_eq!(
+            dispatch.prompt_source,
+            "Entrance-owned harness/bootstrap prompt"
+        );
+        assert_eq!(
+            dispatch.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+        assert!(!dispatch.prompt.contains(".agents"));
+
+        let request = build_agent_task_request(
+            dispatch.issue_id.clone(),
+            dispatch.worktree_path.clone(),
+            "codex:gpt-5-codex".to_string(),
+            dispatch.prompt.clone(),
+            Vec::new(),
+            None,
+        )
+        .expect("dispatch payload should translate into an agent task");
+
+        let forge_plugin = ForgePlugin::new(startup.data_store(), EventBus::new());
+        let task_id = forge_plugin.create_task(request)?;
+        let stored_task = forge_plugin
+            .get_task(task_id)?
+            .expect("stored forge task should exist");
+
+        assert_eq!(
+            stored_task.working_dir.as_deref(),
+            Some(dispatch.worktree_path.as_str())
+        );
+        assert_eq!(
+            stored_task.stdin_text.as_deref(),
+            Some(dispatch.prompt.as_str())
+        );
+        let metadata: ForgeTaskMetadata = serde_json::from_str(&stored_task.metadata)
+            .expect("stored forge task metadata should be valid JSON");
+        assert_eq!(metadata.dispatch_role, Some(ActorRole::Agent));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_agent")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_dev_dispatch_works_after_bootstrap_without_agents_runtime() -> Result<()> {
+        let _guard = forge_test_guard();
+
+        let temp_dir = TestDir::new("dispatch-dev-bootstrap-no-agents");
+        let app_data_dir = temp_dir.path().join("appdata");
+        let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+        let _linear_api_key_guard = EnvVarGuard::remove("LINEAR_API_KEY");
+        let _linear_token_guard = EnvVarGuard::remove("LINEAR_TOKEN");
+
+        fs::create_dir_all(&app_data_dir)?;
+        let mut config = EntranceConfig::default();
+        config.plugins.forge.enabled = true;
+        fs::write(app_data_dir.join("entrance.toml"), render_config(&config)?)?;
+
+        let startup = bootstrap_for_paths(AppPaths::new(app_data_dir.clone()))?;
+        assert_eq!(startup.paths().app_data_dir(), app_data_dir.as_path());
+        assert!(startup.forge_enabled());
+
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        let dev_role = bootstrap_skill.join("roles");
+        fs::create_dir_all(&dev_role)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+        let managed_worktree = app_data_dir
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-48");
+        fs::create_dir_all(&managed_worktree)?;
+        init_git_repo(&managed_worktree);
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let dispatch = runtime
+            .block_on(async {
+                prepare_dev_dispatch(
+                    startup.data_store(),
+                    Some(
+                        project_root
+                            .to_str()
+                            .expect("project path should be valid UTF-8")
+                            .to_string(),
+                    ),
+                )
+                .await
+            })
+            .map_err(anyhow::Error::msg)?;
+
+        assert_eq!(dispatch.issue_id, "MYT-48");
+        assert_eq!(dispatch.dispatch_role, ActorRole::Dev);
+        assert_eq!(dispatch.dispatch_tool_name, "forge_dispatch_dev");
+        assert_eq!(dispatch.issue_status, "Todo");
+        assert_eq!(dispatch.issue_status_source, "fallback");
+        assert!(dispatch.issue_title.is_none());
+        assert_eq!(
+            dispatch.prompt_source,
+            "Entrance-owned harness/bootstrap dev prompt"
+        );
+        assert_eq!(
+            dispatch.worktree_path,
+            managed_worktree.to_string_lossy().replace('\\', "/")
+        );
+        assert!(!dispatch.prompt.contains(".agents"));
+
+        let request = build_dev_task_request(
+            dispatch.issue_id.clone(),
+            dispatch.worktree_path.clone(),
+            "codex:gpt-5-codex".to_string(),
+            dispatch.prompt.clone(),
+            Vec::new(),
+            None,
+        )
+        .expect("dispatch payload should translate into a dev task");
+
+        let forge_plugin = ForgePlugin::new(startup.data_store(), EventBus::new());
+        let task_id = forge_plugin.create_task(request)?;
+        let stored_task = forge_plugin
+            .get_task(task_id)?
+            .expect("stored forge task should exist");
+
+        assert_eq!(
+            stored_task.working_dir.as_deref(),
+            Some(dispatch.worktree_path.as_str())
+        );
+        assert_eq!(
+            stored_task.stdin_text.as_deref(),
+            Some(dispatch.prompt.as_str())
+        );
+        let metadata: ForgeTaskMetadata = serde_json::from_str(&stored_task.metadata)
+            .expect("stored forge task metadata should be valid JSON");
+        assert_eq!(metadata.dispatch_role, Some(ActorRole::Dev));
+        assert_eq!(metadata.kind.as_deref(), Some("dev_dispatch"));
+        assert_eq!(
+            metadata.dispatch_tool_name.as_deref(),
+            Some("forge_dispatch_dev")
+        );
+
+        Ok(())
     }
 }

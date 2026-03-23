@@ -16,8 +16,21 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::core::{
+    action::ActorRole,
+    bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
+    data_store::DataStore,
+    permission::{permission_for_mcp_tool, McpToolPermission},
+    recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
+    resolve_app_data_dir,
+    supervision::SupervisionStrategy,
+};
 use crate::plugins::{
-    forge::{CreateTaskRequest, ForgePlugin},
+    forge::{
+        build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
+        prepare_dev_dispatch_blocking, verify_agent_dispatch, verify_dev_dispatch,
+        CreateTaskRequest, DispatchReceiptRequest, ForgePlugin,
+    },
     launcher::LauncherPlugin,
     vault::VaultPlugin,
 };
@@ -33,6 +46,7 @@ pub enum McpTransport {
 
 #[derive(Clone, Default)]
 pub struct McpPluginSet {
+    pub core_data_store: Option<DataStore>,
     pub forge: Option<ForgePlugin>,
     pub launcher: Option<LauncherPlugin>,
     pub vault: Option<VaultPlugin>,
@@ -42,6 +56,7 @@ pub struct McpPluginSet {
 pub struct McpServer {
     transport: McpTransport,
     plugins: McpPluginSet,
+    actor_role: Option<ActorRole>,
     tools: Arc<Vec<McpToolDescriptor>>,
 }
 
@@ -51,7 +66,38 @@ pub struct McpToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
     pub input_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<McpToolPermission>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dispatch_role: Option<ActorRole>,
 }
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpSurfaceInfo {
+    actor_role: Option<ActorRole>,
+}
+
+#[derive(Debug)]
+struct McpToolSurfaceRoleError {
+    tool_name: String,
+    current_actor_role: ActorRole,
+    required_actor_role: ActorRole,
+}
+
+impl std::fmt::Display for McpToolSurfaceRoleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "tool `{}` is not available on the current `{}` MCP surface; requires `{}`",
+            self.tool_name,
+            actor_role_slug(self.current_actor_role),
+            actor_role_slug(self.required_actor_role)
+        )
+    }
+}
+
+impl std::error::Error for McpToolSurfaceRoleError {}
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -65,10 +111,19 @@ struct JsonRpcRequest {
 
 impl McpServer {
     pub fn new(transport: McpTransport, plugins: McpPluginSet) -> Self {
-        let tools = build_tool_descriptors(&plugins);
+        Self::with_actor_role(transport, plugins, None)
+    }
+
+    pub fn with_actor_role(
+        transport: McpTransport,
+        plugins: McpPluginSet,
+        actor_role: Option<ActorRole>,
+    ) -> Self {
+        let tools = build_tool_descriptors(&plugins, actor_role);
         Self {
             transport,
             plugins,
+            actor_role,
             tools: Arc::new(tools),
         }
     }
@@ -79,6 +134,12 @@ impl McpServer {
 
     pub fn tools(&self) -> &[McpToolDescriptor] {
         self.tools.as_ref().as_slice()
+    }
+
+    fn surface_info(&self) -> McpSurfaceInfo {
+        McpSurfaceInfo {
+            actor_role: self.actor_role,
+        }
     }
 
     pub fn handle_json_rpc_bytes(&self, request: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -151,14 +212,34 @@ impl McpServer {
                     "serverInfo": {
                         "name": env!("CARGO_PKG_NAME"),
                         "version": env!("CARGO_PKG_VERSION")
-                    }
+                    },
+                    "entranceSurface": self.surface_info()
                 }),
             ),
             "ping" => json_rpc_result(id, json!({})),
-            "tools/list" => json_rpc_result(id, json!({ "tools": self.tools() })),
+            "tools/list" => json_rpc_result(
+                id,
+                json!({
+                    "tools": self.tools(),
+                    "entranceSurface": self.surface_info()
+                }),
+            ),
             "tools/call" => {
+                let tool_name = tool_name_from_params(request.params.as_ref());
+                let permission = tool_name.and_then(permission_for_mcp_tool);
+                let dispatch_role = tool_name.and_then(tool_dispatch_role_from_name);
+                let canonical_tool_name = tool_name.and_then(canonical_tool_name_from_name);
                 let result = self.handle_tool_call(request.params.as_ref());
-                json_rpc_result(id, tool_call_result(result))
+                json_rpc_result(
+                    id,
+                    tool_call_result(
+                        result,
+                        self.surface_info(),
+                        permission,
+                        dispatch_role,
+                        canonical_tool_name,
+                    ),
+                )
             }
             _ => json_rpc_error(
                 id,
@@ -183,18 +264,53 @@ impl McpServer {
             .get("name")
             .and_then(Value::as_str)
             .context("tools/call requires a string `name` field")?;
+        self.ensure_tool_is_available(name)?;
         let arguments = params.get("arguments").unwrap_or(&Value::Null);
 
         match name {
             "forge_run" => self.handle_forge_run(arguments),
+            "forge_prepare_dispatch" | "forge_prepare_agent_dispatch" => {
+                self.handle_forge_prepare_dispatch(arguments)
+            }
+            "forge_verify_dispatch" | "forge_verify_agent_dispatch" => {
+                self.handle_forge_verify_dispatch(arguments)
+            }
+            "forge_prepare_dev_dispatch" => self.handle_forge_prepare_dev_dispatch(arguments),
+            "forge_verify_dev_dispatch" => self.handle_forge_verify_dev_dispatch(arguments),
+            "forge_dispatch_agent" => self.handle_forge_dispatch_agent(arguments),
+            "forge_dispatch_dev" => self.handle_forge_dispatch_dev(arguments),
+            "forge_bootstrap_mcp_cycle" => self.handle_forge_bootstrap_mcp_cycle(arguments),
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
+            "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
+            "recovery_list_seed_rows" => self.handle_recovery_list_seed_rows(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
             "vault_list_mcp" => self.handle_vault_list_mcp(),
             "launcher_search" => self.handle_launcher_search(arguments),
             "launcher_launch" => self.handle_launcher_launch(arguments),
             _ => bail!("tool `{name}` is not registered"),
         }
+    }
+
+    fn ensure_tool_is_available(&self, name: &str) -> Result<()> {
+        let Some(actor_role) = self.actor_role else {
+            return Ok(());
+        };
+
+        let Some(permission) = permission_for_mcp_tool(name) else {
+            return Ok(());
+        };
+
+        if permission.actor_role != actor_role {
+            return Err(McpToolSurfaceRoleError {
+                tool_name: name.to_string(),
+                current_actor_role: actor_role,
+                required_actor_role: permission.actor_role,
+            }
+            .into());
+        }
+
+        Ok(())
     }
 
     fn handle_forge_run(&self, arguments: &Value) -> Result<Value> {
@@ -216,6 +332,7 @@ impl McpServer {
             stdin_text: None,
             required_tokens,
             metadata: "{}".to_string(),
+            dispatch_receipt: None,
         })?;
         forge
             .engine()
@@ -232,6 +349,215 @@ impl McpServer {
         }))
     }
 
+    fn handle_forge_prepare_dispatch(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let dispatch = prepare_agent_dispatch_blocking(forge.data_store(), project_dir)
+            .map_err(anyhow::Error::msg)?;
+        serde_json::to_value(dispatch).context("failed to serialize forge dispatch")
+    }
+
+    fn handle_forge_verify_dispatch(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let report = verify_agent_dispatch(forge, project_dir).map_err(anyhow::Error::msg)?;
+        serde_json::to_value(report)
+            .context("failed to serialize forge dispatch verification report")
+    }
+
+    fn handle_forge_prepare_dev_dispatch(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let dispatch = prepare_dev_dispatch_blocking(forge.data_store(), project_dir)
+            .map_err(anyhow::Error::msg)?;
+        serde_json::to_value(dispatch).context("failed to serialize forge dev dispatch")
+    }
+
+    fn handle_forge_verify_dev_dispatch(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let report = verify_dev_dispatch(forge, project_dir).map_err(anyhow::Error::msg)?;
+        serde_json::to_value(report)
+            .context("failed to serialize forge dev dispatch verification report")
+    }
+
+    fn handle_forge_dispatch_agent(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let issue_id = require_string_any(arguments, &["issue_id", "issueId"])?;
+        let worktree_path = require_string_any(arguments, &["worktree_path", "worktreePath"])?;
+        let model = require_string(arguments, "model")?;
+        let prompt = require_string(arguments, "prompt")?;
+        let required_tokens =
+            require_string_list(arguments, &["required_tokens", "requiredTokens"])?;
+        let agent_command = optional_string(arguments, "agent_command")
+            .or_else(|| optional_string(arguments, "agentCommand"))
+            .map(str::to_string);
+        let dispatch_receipt =
+            parse_dispatch_receipt_request(arguments, "forge_dispatch_agent", ActorRole::Agent)?;
+        if let Some(receipt) = dispatch_receipt.as_ref() {
+            forge.get_task(receipt.parent_task_id)?.ok_or_else(|| {
+                anyhow!(
+                    "parent forge task `{}` was not found for dispatch supervision",
+                    receipt.parent_task_id
+                )
+            })?;
+        }
+
+        let mut request = build_agent_task_request(
+            issue_id.to_string(),
+            worktree_path.to_string(),
+            model.to_string(),
+            prompt.to_string(),
+            required_tokens,
+            agent_command,
+        )
+        .map_err(anyhow::Error::msg)?;
+        request.dispatch_receipt = dispatch_receipt;
+
+        let task_id = forge.create_task(request).map_err(anyhow::Error::msg)?;
+        forge
+            .engine()
+            .spawn_task(task_id)
+            .with_context(|| format!("failed to start forge task `{task_id}`"))?;
+
+        let task = forge
+            .get_task(task_id)?
+            .ok_or_else(|| anyhow!("forge task `{task_id}` disappeared after creation"))?;
+        let supervision = forge.get_task_supervision(task_id)?;
+
+        Ok(json!({
+            "dispatch_role": "agent",
+            "dispatch_tool_name": "forge_dispatch_agent",
+            "task_id": task.id,
+            "task": task,
+            "supervision": supervision,
+        }))
+    }
+
+    fn handle_forge_dispatch_dev(&self, arguments: &Value) -> Result<Value> {
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let issue_id = require_string_any(arguments, &["issue_id", "issueId"])?;
+        let worktree_path = require_string_any(arguments, &["worktree_path", "worktreePath"])?;
+        let model = require_string(arguments, "model")?;
+        let prompt = require_string(arguments, "prompt")?;
+        let required_tokens =
+            require_string_list(arguments, &["required_tokens", "requiredTokens"])?;
+        let agent_command = optional_string(arguments, "agent_command")
+            .or_else(|| optional_string(arguments, "agentCommand"))
+            .map(str::to_string);
+        let dispatch_receipt =
+            parse_dispatch_receipt_request(arguments, "forge_dispatch_dev", ActorRole::Dev)?;
+        if let Some(receipt) = dispatch_receipt.as_ref() {
+            forge.get_task(receipt.parent_task_id)?.ok_or_else(|| {
+                anyhow!(
+                    "parent forge task `{}` was not found for dispatch supervision",
+                    receipt.parent_task_id
+                )
+            })?;
+        }
+
+        let mut request = build_dev_task_request(
+            issue_id.to_string(),
+            worktree_path.to_string(),
+            model.to_string(),
+            prompt.to_string(),
+            required_tokens,
+            agent_command,
+        )
+        .map_err(anyhow::Error::msg)?;
+        request.dispatch_receipt = dispatch_receipt;
+
+        let task_id = forge.create_task(request).map_err(anyhow::Error::msg)?;
+        forge
+            .engine()
+            .spawn_task(task_id)
+            .with_context(|| format!("failed to start forge task `{task_id}`"))?;
+
+        let task = forge
+            .get_task(task_id)?
+            .ok_or_else(|| anyhow!("forge task `{task_id}` disappeared after creation"))?;
+        let supervision = forge.get_task_supervision(task_id)?;
+
+        Ok(json!({
+            "dispatch_role": "dev",
+            "dispatch_tool_name": "forge_dispatch_dev",
+            "task_id": task.id,
+            "task": task,
+            "supervision": supervision,
+        }))
+    }
+
+    fn handle_forge_bootstrap_mcp_cycle(&self, arguments: &Value) -> Result<Value> {
+        self.plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+
+        let project_dir = optional_string(arguments, "project_dir")
+            .or_else(|| optional_string(arguments, "projectDir"))
+            .map(str::to_string);
+        let model = optional_string(arguments, "model")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("codex")
+            .to_string();
+        let agent_command = optional_string(arguments, "agent_command")
+            .or_else(|| optional_string(arguments, "agentCommand"))
+            .map(str::to_string);
+        let agent_count = match optional_i64(arguments, &["agent_count", "agentCount"]) {
+            Some(value) if value <= 0 => {
+                bail!("tool argument `agent_count`/`agentCount` must be >= 1")
+            }
+            Some(value) => usize::try_from(value)
+                .context("tool argument `agent_count`/`agentCount` is out of range")?,
+            None => 1,
+        };
+
+        let report = run_forge_bootstrap_mcp_cycle(
+            &resolve_app_data_dir()?,
+            ForgeBootstrapMcpCycleOptions {
+                project_dir,
+                model,
+                agent_command,
+                agent_count,
+            },
+        )?;
+
+        serde_json::to_value(report).context("failed to serialize forge bootstrap MCP cycle report")
+    }
+
     fn handle_forge_status(&self, arguments: &Value) -> Result<Value> {
         let forge = self
             .plugins
@@ -242,9 +568,11 @@ impl McpServer {
         let task = forge
             .get_task(task_id)?
             .ok_or_else(|| anyhow!("forge task `{task_id}` was not found"))?;
+        let supervision = forge.get_task_supervision(task_id)?;
         Ok(json!({
             "task_id": task.id,
             "task": task,
+            "supervision": supervision,
         }))
     }
 
@@ -264,6 +592,36 @@ impl McpServer {
             "cancelled": true,
             "task": task,
         }))
+    }
+
+    fn handle_recovery_list_seed_runs(&self) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        Ok(json!(list_recovery_seed_runs(data_store)?))
+    }
+
+    fn handle_recovery_list_seed_rows(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let limit = optional_i64(arguments, &["limit"])
+            .map(|value| {
+                usize::try_from(value)
+                    .map_err(|_| anyhow!("recovery rows `limit` must be a positive integer"))
+            })
+            .transpose()?;
+        let query = RecoverySeedRowsQuery {
+            ingest_run_id: optional_i64(arguments, &["ingest_run_id", "ingestRunId"]),
+            table_name: optional_string_any(arguments, &["table_name", "tableName"])
+                .map(str::to_string),
+            limit,
+        };
+        Ok(json!(list_recovery_seed_rows(data_store, query)?))
     }
 
     fn handle_vault_get_token(&self, arguments: &Value) -> Result<Value> {
@@ -407,7 +765,10 @@ async fn handle_http_request(
     State(server): State<McpServer>,
     body: Bytes,
 ) -> Result<Response, McpHttpError> {
-    let payload = server.handle_http_json(&body).map_err(McpHttpError)?;
+    let payload = tokio::task::spawn_blocking(move || server.handle_http_json(&body))
+        .await
+        .map_err(|error| McpHttpError(anyhow!("failed to join MCP HTTP request worker: {error}")))?
+        .map_err(McpHttpError)?;
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
@@ -416,7 +777,10 @@ async fn handle_http_request(
         .into_response())
 }
 
-fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
+fn build_tool_descriptors(
+    plugins: &McpPluginSet,
+    actor_role: Option<ActorRole>,
+) -> Vec<McpToolDescriptor> {
     let mut tools = Vec::new();
 
     if plugins.forge.is_some() {
@@ -436,6 +800,138 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["name", "command"]
             }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_prepare_agent_dispatch",
+            description: "Prepare an Entrance-owned agent-lane Forge dispatch from the managed worktree for a project.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                }
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_verify_agent_dispatch",
+            description: "Prepare and persist a Pending agent-lane Forge dispatch without starting agent execution.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                }
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_prepare_dev_dispatch",
+            description: "Prepare an Entrance-owned dev-lane Forge dispatch from the managed worktree for a project.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                }
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_verify_dev_dispatch",
+            description: "Prepare and persist a Pending dev-lane Forge dispatch without starting execution.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                }
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_dispatch_agent",
+            description: "Create and start an agent-lane Forge dispatch from issue, worktree, model, and prompt inputs.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "issue_id": { "type": "string", "description": "Issue identifier for the agent dispatch." },
+                    "issueId": { "type": "string", "description": "CamelCase alias for issue_id." },
+                    "worktree_path": { "type": "string", "description": "Managed worktree path where the agent should run." },
+                    "worktreePath": { "type": "string", "description": "CamelCase alias for worktree_path." },
+                    "model": { "type": "string", "description": "Agent runner or runner:model string such as codex or codex:gpt-5-codex." },
+                    "prompt": { "type": "string", "description": "Prompt sent to the agent." },
+                    "required_tokens": {
+                        "type": "array",
+                        "description": "Optional provider tokens that must be available before launch.",
+                        "items": { "type": "string" }
+                    },
+                    "requiredTokens": {
+                        "type": "array",
+                        "description": "CamelCase alias for required_tokens.",
+                        "items": { "type": "string" }
+                    },
+                    "agent_command": { "type": "string", "description": "Optional executable path overriding the default agent CLI." },
+                    "agentCommand": { "type": "string", "description": "CamelCase alias for agent_command." }
+                },
+                "required": ["issue_id", "worktree_path", "model", "prompt"]
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_dispatch_dev",
+            description: "Create and start a dev-lane Forge dispatch from issue, worktree, model, and prompt inputs.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "issue_id": { "type": "string", "description": "Issue identifier for the dev dispatch." },
+                    "issueId": { "type": "string", "description": "CamelCase alias for issue_id." },
+                    "worktree_path": { "type": "string", "description": "Managed worktree path where Dev should run." },
+                    "worktreePath": { "type": "string", "description": "CamelCase alias for worktree_path." },
+                    "model": { "type": "string", "description": "Dev runner or runner:model string such as codex or codex:gpt-5-codex." },
+                    "prompt": { "type": "string", "description": "Prompt sent to the Dev role." },
+                    "required_tokens": {
+                        "type": "array",
+                        "description": "Optional provider tokens that must be available before launch.",
+                        "items": { "type": "string" }
+                    },
+                    "requiredTokens": {
+                        "type": "array",
+                        "description": "CamelCase alias for required_tokens.",
+                        "items": { "type": "string" }
+                    },
+                    "agent_command": { "type": "string", "description": "Optional executable path overriding the default CLI." },
+                    "agentCommand": { "type": "string", "description": "CamelCase alias for agent_command." }
+                },
+                "required": ["issue_id", "worktree_path", "model", "prompt"]
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "forge_bootstrap_mcp_cycle",
+            description: "Run the current Nota-owned bootstrap allocator cut across Arch, Dev, and Agent MCP surfaces. Multi-agent fan-out still shares one resolved worktree.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." },
+                    "model": { "type": "string", "description": "Runner or runner:model string used for child agent dispatches. Defaults to codex." },
+                    "agent_command": { "type": "string", "description": "Optional executable path overriding the default agent CLI for child agent dispatches." },
+                    "agentCommand": { "type": "string", "description": "CamelCase alias for agent_command." },
+                    "agent_count": { "type": "integer", "description": "Number of agent children to fan out through the current shared-worktree bootstrap cut. Defaults to 1." },
+                    "agentCount": { "type": "integer", "description": "CamelCase alias for agent_count." }
+                }
+            }),
+            permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_status",
@@ -447,6 +943,8 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["task_id"]
             }),
+            permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "forge_cancel",
@@ -458,6 +956,37 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["task_id"]
             }),
+            permission: None,
+            dispatch_role: None,
+        });
+    }
+
+    if plugins.core_data_store.is_some() {
+        tools.push(McpToolDescriptor {
+            name: "recovery_list_seed_runs",
+            description: "List recovery-seed imports that have been absorbed into the runtime DB storage plane.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "recovery_list_seed_rows",
+            description: "List absorbed recovery-seed rows from the runtime DB, optionally filtered by ingest run or source table.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ingest_run_id": { "type": "integer", "description": "Optional recovery ingest run identifier. Defaults to the latest recovery run." },
+                    "ingestRunId": { "type": "integer", "description": "CamelCase alias for ingest_run_id." },
+                    "table_name": { "type": "string", "description": "Optional recovery source table name such as documents or decisions." },
+                    "tableName": { "type": "string", "description": "CamelCase alias for table_name." },
+                    "limit": { "type": "integer", "description": "Optional maximum number of rows to return. Defaults to 50." }
+                }
+            }),
+            permission: None,
+            dispatch_role: None,
         });
     }
 
@@ -472,6 +1001,8 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["token_id"]
             }),
+            permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "vault_list_mcp",
@@ -480,6 +1011,8 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 "type": "object",
                 "properties": {}
             }),
+            permission: None,
+            dispatch_role: None,
         });
     }
 
@@ -495,6 +1028,8 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["query"]
             }),
+            permission: None,
+            dispatch_role: None,
         });
         tools.push(McpToolDescriptor {
             name: "launcher_launch",
@@ -508,10 +1043,20 @@ fn build_tool_descriptors(plugins: &McpPluginSet) -> Vec<McpToolDescriptor> {
                 },
                 "required": ["path"]
             }),
+            permission: None,
+            dispatch_role: None,
         });
     }
 
+    for tool in &mut tools {
+        tool.permission = permission_for_mcp_tool(tool.name);
+        tool.dispatch_role = tool_dispatch_role_from_name(tool.name);
+    }
+
     tools
+        .into_iter()
+        .filter(|tool| tool_is_visible_to_actor(tool, actor_role))
+        .collect()
 }
 
 fn require_string<'a>(arguments: &'a Value, field: &str) -> Result<&'a str> {
@@ -521,8 +1066,33 @@ fn require_string<'a>(arguments: &'a Value, field: &str) -> Result<&'a str> {
         .with_context(|| format!("tool arguments require a string `{field}` field"))
 }
 
+fn require_string_any<'a>(arguments: &'a Value, fields: &[&str]) -> Result<&'a str> {
+    for field in fields {
+        if let Some(value) = arguments.get(*field).and_then(Value::as_str) {
+            return Ok(value);
+        }
+    }
+
+    bail!(
+        "tool arguments require one of these string fields: {}",
+        fields.join(", ")
+    )
+}
+
 fn optional_string<'a>(arguments: &'a Value, field: &str) -> Option<&'a str> {
     arguments.get(field).and_then(Value::as_str)
+}
+
+fn optional_string_any<'a>(arguments: &'a Value, fields: &[&str]) -> Option<&'a str> {
+    fields
+        .iter()
+        .find_map(|field| arguments.get(*field).and_then(Value::as_str))
+}
+
+fn optional_i64(arguments: &Value, fields: &[&str]) -> Option<i64> {
+    fields
+        .iter()
+        .find_map(|field| arguments.get(*field).and_then(Value::as_i64))
 }
 
 fn require_i64(arguments: &Value, fields: &[&str]) -> Result<i64> {
@@ -533,6 +1103,43 @@ fn require_i64(arguments: &Value, fields: &[&str]) -> Result<i64> {
     }
 
     bail!("tool arguments require one of: {}", fields.join(", "))
+}
+
+fn parse_dispatch_receipt_request(
+    arguments: &Value,
+    child_dispatch_tool_name: &str,
+    child_dispatch_role: ActorRole,
+) -> Result<Option<DispatchReceiptRequest>> {
+    let parent_task_id = optional_i64(arguments, &["parent_task_id", "parentTaskId"]);
+    let supervision_strategy =
+        optional_string_any(arguments, &["supervision_strategy", "supervisionStrategy"]);
+    let child_slot = optional_string_any(arguments, &["child_slot", "childSlot"]);
+
+    if parent_task_id.is_none() {
+        if supervision_strategy.is_some() || child_slot.is_some() {
+            bail!("dispatch supervision fields require `parent_task_id`/`parentTaskId` to be set");
+        }
+        return Ok(None);
+    }
+
+    let supervision_strategy = match supervision_strategy.unwrap_or("one_for_one") {
+        "one_for_one" => SupervisionStrategy::OneForOne,
+        "rest_for_one" => SupervisionStrategy::RestForOne,
+        "one_for_all" => SupervisionStrategy::OneForAll,
+        other => {
+            bail!(
+                "unsupported `supervision_strategy`: `{other}`; use `one_for_one`, `rest_for_one`, or `one_for_all`"
+            )
+        }
+    };
+
+    Ok(Some(DispatchReceiptRequest {
+        parent_task_id: parent_task_id.expect("parent task id should be present"),
+        supervision_strategy,
+        child_dispatch_role,
+        child_dispatch_tool_name: child_dispatch_tool_name.to_string(),
+        child_slot: child_slot.map(str::to_string),
+    }))
 }
 
 fn serialize_forge_args(arguments: Option<&Value>) -> Result<String> {
@@ -562,6 +1169,47 @@ fn serialize_forge_args(arguments: Option<&Value>) -> Result<String> {
     }
 }
 
+fn require_string_list(arguments: &Value, fields: &[&str]) -> Result<Vec<String>> {
+    for field in fields {
+        if let Some(value) = arguments.get(*field) {
+            return parse_string_list(value, field);
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+fn parse_string_list(value: &Value, field: &str) -> Result<Vec<String>> {
+    match value {
+        Value::Null => Ok(Vec::new()),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| anyhow!("tool argument `{field}` must be an array of strings"))
+            })
+            .collect(),
+        Value::String(raw) => {
+            let parsed =
+                serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.clone()));
+            match parsed {
+                Value::Array(items) => items
+                    .iter()
+                    .map(|item| {
+                        item.as_str().map(str::to_string).ok_or_else(|| {
+                            anyhow!("tool argument `{field}` must decode to an array of strings")
+                        })
+                    })
+                    .collect(),
+                Value::String(value) => Ok(vec![value]),
+                _ => bail!("tool argument `{field}` string must decode to a JSON string array"),
+            }
+        }
+        _ => bail!("tool argument `{field}` must be either an array or a JSON string"),
+    }
+}
+
 fn json_rpc_result(id: Value, result: Value) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -581,7 +1229,32 @@ fn json_rpc_error(id: Value, code: i64, message: &str) -> Value {
     })
 }
 
-fn tool_call_result(result: Result<Value>) -> Value {
+fn tool_is_visible_to_actor(tool: &McpToolDescriptor, actor_role: Option<ActorRole>) -> bool {
+    let Some(actor_role) = actor_role else {
+        return true;
+    };
+
+    tool.permission
+        .map(|permission| permission.actor_role == actor_role)
+        .unwrap_or(true)
+}
+
+fn actor_role_slug(role: ActorRole) -> &'static str {
+    match role {
+        ActorRole::Nota => "nota",
+        ActorRole::Arch => "arch",
+        ActorRole::Dev => "dev",
+        ActorRole::Agent => "agent",
+    }
+}
+
+fn tool_call_result(
+    result: Result<Value>,
+    surface_info: McpSurfaceInfo,
+    permission: Option<McpToolPermission>,
+    dispatch_role: Option<ActorRole>,
+    canonical_tool_name: Option<&'static str>,
+) -> Value {
     match result {
         Ok(value) => json!({
             "content": [
@@ -591,20 +1264,93 @@ fn tool_call_result(result: Result<Value>) -> Value {
                 }
             ],
             "structuredContent": value,
+            "entranceSurface": surface_info,
+            "permission": permission,
+            "dispatchRole": dispatch_role,
+            "canonicalToolName": canonical_tool_name,
             "isError": false,
         }),
-        Err(error) => json!({
-            "content": [
-                {
-                    "type": "text",
-                    "text": error.to_string(),
+        Err(error) => tool_call_error_result(
+            error,
+            surface_info,
+            permission,
+            dispatch_role,
+            canonical_tool_name,
+        ),
+    }
+}
+
+fn tool_call_error_result(
+    error: anyhow::Error,
+    surface_info: McpSurfaceInfo,
+    permission: Option<McpToolPermission>,
+    dispatch_role: Option<ActorRole>,
+    canonical_tool_name: Option<&'static str>,
+) -> Value {
+    let message = error.to_string();
+    let structured_content =
+        if let Some(role_error) = error.downcast_ref::<McpToolSurfaceRoleError>() {
+            json!({
+                "message": message,
+                "errorCode": "surface_role_mismatch",
+                "toolName": role_error.tool_name,
+                "currentActorRole": role_error.current_actor_role,
+                "requiredActorRole": role_error.required_actor_role,
+                "entranceSurface": {
+                    "actorRole": role_error.current_actor_role
                 }
-            ],
-            "structuredContent": {
-                "message": error.to_string(),
-            },
-            "isError": true,
-        }),
+            })
+        } else {
+            json!({
+                "message": message,
+            })
+        };
+
+    json!({
+        "content": [
+            {
+                "type": "text",
+                "text": message,
+            }
+        ],
+        "structuredContent": structured_content,
+        "entranceSurface": surface_info,
+        "permission": permission,
+        "dispatchRole": dispatch_role,
+        "canonicalToolName": canonical_tool_name,
+        "isError": true,
+    })
+}
+
+fn tool_name_from_params(params: Option<&Value>) -> Option<&str> {
+    params
+        .and_then(|params| params.get("name"))
+        .and_then(Value::as_str)
+}
+
+fn tool_dispatch_role_from_name(name: &str) -> Option<ActorRole> {
+    match name {
+        "forge_prepare_dispatch"
+        | "forge_verify_dispatch"
+        | "forge_prepare_agent_dispatch"
+        | "forge_verify_agent_dispatch"
+        | "forge_dispatch_agent" => Some(ActorRole::Agent),
+        "forge_prepare_dev_dispatch" | "forge_verify_dev_dispatch" | "forge_dispatch_dev" => {
+            Some(ActorRole::Dev)
+        }
+        _ => None,
+    }
+}
+
+fn canonical_tool_name_from_name(name: &str) -> Option<&'static str> {
+    match name {
+        "forge_prepare_dispatch" | "forge_prepare_agent_dispatch" => {
+            Some("forge_prepare_agent_dispatch")
+        }
+        "forge_verify_dispatch" | "forge_verify_agent_dispatch" => {
+            Some("forge_verify_agent_dispatch")
+        }
+        _ => None,
     }
 }
 
@@ -631,6 +1377,8 @@ mod tests {
         },
     };
 
+    use crate::core::action::ActorRole;
+
     use super::{McpPluginSet, McpServer, McpTransport, MCP_PROTOCOL_VERSION};
 
     #[test]
@@ -655,14 +1403,179 @@ mod tests {
             names,
             vec![
                 "forge_run",
+                "forge_prepare_agent_dispatch",
+                "forge_verify_agent_dispatch",
+                "forge_prepare_dev_dispatch",
+                "forge_verify_dev_dispatch",
+                "forge_dispatch_agent",
+                "forge_dispatch_dev",
+                "forge_bootstrap_mcp_cycle",
                 "forge_status",
                 "forge_cancel",
+                "recovery_list_seed_runs",
+                "recovery_list_seed_rows",
                 "vault_get_token",
                 "vault_list_mcp",
                 "launcher_search",
                 "launcher_launch",
             ]
         );
+        assert!(response["result"]["entranceSurface"]["actorRole"].is_null());
+        let tools = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array");
+        let dispatch_agent = tools
+            .iter()
+            .find(|tool| tool["name"] == "forge_dispatch_agent")
+            .expect("forge_dispatch_agent should exist");
+        let dispatch_dev = tools
+            .iter()
+            .find(|tool| tool["name"] == "forge_dispatch_dev")
+            .expect("forge_dispatch_dev should exist");
+        let bootstrap_cycle = tools
+            .iter()
+            .find(|tool| tool["name"] == "forge_bootstrap_mcp_cycle")
+            .expect("forge_bootstrap_mcp_cycle should exist");
+        let prepare_agent = tools
+            .iter()
+            .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
+            .expect("forge_prepare_agent_dispatch should exist");
+        assert_eq!(dispatch_agent["permission"]["actorRole"], "dev");
+        assert_eq!(dispatch_agent["permission"]["primitive"], "dispatch");
+        assert_eq!(dispatch_agent["dispatchRole"], "agent");
+        assert_eq!(dispatch_dev["permission"]["actorRole"], "arch");
+        assert_eq!(dispatch_dev["permission"]["room"], "strategy");
+        assert_eq!(dispatch_dev["dispatchRole"], "dev");
+        assert_eq!(bootstrap_cycle["permission"]["actorRole"], "nota");
+        assert_eq!(bootstrap_cycle["permission"]["primitive"], "assign");
+        assert_eq!(bootstrap_cycle["permission"]["room"], "strategy");
+        assert!(bootstrap_cycle["dispatchRole"].is_null());
+        assert_eq!(prepare_agent["dispatchRole"], "agent");
+
+        Ok(())
+    }
+
+    #[test]
+    fn arch_surface_lists_only_arch_dispatch_lane_plus_neutral_tools() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Arch))?;
+        let response = server
+            .handle_json_rpc_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list"
+            }))?
+            .expect("tools/list should return a response");
+
+        let names = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "forge_run",
+                "forge_prepare_dev_dispatch",
+                "forge_verify_dev_dispatch",
+                "forge_dispatch_dev",
+                "forge_status",
+                "forge_cancel",
+                "recovery_list_seed_runs",
+                "recovery_list_seed_rows",
+                "vault_get_token",
+                "vault_list_mcp",
+                "launcher_search",
+                "launcher_launch",
+            ]
+        );
+        assert_eq!(response["result"]["entranceSurface"]["actorRole"], "arch");
+        assert_eq!(response["result"]["tools"][1]["dispatchRole"], "dev");
+
+        Ok(())
+    }
+
+    #[test]
+    fn nota_surface_lists_only_bootstrap_allocator_plus_neutral_tools() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Nota))?;
+        let response = server
+            .handle_json_rpc_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list"
+            }))?
+            .expect("tools/list should return a response");
+
+        let names = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "forge_run",
+                "forge_bootstrap_mcp_cycle",
+                "forge_status",
+                "forge_cancel",
+                "recovery_list_seed_runs",
+                "recovery_list_seed_rows",
+                "vault_get_token",
+                "vault_list_mcp",
+                "launcher_search",
+                "launcher_launch",
+            ]
+        );
+        assert_eq!(response["result"]["entranceSurface"]["actorRole"], "nota");
+        assert!(response["result"]["tools"][1]["dispatchRole"].is_null());
+        assert_eq!(
+            response["result"]["tools"][1]["permission"]["actorRole"],
+            "nota"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn dev_surface_lists_only_dev_dispatch_lane_plus_neutral_tools() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Dev))?;
+        let response = server
+            .handle_json_rpc_value(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list"
+            }))?
+            .expect("tools/list should return a response");
+
+        let names = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "forge_run",
+                "forge_prepare_agent_dispatch",
+                "forge_verify_agent_dispatch",
+                "forge_dispatch_agent",
+                "forge_status",
+                "forge_cancel",
+                "recovery_list_seed_runs",
+                "recovery_list_seed_rows",
+                "vault_get_token",
+                "vault_list_mcp",
+                "launcher_search",
+                "launcher_launch",
+            ]
+        );
+        assert_eq!(response["result"]["entranceSurface"]["actorRole"], "dev");
+        assert_eq!(response["result"]["tools"][1]["dispatchRole"], "agent");
 
         Ok(())
     }
@@ -688,6 +1601,24 @@ mod tests {
             response["result"]["capabilities"]["tools"]["listChanged"],
             false
         );
+        assert!(response["result"]["entranceSurface"]["actorRole"].is_null());
+
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_initialize_reports_current_surface_role() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Dev))?;
+        let response = server
+            .handle_json_rpc_value(json!({
+                "jsonrpc": "2.0",
+                "id": "init",
+                "method": "initialize",
+                "params": {}
+            }))?
+            .expect("initialize should return a response");
+
+        assert_eq!(response["result"]["entranceSurface"]["actorRole"], "dev");
 
         Ok(())
     }
@@ -708,6 +1639,10 @@ mod tests {
             }),
         )?;
         assert_eq!(launcher_response["isError"], false);
+        assert!(launcher_response["entranceSurface"]["actorRole"].is_null());
+        assert!(launcher_response["permission"].is_null());
+        assert!(launcher_response["dispatchRole"].is_null());
+        assert!(launcher_response["canonicalToolName"].is_null());
         assert_eq!(
             launcher_response["structuredContent"]["results"][0]["path"],
             "C:\\Tools\\Code.exe"
@@ -715,6 +1650,10 @@ mod tests {
 
         let vault_response = call_tool(&server, "vault_get_token", json!({ "token_id": 1 }))?;
         assert_eq!(vault_response["isError"], false);
+        assert!(vault_response["entranceSurface"]["actorRole"].is_null());
+        assert!(vault_response["permission"].is_null());
+        assert!(vault_response["dispatchRole"].is_null());
+        assert!(vault_response["canonicalToolName"].is_null());
         assert_eq!(
             vault_response["structuredContent"]["token"]["provider"],
             "openai"
@@ -726,6 +1665,10 @@ mod tests {
 
         let mcp_list_response = call_tool(&server, "vault_list_mcp", json!({}))?;
         assert_eq!(mcp_list_response["isError"], false);
+        assert!(mcp_list_response["entranceSurface"]["actorRole"].is_null());
+        assert!(mcp_list_response["permission"].is_null());
+        assert!(mcp_list_response["dispatchRole"].is_null());
+        assert!(mcp_list_response["canonicalToolName"].is_null());
         assert_eq!(
             mcp_list_response["structuredContent"]["servers"][0]["transport"],
             "stdio"
@@ -747,11 +1690,88 @@ mod tests {
             )
         })?;
         assert_eq!(forge_response["isError"], false);
+        assert!(forge_response["entranceSurface"]["actorRole"].is_null());
+        assert!(forge_response["permission"].is_null());
+        assert!(forge_response["dispatchRole"].is_null());
+        assert!(forge_response["canonicalToolName"].is_null());
         assert!(
             forge_response["structuredContent"]["task_id"]
                 .as_i64()
                 .unwrap()
                 > 0
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_surface_rejects_dispatch_tools_owned_by_other_role() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Dev))?;
+
+        let response = call_tool(&server, "forge_prepare_dev_dispatch", json!({}))?;
+
+        assert_eq!(response["isError"], true);
+        assert_eq!(response["entranceSurface"]["actorRole"], "dev");
+        assert_eq!(response["permission"]["actorRole"], "arch");
+        assert_eq!(response["permission"]["primitive"], "assign");
+        assert_eq!(response["permission"]["room"], "strategy");
+        assert_eq!(response["permission"]["targetLayer"], "hot");
+        assert_eq!(response["dispatchRole"], "dev");
+        assert_eq!(
+            response["structuredContent"]["message"],
+            "tool `forge_prepare_dev_dispatch` is not available on the current `dev` MCP surface; requires `arch`"
+        );
+        assert_eq!(
+            response["structuredContent"]["errorCode"],
+            "surface_role_mismatch"
+        );
+        assert_eq!(
+            response["structuredContent"]["toolName"],
+            "forge_prepare_dev_dispatch"
+        );
+        assert_eq!(response["structuredContent"]["currentActorRole"], "dev");
+        assert_eq!(response["structuredContent"]["requiredActorRole"], "arch");
+        assert_eq!(
+            response["structuredContent"]["entranceSurface"]["actorRole"],
+            "dev"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_agent_dispatch_alias_reports_canonical_tool_name() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Arch))?;
+
+        let response = call_tool(&server, "forge_prepare_dispatch", json!({}))?;
+
+        assert_eq!(response["isError"], true);
+        assert_eq!(response["dispatchRole"], "agent");
+        assert_eq!(
+            response["canonicalToolName"],
+            "forge_prepare_agent_dispatch"
+        );
+        assert_eq!(
+            response["structuredContent"]["toolName"],
+            "forge_prepare_dispatch"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_tool_calls_report_current_surface_role() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Arch))?;
+
+        let response = call_tool(&server, "vault_list_mcp", json!({}))?;
+
+        assert_eq!(response["isError"], false);
+        assert_eq!(response["entranceSurface"]["actorRole"], "arch");
+        assert!(response["permission"].is_null());
+        assert!(response["dispatchRole"].is_null());
+        assert_eq!(
+            response["structuredContent"]["servers"][0]["transport"],
+            "stdio"
         );
 
         Ok(())
@@ -804,6 +1824,10 @@ mod tests {
     }
 
     fn build_test_server() -> Result<McpServer> {
+        build_test_server_with_actor_role(None)
+    }
+
+    fn build_test_server_with_actor_role(actor_role: Option<ActorRole>) -> Result<McpServer> {
         let data_store = DataStore::in_memory(MigrationPlan::new(&[
             crate::plugins::launcher::migrations()[0],
             crate::plugins::forge::migrations()[0],
@@ -823,17 +1847,19 @@ mod tests {
 
         let launcher = LauncherPlugin::new(data_store.clone());
         let forge = ForgePlugin::new(data_store.clone(), event_bus);
-        let vault = VaultPlugin::new(data_store)?;
+        let vault = VaultPlugin::new(data_store.clone())?;
         vault.add_token("Primary", "openai", "secret-token")?;
         vault.update_mcp_config(None, "Local MCP", "stdio", "npx -y some-mcp", true)?;
 
-        Ok(McpServer::new(
+        Ok(McpServer::with_actor_role(
             McpTransport::InProcess,
             McpPluginSet {
+                core_data_store: Some(data_store.clone()),
                 forge: Some(forge),
                 launcher: Some(launcher),
                 vault: Some(vault),
             },
+            actor_role,
         ))
     }
 }

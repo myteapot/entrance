@@ -25,6 +25,7 @@ pub fn forge_create_task(
             stdin_text: None,
             required_tokens,
             metadata: "{}".to_string(),
+            dispatch_receipt: None,
         })
         .map_err(|e| e.to_string())?;
     forge.engine().spawn_task(id).map_err(|e| e.to_string())?;

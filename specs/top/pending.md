@@ -9,7 +9,11 @@
 
 ## Current State
 
+- The first cold reconciliation cut is now landed; the active absorption lane is `MYT-63 / MYT-64 / MYT-65`.
 - No active architecture pending items are currently registered in the DB-backed working set.
+- No active operational blocker is currently mounted in the hot root.
+- The runtime storage boundary has now collapsed onto `%LOCALAPPDATA%/Entrance/entrance.db`; remaining local DB files are historical residue or removable proof carriers rather than active owners.
+- `GitLab MCP` read access has been validated live in-session against `pub/entrance`; older token-scope and OAuth-host notes are now historical fallback rather than active pending.
 
 ## Rule
 
@@ -20,4 +24,4 @@
 
 ## TODO(fill)
 
-- repopulate only when a new unresolved architecture question actually appears
+- repopulate only when a new unresolved architecture question or live operational blocker actually appears

@@ -171,6 +171,7 @@ async fn run_task(
             stdin_text: payload.stdin.filter(|value| !value.trim().is_empty()),
             required_tokens,
             metadata,
+            dispatch_receipt: None,
         }
     };
 

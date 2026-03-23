@@ -54,6 +54,7 @@ export interface PreparedAgentDispatch {
   issue_title: string | null;
   project_root: string;
   worktree_path: string;
+  prompt_source: string;
   prompt: string;
 }
 

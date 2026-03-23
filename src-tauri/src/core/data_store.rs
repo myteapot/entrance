@@ -15,6 +15,13 @@ const CORE_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0000_create_core_tables.sql"),
 };
 
+const CORE_LANDING_MIGRATION: MigrationStep = MigrationStep {
+    name: "0005_create_core_landing_tables",
+    sql: include_str!("../../migrations/0005_create_core_landing_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 2] = [CORE_MIGRATION, CORE_LANDING_MIGRATION];
+
 #[derive(Debug, Clone, Copy)]
 pub struct MigrationStep {
     pub name: &'static str,
@@ -37,7 +44,7 @@ impl<'a> MigrationPlan<'a> {
 }
 
 pub fn core_migrations() -> &'static [MigrationStep] {
-    &[CORE_MIGRATION]
+    &CORE_MIGRATIONS
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,6 +91,19 @@ pub struct StoredForgeTaskLog {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StoredForgeDispatchReceipt {
+    pub id: i64,
+    pub parent_task_id: i64,
+    pub child_task_id: i64,
+    pub supervision_scope: String,
+    pub supervision_strategy: String,
+    pub child_dispatch_role: String,
+    pub child_dispatch_tool_name: String,
+    pub child_slot: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredVaultToken {
     pub id: i64,
     pub name: String,
@@ -121,6 +141,333 @@ pub struct StoredVaultMcpConfig {
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredSourceIngestRun {
+    pub id: i64,
+    pub source_system: String,
+    pub source_workspace: String,
+    pub source_project: String,
+    pub artifact_path: Option<String>,
+    pub artifact_sha256: Option<String>,
+    pub status: String,
+    pub imported_issue_count: i64,
+    pub imported_document_count: i64,
+    pub imported_milestone_count: i64,
+    pub imported_planning_item_count: i64,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredSourceArtifact {
+    pub id: i64,
+    pub ingest_run_id: i64,
+    pub artifact_kind: String,
+    pub artifact_key: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub payload_json: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredExternalIssueMirror {
+    pub id: i64,
+    pub mirror_key: String,
+    pub source_system: String,
+    pub source_workspace: String,
+    pub source_project: String,
+    pub external_issue_id: String,
+    pub project_name: Option<String>,
+    pub team_name: Option<String>,
+    pub parent_external_issue_id: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub state: Option<String>,
+    pub priority: Option<String>,
+    pub url: Option<String>,
+    pub labels_json: String,
+    pub relations_json: String,
+    pub payload_json: String,
+    pub git_branch_name: Option<String>,
+    pub due_date: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub archived_at: Option<String>,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    pub last_ingest_run_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredPlanningItem {
+    pub id: i64,
+    pub canonical_key: Option<String>,
+    pub item_type: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub reconciliation_status: String,
+    pub source_system: Option<String>,
+    pub source_workspace: Option<String>,
+    pub source_project: Option<String>,
+    pub source_key: Option<String>,
+    pub seeded_from_mirror_id: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredPlanningItemLink {
+    pub id: i64,
+    pub planning_item_id: i64,
+    pub link_type: String,
+    pub target_planning_item_id: Option<i64>,
+    pub target_external_issue_mirror_id: Option<i64>,
+    pub metadata_json: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredPromotionRecord {
+    pub id: i64,
+    pub subject_kind: String,
+    pub subject_id: i64,
+    pub promotion_state: String,
+    pub reason: Option<String>,
+    pub source_ingest_run_id: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertDocumentRecord<'a> {
+    pub id: i64,
+    pub slug: &'a str,
+    pub title: &'a str,
+    pub content: &'a str,
+    pub category: &'a str,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertTodoRecord<'a> {
+    pub id: i64,
+    pub title: &'a str,
+    pub status: &'a str,
+    pub priority: i64,
+    pub project: &'a str,
+    pub created_at: &'a str,
+    pub done_at: Option<&'a str>,
+    pub temperature: &'a str,
+    pub due_on: &'a str,
+    pub remind_every_days: i64,
+    pub remind_next_on: &'a str,
+    pub last_reminded_at: &'a str,
+    pub reminder_status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertInstinctRecord<'a> {
+    pub id: i64,
+    pub pattern: &'a str,
+    pub action: &'a str,
+    pub confidence: f64,
+    pub source: &'a str,
+    pub reference: &'a str,
+    pub created_at: &'a str,
+    pub status: &'a str,
+    pub surfaced_to: &'a str,
+    pub review_status: &'a str,
+    pub origin_type: &'a str,
+    pub lifecycle_status: &'a str,
+    pub temperature: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertCoffeeChatRecord<'a> {
+    pub id: i64,
+    pub project: &'a str,
+    pub stage: &'a str,
+    pub retro: &'a str,
+    pub forward: &'a str,
+    pub priorities: &'a str,
+    pub created_at: &'a str,
+    pub temperature: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertDecisionRecord<'a> {
+    pub id: i64,
+    pub title: &'a str,
+    pub statement: &'a str,
+    pub rationale: &'a str,
+    pub decision_type: &'a str,
+    pub decision_status: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub source_ref: &'a str,
+    pub decided_by: &'a str,
+    pub enforcement_level: &'a str,
+    pub actor_scope: &'a str,
+    pub confidence: f64,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertVisionRecord<'a> {
+    pub id: i64,
+    pub title: &'a str,
+    pub statement: &'a str,
+    pub horizon: &'a str,
+    pub vision_status: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub source_ref: &'a str,
+    pub confidence: f64,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertMemoryFragmentRecord<'a> {
+    pub id: i64,
+    pub title: &'a str,
+    pub content: &'a str,
+    pub kind: &'a str,
+    pub source_type: &'a str,
+    pub source_ref: &'a str,
+    pub source_hash: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub target_table: &'a str,
+    pub target_ref: &'a str,
+    pub status: &'a str,
+    pub triage_status: &'a str,
+    pub temperature: &'a str,
+    pub tags: &'a str,
+    pub notes: &'a str,
+    pub confidence: f64,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertMemoryLinkRecord<'a> {
+    pub id: i64,
+    pub src_kind: &'a str,
+    pub src_id: i64,
+    pub dst_kind: &'a str,
+    pub dst_id: i64,
+    pub relation_type: &'a str,
+    pub status: &'a str,
+    pub created_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewSourceIngestRun<'a> {
+    pub source_system: &'a str,
+    pub source_workspace: &'a str,
+    pub source_project: &'a str,
+    pub artifact_path: Option<&'a str>,
+    pub artifact_sha256: Option<&'a str>,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceIngestRunCompletion<'a> {
+    pub status: &'a str,
+    pub imported_issue_count: i64,
+    pub imported_document_count: i64,
+    pub imported_milestone_count: i64,
+    pub imported_planning_item_count: i64,
+    pub error_message: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewSourceArtifact<'a> {
+    pub ingest_run_id: i64,
+    pub artifact_kind: &'a str,
+    pub artifact_key: &'a str,
+    pub title: Option<&'a str>,
+    pub url: Option<&'a str>,
+    pub payload_json: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertExternalIssueMirror<'a> {
+    pub ingest_run_id: i64,
+    pub mirror_key: &'a str,
+    pub source_system: &'a str,
+    pub source_workspace: &'a str,
+    pub source_project: &'a str,
+    pub external_issue_id: &'a str,
+    pub project_name: Option<&'a str>,
+    pub team_name: Option<&'a str>,
+    pub parent_external_issue_id: Option<&'a str>,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub state: Option<&'a str>,
+    pub priority: Option<&'a str>,
+    pub url: Option<&'a str>,
+    pub labels_json: &'a str,
+    pub relations_json: &'a str,
+    pub payload_json: &'a str,
+    pub git_branch_name: Option<&'a str>,
+    pub due_date: Option<&'a str>,
+    pub created_at: Option<&'a str>,
+    pub updated_at: Option<&'a str>,
+    pub completed_at: Option<&'a str>,
+    pub archived_at: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertPlanningItem<'a> {
+    pub canonical_key: Option<&'a str>,
+    pub item_type: &'a str,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub status: &'a str,
+    pub reconciliation_status: &'a str,
+    pub source_system: Option<&'a str>,
+    pub source_workspace: Option<&'a str>,
+    pub source_project: Option<&'a str>,
+    pub source_key: Option<&'a str>,
+    pub seeded_from_mirror_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewPlanningItemLink<'a> {
+    pub planning_item_id: i64,
+    pub link_type: &'a str,
+    pub target_planning_item_id: Option<i64>,
+    pub target_external_issue_mirror_id: Option<i64>,
+    pub metadata_json: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewPromotionRecord<'a> {
+    pub subject_kind: &'a str,
+    pub subject_id: i64,
+    pub promotion_state: &'a str,
+    pub reason: Option<&'a str>,
+    pub source_ingest_run_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewForgeDispatchReceipt<'a> {
+    pub parent_task_id: i64,
+    pub supervision_scope: &'a str,
+    pub supervision_strategy: &'a str,
+    pub child_dispatch_role: &'a str,
+    pub child_dispatch_tool_name: &'a str,
+    pub child_slot: Option<&'a str>,
 }
 
 #[derive(Clone)]
@@ -405,6 +752,81 @@ impl DataStore {
         })
     }
 
+    pub fn insert_forge_task_with_dispatch_receipt(
+        &self,
+        name: &str,
+        command: &str,
+        args: &str,
+        working_dir: Option<&str>,
+        stdin_text: Option<&str>,
+        required_tokens: &str,
+        metadata: &str,
+        dispatch_receipt: &NewForgeDispatchReceipt<'_>,
+    ) -> Result<(i64, StoredForgeDispatchReceipt)> {
+        let now = Utc::now().to_rfc3339();
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            r#"
+            INSERT INTO plugin_forge_tasks (
+                name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL)
+            "#,
+            params![
+                name,
+                command,
+                args,
+                working_dir,
+                stdin_text,
+                required_tokens,
+                metadata,
+                now
+            ],
+        )?;
+        let child_task_id = transaction.last_insert_rowid();
+        transaction.execute(
+            r#"
+            INSERT INTO plugin_forge_dispatch_receipts (
+                parent_task_id,
+                child_task_id,
+                supervision_scope,
+                supervision_strategy,
+                child_dispatch_role,
+                child_dispatch_tool_name,
+                child_slot,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            params![
+                dispatch_receipt.parent_task_id,
+                child_task_id,
+                dispatch_receipt.supervision_scope,
+                dispatch_receipt.supervision_strategy,
+                dispatch_receipt.child_dispatch_role,
+                dispatch_receipt.child_dispatch_tool_name,
+                dispatch_receipt.child_slot,
+                now,
+            ],
+        )?;
+        let receipt_id = transaction.last_insert_rowid();
+        transaction.commit()?;
+
+        Ok((
+            child_task_id,
+            StoredForgeDispatchReceipt {
+                id: receipt_id,
+                parent_task_id: dispatch_receipt.parent_task_id,
+                child_task_id,
+                supervision_scope: dispatch_receipt.supervision_scope.to_string(),
+                supervision_strategy: dispatch_receipt.supervision_strategy.to_string(),
+                child_dispatch_role: dispatch_receipt.child_dispatch_role.to_string(),
+                child_dispatch_tool_name: dispatch_receipt.child_dispatch_tool_name.to_string(),
+                child_slot: dispatch_receipt.child_slot.map(str::to_string),
+                created_at: now,
+            },
+        ))
+    }
+
     pub fn update_forge_task_status(
         &self,
         id: i64,
@@ -506,6 +928,79 @@ impl DataStore {
         })
     }
 
+    pub fn get_forge_dispatch_parent_receipt(
+        &self,
+        child_task_id: i64,
+    ) -> Result<Option<StoredForgeDispatchReceipt>> {
+        self.with_connection(|conn| {
+            match conn
+                .query_row(
+                    r#"
+                    SELECT
+                        id,
+                        parent_task_id,
+                        child_task_id,
+                        supervision_scope,
+                        supervision_strategy,
+                        child_dispatch_role,
+                        child_dispatch_tool_name,
+                        child_slot,
+                        created_at
+                    FROM plugin_forge_dispatch_receipts
+                    WHERE child_task_id = ?1
+                    "#,
+                    [child_task_id],
+                    map_forge_dispatch_receipt_row,
+                )
+                .optional()
+            {
+                Ok(receipt) => Ok(receipt),
+                Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                    if message.contains("no such table: plugin_forge_dispatch_receipts") =>
+                {
+                    Ok(None)
+                }
+                Err(error) => Err(error.into()),
+            }
+        })
+    }
+
+    pub fn list_forge_dispatch_child_receipts(
+        &self,
+        parent_task_id: i64,
+    ) -> Result<Vec<StoredForgeDispatchReceipt>> {
+        self.with_connection(|conn| {
+            let mut statement = match conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    parent_task_id,
+                    child_task_id,
+                    supervision_scope,
+                    supervision_strategy,
+                    child_dispatch_role,
+                    child_dispatch_tool_name,
+                    child_slot,
+                    created_at
+                FROM plugin_forge_dispatch_receipts
+                WHERE parent_task_id = ?1
+                ORDER BY id ASC
+                "#,
+            ) {
+                Ok(statement) => statement,
+                Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                    if message.contains("no such table: plugin_forge_dispatch_receipts") =>
+                {
+                    return Ok(Vec::new());
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let rows = statement.query_map([parent_task_id], map_forge_dispatch_receipt_row)?;
+            let receipts = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(receipts)
+        })
+    }
+
     pub fn insert_vault_token(
         &self,
         name: &str,
@@ -591,19 +1086,28 @@ impl DataStore {
         provider: &str,
     ) -> Result<Option<EncryptedVaultToken>> {
         self.with_connection(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, name, provider, encrypted_value, created_at, updated_at
-                FROM plugin_vault_tokens
-                WHERE LOWER(provider) = LOWER(?1)
-                ORDER BY updated_at DESC, id DESC
-                LIMIT 1
-                "#,
-                [provider],
-                map_encrypted_vault_token_row,
-            )
-            .optional()
-            .map_err(Into::into)
+            match conn
+                .query_row(
+                    r#"
+                    SELECT id, name, provider, encrypted_value, created_at, updated_at
+                    FROM plugin_vault_tokens
+                    WHERE LOWER(provider) = LOWER(?1)
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                    "#,
+                    [provider],
+                    map_encrypted_vault_token_row,
+                )
+                .optional()
+            {
+                Ok(token) => Ok(token),
+                Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                    if message.contains("no such table: plugin_vault_tokens") =>
+                {
+                    Ok(None)
+                }
+                Err(error) => Err(error.into()),
+            }
         })
     }
 
@@ -687,6 +1191,904 @@ impl DataStore {
         })
     }
 
+    pub fn create_source_ingest_run(
+        &self,
+        new_run: NewSourceIngestRun<'_>,
+    ) -> Result<StoredSourceIngestRun> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO source_ingest_runs (
+                    source_system,
+                    source_workspace,
+                    source_project,
+                    artifact_path,
+                    artifact_sha256,
+                    status,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "#,
+                params![
+                    new_run.source_system,
+                    new_run.source_workspace,
+                    new_run.source_project,
+                    new_run.artifact_path,
+                    new_run.artifact_sha256,
+                    new_run.status,
+                    now,
+                ],
+            )?;
+
+            fetch_source_ingest_run(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("source ingest run disappeared after creation"))
+        })
+    }
+
+    pub fn complete_source_ingest_run(
+        &self,
+        id: i64,
+        completion: SourceIngestRunCompletion<'_>,
+    ) -> Result<StoredSourceIngestRun> {
+        let completed_at = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            let changed = conn.execute(
+                r#"
+                UPDATE source_ingest_runs
+                SET status = ?2,
+                    imported_issue_count = ?3,
+                    imported_document_count = ?4,
+                    imported_milestone_count = ?5,
+                    imported_planning_item_count = ?6,
+                    error_message = ?7,
+                    completed_at = ?8
+                WHERE id = ?1
+                "#,
+                params![
+                    id,
+                    completion.status,
+                    completion.imported_issue_count,
+                    completion.imported_document_count,
+                    completion.imported_milestone_count,
+                    completion.imported_planning_item_count,
+                    completion.error_message,
+                    completed_at,
+                ],
+            )?;
+
+            if changed == 0 {
+                return Err(anyhow!("source ingest run `{id}` does not exist"));
+            }
+
+            fetch_source_ingest_run(conn, id)?
+                .ok_or_else(|| anyhow!("source ingest run `{id}` could not be reloaded"))
+        })
+    }
+
+    pub fn list_source_ingest_runs(&self) -> Result<Vec<StoredSourceIngestRun>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    source_system,
+                    source_workspace,
+                    source_project,
+                    artifact_path,
+                    artifact_sha256,
+                    status,
+                    imported_issue_count,
+                    imported_document_count,
+                    imported_milestone_count,
+                    imported_planning_item_count,
+                    error_message,
+                    created_at,
+                    completed_at
+                FROM source_ingest_runs
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_source_ingest_run_row)?;
+            let runs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(runs)
+        })
+    }
+
+    pub fn insert_source_artifact(
+        &self,
+        artifact: NewSourceArtifact<'_>,
+    ) -> Result<StoredSourceArtifact> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO source_artifacts (
+                    ingest_run_id,
+                    artifact_kind,
+                    artifact_key,
+                    title,
+                    url,
+                    payload_json,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ON CONFLICT(ingest_run_id, artifact_kind, artifact_key) DO UPDATE SET
+                    title = excluded.title,
+                    url = excluded.url,
+                    payload_json = excluded.payload_json,
+                    created_at = excluded.created_at
+                "#,
+                params![
+                    artifact.ingest_run_id,
+                    artifact.artifact_kind,
+                    artifact.artifact_key,
+                    artifact.title,
+                    artifact.url,
+                    artifact.payload_json,
+                    now,
+                ],
+            )?;
+
+            fetch_source_artifact(
+                conn,
+                artifact.ingest_run_id,
+                artifact.artifact_kind,
+                artifact.artifact_key,
+            )?
+            .ok_or_else(|| anyhow!("source artifact disappeared after insert"))
+        })
+    }
+
+    pub fn list_source_artifacts(&self, ingest_run_id: i64) -> Result<Vec<StoredSourceArtifact>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    ingest_run_id,
+                    artifact_kind,
+                    artifact_key,
+                    title,
+                    url,
+                    payload_json,
+                    created_at
+                FROM source_artifacts
+                WHERE ingest_run_id = ?1
+                ORDER BY artifact_kind ASC, artifact_key ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([ingest_run_id], map_source_artifact_row)?;
+            let artifacts = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(artifacts)
+        })
+    }
+
+    pub fn upsert_external_issue_mirror(
+        &self,
+        mirror: UpsertExternalIssueMirror<'_>,
+    ) -> Result<StoredExternalIssueMirror> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO external_issue_mirrors (
+                    mirror_key,
+                    source_system,
+                    source_workspace,
+                    source_project,
+                    external_issue_id,
+                    project_name,
+                    team_name,
+                    parent_external_issue_id,
+                    title,
+                    description,
+                    state,
+                    priority,
+                    url,
+                    labels_json,
+                    relations_json,
+                    payload_json,
+                    git_branch_name,
+                    due_date,
+                    created_at,
+                    updated_at,
+                    completed_at,
+                    archived_at,
+                    first_seen_at,
+                    last_seen_at,
+                    last_ingest_run_id
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                    ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?23, ?24
+                )
+                ON CONFLICT(mirror_key) DO UPDATE SET
+                    source_system = excluded.source_system,
+                    source_workspace = excluded.source_workspace,
+                    source_project = excluded.source_project,
+                    external_issue_id = excluded.external_issue_id,
+                    project_name = excluded.project_name,
+                    team_name = excluded.team_name,
+                    parent_external_issue_id = excluded.parent_external_issue_id,
+                    title = excluded.title,
+                    description = excluded.description,
+                    state = excluded.state,
+                    priority = excluded.priority,
+                    url = excluded.url,
+                    labels_json = excluded.labels_json,
+                    relations_json = excluded.relations_json,
+                    payload_json = excluded.payload_json,
+                    git_branch_name = excluded.git_branch_name,
+                    due_date = excluded.due_date,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    completed_at = excluded.completed_at,
+                    archived_at = excluded.archived_at,
+                    last_seen_at = excluded.last_seen_at,
+                    last_ingest_run_id = excluded.last_ingest_run_id
+                "#,
+                params![
+                    mirror.mirror_key,
+                    mirror.source_system,
+                    mirror.source_workspace,
+                    mirror.source_project,
+                    mirror.external_issue_id,
+                    mirror.project_name,
+                    mirror.team_name,
+                    mirror.parent_external_issue_id,
+                    mirror.title,
+                    mirror.description,
+                    mirror.state,
+                    mirror.priority,
+                    mirror.url,
+                    mirror.labels_json,
+                    mirror.relations_json,
+                    mirror.payload_json,
+                    mirror.git_branch_name,
+                    mirror.due_date,
+                    mirror.created_at,
+                    mirror.updated_at,
+                    mirror.completed_at,
+                    mirror.archived_at,
+                    now,
+                    mirror.ingest_run_id,
+                ],
+            )?;
+
+            fetch_external_issue_mirror_by_key(conn, mirror.mirror_key)?
+                .ok_or_else(|| anyhow!("external issue mirror disappeared after upsert"))
+        })
+    }
+
+    pub fn list_external_issue_mirrors(&self) -> Result<Vec<StoredExternalIssueMirror>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    mirror_key,
+                    source_system,
+                    source_workspace,
+                    source_project,
+                    external_issue_id,
+                    project_name,
+                    team_name,
+                    parent_external_issue_id,
+                    title,
+                    description,
+                    state,
+                    priority,
+                    url,
+                    labels_json,
+                    relations_json,
+                    payload_json,
+                    git_branch_name,
+                    due_date,
+                    created_at,
+                    updated_at,
+                    completed_at,
+                    archived_at,
+                    first_seen_at,
+                    last_seen_at,
+                    last_ingest_run_id
+                FROM external_issue_mirrors
+                ORDER BY external_issue_id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_external_issue_mirror_row)?;
+            let mirrors = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(mirrors)
+        })
+    }
+
+    pub fn upsert_planning_item(&self, item: UpsertPlanningItem<'_>) -> Result<StoredPlanningItem> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            if let Some(canonical_key) = item.canonical_key {
+                conn.execute(
+                    r#"
+                    INSERT INTO planning_items (
+                        canonical_key,
+                        item_type,
+                        title,
+                        description,
+                        status,
+                        reconciliation_status,
+                        source_system,
+                        source_workspace,
+                        source_project,
+                        source_key,
+                        seeded_from_mirror_id,
+                        created_at,
+                        updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+                    ON CONFLICT(canonical_key) DO UPDATE SET
+                        item_type = excluded.item_type,
+                        title = excluded.title,
+                        description = excluded.description,
+                        status = excluded.status,
+                        reconciliation_status = excluded.reconciliation_status,
+                        source_system = excluded.source_system,
+                        source_workspace = excluded.source_workspace,
+                        source_project = excluded.source_project,
+                        source_key = excluded.source_key,
+                        seeded_from_mirror_id = excluded.seeded_from_mirror_id,
+                        updated_at = excluded.updated_at
+                    "#,
+                    params![
+                        canonical_key,
+                        item.item_type,
+                        item.title,
+                        item.description,
+                        item.status,
+                        item.reconciliation_status,
+                        item.source_system,
+                        item.source_workspace,
+                        item.source_project,
+                        item.source_key,
+                        item.seeded_from_mirror_id,
+                        now,
+                    ],
+                )?;
+
+                fetch_planning_item_by_canonical_key(conn, canonical_key)?
+                    .ok_or_else(|| anyhow!("planning item disappeared after upsert"))
+            } else {
+                conn.execute(
+                    r#"
+                    INSERT INTO planning_items (
+                        canonical_key,
+                        item_type,
+                        title,
+                        description,
+                        status,
+                        reconciliation_status,
+                        source_system,
+                        source_workspace,
+                        source_project,
+                        source_key,
+                        seeded_from_mirror_id,
+                        created_at,
+                        updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+                    "#,
+                    params![
+                        Option::<&str>::None,
+                        item.item_type,
+                        item.title,
+                        item.description,
+                        item.status,
+                        item.reconciliation_status,
+                        item.source_system,
+                        item.source_workspace,
+                        item.source_project,
+                        item.source_key,
+                        item.seeded_from_mirror_id,
+                        now,
+                    ],
+                )?;
+
+                fetch_planning_item(conn, conn.last_insert_rowid())?
+                    .ok_or_else(|| anyhow!("planning item disappeared after insert"))
+            }
+        })
+    }
+
+    pub fn list_planning_items(&self) -> Result<Vec<StoredPlanningItem>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    canonical_key,
+                    item_type,
+                    title,
+                    description,
+                    status,
+                    reconciliation_status,
+                    source_system,
+                    source_workspace,
+                    source_project,
+                    source_key,
+                    seeded_from_mirror_id,
+                    created_at,
+                    updated_at
+                FROM planning_items
+                ORDER BY item_type ASC, title ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_planning_item_row)?;
+            let items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(items)
+        })
+    }
+
+    pub fn list_unreconciled_planning_items(&self) -> Result<Vec<StoredPlanningItem>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    canonical_key,
+                    item_type,
+                    title,
+                    description,
+                    status,
+                    reconciliation_status,
+                    source_system,
+                    source_workspace,
+                    source_project,
+                    source_key,
+                    seeded_from_mirror_id,
+                    created_at,
+                    updated_at
+                FROM planning_items
+                WHERE reconciliation_status = 'unreconciled'
+                ORDER BY item_type ASC, title ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_planning_item_row)?;
+            let items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(items)
+        })
+    }
+
+    pub fn ensure_planning_item_link(
+        &self,
+        link: NewPlanningItemLink<'_>,
+    ) -> Result<StoredPlanningItemLink> {
+        self.with_connection(|conn| {
+            if let Some(existing) = fetch_planning_item_link(
+                conn,
+                link.planning_item_id,
+                link.link_type,
+                link.target_planning_item_id,
+                link.target_external_issue_mirror_id,
+            )? {
+                return Ok(existing);
+            }
+
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                r#"
+                INSERT INTO planning_item_links (
+                    planning_item_id,
+                    link_type,
+                    target_planning_item_id,
+                    target_external_issue_mirror_id,
+                    metadata_json,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+                params![
+                    link.planning_item_id,
+                    link.link_type,
+                    link.target_planning_item_id,
+                    link.target_external_issue_mirror_id,
+                    link.metadata_json,
+                    now,
+                ],
+            )?;
+
+            fetch_planning_item_link_by_id(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("planning item link disappeared after insert"))
+        })
+    }
+
+    pub fn list_planning_item_links(&self) -> Result<Vec<StoredPlanningItemLink>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    planning_item_id,
+                    link_type,
+                    target_planning_item_id,
+                    target_external_issue_mirror_id,
+                    metadata_json,
+                    created_at
+                FROM planning_item_links
+                ORDER BY planning_item_id ASC, link_type ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_planning_item_link_row)?;
+            let links = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(links)
+        })
+    }
+
+    pub fn append_promotion_record(
+        &self,
+        record: NewPromotionRecord<'_>,
+    ) -> Result<StoredPromotionRecord> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO promotion_records (
+                    subject_kind,
+                    subject_id,
+                    promotion_state,
+                    reason,
+                    source_ingest_run_id,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+                params![
+                    record.subject_kind,
+                    record.subject_id,
+                    record.promotion_state,
+                    record.reason,
+                    record.source_ingest_run_id,
+                    now,
+                ],
+            )?;
+
+            fetch_promotion_record(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("promotion record disappeared after insert"))
+        })
+    }
+
+    pub fn list_promotion_records(&self) -> Result<Vec<StoredPromotionRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    subject_kind,
+                    subject_id,
+                    promotion_state,
+                    reason,
+                    source_ingest_run_id,
+                    created_at
+                FROM promotion_records
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_promotion_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn upsert_document_record(&self, record: UpsertDocumentRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO documents (
+                    id, slug, title, content, category, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ON CONFLICT(id) DO UPDATE SET
+                    slug = excluded.slug,
+                    title = excluded.title,
+                    content = excluded.content,
+                    category = excluded.category,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.slug,
+                    record.title,
+                    record.content,
+                    record.category,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_todo_record(&self, record: UpsertTodoRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO todos (
+                    id, title, status, priority, project, created_at, done_at, temperature,
+                    due_on, remind_every_days, remind_next_on, last_reminded_at, reminder_status
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    status = excluded.status,
+                    priority = excluded.priority,
+                    project = excluded.project,
+                    created_at = excluded.created_at,
+                    done_at = excluded.done_at,
+                    temperature = excluded.temperature,
+                    due_on = excluded.due_on,
+                    remind_every_days = excluded.remind_every_days,
+                    remind_next_on = excluded.remind_next_on,
+                    last_reminded_at = excluded.last_reminded_at,
+                    reminder_status = excluded.reminder_status
+                "#,
+                params![
+                    record.id,
+                    record.title,
+                    record.status,
+                    record.priority,
+                    record.project,
+                    record.created_at,
+                    record.done_at,
+                    record.temperature,
+                    record.due_on,
+                    record.remind_every_days,
+                    record.remind_next_on,
+                    record.last_reminded_at,
+                    record.reminder_status,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_instinct_record(&self, record: UpsertInstinctRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO instincts (
+                    id, pattern, action, confidence, source, ref, created_at, status,
+                    surfaced_to, review_status, origin_type, lifecycle_status, temperature, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                ON CONFLICT(id) DO UPDATE SET
+                    pattern = excluded.pattern,
+                    action = excluded.action,
+                    confidence = excluded.confidence,
+                    source = excluded.source,
+                    ref = excluded.ref,
+                    created_at = excluded.created_at,
+                    status = excluded.status,
+                    surfaced_to = excluded.surfaced_to,
+                    review_status = excluded.review_status,
+                    origin_type = excluded.origin_type,
+                    lifecycle_status = excluded.lifecycle_status,
+                    temperature = excluded.temperature,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.pattern,
+                    record.action,
+                    record.confidence,
+                    record.source,
+                    record.reference,
+                    record.created_at,
+                    record.status,
+                    record.surfaced_to,
+                    record.review_status,
+                    record.origin_type,
+                    record.lifecycle_status,
+                    record.temperature,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_coffee_chat_record(&self, record: UpsertCoffeeChatRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO coffee_chats (
+                    id, project, stage, retro, forward, priorities, created_at, temperature
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                    project = excluded.project,
+                    stage = excluded.stage,
+                    retro = excluded.retro,
+                    forward = excluded.forward,
+                    priorities = excluded.priorities,
+                    created_at = excluded.created_at,
+                    temperature = excluded.temperature
+                "#,
+                params![
+                    record.id,
+                    record.project,
+                    record.stage,
+                    record.retro,
+                    record.forward,
+                    record.priorities,
+                    record.created_at,
+                    record.temperature,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_decision_record(&self, record: UpsertDecisionRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO decisions (
+                    id, title, statement, rationale, decision_type, decision_status, scope_type,
+                    scope_ref, source_ref, decided_by, enforcement_level, actor_scope,
+                    confidence, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    statement = excluded.statement,
+                    rationale = excluded.rationale,
+                    decision_type = excluded.decision_type,
+                    decision_status = excluded.decision_status,
+                    scope_type = excluded.scope_type,
+                    scope_ref = excluded.scope_ref,
+                    source_ref = excluded.source_ref,
+                    decided_by = excluded.decided_by,
+                    enforcement_level = excluded.enforcement_level,
+                    actor_scope = excluded.actor_scope,
+                    confidence = excluded.confidence,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.title,
+                    record.statement,
+                    record.rationale,
+                    record.decision_type,
+                    record.decision_status,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.source_ref,
+                    record.decided_by,
+                    record.enforcement_level,
+                    record.actor_scope,
+                    record.confidence,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_vision_record(&self, record: UpsertVisionRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO visions (
+                    id, title, statement, horizon, vision_status, scope_type, scope_ref,
+                    source_ref, confidence, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    statement = excluded.statement,
+                    horizon = excluded.horizon,
+                    vision_status = excluded.vision_status,
+                    scope_type = excluded.scope_type,
+                    scope_ref = excluded.scope_ref,
+                    source_ref = excluded.source_ref,
+                    confidence = excluded.confidence,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.title,
+                    record.statement,
+                    record.horizon,
+                    record.vision_status,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.source_ref,
+                    record.confidence,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_memory_fragment_record(
+        &self,
+        record: UpsertMemoryFragmentRecord<'_>,
+    ) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO memory_fragments (
+                    id, title, content, kind, source_type, source_ref, source_hash, scope_type,
+                    scope_ref, target_table, target_ref, status, triage_status, temperature,
+                    tags, notes, confidence, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    content = excluded.content,
+                    kind = excluded.kind,
+                    source_type = excluded.source_type,
+                    source_ref = excluded.source_ref,
+                    source_hash = excluded.source_hash,
+                    scope_type = excluded.scope_type,
+                    scope_ref = excluded.scope_ref,
+                    target_table = excluded.target_table,
+                    target_ref = excluded.target_ref,
+                    status = excluded.status,
+                    triage_status = excluded.triage_status,
+                    temperature = excluded.temperature,
+                    tags = excluded.tags,
+                    notes = excluded.notes,
+                    confidence = excluded.confidence,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.id,
+                    record.title,
+                    record.content,
+                    record.kind,
+                    record.source_type,
+                    record.source_ref,
+                    record.source_hash,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.target_table,
+                    record.target_ref,
+                    record.status,
+                    record.triage_status,
+                    record.temperature,
+                    record.tags,
+                    record.notes,
+                    record.confidence,
+                    record.created_at,
+                    record.updated_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_memory_link_record(&self, record: UpsertMemoryLinkRecord<'_>) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO memory_links (
+                    id, src_kind, src_id, dst_kind, dst_id, relation_type, status, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                    src_kind = excluded.src_kind,
+                    src_id = excluded.src_id,
+                    dst_kind = excluded.dst_kind,
+                    dst_id = excluded.dst_id,
+                    relation_type = excluded.relation_type,
+                    status = excluded.status,
+                    created_at = excluded.created_at
+                "#,
+                params![
+                    record.id,
+                    record.src_kind,
+                    record.src_id,
+                    record.dst_kind,
+                    record.dst_id,
+                    record.relation_type,
+                    record.status,
+                    record.created_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
     fn migrate(&self, migration_plan: MigrationPlan<'_>) -> Result<()> {
         self.with_connection(|connection| {
             for migration in migration_plan
@@ -698,6 +2100,7 @@ impl DataStore {
                 connection.execute_batch(migration.sql)?;
             }
             ensure_forge_task_columns(connection)?;
+            ensure_curated_memory_tables(connection)?;
             Ok(())
         })
     }
@@ -763,6 +2166,22 @@ fn map_forge_log_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTas
     })
 }
 
+fn map_forge_dispatch_receipt_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredForgeDispatchReceipt> {
+    Ok(StoredForgeDispatchReceipt {
+        id: row.get(0)?,
+        parent_task_id: row.get(1)?,
+        child_task_id: row.get(2)?,
+        supervision_scope: row.get(3)?,
+        supervision_strategy: row.get(4)?,
+        child_dispatch_role: row.get(5)?,
+        child_dispatch_tool_name: row.get(6)?,
+        child_slot: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
 fn map_vault_token_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultToken> {
     Ok(StoredVaultToken {
         id: row.get(0)?,
@@ -796,6 +2215,114 @@ fn map_vault_mcp_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultMcp
     })
 }
 
+fn map_source_ingest_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSourceIngestRun> {
+    Ok(StoredSourceIngestRun {
+        id: row.get(0)?,
+        source_system: row.get(1)?,
+        source_workspace: row.get(2)?,
+        source_project: row.get(3)?,
+        artifact_path: row.get(4)?,
+        artifact_sha256: row.get(5)?,
+        status: row.get(6)?,
+        imported_issue_count: row.get(7)?,
+        imported_document_count: row.get(8)?,
+        imported_milestone_count: row.get(9)?,
+        imported_planning_item_count: row.get(10)?,
+        error_message: row.get(11)?,
+        created_at: row.get(12)?,
+        completed_at: row.get(13)?,
+    })
+}
+
+fn map_source_artifact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSourceArtifact> {
+    Ok(StoredSourceArtifact {
+        id: row.get(0)?,
+        ingest_run_id: row.get(1)?,
+        artifact_kind: row.get(2)?,
+        artifact_key: row.get(3)?,
+        title: row.get(4)?,
+        url: row.get(5)?,
+        payload_json: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
+fn map_external_issue_mirror_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredExternalIssueMirror> {
+    Ok(StoredExternalIssueMirror {
+        id: row.get(0)?,
+        mirror_key: row.get(1)?,
+        source_system: row.get(2)?,
+        source_workspace: row.get(3)?,
+        source_project: row.get(4)?,
+        external_issue_id: row.get(5)?,
+        project_name: row.get(6)?,
+        team_name: row.get(7)?,
+        parent_external_issue_id: row.get(8)?,
+        title: row.get(9)?,
+        description: row.get(10)?,
+        state: row.get(11)?,
+        priority: row.get(12)?,
+        url: row.get(13)?,
+        labels_json: row.get(14)?,
+        relations_json: row.get(15)?,
+        payload_json: row.get(16)?,
+        git_branch_name: row.get(17)?,
+        due_date: row.get(18)?,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
+        completed_at: row.get(21)?,
+        archived_at: row.get(22)?,
+        first_seen_at: row.get(23)?,
+        last_seen_at: row.get(24)?,
+        last_ingest_run_id: row.get(25)?,
+    })
+}
+
+fn map_planning_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredPlanningItem> {
+    Ok(StoredPlanningItem {
+        id: row.get(0)?,
+        canonical_key: row.get(1)?,
+        item_type: row.get(2)?,
+        title: row.get(3)?,
+        description: row.get(4)?,
+        status: row.get(5)?,
+        reconciliation_status: row.get(6)?,
+        source_system: row.get(7)?,
+        source_workspace: row.get(8)?,
+        source_project: row.get(9)?,
+        source_key: row.get(10)?,
+        seeded_from_mirror_id: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+    })
+}
+
+fn map_planning_item_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredPlanningItemLink> {
+    Ok(StoredPlanningItemLink {
+        id: row.get(0)?,
+        planning_item_id: row.get(1)?,
+        link_type: row.get(2)?,
+        target_planning_item_id: row.get(3)?,
+        target_external_issue_mirror_id: row.get(4)?,
+        metadata_json: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+fn map_promotion_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredPromotionRecord> {
+    Ok(StoredPromotionRecord {
+        id: row.get(0)?,
+        subject_kind: row.get(1)?,
+        subject_id: row.get(2)?,
+        promotion_state: row.get(3)?,
+        reason: row.get(4)?,
+        source_ingest_run_id: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
 fn fetch_vault_mcp_config(
     connection: &Connection,
     id: i64,
@@ -809,6 +2336,260 @@ fn fetch_vault_mcp_config(
             "#,
             [id],
             map_vault_mcp_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_source_ingest_run(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredSourceIngestRun>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                source_system,
+                source_workspace,
+                source_project,
+                artifact_path,
+                artifact_sha256,
+                status,
+                imported_issue_count,
+                imported_document_count,
+                imported_milestone_count,
+                imported_planning_item_count,
+                error_message,
+                created_at,
+                completed_at
+            FROM source_ingest_runs
+            WHERE id = ?1
+            "#,
+            [id],
+            map_source_ingest_run_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_source_artifact(
+    connection: &Connection,
+    ingest_run_id: i64,
+    artifact_kind: &str,
+    artifact_key: &str,
+) -> Result<Option<StoredSourceArtifact>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                ingest_run_id,
+                artifact_kind,
+                artifact_key,
+                title,
+                url,
+                payload_json,
+                created_at
+            FROM source_artifacts
+            WHERE ingest_run_id = ?1
+              AND artifact_kind = ?2
+              AND artifact_key = ?3
+            "#,
+            params![ingest_run_id, artifact_kind, artifact_key],
+            map_source_artifact_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_external_issue_mirror_by_key(
+    connection: &Connection,
+    mirror_key: &str,
+) -> Result<Option<StoredExternalIssueMirror>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                mirror_key,
+                source_system,
+                source_workspace,
+                source_project,
+                external_issue_id,
+                project_name,
+                team_name,
+                parent_external_issue_id,
+                title,
+                description,
+                state,
+                priority,
+                url,
+                labels_json,
+                relations_json,
+                payload_json,
+                git_branch_name,
+                due_date,
+                created_at,
+                updated_at,
+                completed_at,
+                archived_at,
+                first_seen_at,
+                last_seen_at,
+                last_ingest_run_id
+            FROM external_issue_mirrors
+            WHERE mirror_key = ?1
+            "#,
+            [mirror_key],
+            map_external_issue_mirror_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_planning_item(connection: &Connection, id: i64) -> Result<Option<StoredPlanningItem>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                canonical_key,
+                item_type,
+                title,
+                description,
+                status,
+                reconciliation_status,
+                source_system,
+                source_workspace,
+                source_project,
+                source_key,
+                seeded_from_mirror_id,
+                created_at,
+                updated_at
+            FROM planning_items
+            WHERE id = ?1
+            "#,
+            [id],
+            map_planning_item_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_planning_item_by_canonical_key(
+    connection: &Connection,
+    canonical_key: &str,
+) -> Result<Option<StoredPlanningItem>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                canonical_key,
+                item_type,
+                title,
+                description,
+                status,
+                reconciliation_status,
+                source_system,
+                source_workspace,
+                source_project,
+                source_key,
+                seeded_from_mirror_id,
+                created_at,
+                updated_at
+            FROM planning_items
+            WHERE canonical_key = ?1
+            "#,
+            [canonical_key],
+            map_planning_item_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_planning_item_link(
+    connection: &Connection,
+    planning_item_id: i64,
+    link_type: &str,
+    target_planning_item_id: Option<i64>,
+    target_external_issue_mirror_id: Option<i64>,
+) -> Result<Option<StoredPlanningItemLink>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                planning_item_id,
+                link_type,
+                target_planning_item_id,
+                target_external_issue_mirror_id,
+                metadata_json,
+                created_at
+            FROM planning_item_links
+            WHERE planning_item_id = ?1
+              AND link_type = ?2
+              AND ((target_planning_item_id IS NULL AND ?3 IS NULL) OR target_planning_item_id = ?3)
+              AND ((target_external_issue_mirror_id IS NULL AND ?4 IS NULL) OR target_external_issue_mirror_id = ?4)
+            LIMIT 1
+            "#,
+            params![
+                planning_item_id,
+                link_type,
+                target_planning_item_id,
+                target_external_issue_mirror_id
+            ],
+            map_planning_item_link_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_planning_item_link_by_id(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredPlanningItemLink>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                planning_item_id,
+                link_type,
+                target_planning_item_id,
+                target_external_issue_mirror_id,
+                metadata_json,
+                created_at
+            FROM planning_item_links
+            WHERE id = ?1
+            "#,
+            [id],
+            map_planning_item_link_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_promotion_record(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredPromotionRecord>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                subject_kind,
+                subject_id,
+                promotion_state,
+                reason,
+                source_ingest_run_id,
+                created_at
+            FROM promotion_records
+            WHERE id = ?1
+            "#,
+            [id],
+            map_promotion_record_row,
         )
         .optional()
         .map_err(Into::into)
@@ -861,6 +2642,216 @@ fn ensure_forge_task_columns(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_curated_memory_tables(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS documents (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug        TEXT NOT NULL,
+            title       TEXT NOT NULL,
+            content     TEXT NOT NULL,
+            category    TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS todos (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            title               TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'pending',
+            priority            INTEGER NOT NULL DEFAULT 2,
+            project             TEXT NOT NULL DEFAULT '',
+            created_at          TEXT NOT NULL,
+            done_at             TEXT,
+            temperature         TEXT NOT NULL DEFAULT 'warm',
+            due_on              TEXT NOT NULL DEFAULT '',
+            remind_every_days   INTEGER NOT NULL DEFAULT 0,
+            remind_next_on      TEXT NOT NULL DEFAULT '',
+            last_reminded_at    TEXT NOT NULL DEFAULT '',
+            reminder_status     TEXT NOT NULL DEFAULT 'none'
+        );
+
+        CREATE TABLE IF NOT EXISTS instincts (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern             TEXT NOT NULL,
+            action              TEXT NOT NULL,
+            confidence          REAL NOT NULL DEFAULT 0.8,
+            source              TEXT NOT NULL DEFAULT '',
+            ref                 TEXT NOT NULL DEFAULT '',
+            created_at          TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'active',
+            surfaced_to         TEXT NOT NULL DEFAULT '',
+            review_status       TEXT NOT NULL DEFAULT '',
+            origin_type         TEXT NOT NULL DEFAULT 'manual',
+            lifecycle_status    TEXT NOT NULL DEFAULT 'active',
+            temperature         TEXT NOT NULL DEFAULT 'warm',
+            updated_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS coffee_chats (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            project     TEXT NOT NULL,
+            stage       TEXT NOT NULL,
+            retro       TEXT NOT NULL,
+            forward     TEXT NOT NULL,
+            priorities  TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            temperature TEXT NOT NULL DEFAULT 'warm'
+        );
+
+        CREATE TABLE IF NOT EXISTS decisions (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            title               TEXT NOT NULL,
+            statement           TEXT NOT NULL,
+            rationale           TEXT NOT NULL DEFAULT '',
+            decision_type       TEXT NOT NULL DEFAULT '',
+            decision_status     TEXT NOT NULL DEFAULT 'accepted',
+            scope_type          TEXT NOT NULL DEFAULT '',
+            scope_ref           TEXT NOT NULL DEFAULT '',
+            source_ref          TEXT NOT NULL DEFAULT '',
+            decided_by          TEXT NOT NULL DEFAULT '',
+            enforcement_level   TEXT NOT NULL DEFAULT '',
+            actor_scope         TEXT NOT NULL DEFAULT '',
+            confidence          REAL NOT NULL DEFAULT 1.0,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS visions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            title           TEXT NOT NULL,
+            statement       TEXT NOT NULL,
+            horizon         TEXT NOT NULL DEFAULT '',
+            vision_status   TEXT NOT NULL DEFAULT 'active',
+            scope_type      TEXT NOT NULL DEFAULT '',
+            scope_ref       TEXT NOT NULL DEFAULT '',
+            source_ref      TEXT NOT NULL DEFAULT '',
+            confidence      REAL NOT NULL DEFAULT 1.0,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_fragments (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            title           TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            kind            TEXT NOT NULL DEFAULT '',
+            source_type     TEXT NOT NULL DEFAULT '',
+            source_ref      TEXT NOT NULL DEFAULT '',
+            source_hash     TEXT NOT NULL DEFAULT '',
+            scope_type      TEXT NOT NULL DEFAULT '',
+            scope_ref       TEXT NOT NULL DEFAULT '',
+            target_table    TEXT NOT NULL DEFAULT '',
+            target_ref      TEXT NOT NULL DEFAULT '',
+            status          TEXT NOT NULL DEFAULT '',
+            triage_status   TEXT NOT NULL DEFAULT '',
+            temperature     TEXT NOT NULL DEFAULT 'warm',
+            tags            TEXT NOT NULL DEFAULT '',
+            notes           TEXT NOT NULL DEFAULT '',
+            confidence      REAL NOT NULL DEFAULT 0.0,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_links (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            src_kind        TEXT NOT NULL,
+            src_id          INTEGER NOT NULL,
+            dst_kind        TEXT NOT NULL,
+            dst_id          INTEGER NOT NULL,
+            relation_type   TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'active',
+            created_at      TEXT NOT NULL
+        );
+        "#,
+    )?;
+
+    ensure_table_column(
+        connection,
+        "todos",
+        "temperature",
+        "ALTER TABLE todos ADD COLUMN temperature TEXT NOT NULL DEFAULT 'warm'",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "due_on",
+        "ALTER TABLE todos ADD COLUMN due_on TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "remind_every_days",
+        "ALTER TABLE todos ADD COLUMN remind_every_days INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "remind_next_on",
+        "ALTER TABLE todos ADD COLUMN remind_next_on TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "last_reminded_at",
+        "ALTER TABLE todos ADD COLUMN last_reminded_at TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_table_column(
+        connection,
+        "todos",
+        "reminder_status",
+        "ALTER TABLE todos ADD COLUMN reminder_status TEXT NOT NULL DEFAULT 'none'",
+    )?;
+
+    ensure_table_column(
+        connection,
+        "instincts",
+        "lifecycle_status",
+        "ALTER TABLE instincts ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'active'",
+    )?;
+    ensure_table_column(
+        connection,
+        "instincts",
+        "temperature",
+        "ALTER TABLE instincts ADD COLUMN temperature TEXT NOT NULL DEFAULT 'warm'",
+    )?;
+    ensure_table_column(
+        connection,
+        "instincts",
+        "updated_at",
+        "ALTER TABLE instincts ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    )?;
+
+    ensure_table_column(
+        connection,
+        "coffee_chats",
+        "temperature",
+        "ALTER TABLE coffee_chats ADD COLUMN temperature TEXT NOT NULL DEFAULT 'warm'",
+    )?;
+
+    Ok(())
+}
+
+fn ensure_table_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> Result<()> {
+    if !table_exists(connection, table)? {
+        return Ok(());
+    }
+
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let columns = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|name| name == column) {
+        connection.execute(alter_sql, [])?;
+    }
+
+    Ok(())
+}
+
 fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
     let exists = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
@@ -869,6 +2860,14 @@ fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
     )?;
 
     Ok(exists != 0)
+}
+
+#[cfg(test)]
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let columns = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns.iter().any(|name| name == column))
 }
 
 fn fallback_app_name(path: &str) -> String {
@@ -908,6 +2907,295 @@ mod tests {
         assert_eq!(logs[0].line, "hello");
         assert_eq!(logs[1].stream, "stderr");
         assert_eq!(logs[1].line, "warn");
+
+        Ok(())
+    }
+
+    #[test]
+    fn forge_dispatch_receipts_round_trip() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0006_create_plugin_forge_dispatch_receipts",
+                sql: include_str!(
+                    "../../migrations/0006_create_plugin_forge_dispatch_receipts.sql"
+                ),
+            },
+        ]))?;
+
+        let parent_task_id =
+            store.insert_forge_task("Parent", "echo", r#"["hello"]"#, None, None, "[]", "{}")?;
+        let (child_task_id, receipt) = store.insert_forge_task_with_dispatch_receipt(
+            "Child",
+            "echo",
+            r#"["world"]"#,
+            None,
+            None,
+            "[]",
+            "{}",
+            &NewForgeDispatchReceipt {
+                parent_task_id,
+                supervision_scope: "dispatch_pipeline",
+                supervision_strategy: "one_for_one",
+                child_dispatch_role: "agent",
+                child_dispatch_tool_name: "forge_dispatch_agent",
+                child_slot: Some("agent-1"),
+            },
+        )?;
+
+        assert!(child_task_id > parent_task_id);
+        assert_eq!(receipt.parent_task_id, parent_task_id);
+        assert_eq!(receipt.child_task_id, child_task_id);
+        assert_eq!(receipt.supervision_strategy, "one_for_one");
+
+        let parent_receipt = store
+            .get_forge_dispatch_parent_receipt(child_task_id)?
+            .expect("child task should have a parent receipt");
+        assert_eq!(parent_receipt.parent_task_id, parent_task_id);
+        assert_eq!(
+            parent_receipt.child_dispatch_tool_name,
+            "forge_dispatch_agent"
+        );
+
+        let child_receipts = store.list_forge_dispatch_child_receipts(parent_task_id)?;
+        assert_eq!(child_receipts.len(), 1);
+        assert_eq!(child_receipts[0].child_task_id, child_task_id);
+        assert_eq!(child_receipts[0].child_slot.as_deref(), Some("agent-1"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn landing_tables_round_trip() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        let run = store.create_source_ingest_run(NewSourceIngestRun {
+            source_system: "linear",
+            source_workspace: "microt",
+            source_project: "Entrance",
+            artifact_path: Some("A:/Agent/linear-snapshot.json"),
+            artifact_sha256: Some("abc123"),
+            status: "running",
+        })?;
+
+        let artifact = store.insert_source_artifact(NewSourceArtifact {
+            ingest_run_id: run.id,
+            artifact_kind: "snapshot",
+            artifact_key: "linear:microt:Entrance:snapshot:test",
+            title: Some("Entrance snapshot"),
+            url: Some("https://linear.app/project/entrance"),
+            payload_json: r#"{"issues":[]}"#,
+        })?;
+
+        let mirror = store.upsert_external_issue_mirror(UpsertExternalIssueMirror {
+            ingest_run_id: run.id,
+            mirror_key: "linear:microt:Entrance:issue:MYT-1",
+            source_system: "linear",
+            source_workspace: "microt",
+            source_project: "Entrance",
+            external_issue_id: "MYT-1",
+            project_name: Some("Entrance"),
+            team_name: Some("Pub"),
+            parent_external_issue_id: None,
+            title: "Bootstrap ownership",
+            description: Some("first issue"),
+            state: Some("Todo"),
+            priority: Some("High"),
+            url: Some("https://linear.app/microt/issue/MYT-1"),
+            labels_json: r#"["Feature"]"#,
+            relations_json: r#"{"blocks":[],"blockedBy":[],"relatedTo":[],"duplicateOf":null}"#,
+            payload_json: r#"{"id":"MYT-1"}"#,
+            git_branch_name: Some("kc2003/myt-1"),
+            due_date: None,
+            created_at: Some("2026-03-22T00:00:00.000Z"),
+            updated_at: Some("2026-03-22T00:00:00.000Z"),
+            completed_at: None,
+            archived_at: None,
+        })?;
+
+        let planning_item = store.upsert_planning_item(UpsertPlanningItem {
+            canonical_key: Some("linear:microt:Entrance:issue:MYT-1"),
+            item_type: "issue",
+            title: "Bootstrap ownership",
+            description: Some("seeded from mirror"),
+            status: "seeded",
+            reconciliation_status: "unreconciled",
+            source_system: Some("linear"),
+            source_workspace: Some("microt"),
+            source_project: Some("Entrance"),
+            source_key: Some("MYT-1"),
+            seeded_from_mirror_id: Some(mirror.id),
+        })?;
+
+        let link = store.ensure_planning_item_link(NewPlanningItemLink {
+            planning_item_id: planning_item.id,
+            link_type: "mirrors",
+            target_planning_item_id: None,
+            target_external_issue_mirror_id: Some(mirror.id),
+            metadata_json: r#"{"seed":"external_issue_mirror"}"#,
+        })?;
+
+        let promotion = store.append_promotion_record(NewPromotionRecord {
+            subject_kind: "planning_item",
+            subject_id: planning_item.id,
+            promotion_state: "storage_only",
+            reason: Some("seeded on import"),
+            source_ingest_run_id: Some(run.id),
+        })?;
+
+        let run = store.complete_source_ingest_run(
+            run.id,
+            SourceIngestRunCompletion {
+                status: "completed",
+                imported_issue_count: 1,
+                imported_document_count: 0,
+                imported_milestone_count: 0,
+                imported_planning_item_count: 1,
+                error_message: None,
+            },
+        )?;
+
+        let runs = store.list_source_ingest_runs()?;
+        let artifacts = store.list_source_artifacts(run.id)?;
+        let mirrors = store.list_external_issue_mirrors()?;
+        let items = store.list_planning_items()?;
+        let unreconciled = store.list_unreconciled_planning_items()?;
+        let links = store.list_planning_item_links()?;
+        let promotions = store.list_promotion_records()?;
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "completed");
+        assert_eq!(runs[0].imported_issue_count, 1);
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].id, artifact.id);
+        assert_eq!(mirrors.len(), 1);
+        assert_eq!(mirrors[0].external_issue_id, "MYT-1");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, planning_item.id);
+        assert_eq!(unreconciled.len(), 1);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].id, link.id);
+        assert_eq!(promotions.len(), 1);
+        assert_eq!(promotions[0].id, promotion.id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn curated_memory_tables_materialize_remaining_recovery_families() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        store.upsert_decision_record(UpsertDecisionRecord {
+            id: 1,
+            title: "Single runtime db",
+            statement: "Entrance should converge on one runtime db.",
+            rationale: "Avoid split truth between repo root and app data.",
+            decision_type: "storage",
+            decision_status: "accepted",
+            scope_type: "project",
+            scope_ref: "Entrance",
+            source_ref: "recovery_seed:decision:1",
+            decided_by: "Human+NOTA",
+            enforcement_level: "hard",
+            actor_scope: "system",
+            confidence: 0.95,
+            created_at: "2026-03-23T00:00:00Z",
+            updated_at: "2026-03-23T00:05:00Z",
+        })?;
+        store.upsert_vision_record(UpsertVisionRecord {
+            id: 1,
+            title: "NOTA control plane",
+            statement: "Human should primarily interact through NOTA.",
+            horizon: "long",
+            vision_status: "active",
+            scope_type: "system",
+            scope_ref: "nota-control-plane",
+            source_ref: "recovery_seed:vision:1",
+            confidence: 0.92,
+            created_at: "2026-03-23T00:00:00Z",
+            updated_at: "2026-03-23T00:05:00Z",
+        })?;
+        store.upsert_memory_fragment_record(UpsertMemoryFragmentRecord {
+            id: 1,
+            title: "Delete directory safety",
+            content: "Raw directory deletion is forbidden.",
+            kind: "decision",
+            source_type: "human-chat",
+            source_ref: "chat:2026-03-21/raw-directory-delete-policy",
+            source_hash: "hash",
+            scope_type: "system",
+            scope_ref: "filesystem",
+            target_table: "decisions",
+            target_ref: "1",
+            status: "promoted",
+            triage_status: "promoted",
+            temperature: "hot",
+            tags: "safety",
+            notes: "Recovered and clarified.",
+            confidence: 1.0,
+            created_at: "2026-03-23T00:00:00Z",
+            updated_at: "2026-03-23T00:05:00Z",
+        })?;
+        store.upsert_memory_link_record(UpsertMemoryLinkRecord {
+            id: 1,
+            src_kind: "decision",
+            src_id: 1,
+            dst_kind: "memory_fragments",
+            dst_id: 1,
+            relation_type: "derived_from",
+            status: "active",
+            created_at: "2026-03-23T00:05:00Z",
+        })?;
+
+        store.with_connection(|connection| {
+            assert!(table_exists(connection, "decisions")?);
+            assert!(table_exists(connection, "visions")?);
+            assert!(table_exists(connection, "memory_fragments")?);
+            assert!(table_exists(connection, "memory_links")?);
+
+            assert!(table_has_column(
+                connection,
+                "decisions",
+                "decision_status"
+            )?);
+            assert!(table_has_column(connection, "visions", "vision_status")?);
+            assert!(table_has_column(
+                connection,
+                "memory_fragments",
+                "target_table"
+            )?);
+            assert!(table_has_column(
+                connection,
+                "memory_links",
+                "relation_type"
+            )?);
+
+            let decision_count =
+                connection.query_row("SELECT COUNT(*) FROM decisions", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+            let vision_count = connection.query_row("SELECT COUNT(*) FROM visions", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+            let fragment_count =
+                connection.query_row("SELECT COUNT(*) FROM memory_fragments", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+            let link_count =
+                connection.query_row("SELECT COUNT(*) FROM memory_links", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+
+            assert_eq!(decision_count, 1);
+            assert_eq!(vision_count, 1);
+            assert_eq!(fragment_count, 1);
+            assert_eq!(link_count, 1);
+
+            Ok(())
+        })?;
 
         Ok(())
     }

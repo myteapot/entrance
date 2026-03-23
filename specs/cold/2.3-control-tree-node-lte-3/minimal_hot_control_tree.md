@@ -104,8 +104,21 @@ Split only if:
 - it lets current seven docs converge toward a smaller stable hot surface without deleting any design truth
 - it makes future compression an explicit operation instead of an ad hoc cleanup pass
 
+## Resolved Boundary
+
+### v0 rule
+
+- authority summaries stay under `Control`; they should not be absorbed into `Machine`
+- the repo may keep [README](../../top/README.md) as a navigation landing page, but the semantic hot root remains the direct `Machine / Control / Truth` trunk set plus utility surfaces
+- the compressed root is already switched semantically; v0 does not require a physical merge or path churn of the numbered mounted docs
+- `Control Tree` is the canonical naming; legacy `Bt tree` wording should be treated as historical residue only
+
+### Consequence
+
+- control topology stays distinct from machine runtime semantics
+- navigation may stay friendly without creating an extra semantic trunk
+- mounted detail docs can remain in place as reconstructable transitional detail while the root shape stays stable
+
 ## Open Questions
 
-- whether `Machine` should explicitly include authority summaries that currently live in `2.2`, or whether authority must stay entirely under `Control`
-- whether the final hot surface should expose the three semantic trunks directly or through one landing summary page
-- when the repo should perform the actual merge from seven hot docs into the compressed target rather than only maintaining the target map
+- none mounted at v0; reopen only if compression fails the `<=3` hot-control budget again
