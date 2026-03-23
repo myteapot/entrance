@@ -773,12 +773,28 @@ pub fn list_nota_runtime_receipts(
     data_store: &DataStore,
     transaction_id: Option<i64>,
 ) -> Result<NotaRuntimeReceiptsReport> {
+    materialize_terminal_receipt_backflow(data_store, transaction_id)?;
     let receipts = data_store.list_nota_runtime_receipts(transaction_id)?;
     Ok(NotaRuntimeReceiptsReport {
         receipt_count: receipts.len(),
         requested_transaction_id: transaction_id,
         receipts,
     })
+}
+
+fn materialize_terminal_receipt_backflow(
+    data_store: &DataStore,
+    transaction_id: Option<i64>,
+) -> Result<()> {
+    for allocation in data_store.list_nota_runtime_allocations()?.into_iter().filter(|allocation| {
+        transaction_id
+            .map(|requested_id| allocation.source_transaction_id == requested_id)
+            .unwrap_or(true)
+    }) {
+        materialize_terminal_allocation_outcome(data_store, allocation)?;
+    }
+
+    Ok(())
 }
 
 fn materialize_terminal_allocation_outcomes(
@@ -1495,9 +1511,10 @@ mod tests {
     };
 
     use super::{
-        list_nota_runtime_allocations, list_runtime_checkpoints, write_runtime_checkpoint,
-        AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest, NotaDoAllocationPayload,
-        NotaDoAllocationTerminalOutcome, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
+        list_nota_runtime_allocations, list_nota_runtime_receipts, list_runtime_checkpoints,
+        write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload,
+        NotaCheckpointRequest, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
+        ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
     };
 
     struct TempDbPath {
@@ -1733,6 +1750,102 @@ mod tests {
                 .list_nota_runtime_receipts(Some(transaction.id))?
                 .len(),
             1
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_surface_backfills_terminal_outcome_without_allocation_preread() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+
+        let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "dev",
+            transaction_kind: "forge_dev_dispatch",
+            title: "Receipt backflow",
+            payload_json: "{}",
+            status: "checkpointed",
+            forge_task_id: None,
+            cadence_checkpoint_id: None,
+        })?;
+        let task_id = store.insert_forge_task(
+            "Heartbeat child",
+            "echo",
+            "[]",
+            None,
+            None,
+            "[]",
+            "{}",
+        )?;
+        store.update_forge_task_status(task_id, "Failed", None, Some("Task heartbeat lost"))?;
+        let allocation_payload = NotaDoAllocationPayload {
+            issue_id: "MYT-1048".to_string(),
+            issue_status: "Todo".to_string(),
+            issue_status_source: "fallback".to_string(),
+            issue_title: None,
+            project_root: "A:/Agent/Entrance".to_string(),
+            worktree_path: "A:/Agent/Entrance/worktrees/feat-MYT-1048".to_string(),
+            prompt_source: "test".to_string(),
+            model: "codex".to_string(),
+            agent_command: None,
+            child_dispatch_role: "dev".to_string(),
+            child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
+            terminal_outcome: None,
+        };
+        store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_dev",
+            allocation_kind: "forge_dev_dispatch",
+            source_transaction_id: transaction.id,
+            lineage_ref: "nota/dev/transaction/1/forge-task/1",
+            child_execution_kind: "forge_task",
+            child_execution_ref: &task_id.to_string(),
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: &transaction.id.to_string(),
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: &transaction.id.to_string(),
+            status: "task_created",
+            payload_json: &serde_json::to_string(&allocation_payload)?,
+        })?;
+
+        assert!(store.list_nota_runtime_receipts(Some(transaction.id))?.is_empty());
+
+        let report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
+        assert_eq!(report.receipt_count, 1);
+        assert_eq!(
+            report.receipts[0].receipt_kind,
+            ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND
+        );
+
+        let receipt_payload: AllocationTerminalOutcomeReceiptPayload =
+            serde_json::from_str(&report.receipts[0].payload_json)?;
+        assert_eq!(
+            receipt_payload,
+            AllocationTerminalOutcomeReceiptPayload {
+                allocation_id: 1,
+                lineage_ref: "nota/dev/transaction/1/forge-task/1".to_string(),
+                boundary_kind: "escalation".to_string(),
+                child_execution_status: "Failed".to_string(),
+                child_execution_status_message: Some("Task heartbeat lost".to_string()),
+                target_kind: "nota_runtime_transaction".to_string(),
+                target_ref: transaction.id.to_string(),
+                allocation_status: "escalated_failed".to_string(),
+            }
+        );
+
+        let stored_allocations = store.list_nota_runtime_allocations()?;
+        assert_eq!(stored_allocations.len(), 1);
+        assert_eq!(stored_allocations[0].status, "escalated_failed");
+        let stored_payload: NotaDoAllocationPayload =
+            serde_json::from_str(&stored_allocations[0].payload_json)?;
+        let terminal_outcome = stored_payload
+            .terminal_outcome
+            .expect("receipt read should persist the allocation terminal outcome");
+        assert_eq!(terminal_outcome.child_execution_status, "Failed");
+        assert_eq!(
+            terminal_outcome.child_execution_status_message.as_deref(),
+            Some("Task heartbeat lost")
         );
 
         Ok(())
