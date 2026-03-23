@@ -423,16 +423,16 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
         .context("blocked nota overview output should be valid JSON")?;
     assert_eq!(
         blocked_overview["recommended_checkpoint"]["stable_level"],
-        "single-ingress, checkpointed, DB-first NOTA host with single-lane honest allocator truth checkpointed into runtime continuity"
+        "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned agent escalation boundary checkpointed into runtime continuity"
     );
     assert_eq!(
         blocked_overview["recommended_checkpoint"]["selected_trunk"],
-        "single-lane honest allocator continuity"
+        "agent escalation continuity"
     );
     assert_eq!(
         blocked_overview["recommended_checkpoint"]["landed"][0],
         format!(
-            "Single-lane NOTA allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+            "NOTA-owned agent allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
             allocation_id,
             lineage_ref,
             transaction_id,
@@ -457,8 +457,8 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     assert_eq!(
         blocked_overview["recommended_checkpoint"]["next_start_hints"][2],
         format!(
-            "Treat lineage `{}` as the canonical single-lane allocator thread until the blocked gate is cleared.",
-            lineage_ref
+            "Treat lineage `{}` as the current agent escalation boundary until the Blocked gate is cleared.",
+            lineage_ref,
         )
     );
 
@@ -475,7 +475,7 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     );
     assert_eq!(
         blocked_status["recommended_checkpoint"]["selected_trunk"],
-        "single-lane honest allocator continuity"
+        "agent escalation continuity"
     );
 
     let stored_allocation_outcome = connection.query_row(

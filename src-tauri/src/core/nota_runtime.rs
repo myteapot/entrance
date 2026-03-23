@@ -451,7 +451,7 @@ struct RecommendedCheckpointCandidate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecommendedCheckpointCandidateKind {
-    SingleLaneAllocatorContinuity,
+    AgentEscalationContinuity,
     AgentReturnAcceptance,
     DevReturnAcceptance,
 }
@@ -1581,7 +1581,7 @@ fn ensure_runtime_closure_acceptance_receipt(
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
     match candidate.kind {
-        RecommendedCheckpointCandidateKind::SingleLaneAllocatorContinuity => Ok(()),
+        RecommendedCheckpointCandidateKind::AgentEscalationContinuity => Ok(()),
         RecommendedCheckpointCandidateKind::AgentReturnAcceptance => {
             ensure_agent_return_accepted_receipt(data_store, candidate, checkpoint)
         }
@@ -1860,18 +1860,18 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
             };
 
             (
-                RecommendedCheckpointCandidateKind::SingleLaneAllocatorContinuity,
+                RecommendedCheckpointCandidateKind::AgentEscalationContinuity,
                 NotaCheckpointRequest {
                     title: Some(format!(
-                        "Checkpoint: single-lane honest allocator continuity for {}",
+                        "Checkpoint: agent escalation continuity for {}",
                         allocation_payload.issue_id
                     )),
                     stable_level:
-                        "single-ingress, checkpointed, DB-first NOTA host with single-lane honest allocator truth checkpointed into runtime continuity"
+                        "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned agent escalation boundary checkpointed into runtime continuity"
                             .to_string(),
                     landed: vec![
                         format!(
-                            "Single-lane NOTA allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+                            "NOTA-owned agent allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
                             latest_allocation.id,
                             latest_allocation.lineage_ref,
                             transaction_id,
@@ -1888,14 +1888,14 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
                     ],
                     remaining: vec![
                         current_gate,
-                        "Keep this checkpoint scoped to the single-lane honest allocator cut; dev lane, permission wiring, and a fuller allocator/router are still not landed.".to_string(),
+                        "Keep this checkpoint scoped to agent escalation continuity; return acceptance, dev lane, permission wiring, and a fuller multi-role allocator are still not landed.".to_string(),
                     ],
                     human_continuity_bus: if outcome.boundary_kind == "escalation" {
                         "reduced but still required for escalation resolution".to_string()
                     } else {
                         "reduced but still required for return integration".to_string()
                     },
-                    selected_trunk: Some("single-lane honest allocator continuity".to_string()),
+                    selected_trunk: Some("agent escalation continuity".to_string()),
                     next_start_hints: vec![
                         format!(
                             "Start from `entrance nota overview`, then `entrance nota allocations`, then `entrance nota receipts --transaction-id {transaction_id}`."
@@ -1904,8 +1904,9 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
                             "If you are on MCP, read `nota_runtime_overview`, `nota_runtime_allocations`, and `nota_runtime_receipts` for transaction {transaction_id} before any new write."
                         ),
                         format!(
-                            "Treat lineage `{}` as the canonical single-lane allocator thread until the blocked gate is cleared.",
-                            latest_allocation.lineage_ref
+                            "Treat lineage `{}` as the current agent escalation boundary until the {} gate is cleared.",
+                            latest_allocation.lineage_ref,
+                            outcome.child_execution_status
                         ),
                     ],
                     project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
