@@ -355,6 +355,80 @@ fn nota_chat_archive_policy_and_capture_cli_keep_raw_chat_separate_from_decision
     Ok(())
 }
 
+#[test]
+fn nota_overview_cli_returns_db_first_continuity_bundle() -> Result<()> {
+    let temp_dir = TempDir::new("overview")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--stable-level",
+            "single-ingress, checkpointed, DB-first NOTA host",
+            "--landed",
+            "cadence cut landed",
+            "--remaining",
+            "headless continuity bundle",
+            "--human-continuity-bus",
+            "reduced but still present",
+        ],
+    )?;
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "decision",
+            "--title",
+            "Chat is the continuity surface",
+            "--statement",
+            "Chat should read the runtime DB continuity bundle instead of replaying raw chat.",
+            "--rationale",
+            "Resume should start from canonical runtime state.",
+            "--decision-type",
+            "ui_surface",
+            "--scope-type",
+            "project",
+            "--scope-ref",
+            "Entrance",
+            "--source-ref",
+            "nota:test:overview",
+        ],
+    )?;
+    run_nota_cli(
+        &app_data_dir,
+        &["nota", "chat-policy", "--policy", "full"],
+    )?;
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "capture-chat",
+            "--role",
+            "nota",
+            "--content",
+            "Overview should expose checkpoint, decision, and archive state together.",
+        ],
+    )?;
+
+    let output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let overview: Value =
+        serde_json::from_str(&output).context("nota overview output should be valid JSON")?;
+    assert_eq!(overview["checkpoints"]["checkpoint_count"], 1);
+    assert_eq!(overview["decisions"]["decision_count"], 1);
+    assert_eq!(overview["chat_captures"]["capture_count"], 1);
+    assert_eq!(overview["transactions"]["transaction_count"], 0);
+    assert_eq!(overview["chat_policy"]["setting"]["archive_policy"], "full");
+    assert_eq!(
+        overview["checkpoints"]["checkpoints"][0]["payload"]["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host"
+    );
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(

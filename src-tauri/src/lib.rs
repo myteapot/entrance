@@ -427,6 +427,9 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
     let startup = bootstrap_cli_state()?;
 
     match args {
+        [command] if command == "overview" => {
+            print_json(&build_nota_runtime_overview(&startup.data_store())?)
+        }
         [command] if command == "chat-policy" => {
             print_json(&get_chat_archive_policy(&startup.data_store(), None, None)?)
         }
@@ -484,7 +487,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&write_runtime_checkpoint(&startup.data_store(), request)?)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota chat-captures`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota chat-captures`, or `entrance nota transactions`"
         ),
     }
 }
@@ -1177,19 +1180,23 @@ fn dashboard_summary(
     })
 }
 
+fn build_nota_runtime_overview(
+    data_store: &core::data_store::DataStore,
+) -> Result<NotaRuntimeOverview> {
+    Ok(NotaRuntimeOverview {
+        chat_policy: get_chat_archive_policy(data_store, None, None)?,
+        checkpoints: list_runtime_checkpoints(data_store)?,
+        transactions: list_nota_runtime_transactions(data_store)?,
+        decisions: list_design_decisions(data_store)?,
+        chat_captures: list_chat_captures(data_store)?,
+    })
+}
+
 #[tauri::command]
 fn nota_runtime_overview(
     data_store: tauri::State<'_, core::data_store::DataStore>,
 ) -> Result<NotaRuntimeOverview, String> {
-    Ok(NotaRuntimeOverview {
-        chat_policy: get_chat_archive_policy(&data_store, None, None)
-            .map_err(|error| error.to_string())?,
-        checkpoints: list_runtime_checkpoints(&data_store).map_err(|error| error.to_string())?,
-        transactions: list_nota_runtime_transactions(&data_store)
-            .map_err(|error| error.to_string())?,
-        decisions: list_design_decisions(&data_store).map_err(|error| error.to_string())?,
-        chat_captures: list_chat_captures(&data_store).map_err(|error| error.to_string())?,
-    })
+    build_nota_runtime_overview(&data_store).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
