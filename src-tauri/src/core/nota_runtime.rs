@@ -540,31 +540,31 @@ pub fn list_nota_runtime_transactions(
 pub fn list_nota_runtime_allocations(
     data_store: &DataStore,
 ) -> Result<NotaRuntimeAllocationsReport> {
-    materialize_terminal_allocation_outcomes(data_store)?;
-    let allocations = data_store.list_nota_runtime_allocations()?;
+    let allocations = materialize_terminal_allocation_outcomes(data_store)?;
     Ok(NotaRuntimeAllocationsReport {
         allocation_count: allocations.len(),
         allocations,
     })
 }
 
-fn materialize_terminal_allocation_outcomes(data_store: &DataStore) -> Result<()> {
-    let allocations = data_store.list_nota_runtime_allocations()?;
-    for allocation in allocations {
-        materialize_terminal_allocation_outcome(data_store, &allocation)?;
-    }
-
-    Ok(())
+fn materialize_terminal_allocation_outcomes(
+    data_store: &DataStore,
+) -> Result<Vec<StoredNotaRuntimeAllocation>> {
+    data_store
+        .list_nota_runtime_allocations()?
+        .into_iter()
+        .map(|allocation| materialize_terminal_allocation_outcome(data_store, allocation))
+        .collect()
 }
 
 fn materialize_terminal_allocation_outcome(
     data_store: &DataStore,
-    allocation: &StoredNotaRuntimeAllocation,
-) -> Result<()> {
+    allocation: StoredNotaRuntimeAllocation,
+) -> Result<StoredNotaRuntimeAllocation> {
     if allocation.allocation_kind != "forge_agent_dispatch"
         || allocation.child_execution_kind != "forge_task"
     {
-        return Ok(());
+        return Ok(allocation);
     }
 
     let task_id = allocation
@@ -577,20 +577,14 @@ fn materialize_terminal_allocation_outcome(
             )
         })?;
     let Some(task) = data_store.get_forge_task(task_id)? else {
-        return Ok(());
+        return Ok(allocation);
     };
 
-    let Some((status, outcome)) = build_terminal_allocation_outcome(allocation, &task) else {
-        return Ok(());
+    let Some((status, outcome)) = build_terminal_allocation_outcome(&allocation, &task) else {
+        return Ok(allocation);
     };
-    let receipt_payload =
-        build_allocation_terminal_outcome_receipt_payload(allocation, status, &outcome);
-    let receipt_recorded = has_allocation_terminal_outcome_receipt(
-        data_store,
-        allocation.source_transaction_id,
-        &receipt_payload,
-    )?;
 
+    let mut projected = allocation.clone();
     let mut payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
         .with_context(|| {
             format!(
@@ -600,37 +594,104 @@ fn materialize_terminal_allocation_outcome(
         })?;
     if allocation.status != status || payload.terminal_outcome.as_ref() != Some(&outcome) {
         payload.terminal_outcome = Some(outcome.clone());
-        let payload_json = serde_json::to_string(&payload).with_context(|| {
+        projected.status = status.to_string();
+        projected.payload_json = serde_json::to_string(&payload).with_context(|| {
             format!(
                 "failed to serialize allocation {} terminal outcome",
                 allocation.id
             )
         })?;
-        data_store.update_nota_runtime_allocation(
-            allocation.id,
-            NotaRuntimeAllocationUpdate {
-                status,
-                payload_json: Some(&payload_json),
-            },
-        )?;
     }
 
+    persist_terminal_allocation_projection(data_store, &allocation, &projected, &outcome)?;
+
+    Ok(projected)
+}
+
+fn persist_terminal_allocation_projection(
+    data_store: &DataStore,
+    stored_allocation: &StoredNotaRuntimeAllocation,
+    projected_allocation: &StoredNotaRuntimeAllocation,
+    outcome: &NotaDoAllocationTerminalOutcome,
+) -> Result<()> {
+    if stored_allocation.status != projected_allocation.status
+        || stored_allocation.payload_json != projected_allocation.payload_json
+    {
+        if let Err(error) = data_store.update_nota_runtime_allocation(
+            stored_allocation.id,
+            NotaRuntimeAllocationUpdate {
+                status: &projected_allocation.status,
+                payload_json: Some(&projected_allocation.payload_json),
+            },
+        ) {
+            ignore_readonly_allocation_persistence_error(
+                error,
+                stored_allocation,
+                "update_terminal_outcome",
+            )?;
+        }
+    }
+
+    let receipt_payload = build_allocation_terminal_outcome_receipt_payload(
+        projected_allocation,
+        &projected_allocation.status,
+        outcome,
+    );
+    let receipt_recorded = has_allocation_terminal_outcome_receipt(
+        data_store,
+        stored_allocation.source_transaction_id,
+        &receipt_payload,
+    )?;
     if !receipt_recorded {
         let receipt_payload_json = serde_json::to_string(&receipt_payload).with_context(|| {
             format!(
                 "failed to serialize allocation {} terminal outcome receipt",
-                allocation.id
+                stored_allocation.id
             )
         })?;
-        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
-            transaction_id: allocation.source_transaction_id,
+        if let Err(error) = data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: stored_allocation.source_transaction_id,
             receipt_kind: ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
             payload_json: &receipt_payload_json,
             status: "recorded",
-        })?;
+        }) {
+            ignore_readonly_allocation_persistence_error(
+                error,
+                stored_allocation,
+                "append_terminal_outcome_receipt",
+            )?;
+        }
     }
 
     Ok(())
+}
+
+fn ignore_readonly_allocation_persistence_error(
+    error: anyhow::Error,
+    allocation: &StoredNotaRuntimeAllocation,
+    operation: &'static str,
+) -> Result<()> {
+    if !is_readonly_sqlite_error(&error) {
+        return Err(error);
+    }
+
+    tracing::warn!(
+        allocation_id = allocation.id,
+        lineage_ref = %allocation.lineage_ref,
+        operation,
+        error = %error,
+        "Skipping NOTA allocation read-surface persistence on read-only database"
+    );
+    Ok(())
+}
+
+fn is_readonly_sqlite_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("readonly database")
+    })
 }
 
 fn build_allocation_terminal_outcome_receipt_payload(
@@ -918,6 +979,12 @@ fn actor_role_slug(role: crate::core::action::ActorRole) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use anyhow::Result;
 
     use crate::core::data_store::{
@@ -930,6 +997,34 @@ mod tests {
         AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest, NotaDoAllocationPayload,
         NotaDoAllocationTerminalOutcome, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
     };
+
+    struct TempDbPath {
+        root: PathBuf,
+        db_path: PathBuf,
+    }
+
+    impl TempDbPath {
+        fn new(label: &str) -> Result<Self> {
+            let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "entrance-nota-runtime-{label}-{}-{suffix}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&root)?;
+            let db_path = root.join("entrance.db");
+            Ok(Self { root, db_path })
+        }
+
+        fn path(&self) -> &Path {
+            &self.db_path
+        }
+    }
+
+    impl Drop for TempDbPath {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
 
     #[test]
     fn runtime_checkpoint_persists_in_dedicated_cadence_storage() -> Result<()> {
@@ -1137,6 +1232,101 @@ mod tests {
                 .len(),
             1
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn allocation_read_surface_projects_terminal_outcome_without_writing_on_readonly_database(
+    ) -> Result<()> {
+        let temp_db = TempDbPath::new("readonly-allocation-surface")?;
+        let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+        let writable_store = DataStore::open(temp_db.path(), migration_plan)?;
+
+        let transaction =
+            writable_store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+                actor_role: "nota",
+                surface_action: "do",
+                transaction_kind: "forge_agent_dispatch",
+                title: "Readonly allocation surface",
+                payload_json: "{}",
+                status: "checkpointed",
+                forge_task_id: None,
+                cadence_checkpoint_id: None,
+            })?;
+        let task_id = writable_store.insert_forge_task(
+            "Blocked child",
+            "echo",
+            "[]",
+            None,
+            None,
+            "[]",
+            "{}",
+        )?;
+        writable_store.update_forge_task_status(
+            task_id,
+            "Blocked",
+            None,
+            Some("add openai to Vault first"),
+        )?;
+        let allocation_payload = NotaDoAllocationPayload {
+            issue_id: "MYT-48".to_string(),
+            issue_status: "Todo".to_string(),
+            issue_status_source: "linear".to_string(),
+            issue_title: Some("Test issue".to_string()),
+            project_root: "A:/Agent/Entrance".to_string(),
+            worktree_path: "A:/Agent/Entrance/worktrees/feat-MYT-48".to_string(),
+            prompt_source: "test".to_string(),
+            model: "codex".to_string(),
+            agent_command: None,
+            child_dispatch_role: "agent".to_string(),
+            child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
+            terminal_outcome: None,
+        };
+        writable_store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_do",
+            allocation_kind: "forge_agent_dispatch",
+            source_transaction_id: transaction.id,
+            lineage_ref: "nota/do/transaction/1/forge-task/1",
+            child_execution_kind: "forge_task",
+            child_execution_ref: &task_id.to_string(),
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: &transaction.id.to_string(),
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: &transaction.id.to_string(),
+            status: "task_created",
+            payload_json: &serde_json::to_string(&allocation_payload)?,
+        })?;
+        drop(writable_store);
+
+        let readonly_store = DataStore::open_read_only(temp_db.path(), migration_plan)?;
+        let readonly_report = list_nota_runtime_allocations(&readonly_store)?;
+        assert_eq!(readonly_report.allocation_count, 1);
+        assert_eq!(readonly_report.allocations[0].status, "escalated_blocked");
+        let readonly_payload: NotaDoAllocationPayload =
+            serde_json::from_str(&readonly_report.allocations[0].payload_json)?;
+        let readonly_outcome = readonly_payload
+            .terminal_outcome
+            .expect("read surface should project a terminal outcome");
+        assert_eq!(readonly_outcome.boundary_kind, "escalation");
+        assert_eq!(readonly_outcome.child_execution_status, "Blocked");
+        assert_eq!(
+            readonly_outcome.child_execution_status_message.as_deref(),
+            Some("add openai to Vault first")
+        );
+        drop(readonly_store);
+
+        let verify_store = DataStore::open(temp_db.path(), migration_plan)?;
+        let stored_allocations = verify_store.list_nota_runtime_allocations()?;
+        assert_eq!(stored_allocations.len(), 1);
+        assert_eq!(stored_allocations[0].status, "task_created");
+        let stored_payload: NotaDoAllocationPayload =
+            serde_json::from_str(&stored_allocations[0].payload_json)?;
+        assert!(stored_payload.terminal_outcome.is_none());
+        assert!(verify_store
+            .list_nota_runtime_receipts(Some(transaction.id))?
+            .is_empty());
 
         Ok(())
     }

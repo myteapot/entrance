@@ -6,6 +6,8 @@ use std::{
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
+#[cfg(test)]
+use rusqlite::OpenFlags;
 use serde::Serialize;
 
 use crate::plugins::launcher::scanner::DiscoveredApp;
@@ -808,6 +810,22 @@ impl DataStore {
         }
 
         let connection = Connection::open(&path)?;
+
+        let store = Self {
+            connection: Arc::new(Mutex::new(connection)),
+            path: Arc::new(path),
+        };
+        store.migrate(migration_plan)?;
+        Ok(store)
+    }
+
+    #[cfg(test)]
+    pub fn open_read_only(
+        path: impl AsRef<Path>,
+        migration_plan: MigrationPlan<'_>,
+    ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
 
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),

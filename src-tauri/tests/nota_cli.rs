@@ -225,7 +225,7 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
-    assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
+    assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 6);
     assert_eq!(count_rows(&connection, "nota_runtime_allocations")?, 1);
     assert_eq!(count_rows(&connection, "cadence_objects")?, 1);
     assert_eq!(count_rows(&connection, "plugin_forge_tasks")?, 1);
@@ -428,10 +428,7 @@ fn nota_chat_archive_policy_and_capture_cli_keep_raw_chat_separate_from_decision
     assert_eq!(summary_capture["record"]["capture_mode"], "summary_capture");
     assert_eq!(summary_capture["record"]["content"], "");
 
-    run_nota_cli(
-        &app_data_dir,
-        &["nota", "chat-policy", "--policy", "full"],
-    )?;
+    run_nota_cli(&app_data_dir, &["nota", "chat-policy", "--policy", "full"])?;
     let full_capture = run_nota_cli(
         &app_data_dir,
         &[
