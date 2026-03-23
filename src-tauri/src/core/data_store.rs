@@ -40,13 +40,19 @@ const CORE_CHAT_ARCHIVE_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0010_create_core_chat_archive_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 6] = [
+const CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION: MigrationStep = MigrationStep {
+    name: "0011_create_core_nota_runtime_allocations",
+    sql: include_str!("../../migrations/0011_create_core_nota_runtime_allocations.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 7] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
     CORE_NOTA_DO_RUNTIME_MIGRATION,
     CORE_DECISION_LINKS_MIGRATION,
     CORE_CHAT_ARCHIVE_MIGRATION,
+    CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -322,6 +328,26 @@ pub struct StoredNotaRuntimeReceipt {
     pub payload_json: String,
     pub status: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredNotaRuntimeAllocation {
+    pub id: i64,
+    pub allocator_role: String,
+    pub allocator_surface: String,
+    pub allocation_kind: String,
+    pub source_transaction_id: i64,
+    pub lineage_ref: String,
+    pub child_execution_kind: String,
+    pub child_execution_ref: String,
+    pub return_target_kind: String,
+    pub return_target_ref: String,
+    pub escalation_target_kind: String,
+    pub escalation_target_ref: String,
+    pub status: String,
+    pub payload_json: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -723,6 +749,28 @@ pub struct NewNotaRuntimeReceipt<'a> {
     pub transaction_id: i64,
     pub receipt_kind: &'a str,
     pub payload_json: &'a str,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewNotaRuntimeAllocation<'a> {
+    pub allocator_role: &'a str,
+    pub allocator_surface: &'a str,
+    pub allocation_kind: &'a str,
+    pub source_transaction_id: i64,
+    pub lineage_ref: &'a str,
+    pub child_execution_kind: &'a str,
+    pub child_execution_ref: &'a str,
+    pub return_target_kind: &'a str,
+    pub return_target_ref: &'a str,
+    pub escalation_target_kind: &'a str,
+    pub escalation_target_ref: &'a str,
+    pub status: &'a str,
+    pub payload_json: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaRuntimeAllocationUpdate<'a> {
     pub status: &'a str,
 }
 
@@ -2444,6 +2492,108 @@ impl DataStore {
         })
     }
 
+    pub fn insert_nota_runtime_allocation(
+        &self,
+        record: NewNotaRuntimeAllocation<'_>,
+    ) -> Result<StoredNotaRuntimeAllocation> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO nota_runtime_allocations (
+                    allocator_role,
+                    allocator_surface,
+                    allocation_kind,
+                    source_transaction_id,
+                    lineage_ref,
+                    child_execution_kind,
+                    child_execution_ref,
+                    return_target_kind,
+                    return_target_ref,
+                    escalation_target_kind,
+                    escalation_target_ref,
+                    status,
+                    payload_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
+                "#,
+                params![
+                    record.allocator_role,
+                    record.allocator_surface,
+                    record.allocation_kind,
+                    record.source_transaction_id,
+                    record.lineage_ref,
+                    record.child_execution_kind,
+                    record.child_execution_ref,
+                    record.return_target_kind,
+                    record.return_target_ref,
+                    record.escalation_target_kind,
+                    record.escalation_target_ref,
+                    record.status,
+                    record.payload_json,
+                    now,
+                ],
+            )?;
+
+            fetch_nota_runtime_allocation(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("nota runtime allocation disappeared after insert"))
+        })
+    }
+
+    pub fn update_nota_runtime_allocation(
+        &self,
+        id: i64,
+        update: NotaRuntimeAllocationUpdate<'_>,
+    ) -> Result<StoredNotaRuntimeAllocation> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                UPDATE nota_runtime_allocations
+                SET status = ?2,
+                    updated_at = ?3
+                WHERE id = ?1
+                "#,
+                params![id, update.status, now],
+            )?;
+
+            fetch_nota_runtime_allocation(conn, id)?
+                .ok_or_else(|| anyhow!("nota runtime allocation `{id}` does not exist"))
+        })
+    }
+
+    pub fn list_nota_runtime_allocations(&self) -> Result<Vec<StoredNotaRuntimeAllocation>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    allocator_role,
+                    allocator_surface,
+                    allocation_kind,
+                    source_transaction_id,
+                    lineage_ref,
+                    child_execution_kind,
+                    child_execution_ref,
+                    return_target_kind,
+                    return_target_ref,
+                    escalation_target_kind,
+                    escalation_target_ref,
+                    status,
+                    payload_json,
+                    created_at,
+                    updated_at
+                FROM nota_runtime_allocations
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_nota_runtime_allocation_row)?;
+            let allocations = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(allocations)
+        })
+    }
+
     pub fn list_memory_fragment_records(&self) -> Result<Vec<StoredMemoryFragment>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
@@ -3382,6 +3532,29 @@ fn map_nota_runtime_receipt_row(
     })
 }
 
+fn map_nota_runtime_allocation_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredNotaRuntimeAllocation> {
+    Ok(StoredNotaRuntimeAllocation {
+        id: row.get(0)?,
+        allocator_role: row.get(1)?,
+        allocator_surface: row.get(2)?,
+        allocation_kind: row.get(3)?,
+        source_transaction_id: row.get(4)?,
+        lineage_ref: row.get(5)?,
+        child_execution_kind: row.get(6)?,
+        child_execution_ref: row.get(7)?,
+        return_target_kind: row.get(8)?,
+        return_target_ref: row.get(9)?,
+        escalation_target_kind: row.get(10)?,
+        escalation_target_ref: row.get(11)?,
+        status: row.get(12)?,
+        payload_json: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
+}
+
 fn map_decision_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDecisionRecord> {
     Ok(StoredDecisionRecord {
         id: row.get(0)?,
@@ -3862,6 +4035,40 @@ fn fetch_nota_runtime_receipt(
             "#,
             [id],
             map_nota_runtime_receipt_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_nota_runtime_allocation(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredNotaRuntimeAllocation>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                allocator_role,
+                allocator_surface,
+                allocation_kind,
+                source_transaction_id,
+                lineage_ref,
+                child_execution_kind,
+                child_execution_ref,
+                return_target_kind,
+                return_target_ref,
+                escalation_target_kind,
+                escalation_target_ref,
+                status,
+                payload_json,
+                created_at,
+                updated_at
+            FROM nota_runtime_allocations
+            WHERE id = ?1
+            "#,
+            [id],
+            map_nota_runtime_allocation_row,
         )
         .optional()
         .map_err(Into::into)

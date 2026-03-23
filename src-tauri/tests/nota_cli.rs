@@ -167,6 +167,25 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
         "forge_agent_dispatch"
     );
     assert_eq!(report["dispatch"]["issue_id"], "MYT-48");
+    assert_eq!(report["allocation"]["allocator_role"], "nota");
+    assert_eq!(report["allocation"]["allocator_surface"], "nota_do");
+    assert_eq!(
+        report["allocation"]["allocation_kind"],
+        "forge_agent_dispatch"
+    );
+    assert_eq!(
+        report["allocation"]["source_transaction_id"],
+        report["transaction"]["id"]
+    );
+    assert_eq!(report["allocation"]["child_execution_kind"], "forge_task");
+    assert_eq!(
+        report["allocation"]["return_target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        report["allocation"]["escalation_target_kind"],
+        "nota_runtime_transaction"
+    );
     assert_eq!(report["checkpoint"]["cadence_kind"], "CADENCE_CHECKPOINT");
     assert_eq!(report["spawn_error"], Value::Null);
     assert_eq!(
@@ -174,8 +193,9 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
             .as_array()
             .context("receipts should be an array")?
             .len(),
-        4
+        5
     );
+    assert_eq!(report["receipts"][2]["receipt_kind"], "ALLOCATION_RECORDED");
 
     let transactions_output = run_nota_cli(&app_data_dir, &["nota", "transactions"])?;
     let transactions: Value = serde_json::from_str(&transactions_output)
@@ -187,9 +207,38 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
-    assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 4);
+    assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
+    assert_eq!(count_rows(&connection, "nota_runtime_allocations")?, 1);
     assert_eq!(count_rows(&connection, "cadence_objects")?, 1);
     assert_eq!(count_rows(&connection, "plugin_forge_tasks")?, 1);
+    let allocation_boundary = connection.query_row(
+        r#"
+        SELECT
+            source_transaction_id,
+            child_execution_kind,
+            return_target_kind,
+            escalation_target_kind
+        FROM nota_runtime_allocations
+        "#,
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    )?;
+    assert_eq!(
+        allocation_boundary.0,
+        report["transaction"]["id"]
+            .as_i64()
+            .context("transaction id should be present")?
+    );
+    assert_eq!(allocation_boundary.1, "forge_task");
+    assert_eq!(allocation_boundary.2, "nota_runtime_transaction");
+    assert_eq!(allocation_boundary.3, "nota_runtime_transaction");
 
     Ok(())
 }
@@ -302,7 +351,10 @@ fn nota_chat_archive_policy_and_capture_cli_keep_raw_chat_separate_from_decision
     assert_eq!(summary_capture["record"]["capture_mode"], "summary_capture");
     assert_eq!(summary_capture["record"]["content"], "");
 
-    run_nota_cli(&app_data_dir, &["nota", "chat-policy", "--policy", "full"])?;
+    run_nota_cli(
+        &app_data_dir,
+        &["nota", "chat-policy", "--policy", "full"],
+    )?;
     let full_capture = run_nota_cli(
         &app_data_dir,
         &[
@@ -397,10 +449,7 @@ fn nota_overview_cli_returns_db_first_continuity_bundle() -> Result<()> {
             "nota:test:overview",
         ],
     )?;
-    run_nota_cli(
-        &app_data_dir,
-        &["nota", "chat-policy", "--policy", "full"],
-    )?;
+    run_nota_cli(&app_data_dir, &["nota", "chat-policy", "--policy", "full"])?;
     run_nota_cli(
         &app_data_dir,
         &[

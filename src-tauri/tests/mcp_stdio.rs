@@ -796,43 +796,85 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
         "MYT-48"
     );
     assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["allocator_role"],
+        "nota"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["allocator_surface"],
+        "nota_do"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["source_transaction_id"],
+        do_report["result"]["structuredContent"]["transaction"]["id"]
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["child_execution_kind"],
+        "forge_task"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["return_target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["escalation_target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
         do_report["result"]["structuredContent"]["checkpoint"]["cadence_kind"],
         "CADENCE_CHECKPOINT"
     );
-    assert_eq!(do_report["result"]["structuredContent"]["spawn_error"], Value::Null);
+    assert_eq!(
+        do_report["result"]["structuredContent"]["spawn_error"],
+        Value::Null
+    );
     assert_eq!(
         do_report["result"]["structuredContent"]["receipts"]
             .as_array()
             .context("nota_do receipts should be an array")?
             .len(),
-        4
+        5
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["receipts"][2]["receipt_kind"],
+        "ALLOCATION_RECORDED"
     );
 
     let overview = run_entrance_cli(app_dir.path(), &["nota", "overview"])?;
     let overview: Value =
         serde_json::from_str(&overview).context("nota overview output should be valid JSON")?;
     assert_eq!(overview["transactions"]["transaction_count"], 1);
-    assert_eq!(overview["transactions"]["transactions"][0]["surface_action"], "do");
+    assert_eq!(
+        overview["transactions"]["transactions"][0]["surface_action"],
+        "do"
+    );
     assert_eq!(overview["checkpoints"]["checkpoint_count"], 1);
     assert_eq!(
         overview["checkpoints"]["checkpoints"][0]["title"],
-        "Do receipt: MYT-48"
+        "Do allocation: MYT-48"
     );
 
     let db_path = app_dir.path().join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(
-        connection.query_row("SELECT COUNT(*) FROM nota_runtime_transactions", [], |row| {
-            row.get::<_, i64>(0)
-        })?,
+        connection.query_row(
+            "SELECT COUNT(*) FROM nota_runtime_transactions",
+            [],
+            |row| { row.get::<_, i64>(0) }
+        )?,
         1
     );
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
             row.get::<_, i64>(0)
         })?,
-        4
+        5
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_allocations", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        1
     );
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM cadence_objects", [], |row| {
