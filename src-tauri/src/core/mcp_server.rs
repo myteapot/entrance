@@ -21,8 +21,9 @@ use crate::core::{
     bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
     data_store::DataStore,
     nota_runtime::{
-        list_nota_runtime_allocations, list_nota_runtime_receipts, run_nota_do_agent_dispatch,
-        write_runtime_checkpoint, NotaCheckpointRequest, NotaDoAgentDispatchRequest,
+        list_nota_runtime_allocations, list_nota_runtime_receipts, run_nota_dev_dispatch,
+        run_nota_do_agent_dispatch, write_runtime_checkpoint, NotaCheckpointRequest,
+        NotaDevDispatchRequest, NotaDoAgentDispatchRequest,
     },
     permission::{permission_for_mcp_tool, McpToolPermission},
     recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
@@ -293,6 +294,7 @@ impl McpServer {
             "nota_runtime_allocations" => self.handle_nota_runtime_allocations(),
             "nota_runtime_receipts" => self.handle_nota_runtime_receipts(arguments),
             "nota_do" => self.handle_nota_do(arguments),
+            "nota_dev" => self.handle_nota_dev(arguments),
             "nota_write_checkpoint" => self.handle_nota_write_checkpoint(arguments),
             "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
             "recovery_list_seed_rows" => self.handle_recovery_list_seed_rows(arguments),
@@ -688,6 +690,23 @@ impl McpServer {
             .context("forge plugin is not enabled")?;
         let request = parse_nota_do_request(arguments);
         Ok(json!(run_nota_do_agent_dispatch(
+            data_store, forge, request
+        )?))
+    }
+
+    fn handle_nota_dev(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let forge = self
+            .plugins
+            .forge
+            .as_ref()
+            .context("forge plugin is not enabled")?;
+        let request = parse_nota_dev_request(arguments);
+        Ok(json!(run_nota_dev_dispatch(
             data_store, forge, request
         )?))
     }
@@ -1125,6 +1144,23 @@ fn build_tool_descriptors(
                 permission: None,
                 dispatch_role: None,
             });
+            tools.push(McpToolDescriptor {
+                name: "nota_dev",
+                description: "Create a real NOTA-owned dev transaction that records runtime receipts and a checkpoint while dispatching through the existing Forge dev runtime.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
+                        "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." },
+                        "model": { "type": "string", "description": "Runner or runner:model string used for the dispatched task. Defaults to codex." },
+                        "agent_command": { "type": "string", "description": "Optional executable path overriding the default agent CLI." },
+                        "agentCommand": { "type": "string", "description": "CamelCase alias for agent_command." },
+                        "title": { "type": "string", "description": "Optional human-readable transaction title." }
+                    }
+                }),
+                permission: None,
+                dispatch_role: None,
+            });
         }
         tools.push(McpToolDescriptor {
             name: "nota_write_checkpoint",
@@ -1445,7 +1481,7 @@ fn parse_nota_checkpoint_request(arguments: &Value) -> Result<NotaCheckpointRequ
     })
 }
 
-fn parse_nota_do_request(arguments: &Value) -> NotaDoAgentDispatchRequest {
+fn parse_nota_dispatch_request(arguments: &Value) -> NotaDoAgentDispatchRequest {
     NotaDoAgentDispatchRequest {
         project_dir: optional_string_any(arguments, &["project_dir", "projectDir"])
             .map(str::to_string),
@@ -1456,6 +1492,14 @@ fn parse_nota_do_request(arguments: &Value) -> NotaDoAgentDispatchRequest {
             .map(str::to_string),
         title: optional_string(arguments, "title").map(str::to_string),
     }
+}
+
+fn parse_nota_do_request(arguments: &Value) -> NotaDoAgentDispatchRequest {
+    parse_nota_dispatch_request(arguments)
+}
+
+fn parse_nota_dev_request(arguments: &Value) -> NotaDevDispatchRequest {
+    parse_nota_dispatch_request(arguments)
 }
 
 fn json_rpc_result(id: Value, result: Value) -> Value {
@@ -1674,6 +1718,7 @@ mod tests {
                 "nota_runtime_allocations",
                 "nota_runtime_receipts",
                 "nota_do",
+                "nota_dev",
                 "nota_write_checkpoint",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
@@ -1719,6 +1764,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_do")
             .expect("nota_do should exist");
+        let nota_dev = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_dev")
+            .expect("nota_dev should exist");
         let nota_checkpoint = tools
             .iter()
             .find(|tool| tool["name"] == "nota_write_checkpoint")
@@ -1762,6 +1811,11 @@ mod tests {
         assert_eq!(nota_do["permission"]["room"], "strategy");
         assert_eq!(nota_do["permission"]["targetLayer"], "hot");
         assert!(nota_do["dispatchRole"].is_null());
+        assert_eq!(nota_dev["permission"]["actorRole"], "nota");
+        assert_eq!(nota_dev["permission"]["primitive"], "assign");
+        assert_eq!(nota_dev["permission"]["room"], "strategy");
+        assert_eq!(nota_dev["permission"]["targetLayer"], "hot");
+        assert!(nota_dev["dispatchRole"].is_null());
         assert_eq!(nota_checkpoint["permission"]["actorRole"], "nota");
         assert_eq!(nota_checkpoint["permission"]["primitive"], "learn");
         assert_eq!(nota_checkpoint["permission"]["room"], "memory");
@@ -1843,6 +1897,7 @@ mod tests {
                 "nota_runtime_allocations",
                 "nota_runtime_receipts",
                 "nota_do",
+                "nota_dev",
                 "nota_write_checkpoint",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
@@ -1880,6 +1935,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_do")
             .expect("nota_do should exist on nota surface");
+        let dev_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_dev")
+            .expect("nota_dev should exist on nota surface");
         let checkpoint_tool = tools
             .iter()
             .find(|tool| tool["name"] == "nota_write_checkpoint")
@@ -1904,6 +1963,10 @@ mod tests {
         assert_eq!(do_tool["permission"]["primitive"], "assign");
         assert_eq!(do_tool["permission"]["room"], "strategy");
         assert_eq!(do_tool["permission"]["targetLayer"], "hot");
+        assert_eq!(dev_tool["permission"]["actorRole"], "nota");
+        assert_eq!(dev_tool["permission"]["primitive"], "assign");
+        assert_eq!(dev_tool["permission"]["room"], "strategy");
+        assert_eq!(dev_tool["permission"]["targetLayer"], "hot");
         assert_eq!(checkpoint_tool["permission"]["primitive"], "learn");
         assert_eq!(checkpoint_tool["permission"]["room"], "memory");
         assert_eq!(checkpoint_tool["permission"]["targetLayer"], "cold");

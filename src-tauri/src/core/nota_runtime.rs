@@ -12,7 +12,9 @@ use crate::core::data_store::{
     StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
 };
 use crate::plugins::forge::{
-    build_agent_task_request, prepare_agent_dispatch_blocking, ForgePlugin, PreparedAgentDispatch,
+    build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
+    prepare_dev_dispatch_blocking, CreateTaskRequest, ForgePlugin, PreparedAgentDispatch,
+    PreparedDevDispatch,
 };
 
 const CADENCE_CHECKPOINT_KIND: &str = "CADENCE_CHECKPOINT";
@@ -84,6 +86,8 @@ pub struct NotaDoAgentDispatchRequest {
     pub title: Option<String>,
 }
 
+pub type NotaDevDispatchRequest = NotaDoAgentDispatchRequest;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotaDoDispatchPayload {
     pub issue_id: String,
@@ -140,11 +144,210 @@ pub struct NotaDoDispatchReport {
     pub transaction: StoredNotaRuntimeTransaction,
     pub allocation: StoredNotaRuntimeAllocation,
     pub receipts: Vec<StoredNotaRuntimeReceipt>,
-    pub dispatch: PreparedAgentDispatch,
+    pub dispatch: PreparedNotaDispatch,
     pub task_id: i64,
     pub task_status: String,
     pub spawn_error: Option<String>,
     pub checkpoint: NotaCheckpointRecord,
+}
+
+pub type NotaDevDispatchReport = NotaDoDispatchReport;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreparedNotaDispatch {
+    pub dispatch_role: crate::core::action::ActorRole,
+    pub dispatch_tool_name: String,
+    pub issue_id: String,
+    pub issue_status: String,
+    pub issue_status_source: String,
+    pub issue_title: Option<String>,
+    pub project_root: String,
+    pub worktree_path: String,
+    pub prompt_source: String,
+    pub prompt: String,
+}
+
+impl From<PreparedAgentDispatch> for PreparedNotaDispatch {
+    fn from(dispatch: PreparedAgentDispatch) -> Self {
+        Self {
+            dispatch_role: dispatch.dispatch_role,
+            dispatch_tool_name: dispatch.dispatch_tool_name,
+            issue_id: dispatch.issue_id,
+            issue_status: dispatch.issue_status,
+            issue_status_source: dispatch.issue_status_source,
+            issue_title: dispatch.issue_title,
+            project_root: dispatch.project_root,
+            worktree_path: dispatch.worktree_path,
+            prompt_source: dispatch.prompt_source,
+            prompt: dispatch.prompt,
+        }
+    }
+}
+
+impl From<PreparedDevDispatch> for PreparedNotaDispatch {
+    fn from(dispatch: PreparedDevDispatch) -> Self {
+        Self {
+            dispatch_role: dispatch.dispatch_role,
+            dispatch_tool_name: dispatch.dispatch_tool_name,
+            issue_id: dispatch.issue_id,
+            issue_status: dispatch.issue_status,
+            issue_status_source: dispatch.issue_status_source,
+            issue_title: dispatch.issue_title,
+            project_root: dispatch.project_root,
+            worktree_path: dispatch.worktree_path,
+            prompt_source: dispatch.prompt_source,
+            prompt: dispatch.prompt,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotaDispatchLane {
+    Agent,
+    Dev,
+}
+
+impl NotaDispatchLane {
+    fn surface_action(self) -> &'static str {
+        match self {
+            Self::Agent => "do",
+            Self::Dev => "dev",
+        }
+    }
+
+    fn allocator_surface(self) -> &'static str {
+        match self {
+            Self::Agent => "nota_do",
+            Self::Dev => "nota_dev",
+        }
+    }
+
+    fn transaction_kind(self) -> &'static str {
+        match self {
+            Self::Agent => "forge_agent_dispatch",
+            Self::Dev => "forge_dev_dispatch",
+        }
+    }
+
+    fn default_title(self, issue_id: &str) -> String {
+        match self {
+            Self::Agent => format!("Do dispatch {issue_id}"),
+            Self::Dev => format!("Dev dispatch {issue_id}"),
+        }
+    }
+
+    fn checkpoint_title(self, issue_id: &str) -> String {
+        match self {
+            Self::Agent => format!("Do allocation: {issue_id}"),
+            Self::Dev => format!("Dev allocation: {issue_id}"),
+        }
+    }
+
+    fn checkpoint_stable_level(self) -> &'static str {
+        match self {
+            Self::Agent => "single-ingress, checkpointed, DB-first NOTA host with a minimal Do allocation object and allocation-owned terminal outcome boundary",
+            Self::Dev => "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned dev runtime lane",
+        }
+    }
+
+    fn selected_trunk(self) -> &'static str {
+        match self {
+            Self::Agent => "Do allocation storage cut",
+            Self::Dev => "NOTA-owned dev runtime cut",
+        }
+    }
+
+    fn prepare_dispatch(
+        self,
+        data_store: &DataStore,
+        project_dir: Option<String>,
+    ) -> Result<PreparedNotaDispatch> {
+        match self {
+            Self::Agent => prepare_agent_dispatch_blocking(data_store.clone(), project_dir)
+                .map(Into::into)
+                .map_err(anyhow::Error::msg),
+            Self::Dev => prepare_dev_dispatch_blocking(data_store.clone(), project_dir)
+                .map(Into::into)
+                .map_err(anyhow::Error::msg),
+        }
+    }
+
+    fn build_task_request(
+        self,
+        dispatch: &PreparedNotaDispatch,
+        model: String,
+        agent_command: Option<String>,
+    ) -> Result<CreateTaskRequest> {
+        match self {
+            Self::Agent => build_agent_task_request(
+                dispatch.issue_id.clone(),
+                dispatch.worktree_path.clone(),
+                model,
+                dispatch.prompt.clone(),
+                Vec::new(),
+                agent_command,
+            ),
+            Self::Dev => build_dev_task_request(
+                dispatch.issue_id.clone(),
+                dispatch.worktree_path.clone(),
+                model,
+                dispatch.prompt.clone(),
+                Vec::new(),
+                agent_command,
+            ),
+        }
+        .map_err(anyhow::Error::msg)
+    }
+
+    fn build_lineage_ref(self, transaction_id: i64, task_id: i64) -> String {
+        match self {
+            Self::Agent => build_do_allocation_lineage_ref(transaction_id, task_id),
+            Self::Dev => build_dev_allocation_lineage_ref(transaction_id, task_id),
+        }
+    }
+
+    fn build_checkpoint_landed_items(
+        self,
+        transaction_id: i64,
+        allocation: &StoredNotaRuntimeAllocation,
+        task_id: i64,
+        dispatch: &PreparedNotaDispatch,
+        spawn_error: &Option<String>,
+    ) -> Vec<String> {
+        match self {
+            Self::Agent => {
+                build_do_checkpoint_landed_items(transaction_id, allocation, task_id, dispatch, spawn_error)
+            }
+            Self::Dev => {
+                build_dev_checkpoint_landed_items(transaction_id, allocation, task_id, dispatch, spawn_error)
+            }
+        }
+    }
+
+    fn build_checkpoint_remaining_items(
+        self,
+        allocation_id: i64,
+        task_id: i64,
+        spawn_error: &Option<String>,
+    ) -> Vec<String> {
+        match self {
+            Self::Agent => build_do_checkpoint_remaining_items(allocation_id, task_id, spawn_error),
+            Self::Dev => build_dev_checkpoint_remaining_items(allocation_id, task_id, spawn_error),
+        }
+    }
+
+    fn build_checkpoint_hints(
+        self,
+        transaction_id: i64,
+        allocation_id: i64,
+        task_id: i64,
+        spawn_error: &Option<String>,
+    ) -> Vec<String> {
+        match self {
+            Self::Agent => build_do_checkpoint_hints(transaction_id, allocation_id, task_id, spawn_error),
+            Self::Dev => build_dev_checkpoint_hints(transaction_id, allocation_id, task_id, spawn_error),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -278,13 +481,29 @@ pub fn run_nota_do_agent_dispatch(
     forge: &ForgePlugin,
     request: NotaDoAgentDispatchRequest,
 ) -> Result<NotaDoDispatchReport> {
+    run_nota_dispatch(data_store, forge, request, NotaDispatchLane::Agent)
+}
+
+pub fn run_nota_dev_dispatch(
+    data_store: &DataStore,
+    forge: &ForgePlugin,
+    request: NotaDevDispatchRequest,
+) -> Result<NotaDevDispatchReport> {
+    run_nota_dispatch(data_store, forge, request, NotaDispatchLane::Dev)
+}
+
+fn run_nota_dispatch(
+    data_store: &DataStore,
+    forge: &ForgePlugin,
+    request: NotaDoAgentDispatchRequest,
+    lane: NotaDispatchLane,
+) -> Result<NotaDoDispatchReport> {
     let model = request.model.trim().to_string();
     if model.is_empty() {
         return Err(anyhow!("`model` must not be empty"));
     }
 
-    let dispatch = prepare_agent_dispatch_blocking(data_store.clone(), request.project_dir.clone())
-        .map_err(anyhow::Error::msg)?;
+    let dispatch = lane.prepare_dispatch(data_store, request.project_dir.clone())?;
     let payload = NotaDoDispatchPayload {
         issue_id: dispatch.issue_id.clone(),
         issue_status: dispatch.issue_status.clone(),
@@ -305,13 +524,13 @@ pub fn run_nota_do_agent_dispatch(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("Do dispatch {}", dispatch.issue_id));
+        .unwrap_or_else(|| lane.default_title(&dispatch.issue_id));
 
     let mut transaction =
         data_store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
-            surface_action: "do",
-            transaction_kind: "forge_agent_dispatch",
+            surface_action: lane.surface_action(),
+            transaction_kind: lane.transaction_kind(),
             title: &title,
             payload_json: &payload_json,
             status: "accepted",
@@ -328,15 +547,7 @@ pub fn run_nota_do_agent_dispatch(
         })?,
     );
 
-    let task_request = build_agent_task_request(
-        dispatch.issue_id.clone(),
-        dispatch.worktree_path.clone(),
-        model.clone(),
-        dispatch.prompt.clone(),
-        Vec::new(),
-        request.agent_command.clone(),
-    )
-    .map_err(anyhow::Error::msg)?;
+    let task_request = lane.build_task_request(&dispatch, model.clone(), request.agent_command.clone())?;
     let task_id = forge.create_task(task_request)?;
     let task = forge
         .get_task(task_id)?
@@ -367,11 +578,11 @@ pub fn run_nota_do_agent_dispatch(
         .context("failed to serialize nota allocation payload")?;
     let child_execution_ref = task_id.to_string();
     let return_target_ref = transaction.id.to_string();
-    let lineage_ref = build_do_allocation_lineage_ref(transaction.id, task_id);
+    let lineage_ref = lane.build_lineage_ref(transaction.id, task_id);
     let mut allocation = data_store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
         allocator_role: "nota",
-        allocator_surface: "nota_do",
-        allocation_kind: "forge_agent_dispatch",
+        allocator_surface: lane.allocator_surface(),
+        allocation_kind: lane.transaction_kind(),
         source_transaction_id: transaction.id,
         lineage_ref: &lineage_ref,
         child_execution_kind: "forge_task",
@@ -472,23 +683,27 @@ pub fn run_nota_do_agent_dispatch(
     let checkpoint_report = write_runtime_checkpoint(
         data_store,
         NotaCheckpointRequest {
-            title: Some(format!("Do allocation: {}", dispatch.issue_id)),
-            stable_level: "single-ingress, checkpointed, DB-first NOTA host with a minimal Do allocation object and allocation-owned terminal outcome boundary".to_string(),
-            landed: build_do_checkpoint_landed_items(
+            title: Some(lane.checkpoint_title(&dispatch.issue_id)),
+            stable_level: lane.checkpoint_stable_level().to_string(),
+            landed: lane.build_checkpoint_landed_items(
                 transaction.id,
                 &allocation,
                 task_id,
                 &dispatch,
                 &spawn_error,
             ),
-            remaining: build_do_checkpoint_remaining_items(allocation.id, task_id, &spawn_error),
+            remaining: lane.build_checkpoint_remaining_items(
+                allocation.id,
+                task_id,
+                &spawn_error,
+            ),
             human_continuity_bus: if spawn_error.is_some() {
                 "still required for operator recovery".to_string()
             } else {
                 "reduced but not eliminated".to_string()
             },
-            selected_trunk: Some("Do allocation storage cut".to_string()),
-            next_start_hints: build_do_checkpoint_hints(
+            selected_trunk: Some(lane.selected_trunk().to_string()),
+            next_start_hints: lane.build_checkpoint_hints(
                 transaction.id,
                 allocation.id,
                 task_id,
@@ -580,8 +795,10 @@ fn materialize_terminal_allocation_outcome(
     data_store: &DataStore,
     allocation: StoredNotaRuntimeAllocation,
 ) -> Result<StoredNotaRuntimeAllocation> {
-    if allocation.allocation_kind != "forge_agent_dispatch"
-        || allocation.child_execution_kind != "forge_task"
+    if !matches!(
+        allocation.allocation_kind.as_str(),
+        "forge_agent_dispatch" | "forge_dev_dispatch"
+    ) || allocation.child_execution_kind != "forge_task"
     {
         return Ok(allocation);
     }
@@ -827,7 +1044,7 @@ fn build_do_checkpoint_landed_items(
     transaction_id: i64,
     allocation: &StoredNotaRuntimeAllocation,
     task_id: i64,
-    dispatch: &PreparedAgentDispatch,
+    dispatch: &PreparedNotaDispatch,
     spawn_error: &Option<String>,
 ) -> Vec<String> {
     let mut landed = vec![
@@ -854,6 +1071,44 @@ fn build_do_checkpoint_landed_items(
     } else {
         landed.push(format!(
             "Dispatched Forge task {task_id} for allocation {} from the NOTA `Do` ingress.",
+            allocation.id
+        ));
+    }
+
+    landed
+}
+
+fn build_dev_checkpoint_landed_items(
+    transaction_id: i64,
+    allocation: &StoredNotaRuntimeAllocation,
+    task_id: i64,
+    dispatch: &PreparedNotaDispatch,
+    spawn_error: &Option<String>,
+) -> Vec<String> {
+    let mut landed = vec![
+        format!("Created NOTA runtime transaction {transaction_id} for a dev child dispatch."),
+        format!(
+            "Materialized NOTA allocation {} with lineage {}.",
+            allocation.id, allocation.lineage_ref
+        ),
+        format!(
+            "Bound allocation {} child execution target to Forge task {task_id} in {}.",
+            allocation.id, dispatch.worktree_path
+        ),
+        format!(
+            "Recorded runtime-visible child dispatch role `dev` and tool `{}` for allocation {}.",
+            dispatch.dispatch_tool_name, allocation.id
+        ),
+    ];
+
+    if let Some(error) = spawn_error.as_ref() {
+        landed.push(format!(
+            "Recorded spawn failure for dev allocation {} on Forge task {task_id}: {error}.",
+            allocation.id
+        ));
+    } else {
+        landed.push(format!(
+            "Dispatched Forge task {task_id} for dev allocation {} from the NOTA `Dev` ingress.",
             allocation.id
         ));
     }
@@ -898,6 +1153,52 @@ fn build_do_checkpoint_hints(
 
     if spawn_error.is_some() {
         hints.push("Check runner availability before retrying `nota do`.".to_string());
+    }
+
+    hints
+}
+
+fn build_dev_checkpoint_remaining_items(
+    allocation_id: i64,
+    task_id: i64,
+    spawn_error: &Option<String>,
+) -> Vec<String> {
+    if spawn_error.is_some() {
+        return vec![
+            format!("Re-dispatch dev allocation {allocation_id} after the runner boundary is healthy."),
+            format!(
+                "Re-check Forge task {task_id} and the persisted NOTA runtime receipts before retrying the dev lane."
+            ),
+        ];
+    }
+
+    vec![
+        format!(
+            "Read dev allocation {allocation_id} back through `entrance nota allocations` or `nota_runtime_allocations` once the child reaches a terminal state."
+        ),
+        "Keep this cut scoped to the first NOTA-owned dev runtime lane; honest multi-role allocator and permission-finalization are still not landed.".to_string(),
+    ]
+}
+
+fn build_dev_checkpoint_hints(
+    transaction_id: i64,
+    allocation_id: i64,
+    task_id: i64,
+    spawn_error: &Option<String>,
+) -> Vec<String> {
+    let mut hints = vec![
+        format!("Resume from NOTA runtime transaction {transaction_id}."),
+        format!("Inspect NOTA allocation {allocation_id} and confirm child_dispatch_role `dev`."),
+    ];
+
+    if spawn_error.is_some() {
+        hints.push(format!(
+            "Re-enter from Forge task {task_id} after the spawn failure is cleared."
+        ));
+    } else {
+        hints.push(format!(
+            "Start from `entrance nota status` or `nota_runtime_status`, then inspect Forge task {task_id} from storage-backed read surfaces."
+        ));
     }
 
     hints
@@ -1096,7 +1397,19 @@ fn build_checkpoint_summary(stable_level: &str, landed: &[String]) -> String {
 }
 
 fn build_do_allocation_lineage_ref(transaction_id: i64, task_id: i64) -> String {
-    format!("nota/do/transaction/{transaction_id}/forge-task/{task_id}")
+    build_nota_allocation_lineage_ref("do", transaction_id, task_id)
+}
+
+fn build_dev_allocation_lineage_ref(transaction_id: i64, task_id: i64) -> String {
+    build_nota_allocation_lineage_ref("dev", transaction_id, task_id)
+}
+
+fn build_nota_allocation_lineage_ref(
+    surface_action: &str,
+    transaction_id: i64,
+    task_id: i64,
+) -> String {
+    format!("nota/{surface_action}/transaction/{transaction_id}/forge-task/{task_id}")
 }
 
 fn normalize_list(values: Vec<String>) -> Vec<String> {
