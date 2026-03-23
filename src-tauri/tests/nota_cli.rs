@@ -784,6 +784,9 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     let task_id = report["task_id"]
         .as_i64()
         .context("task id should be present")?;
+    let issue_id = report["dispatch"]["issue_id"]
+        .as_str()
+        .context("dispatch issue_id should be present")?;
     let lineage_ref = report["allocation"]["lineage_ref"]
         .as_str()
         .context("allocation lineage_ref should be present")?;
@@ -843,7 +846,18 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     );
     assert_eq!(
         status["recommended_checkpoint"]["selected_trunk"],
-        "single-lane honest allocator continuity"
+        "agent return acceptance truth"
+    );
+    assert_eq!(
+        status["recommended_checkpoint"]["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned agent return boundary surfaced as storage-backed acceptance truth"
+    );
+    assert_eq!(
+        status["recommended_checkpoint"]["next_start_hints"][2],
+        format!(
+            "Treat lineage `{}` as a returned agent boundary only; do not collapse it into full allocator closure or a multi-role allocator.",
+            lineage_ref
+        )
     );
 
     let checkpoint_runtime_closure_output =
@@ -854,7 +868,15 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     assert_eq!(checkpoint_runtime_closure["status"], "applied");
     assert_eq!(
         checkpoint_runtime_closure["source_recommendation"]["selected_trunk"],
-        "single-lane honest allocator continuity"
+        "agent return acceptance truth"
+    );
+    assert_eq!(
+        checkpoint_runtime_closure["checkpoint"]["title"],
+        format!("Checkpoint: agent return acceptance truth for {issue_id}")
+    );
+    assert_eq!(
+        checkpoint_runtime_closure["checkpoint"]["payload"]["selected_trunk"],
+        "agent return acceptance truth"
     );
 
     let post_materialization_status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
@@ -864,6 +886,14 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     assert_eq!(
         post_materialization_status["latest_transaction"]["cadence_checkpoint_id"],
         checkpoint_runtime_closure["checkpoint"]["id"]
+    );
+    assert_eq!(
+        post_materialization_status["current_checkpoint"]["title"],
+        format!("Checkpoint: agent return acceptance truth for {issue_id}")
+    );
+    assert_eq!(
+        post_materialization_status["current_checkpoint"]["payload"]["selected_trunk"],
+        "agent return acceptance truth"
     );
     assert!(post_materialization_status["recommended_checkpoint"].is_null());
     assert_eq!(
@@ -887,6 +917,16 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     assert_eq!(
         post_materialization_receipts["receipts"][6]["receipt_kind"],
         "CADENCE_CHECKPOINT_WRITTEN"
+    );
+    let checkpoint_receipt_payload_json = post_materialization_receipts["receipts"][6]
+        ["payload_json"]
+        .as_str()
+        .context("checkpoint receipt payload_json should be present")?;
+    let checkpoint_receipt_payload: Value = serde_json::from_str(checkpoint_receipt_payload_json)
+        .context("checkpoint receipt payload_json should be valid JSON")?;
+    assert_eq!(
+        checkpoint_receipt_payload["selected_trunk"],
+        "agent return acceptance truth"
     );
     assert_eq!(
         post_materialization_receipts["receipts"][7]["receipt_kind"],
@@ -917,6 +957,17 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     assert_eq!(
         agent_return_accepted_payload["target_ref"],
         transaction_id.to_string()
+    );
+
+    let checkpoint_runtime_closure_again_output =
+        run_nota_cli(&app_data_dir, &["nota", "checkpoint-runtime-closure"])?;
+    let checkpoint_runtime_closure_again: Value =
+        serde_json::from_str(&checkpoint_runtime_closure_again_output)
+            .context("second checkpoint-runtime-closure output should be valid JSON")?;
+    assert_eq!(checkpoint_runtime_closure_again["status"], "already_current");
+    assert_eq!(
+        checkpoint_runtime_closure_again["checkpoint"]["title"],
+        format!("Checkpoint: agent return acceptance truth for {issue_id}")
     );
 
     Ok(())

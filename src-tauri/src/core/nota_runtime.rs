@@ -452,6 +452,7 @@ struct RecommendedCheckpointCandidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecommendedCheckpointCandidateKind {
     SingleLaneAllocatorContinuity,
+    AgentReturnAcceptance,
     DevReturnAcceptance,
 }
 
@@ -1580,7 +1581,8 @@ fn ensure_runtime_closure_acceptance_receipt(
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
     match candidate.kind {
-        RecommendedCheckpointCandidateKind::SingleLaneAllocatorContinuity => {
+        RecommendedCheckpointCandidateKind::SingleLaneAllocatorContinuity => Ok(()),
+        RecommendedCheckpointCandidateKind::AgentReturnAcceptance => {
             ensure_agent_return_accepted_receipt(data_store, candidate, checkpoint)
         }
         RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
@@ -1759,87 +1761,160 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
         return Ok(None);
     };
 
-    let outcome_fact = match outcome.child_execution_status_message.as_deref() {
-        Some(message) => format!(
-            "Allocation {} terminal outcome is {} / {} back to {} {} with status message `{message}`.",
-            latest_allocation.id,
-            outcome.boundary_kind,
-            outcome.child_execution_status,
-            outcome.target_kind,
-            outcome.target_ref
-        ),
-        None => format!(
-            "Allocation {} terminal outcome is {} / {} back to {} {}.",
-            latest_allocation.id,
-            outcome.boundary_kind,
-            outcome.child_execution_status,
-            outcome.target_kind,
-            outcome.target_ref
-        ),
-    };
-    let current_gate = match outcome.child_execution_status_message.as_deref() {
-        Some(message) => format!(
-            "L3 remains open until the current {} gate is cleared: {message}.",
-            outcome.child_execution_status
-        ),
-        None => format!(
-            "L3 remains open until the current {} gate is cleared.",
-            outcome.child_execution_status
-        ),
-    };
-
-    let recommendation = NotaCheckpointRequest {
-        title: Some(format!(
-            "Checkpoint: single-lane honest allocator continuity for {}",
-            allocation_payload.issue_id
-        )),
-        stable_level:
-            "single-ingress, checkpointed, DB-first NOTA host with single-lane honest allocator truth checkpointed into runtime continuity"
-                .to_string(),
-        landed: vec![
-            format!(
-                "Single-lane NOTA allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
-                latest_allocation.id,
-                latest_allocation.lineage_ref,
-                transaction_id,
-                latest_allocation.child_execution_ref
-            ),
-            outcome_fact,
-            format!(
-                "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
-                latest_allocation.id,
-                latest_terminal_receipt.target_kind,
-                latest_terminal_receipt.target_ref
-            ),
-            "Dedicated headless CLI and MCP read boundaries now expose the same runtime slice through `entrance nota overview` / `allocations` / `receipts` and `nota_runtime_overview` / `nota_runtime_allocations` / `nota_runtime_receipts`.".to_string(),
-        ],
-        remaining: vec![
-            current_gate,
-            "Keep this checkpoint scoped to the single-lane honest allocator cut; dev lane, permission wiring, and a fuller allocator/router are still not landed.".to_string(),
-        ],
-        human_continuity_bus: if outcome.boundary_kind == "escalation" {
-            "reduced but still required for escalation resolution".to_string()
+    let (kind, recommendation) =
+        if outcome.boundary_kind == "return" && outcome.child_execution_status == "Done" {
+            (
+                RecommendedCheckpointCandidateKind::AgentReturnAcceptance,
+                NotaCheckpointRequest {
+                    title: Some(format!(
+                        "Checkpoint: agent return acceptance truth for {}",
+                        allocation_payload.issue_id
+                    )),
+                    stable_level:
+                        "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned agent return boundary surfaced as storage-backed acceptance truth"
+                            .to_string(),
+                    landed: vec![
+                        format!(
+                            "NOTA-owned agent allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+                            latest_allocation.id,
+                            latest_allocation.lineage_ref,
+                            transaction_id,
+                            latest_allocation.child_execution_ref
+                        ),
+                        format!(
+                            "Agent allocation {} terminal outcome is return / Done back to {} {}.",
+                            latest_allocation.id,
+                            outcome.target_kind,
+                            outcome.target_ref
+                        ),
+                        format!(
+                            "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
+                            latest_allocation.id,
+                            latest_terminal_receipt.target_kind,
+                            latest_terminal_receipt.target_ref
+                        ),
+                        format!(
+                            "Runtime payloads keep execution_host `{}` and child_dispatch_role `{}` visible for transaction {} / allocation {}.",
+                            allocation_payload.execution_host,
+                            allocation_payload.child_dispatch_role,
+                            transaction_id,
+                            latest_allocation.id
+                        ),
+                    ],
+                    remaining: vec![
+                        "This is a returned agent child boundary, not a completed review / integrate / repair loop; fuller allocator closure is still open."
+                            .to_string(),
+                        "Keep this cut scoped to agent return acceptance truth; dev lane, permission wiring, and a fuller multi-role allocator are still not landed."
+                            .to_string(),
+                    ],
+                    human_continuity_bus:
+                        "reduced but still required for acceptance and follow-on integration"
+                            .to_string(),
+                    selected_trunk: Some("agent return acceptance truth".to_string()),
+                    next_start_hints: vec![
+                        format!(
+                            "Start from `entrance nota status`, then `entrance nota allocations`, then `entrance nota receipts --transaction-id {transaction_id}`."
+                        ),
+                        format!(
+                            "Confirm allocation {} still carries child_dispatch_role `{}`, execution_host `{}`, and terminal_outcome return / Done before any acceptance write.",
+                            latest_allocation.id,
+                            allocation_payload.child_dispatch_role,
+                            allocation_payload.execution_host
+                        ),
+                        format!(
+                            "Treat lineage `{}` as a returned agent boundary only; do not collapse it into full allocator closure or a multi-role allocator.",
+                            latest_allocation.lineage_ref
+                        ),
+                    ],
+                    project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
+                },
+            )
         } else {
-            "reduced but still required for return integration".to_string()
-        },
-        selected_trunk: Some("single-lane honest allocator continuity".to_string()),
-        next_start_hints: vec![
-            format!(
-                "Start from `entrance nota overview`, then `entrance nota allocations`, then `entrance nota receipts --transaction-id {transaction_id}`."
-            ),
-            format!(
-                "If you are on MCP, read `nota_runtime_overview`, `nota_runtime_allocations`, and `nota_runtime_receipts` for transaction {transaction_id} before any new write."
-            ),
-            format!(
-                "Treat lineage `{}` as the canonical single-lane allocator thread until the blocked gate is cleared.",
-                latest_allocation.lineage_ref
-            ),
-        ],
-        project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
-    };
+            let outcome_fact = match outcome.child_execution_status_message.as_deref() {
+                Some(message) => format!(
+                    "Allocation {} terminal outcome is {} / {} back to {} {} with status message `{message}`.",
+                    latest_allocation.id,
+                    outcome.boundary_kind,
+                    outcome.child_execution_status,
+                    outcome.target_kind,
+                    outcome.target_ref
+                ),
+                None => format!(
+                    "Allocation {} terminal outcome is {} / {} back to {} {}.",
+                    latest_allocation.id,
+                    outcome.boundary_kind,
+                    outcome.child_execution_status,
+                    outcome.target_kind,
+                    outcome.target_ref
+                ),
+            };
+            let current_gate = match outcome.child_execution_status_message.as_deref() {
+                Some(message) => format!(
+                    "L3 remains open until the current {} gate is cleared: {message}.",
+                    outcome.child_execution_status
+                ),
+                None => format!(
+                    "L3 remains open until the current {} gate is cleared.",
+                    outcome.child_execution_status
+                ),
+            };
+
+            (
+                RecommendedCheckpointCandidateKind::SingleLaneAllocatorContinuity,
+                NotaCheckpointRequest {
+                    title: Some(format!(
+                        "Checkpoint: single-lane honest allocator continuity for {}",
+                        allocation_payload.issue_id
+                    )),
+                    stable_level:
+                        "single-ingress, checkpointed, DB-first NOTA host with single-lane honest allocator truth checkpointed into runtime continuity"
+                            .to_string(),
+                    landed: vec![
+                        format!(
+                            "Single-lane NOTA allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+                            latest_allocation.id,
+                            latest_allocation.lineage_ref,
+                            transaction_id,
+                            latest_allocation.child_execution_ref
+                        ),
+                        outcome_fact,
+                        format!(
+                            "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
+                            latest_allocation.id,
+                            latest_terminal_receipt.target_kind,
+                            latest_terminal_receipt.target_ref
+                        ),
+                        "Dedicated headless CLI and MCP read boundaries now expose the same runtime slice through `entrance nota overview` / `allocations` / `receipts` and `nota_runtime_overview` / `nota_runtime_allocations` / `nota_runtime_receipts`.".to_string(),
+                    ],
+                    remaining: vec![
+                        current_gate,
+                        "Keep this checkpoint scoped to the single-lane honest allocator cut; dev lane, permission wiring, and a fuller allocator/router are still not landed.".to_string(),
+                    ],
+                    human_continuity_bus: if outcome.boundary_kind == "escalation" {
+                        "reduced but still required for escalation resolution".to_string()
+                    } else {
+                        "reduced but still required for return integration".to_string()
+                    },
+                    selected_trunk: Some("single-lane honest allocator continuity".to_string()),
+                    next_start_hints: vec![
+                        format!(
+                            "Start from `entrance nota overview`, then `entrance nota allocations`, then `entrance nota receipts --transaction-id {transaction_id}`."
+                        ),
+                        format!(
+                            "If you are on MCP, read `nota_runtime_overview`, `nota_runtime_allocations`, and `nota_runtime_receipts` for transaction {transaction_id} before any new write."
+                        ),
+                        format!(
+                            "Treat lineage `{}` as the canonical single-lane allocator thread until the blocked gate is cleared.",
+                            latest_allocation.lineage_ref
+                        ),
+                    ],
+                    project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
+                },
+            )
+        };
 
     Ok(Some(RecommendedCheckpointCandidate {
-        kind: RecommendedCheckpointCandidateKind::SingleLaneAllocatorContinuity,
+        kind,
         allocation_id: latest_allocation.id,
         source_transaction_id: transaction_id,
         request: recommendation,
@@ -2667,6 +2742,30 @@ mod tests {
         let recommendation =
             recommend_runtime_closure_checkpoint(&store, &allocations.allocations, None)?
                 .context("agent return checkpoint recommendation should exist")?;
+        assert_eq!(
+            recommendation.selected_trunk.as_deref(),
+            Some("agent return acceptance truth")
+        );
+        assert_eq!(
+            recommendation.title.as_deref(),
+            Some("Checkpoint: agent return acceptance truth for MYT-48")
+        );
+        assert_eq!(
+            recommendation.stable_level,
+            "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned agent return boundary surfaced as storage-backed acceptance truth"
+        );
+        assert_eq!(
+            recommendation.landed[3],
+            format!(
+                "Runtime payloads keep execution_host `in_process` and child_dispatch_role `agent` visible for transaction {} / allocation {}.",
+                transaction.id,
+                allocation.id
+            )
+        );
+        assert_eq!(
+            recommendation.remaining[0],
+            "This is a returned agent child boundary, not a completed review / integrate / repair loop; fuller allocator closure is still open."
+        );
         let checkpoint_report = write_runtime_checkpoint(&store, recommendation.clone())?;
         store.update_nota_runtime_transaction(
             transaction.id,
