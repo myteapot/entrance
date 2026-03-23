@@ -1,5 +1,7 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -84,9 +86,30 @@ pub struct NotaDoAgentDispatchRequest {
     pub model: String,
     pub agent_command: Option<String>,
     pub title: Option<String>,
+    pub execution_host: NotaDispatchExecutionHost,
 }
 
 pub type NotaDevDispatchRequest = NotaDoAgentDispatchRequest;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotaDispatchExecutionHost {
+    InProcess,
+    DetachedForgeCliSupervisor,
+}
+
+impl NotaDispatchExecutionHost {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InProcess => "in_process",
+            Self::DetachedForgeCliSupervisor => "detached_forge_cli_supervisor",
+        }
+    }
+}
+
+fn default_nota_dispatch_execution_host() -> String {
+    NotaDispatchExecutionHost::InProcess.as_str().to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotaDoDispatchPayload {
@@ -99,6 +122,8 @@ pub struct NotaDoDispatchPayload {
     pub prompt_source: String,
     pub model: String,
     pub agent_command: Option<String>,
+    #[serde(default = "default_nota_dispatch_execution_host")]
+    pub execution_host: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +137,8 @@ pub struct NotaDoAllocationPayload {
     pub prompt_source: String,
     pub model: String,
     pub agent_command: Option<String>,
+    #[serde(default = "default_nota_dispatch_execution_host")]
+    pub execution_host: String,
     pub child_dispatch_role: String,
     pub child_dispatch_tool_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -514,6 +541,7 @@ fn run_nota_dispatch(
         prompt_source: dispatch.prompt_source.clone(),
         model: model.clone(),
         agent_command: request.agent_command.clone(),
+        execution_host: request.execution_host.as_str().to_string(),
     };
     let payload_json =
         serde_json::to_string(&payload).context("failed to serialize nota do payload")?;
@@ -570,6 +598,7 @@ fn run_nota_dispatch(
         prompt_source: dispatch.prompt_source.clone(),
         model: model.clone(),
         agent_command: request.agent_command.clone(),
+        execution_host: request.execution_host.as_str().to_string(),
         child_dispatch_role: actor_role_slug(dispatch.dispatch_role).to_string(),
         child_dispatch_tool_name: dispatch.dispatch_tool_name.clone(),
         terminal_outcome: None,
@@ -632,9 +661,7 @@ fn run_nota_dispatch(
         })?,
     );
 
-    let spawn_error = forge
-        .engine()
-        .spawn_task(task_id)
+    let spawn_error = launch_forge_task(forge, task_id, request.execution_host)
         .err()
         .map(|error| error.to_string());
     let task_after_spawn = forge
@@ -747,6 +774,57 @@ fn run_nota_dispatch(
         spawn_error,
         checkpoint: checkpoint_report.checkpoint,
     })
+}
+
+fn launch_forge_task(
+    forge: &ForgePlugin,
+    task_id: i64,
+    execution_host: NotaDispatchExecutionHost,
+) -> Result<()> {
+    match execution_host {
+        NotaDispatchExecutionHost::InProcess => {
+            forge.engine().spawn_task(task_id)?;
+        }
+        NotaDispatchExecutionHost::DetachedForgeCliSupervisor => {
+            spawn_detached_forge_supervisor_process(task_id)?;
+            wait_for_task_launch_transition(forge, task_id, Duration::from_millis(150))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn spawn_detached_forge_supervisor_process(task_id: i64) -> Result<()> {
+    let current_exe =
+        std::env::current_exe().context("failed to resolve current Entrance executable path")?;
+    Command::new(current_exe)
+        .args(["forge", "supervise-task", "--task-id", &task_id.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to spawn detached forge supervisor for task {task_id}"))?;
+    Ok(())
+}
+
+fn wait_for_task_launch_transition(
+    forge: &ForgePlugin,
+    task_id: i64,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let task = forge
+            .get_task(task_id)?
+            .ok_or_else(|| anyhow!("stored Forge task {task_id} disappeared during launch"))?;
+        if task.status != "Pending" {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 pub fn list_nota_runtime_transactions(
@@ -1690,6 +1768,7 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "agent".to_string(),
             child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
             terminal_outcome: Some(NotaDoAllocationTerminalOutcome {
@@ -1789,6 +1868,7 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "dev".to_string(),
             child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
             terminal_outcome: None,
@@ -1894,6 +1974,7 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "agent".to_string(),
             child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
             terminal_outcome: None,

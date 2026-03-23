@@ -47,7 +47,8 @@ use core::{
         list_runtime_checkpoints, recommend_single_lane_allocator_checkpoint,
         run_nota_dev_dispatch, run_nota_do_agent_dispatch, write_runtime_checkpoint,
         NotaCheckpointListReport, NotaCheckpointRequest, NotaDevDispatchRequest,
-        NotaDoAgentDispatchRequest, NotaRuntimeAllocationsReport, NotaRuntimeTransactionsReport,
+        NotaDispatchExecutionHost, NotaDoAgentDispatchRequest, NotaRuntimeAllocationsReport,
+        NotaRuntimeTransactionsReport,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -435,8 +436,11 @@ fn run_forge_cli(args: &[String]) -> Result<()> {
         [command] if command == "run-bootstrap-dev-plan" => {
             print_json(&run_forge_bootstrap_dev_plan_cli()?)
         }
+        [command, rest @ ..] if command == "supervise-task" => {
+            run_forge_supervise_task_cli(parse_forge_supervise_task_args(rest)?)
+        }
         _ => bail!(
-            "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, `entrance forge verify-dispatch --project-dir <path>`, `entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--agent-count <n>]`, or `entrance forge run-bootstrap-dev-plan`"
+            "unsupported forge command, expected `entrance forge prepare-dispatch`, `entrance forge prepare-dispatch --project-dir <path>`, `entrance forge verify-dispatch`, `entrance forge verify-dispatch --project-dir <path>`, `entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--agent-count <n>]`, `entrance forge run-bootstrap-dev-plan`, or `entrance forge supervise-task --task-id <id>`"
         ),
     }
 }
@@ -527,6 +531,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                     model: request.model,
                     agent_command,
                     title: request.title,
+                    execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor,
                 },
             )?)
         }
@@ -552,6 +557,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                     model: request.model,
                     agent_command,
                     title: request.title,
+                    execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor,
                 },
             )?)
         }
@@ -770,12 +776,54 @@ fn parse_forge_bootstrap_mcp_cycle_args(args: &[String]) -> Result<ForgeBootstra
     Ok(options)
 }
 
+fn parse_forge_supervise_task_args(args: &[String]) -> Result<i64> {
+    let mut task_id = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--task-id" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance forge supervise-task --task-id` requires a value")?;
+                let parsed = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid forge task id `{value}`"))?;
+                if parsed <= 0 {
+                    bail!("`entrance forge supervise-task --task-id` must be >= 1");
+                }
+                task_id = Some(parsed);
+                index += 2;
+            }
+            other => bail!("unsupported forge supervise-task argument `{other}`"),
+        }
+    }
+
+    task_id.context("`entrance forge supervise-task --task-id` is required")
+}
+
 fn bootstrap_forge_mcp_cycle_cli(
     options: ForgeBootstrapMcpCycleOptions,
 ) -> Result<ForgeBootstrapMcpCycleReport> {
     let startup = bootstrap_forge_mcp_cli_state()?;
     let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
     run_forge_bootstrap_mcp_cycle(&forge_plugin, startup.paths().app_data_dir(), options)
+}
+
+fn run_forge_supervise_task_cli(task_id: i64) -> Result<()> {
+    let startup = bootstrap_forge_cli_state()?;
+    let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
+    forge_plugin.engine().spawn_task(task_id)?;
+
+    loop {
+        let task = forge_plugin
+            .get_task(task_id)?
+            .ok_or_else(|| anyhow::anyhow!("forge task `{task_id}` disappeared during supervision"))?;
+        if matches!(task.status.as_str(), "Done" | "Failed" | "Cancelled" | "Blocked") {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 fn parse_nota_checkpoint_args(args: &[String]) -> Result<NotaCheckpointRequest> {
@@ -865,6 +913,7 @@ fn parse_nota_dispatch_args(
         model: "codex".to_string(),
         agent_command: None,
         title: None,
+        execution_host: NotaDispatchExecutionHost::InProcess,
     };
     let mut index = 0;
 

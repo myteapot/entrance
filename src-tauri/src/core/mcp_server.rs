@@ -23,7 +23,7 @@ use crate::core::{
     nota_runtime::{
         list_nota_runtime_allocations, list_nota_runtime_receipts, run_nota_dev_dispatch,
         run_nota_do_agent_dispatch, write_runtime_checkpoint, NotaCheckpointRequest,
-        NotaDevDispatchRequest, NotaDoAgentDispatchRequest,
+        NotaDevDispatchRequest, NotaDispatchExecutionHost, NotaDoAgentDispatchRequest,
     },
     permission::{permission_for_mcp_tool, McpToolPermission},
     recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
@@ -1491,6 +1491,7 @@ fn parse_nota_dispatch_request(arguments: &Value) -> NotaDoAgentDispatchRequest 
         agent_command: optional_string_any(arguments, &["agent_command", "agentCommand"])
             .map(str::to_string),
         title: optional_string(arguments, "title").map(str::to_string),
+        execution_host: NotaDispatchExecutionHost::InProcess,
     }
 }
 

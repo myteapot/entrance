@@ -2,7 +2,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -721,6 +722,73 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
 }
 
 #[test]
+fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<()> {
+    let temp_dir = TempDir::new("dev-detached-supervisor")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_forge_app_state(&app_data_dir)?;
+
+    let project_root = temp_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-49");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let completion_marker = temp_dir.path().join("child-finished.txt");
+    let fake_agent = write_delayed_success_agent(temp_dir.path(), &completion_marker)?;
+
+    let output = run_nota_cli_with_env(
+        &app_data_dir,
+        &[
+            "nota",
+            "dev",
+            "--project-dir",
+            project_root
+                .to_str()
+                .context("project root should be valid UTF-8")?,
+            "--model",
+            "codex",
+            "--agent-command",
+            fake_agent
+                .to_str()
+                .context("fake delayed dev path should be valid UTF-8")?,
+            "--title",
+            "Dev dispatch MYT-49",
+        ],
+        &[("OPENAI_API_KEY", "test-openai-token")],
+    )?;
+    let report: Value =
+        serde_json::from_str(&output).context("nota dev output should be valid JSON")?;
+    let task_id = report["task_id"]
+        .as_i64()
+        .context("task id should be present")?;
+    let allocation_payload_json = report["allocation"]["payload_json"]
+        .as_str()
+        .context("allocation payload_json should be present")?;
+    let allocation_payload: Value = serde_json::from_str(allocation_payload_json)
+        .context("allocation payload_json should be valid JSON")?;
+    assert_eq!(
+        allocation_payload["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(report["task_status"], "Running");
+
+    let task = wait_for_forge_task_terminal(&app_data_dir.join("entrance.db"), task_id)?;
+    assert_eq!(task.status, "Done");
+    assert!(task.heartbeat_at.is_some());
+    assert!(completion_marker.exists());
+
+    Ok(())
+}
+
+#[test]
 fn nota_decision_cli_persists_design_decisions_and_governance_links() -> Result<()> {
     let temp_dir = TempDir::new("design-decision")?;
     let app_data_dir = temp_dir.path().join("appdata");
@@ -1024,9 +1092,20 @@ fn init_git_repo(path: &Path) -> Result<()> {
 }
 
 fn run_nota_cli(app_data_dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
-        .args(args)
-        .env("ENTRANCE_APP_DATA_DIR", app_data_dir)
+    run_nota_cli_with_env(app_data_dir, args, &[])
+}
+
+fn run_nota_cli_with_env(
+    app_data_dir: &Path,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> Result<String> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_entrance"));
+    command.args(args).env("ENTRANCE_APP_DATA_DIR", app_data_dir);
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let output = command
         .output()
         .with_context(|| format!("failed to spawn `entrance {}`", args.join(" ")))?;
 
@@ -1039,6 +1118,70 @@ fn run_nota_cli(app_data_dir: &Path, args: &[&str]) -> Result<String> {
     }
 
     String::from_utf8(output.stdout).context("CLI stdout should be valid UTF-8")
+}
+
+struct ForgeTaskTerminalState {
+    status: String,
+    heartbeat_at: Option<String>,
+}
+
+fn wait_for_forge_task_terminal(db_path: &Path, task_id: i64) -> Result<ForgeTaskTerminalState> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let connection = Connection::open(db_path)
+            .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+        let task = connection.query_row(
+            "SELECT status, heartbeat_at FROM plugin_forge_tasks WHERE id = ?1",
+            rusqlite::params![task_id],
+            |row| {
+                Ok(ForgeTaskTerminalState {
+                    status: row.get(0)?,
+                    heartbeat_at: row.get(1)?,
+                })
+            },
+        )?;
+        if matches!(task.status.as_str(), "Done" | "Failed" | "Cancelled" | "Blocked") {
+            return Ok(task);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("forge task {task_id} did not reach a terminal state in time");
+        }
+        drop(connection);
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn write_delayed_success_agent(temp_root: &Path, completion_marker: &Path) -> Result<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let script_path = temp_root.join("delayed-dev.cmd");
+        let marker = completion_marker
+            .to_str()
+            .context("completion marker path should be valid UTF-8")?;
+        fs::write(
+            &script_path,
+            format!("@echo off\r\nping -n 4 127.0.0.1 > nul\r\necho done>\"{marker}\"\r\nexit /b 0\r\n"),
+        )?;
+        Ok(script_path)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script_path = temp_root.join("delayed-dev.sh");
+        let marker = completion_marker
+            .to_str()
+            .context("completion marker path should be valid UTF-8")?;
+        fs::write(
+            &script_path,
+            format!("#!/bin/sh\nsleep 3\nprintf done > \"{marker}\"\n"),
+        )?;
+        let mut permissions = fs::metadata(&script_path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions)?;
+        Ok(script_path)
+    }
 }
 
 fn count_rows(connection: &Connection, table: &str) -> Result<i64> {
