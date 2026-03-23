@@ -22,8 +22,8 @@ use crate::core::{
     bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
     data_store::DataStore,
     nota_runtime::{
-        run_nota_do_agent_dispatch, write_runtime_checkpoint, NotaCheckpointRequest,
-        NotaDoAgentDispatchRequest,
+        list_nota_runtime_allocations, run_nota_do_agent_dispatch, write_runtime_checkpoint,
+        NotaCheckpointRequest, NotaDoAgentDispatchRequest,
     },
     permission::{permission_for_mcp_tool, McpToolPermission},
     recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
@@ -232,7 +232,7 @@ impl McpServer {
             ),
             "tools/call" => {
                 let tool_name = tool_name_from_params(request.params.as_ref());
-                let permission = tool_name.and_then(permission_for_mcp_tool);
+                let permission = tool_name.and_then(permission_for_registered_tool);
                 let dispatch_role = tool_name.and_then(tool_dispatch_role_from_name);
                 let canonical_tool_name = tool_name.and_then(canonical_tool_name_from_name);
                 let result = self.handle_tool_call(request.params.as_ref());
@@ -289,6 +289,7 @@ impl McpServer {
             "forge_status" => self.handle_forge_status(arguments),
             "forge_cancel" => self.handle_forge_cancel(arguments),
             "nota_runtime_overview" => self.handle_nota_runtime_overview(),
+            "nota_runtime_allocations" => self.handle_nota_runtime_allocations(),
             "nota_do" => self.handle_nota_do(arguments),
             "nota_write_checkpoint" => self.handle_nota_write_checkpoint(arguments),
             "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
@@ -306,7 +307,7 @@ impl McpServer {
             return Ok(());
         };
 
-        let Some(permission) = permission_for_mcp_tool(name) else {
+        let Some(permission) = permission_for_registered_tool(name) else {
             return Ok(());
         };
 
@@ -636,6 +637,15 @@ impl McpServer {
         Ok(json!(build_nota_runtime_overview(data_store)?))
     }
 
+    fn handle_nota_runtime_allocations(&self) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        Ok(json!(list_nota_runtime_allocations(data_store)?))
+    }
+
     fn handle_nota_do(&self, arguments: &Value) -> Result<Value> {
         let data_store = self
             .plugins
@@ -648,7 +658,9 @@ impl McpServer {
             .as_ref()
             .context("forge plugin is not enabled")?;
         let request = parse_nota_do_request(arguments);
-        Ok(json!(run_nota_do_agent_dispatch(data_store, forge, request)?))
+        Ok(json!(run_nota_do_agent_dispatch(
+            data_store, forge, request
+        )?))
     }
 
     fn handle_nota_write_checkpoint(&self, arguments: &Value) -> Result<Value> {
@@ -1032,6 +1044,16 @@ fn build_tool_descriptors(
             permission: None,
             dispatch_role: None,
         });
+        tools.push(McpToolDescriptor {
+            name: "nota_runtime_allocations",
+            description: "Read the persisted NOTA runtime allocations report that powers `entrance nota allocations`.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
         if plugins.forge.is_some() {
             tools.push(McpToolDescriptor {
                 name: "nota_do",
@@ -1179,7 +1201,7 @@ fn build_tool_descriptors(
     }
 
     for tool in &mut tools {
-        tool.permission = permission_for_mcp_tool(tool.name);
+        tool.permission = permission_for_registered_tool(tool.name);
         tool.dispatch_role = tool_dispatch_role_from_name(tool.name);
     }
 
@@ -1501,6 +1523,13 @@ fn tool_name_from_params(params: Option<&Value>) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+fn permission_for_registered_tool(name: &str) -> Option<McpToolPermission> {
+    permission_for_mcp_tool(name).or_else(|| match name {
+        "nota_runtime_allocations" => permission_for_mcp_tool("nota_runtime_overview"),
+        _ => None,
+    })
+}
+
 fn tool_dispatch_role_from_name(name: &str) -> Option<ActorRole> {
     match name {
         "forge_prepare_dispatch"
@@ -1586,6 +1615,7 @@ mod tests {
                 "forge_status",
                 "forge_cancel",
                 "nota_runtime_overview",
+                "nota_runtime_allocations",
                 "nota_do",
                 "nota_write_checkpoint",
                 "recovery_list_seed_runs",
@@ -1616,6 +1646,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_overview")
             .expect("nota_runtime_overview should exist");
+        let nota_allocations = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_runtime_allocations")
+            .expect("nota_runtime_allocations should exist");
         let nota_do = tools
             .iter()
             .find(|tool| tool["name"] == "nota_do")
@@ -1643,6 +1677,11 @@ mod tests {
         assert_eq!(nota_overview["permission"]["room"], "surface");
         assert_eq!(nota_overview["permission"]["targetLayer"], "cold");
         assert!(nota_overview["dispatchRole"].is_null());
+        assert_eq!(nota_allocations["permission"]["actorRole"], "nota");
+        assert_eq!(nota_allocations["permission"]["primitive"], "chat");
+        assert_eq!(nota_allocations["permission"]["room"], "surface");
+        assert_eq!(nota_allocations["permission"]["targetLayer"], "cold");
+        assert!(nota_allocations["dispatchRole"].is_null());
         assert_eq!(nota_do["permission"]["actorRole"], "nota");
         assert_eq!(nota_do["permission"]["primitive"], "assign");
         assert_eq!(nota_do["permission"]["room"], "strategy");
@@ -1725,6 +1764,7 @@ mod tests {
                 "forge_status",
                 "forge_cancel",
                 "nota_runtime_overview",
+                "nota_runtime_allocations",
                 "nota_do",
                 "nota_write_checkpoint",
                 "recovery_list_seed_runs",
@@ -1747,6 +1787,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_overview")
             .expect("nota_runtime_overview should exist on nota surface");
+        let allocations_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_runtime_allocations")
+            .expect("nota_runtime_allocations should exist on nota surface");
         let do_tool = tools
             .iter()
             .find(|tool| tool["name"] == "nota_do")
@@ -1760,6 +1804,10 @@ mod tests {
         assert_eq!(overview_tool["permission"]["primitive"], "chat");
         assert_eq!(overview_tool["permission"]["room"], "surface");
         assert_eq!(overview_tool["permission"]["targetLayer"], "cold");
+        assert_eq!(allocations_tool["permission"]["actorRole"], "nota");
+        assert_eq!(allocations_tool["permission"]["primitive"], "chat");
+        assert_eq!(allocations_tool["permission"]["room"], "surface");
+        assert_eq!(allocations_tool["permission"]["targetLayer"], "cold");
         assert_eq!(do_tool["permission"]["actorRole"], "nota");
         assert_eq!(do_tool["permission"]["primitive"], "assign");
         assert_eq!(do_tool["permission"]["room"], "strategy");

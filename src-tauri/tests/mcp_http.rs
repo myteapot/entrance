@@ -458,6 +458,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
             "forge_status",
             "forge_cancel",
             "nota_runtime_overview",
+            "nota_runtime_allocations",
             "nota_do",
             "nota_write_checkpoint",
             "recovery_list_seed_runs",
@@ -796,6 +797,33 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
     assert_eq!(
         do_report["result"]["structuredContent"]["receipts"][2]["receipt_kind"],
         "ALLOCATION_RECORDED"
+    );
+
+    let allocations = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-allocations",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_allocations",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(allocations["result"]["isError"], false);
+    assert_eq!(
+        allocations["result"]["entranceSurface"]["actorRole"],
+        "nota"
+    );
+    assert_eq!(allocations["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(allocations["result"]["permission"]["primitive"], "chat");
+    assert_eq!(allocations["result"]["permission"]["room"], "surface");
+    assert_eq!(allocations["result"]["permission"]["targetLayer"], "cold");
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocation_count"],
+        1
+    );
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocations"][0]["source_transaction_id"],
+        do_report["result"]["structuredContent"]["transaction"]["id"]
     );
 
     let overview = run_entrance_cli(app_dir.path(), &["nota", "overview"])?;

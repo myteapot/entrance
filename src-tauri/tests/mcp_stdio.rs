@@ -488,6 +488,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
             "forge_status",
             "forge_cancel",
             "nota_runtime_overview",
+            "nota_runtime_allocations",
             "nota_do",
             "nota_write_checkpoint",
             "recovery_list_seed_runs",
@@ -843,6 +844,34 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
         "ALLOCATION_RECORDED"
     );
 
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-allocations",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_allocations",
+            "arguments": {}
+        }
+    }))?;
+    let allocations = server.read_response()?;
+    assert_eq!(allocations["result"]["isError"], false);
+    assert_eq!(
+        allocations["result"]["entranceSurface"]["actorRole"],
+        "nota"
+    );
+    assert_eq!(allocations["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(allocations["result"]["permission"]["primitive"], "chat");
+    assert_eq!(allocations["result"]["permission"]["room"], "surface");
+    assert_eq!(allocations["result"]["permission"]["targetLayer"], "cold");
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocation_count"],
+        1
+    );
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocations"][0]["source_transaction_id"],
+        do_report["result"]["structuredContent"]["transaction"]["id"]
+    );
+
     let overview = run_entrance_cli(app_dir.path(), &["nota", "overview"])?;
     let overview: Value =
         serde_json::from_str(&overview).context("nota overview output should be valid JSON")?;
@@ -942,6 +971,40 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
     );
     assert_eq!(
         blocked_payload["terminal_outcome"]["child_execution_status_message"],
+        "请先在 Vault 添加 openai"
+    );
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-allocations-terminal",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_allocations",
+            "arguments": {}
+        }
+    }))?;
+    let blocked_allocations = server.read_response()?;
+    assert_eq!(blocked_allocations["result"]["isError"], false);
+    assert_eq!(
+        blocked_allocations["result"]["structuredContent"]["allocations"][0]["status"],
+        "escalated_blocked"
+    );
+    let blocked_allocations_payload_json = blocked_allocations["result"]["structuredContent"]
+        ["allocations"][0]["payload_json"]
+        .as_str()
+        .context("allocation payload_json should be present on dedicated MCP surface")?;
+    let blocked_allocations_payload: Value = serde_json::from_str(blocked_allocations_payload_json)
+        .context("dedicated MCP allocation payload_json should stay valid JSON")?;
+    assert_eq!(
+        blocked_allocations_payload["terminal_outcome"]["boundary_kind"],
+        "escalation"
+    );
+    assert_eq!(
+        blocked_allocations_payload["terminal_outcome"]["child_execution_status"],
+        "Blocked"
+    );
+    assert_eq!(
+        blocked_allocations_payload["terminal_outcome"]["child_execution_status_message"],
         "请先在 Vault 添加 openai"
     );
 
