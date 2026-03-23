@@ -5,9 +5,9 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
 #[cfg(test)]
 use rusqlite::OpenFlags;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::plugins::launcher::scanner::DiscoveredApp;
@@ -113,6 +113,7 @@ pub struct StoredForgeTask {
     pub status_message: Option<String>,
     pub exit_code: Option<i64>,
     pub created_at: String,
+    pub heartbeat_at: Option<String>,
     pub finished_at: Option<String>,
 }
 
@@ -1067,8 +1068,8 @@ impl DataStore {
             conn.execute(
                 r#"
                 INSERT INTO plugin_forge_tasks (
-                    name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL)
+                    name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, heartbeat_at, finished_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL, NULL)
                 "#,
                 params![
                     name,
@@ -1102,8 +1103,8 @@ impl DataStore {
         transaction.execute(
             r#"
             INSERT INTO plugin_forge_tasks (
-                name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL)
+                name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, heartbeat_at, finished_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL, NULL)
             "#,
             params![
                 name,
@@ -1167,20 +1168,25 @@ impl DataStore {
         exit_code: Option<i32>,
         status_message: Option<&str>,
     ) -> Result<()> {
-        let now = if matches!(status, "Done" | "Failed" | "Cancelled" | "Blocked") {
-            Some(Utc::now().to_rfc3339())
-        } else {
-            None
-        };
+        let now = Utc::now().to_rfc3339();
         self.with_connection(|conn| {
-            if let Some(finished_at) = now {
+            if status == "Running" {
+                conn.execute(
+                    r#"
+                    UPDATE plugin_forge_tasks
+                    SET status = ?2, exit_code = ?3, status_message = ?4, heartbeat_at = ?5, finished_at = NULL
+                    WHERE id = ?1
+                    "#,
+                    params![id, status, exit_code, status_message, now],
+                )?;
+            } else if matches!(status, "Done" | "Failed" | "Cancelled" | "Blocked") {
                 conn.execute(
                     r#"
                     UPDATE plugin_forge_tasks
                     SET status = ?2, exit_code = ?3, status_message = ?4, finished_at = ?5
                     WHERE id = ?1
                     "#,
-                    params![id, status, exit_code, status_message, finished_at],
+                    params![id, status, exit_code, status_message, now],
                 )?;
             } else {
                 conn.execute(
@@ -1192,6 +1198,22 @@ impl DataStore {
                     params![id, status, exit_code, status_message],
                 )?;
             }
+            Ok(())
+        })
+    }
+
+    pub fn touch_forge_task_heartbeat(&self, id: i64) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET heartbeat_at = ?2
+                WHERE id = ?1
+                  AND status = 'Running'
+                "#,
+                params![id, now],
+            )?;
             Ok(())
         })
     }
@@ -1243,7 +1265,7 @@ impl DataStore {
     pub fn list_forge_tasks(&self) -> Result<Vec<StoredForgeTask>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks ORDER BY created_at DESC"
+                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, heartbeat_at, finished_at FROM plugin_forge_tasks ORDER BY created_at DESC"
             )?;
             let rows = stmt.query_map([], map_forge_row)?;
             let tasks = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1254,7 +1276,7 @@ impl DataStore {
     pub fn get_forge_task(&self, id: i64) -> Result<Option<StoredForgeTask>> {
         self.with_connection(|conn| {
             conn.query_row(
-                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks WHERE id = ?1",
+                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, heartbeat_at, finished_at FROM plugin_forge_tasks WHERE id = ?1",
                 [id],
                 map_forge_row,
             )
@@ -1278,6 +1300,15 @@ impl DataStore {
                 ) VALUES (?1, ?2, ?3, ?4)
                 "#,
                 params![task_id, stream, line, now],
+            )?;
+            conn.execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET heartbeat_at = ?2
+                WHERE id = ?1
+                  AND status = 'Running'
+                "#,
+                params![task_id, now],
             )?;
             Ok(StoredForgeTaskLog {
                 id: conn.last_insert_rowid(),
@@ -3319,7 +3350,8 @@ fn map_forge_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTask> {
         status_message: row.get(9)?,
         exit_code: row.get(10)?,
         created_at: row.get(11)?,
-        finished_at: row.get(12)?,
+        heartbeat_at: row.get(12)?,
+        finished_at: row.get(13)?,
     })
 }
 
@@ -4251,6 +4283,13 @@ fn ensure_forge_task_columns(connection: &Connection) -> Result<()> {
         )?;
     }
 
+    if !columns.iter().any(|column| column == "heartbeat_at") {
+        connection.execute(
+            "ALTER TABLE plugin_forge_tasks ADD COLUMN heartbeat_at TEXT",
+            [],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -4493,6 +4532,7 @@ fn fallback_app_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{thread, time::Duration};
 
     #[test]
     fn forge_task_logs_round_trip() -> Result<()> {
@@ -4519,6 +4559,58 @@ mod tests {
         assert_eq!(logs[0].line, "hello");
         assert_eq!(logs[1].stream, "stderr");
         assert_eq!(logs[1].line, "warn");
+
+        Ok(())
+    }
+
+    #[test]
+    fn forge_task_heartbeat_advances_while_running() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+
+        let task_id =
+            store.insert_forge_task("Echo", "echo", r#"["hello"]"#, None, None, "[]", "{}")?;
+        let pending = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert!(pending.heartbeat_at.is_none());
+
+        store.update_forge_task_status(task_id, "Running", None, None)?;
+        let running = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        let first_heartbeat = running
+            .heartbeat_at
+            .clone()
+            .expect("running task should record an initial heartbeat");
+
+        thread::sleep(Duration::from_millis(2));
+        store.append_forge_task_log(task_id, "stdout", "hello")?;
+        let after_log = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert_ne!(
+            after_log.heartbeat_at.as_deref(),
+            Some(first_heartbeat.as_str())
+        );
+
+        let last_heartbeat = after_log
+            .heartbeat_at
+            .clone()
+            .expect("running task heartbeat should stay present");
+        store.update_forge_task_status(task_id, "Done", Some(0), None)?;
+        let done = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert_eq!(done.heartbeat_at.as_deref(), Some(last_heartbeat.as_str()));
 
         Ok(())
     }

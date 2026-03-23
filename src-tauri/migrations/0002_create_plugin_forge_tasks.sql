@@ -11,5 +11,6 @@ CREATE TABLE IF NOT EXISTS plugin_forge_tasks (
     status_message TEXT,
     exit_code   INTEGER,
     created_at  TEXT NOT NULL,
+    heartbeat_at TEXT,
     finished_at TEXT
 );
