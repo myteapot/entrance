@@ -20,6 +20,7 @@ use core::{
         ForgeBootstrapMcpCycleReport,
     },
     data_store::StoredSourceIngestRun,
+    design_governance::{list_design_decisions, record_design_decision, DesignDecisionRequest},
     event_bus::EventBus,
     hotkey,
     hygiene::{list_spec_hygiene_v0, run_spec_hygiene_v0, SpecHygieneReport},
@@ -411,8 +412,15 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "checkpoints" => {
             print_json(&list_runtime_checkpoints(&startup.data_store())?)
         }
+        [command] if command == "decisions" => {
+            print_json(&list_design_decisions(&startup.data_store())?)
+        }
         [command] if command == "transactions" => {
             print_json(&list_nota_runtime_transactions(&startup.data_store())?)
+        }
+        [command, rest @ ..] if command == "decision" => {
+            let request = parse_nota_decision_args(rest)?;
+            print_json(&record_design_decision(&startup.data_store(), request)?)
         }
         [command, rest @ ..] if command == "do" => {
             if !startup.forge_enabled() {
@@ -444,7 +452,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&write_runtime_checkpoint(&startup.data_store(), request)?)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, `entrance nota decisions`, or `entrance nota transactions`"
         ),
     }
 }
@@ -754,6 +762,142 @@ fn parse_nota_do_args(args: &[String]) -> Result<NotaDoAgentDispatchRequest> {
                 index += 2;
             }
             other => bail!("unsupported nota do argument `{other}`"),
+        }
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_decision_args(args: &[String]) -> Result<DesignDecisionRequest> {
+    let mut request = DesignDecisionRequest {
+        title: String::new(),
+        statement: String::new(),
+        rationale: String::new(),
+        decision_type: String::new(),
+        decision_status: "accepted".to_string(),
+        scope_type: String::new(),
+        scope_ref: String::new(),
+        source_ref: String::new(),
+        decided_by: "NOTA".to_string(),
+        enforcement_level: "runtime_canonical".to_string(),
+        actor_scope: "system".to_string(),
+        confidence: 1.0,
+        supersedes: Vec::new(),
+        conflicts_with: Vec::new(),
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--title" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --title` requires a value")?;
+                request.title = value.to_string();
+                index += 2;
+            }
+            "--statement" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --statement` requires a value")?;
+                request.statement = value.to_string();
+                index += 2;
+            }
+            "--rationale" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --rationale` requires a value")?;
+                request.rationale = value.to_string();
+                index += 2;
+            }
+            "--decision-type" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --decision-type` requires a value")?;
+                request.decision_type = value.to_string();
+                index += 2;
+            }
+            "--decision-status" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --decision-status` requires a value")?;
+                request.decision_status = value.to_string();
+                index += 2;
+            }
+            "--scope-type" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --scope-type` requires a value")?;
+                request.scope_type = value.to_string();
+                index += 2;
+            }
+            "--scope-ref" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --scope-ref` requires a value")?;
+                request.scope_ref = value.to_string();
+                index += 2;
+            }
+            "--source-ref" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --source-ref` requires a value")?;
+                request.source_ref = value.to_string();
+                index += 2;
+            }
+            "--decided-by" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --decided-by` requires a value")?;
+                request.decided_by = value.to_string();
+                index += 2;
+            }
+            "--enforcement-level" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --enforcement-level` requires a value")?;
+                request.enforcement_level = value.to_string();
+                index += 2;
+            }
+            "--actor-scope" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --actor-scope` requires a value")?;
+                request.actor_scope = value.to_string();
+                index += 2;
+            }
+            "--confidence" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --confidence` requires a value")?;
+                request.confidence = value
+                    .parse::<f64>()
+                    .with_context(|| format!("invalid nota decision confidence `{value}`"))?;
+                index += 2;
+            }
+            "--supersedes" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --supersedes` requires a value")?;
+                request.supersedes.push(
+                    value
+                        .parse::<i64>()
+                        .with_context(|| format!("invalid superseded decision id `{value}`"))?,
+                );
+                index += 2;
+            }
+            "--conflicts-with" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota decision --conflicts-with` requires a value")?;
+                request.conflicts_with.push(
+                    value
+                        .parse::<i64>()
+                        .with_context(|| format!("invalid conflicted decision id `{value}`"))?,
+                );
+                index += 2;
+            }
+            other => bail!("unsupported nota decision argument `{other}`"),
         }
     }
 

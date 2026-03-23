@@ -13,6 +13,7 @@ pub mod action;
 pub mod bootstrap_mcp_cycle;
 pub mod config_store;
 pub mod data_store;
+pub mod design_governance;
 pub mod event_bus;
 pub mod hotkey;
 pub mod hygiene;

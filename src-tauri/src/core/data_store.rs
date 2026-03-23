@@ -30,11 +30,17 @@ const CORE_NOTA_DO_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0008_create_core_nota_do_runtime_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 4] = [
+const CORE_DECISION_LINKS_MIGRATION: MigrationStep = MigrationStep {
+    name: "0009_create_core_decision_links",
+    sql: include_str!("../../migrations/0009_create_core_decision_links.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 5] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
     CORE_NOTA_DO_RUNTIME_MIGRATION,
+    CORE_DECISION_LINKS_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -313,6 +319,35 @@ pub struct StoredNotaRuntimeReceipt {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StoredDecisionRecord {
+    pub id: i64,
+    pub title: String,
+    pub statement: String,
+    pub rationale: String,
+    pub decision_type: String,
+    pub decision_status: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub source_ref: String,
+    pub decided_by: String,
+    pub enforcement_level: String,
+    pub actor_scope: String,
+    pub confidence: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredDecisionLink {
+    pub id: i64,
+    pub src_decision_id: i64,
+    pub dst_decision_id: i64,
+    pub relation_type: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredMemoryFragment {
     pub id: i64,
     pub title: String,
@@ -422,6 +457,30 @@ pub struct UpsertDecisionRecord<'a> {
     pub confidence: f64,
     pub created_at: &'a str,
     pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewDecisionRecord<'a> {
+    pub title: &'a str,
+    pub statement: &'a str,
+    pub rationale: &'a str,
+    pub decision_type: &'a str,
+    pub decision_status: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub source_ref: &'a str,
+    pub decided_by: &'a str,
+    pub enforcement_level: &'a str,
+    pub actor_scope: &'a str,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewDecisionLink<'a> {
+    pub src_decision_id: i64,
+    pub dst_decision_id: i64,
+    pub relation_type: &'a str,
+    pub status: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -2583,6 +2642,143 @@ impl DataStore {
         })
     }
 
+    pub fn insert_decision_record(
+        &self,
+        record: NewDecisionRecord<'_>,
+    ) -> Result<StoredDecisionRecord> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO decisions (
+                    title,
+                    statement,
+                    rationale,
+                    decision_type,
+                    decision_status,
+                    scope_type,
+                    scope_ref,
+                    source_ref,
+                    decided_by,
+                    enforcement_level,
+                    actor_scope,
+                    confidence,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+                "#,
+                params![
+                    record.title,
+                    record.statement,
+                    record.rationale,
+                    record.decision_type,
+                    record.decision_status,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.source_ref,
+                    record.decided_by,
+                    record.enforcement_level,
+                    record.actor_scope,
+                    record.confidence,
+                    now,
+                ],
+            )?;
+
+            fetch_decision_record(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("decision disappeared after insert"))
+        })
+    }
+
+    pub fn get_decision_record(&self, id: i64) -> Result<Option<StoredDecisionRecord>> {
+        self.with_connection(|conn| fetch_decision_record(conn, id))
+    }
+
+    pub fn list_decision_records(&self) -> Result<Vec<StoredDecisionRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    title,
+                    statement,
+                    rationale,
+                    decision_type,
+                    decision_status,
+                    scope_type,
+                    scope_ref,
+                    source_ref,
+                    decided_by,
+                    enforcement_level,
+                    actor_scope,
+                    confidence,
+                    created_at,
+                    updated_at
+                FROM decisions
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_decision_record_row)?;
+            let decisions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(decisions)
+        })
+    }
+
+    pub fn insert_decision_link(&self, record: NewDecisionLink<'_>) -> Result<StoredDecisionLink> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO decision_links (
+                    src_decision_id,
+                    dst_decision_id,
+                    relation_type,
+                    status,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(src_decision_id, dst_decision_id, relation_type) DO UPDATE SET
+                    status = excluded.status,
+                    created_at = excluded.created_at
+                "#,
+                params![
+                    record.src_decision_id,
+                    record.dst_decision_id,
+                    record.relation_type,
+                    record.status,
+                    now,
+                ],
+            )?;
+
+            fetch_decision_link(
+                conn,
+                record.src_decision_id,
+                record.dst_decision_id,
+                record.relation_type,
+            )?
+            .ok_or_else(|| anyhow!("decision link disappeared after upsert"))
+        })
+    }
+
+    pub fn list_decision_links(&self) -> Result<Vec<StoredDecisionLink>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    src_decision_id,
+                    dst_decision_id,
+                    relation_type,
+                    status,
+                    created_at
+                FROM decision_links
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_decision_link_row)?;
+            let links = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(links)
+        })
+    }
+
     pub fn upsert_vision_record(&self, record: UpsertVisionRecord<'_>) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute(
@@ -3006,6 +3202,37 @@ fn map_nota_runtime_receipt_row(
     })
 }
 
+fn map_decision_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDecisionRecord> {
+    Ok(StoredDecisionRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        statement: row.get(2)?,
+        rationale: row.get(3)?,
+        decision_type: row.get(4)?,
+        decision_status: row.get(5)?,
+        scope_type: row.get(6)?,
+        scope_ref: row.get(7)?,
+        source_ref: row.get(8)?,
+        decided_by: row.get(9)?,
+        enforcement_level: row.get(10)?,
+        actor_scope: row.get(11)?,
+        confidence: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
+}
+
+fn map_decision_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDecisionLink> {
+    Ok(StoredDecisionLink {
+        id: row.get(0)?,
+        src_decision_id: row.get(1)?,
+        dst_decision_id: row.get(2)?,
+        relation_type: row.get(3)?,
+        status: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
 fn map_memory_fragment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemoryFragment> {
     Ok(StoredMemoryFragment {
         id: row.get(0)?,
@@ -3424,6 +3651,64 @@ fn fetch_nota_runtime_receipt(
             "#,
             [id],
             map_nota_runtime_receipt_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_decision_record(connection: &Connection, id: i64) -> Result<Option<StoredDecisionRecord>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                title,
+                statement,
+                rationale,
+                decision_type,
+                decision_status,
+                scope_type,
+                scope_ref,
+                source_ref,
+                decided_by,
+                enforcement_level,
+                actor_scope,
+                confidence,
+                created_at,
+                updated_at
+            FROM decisions
+            WHERE id = ?1
+            "#,
+            [id],
+            map_decision_record_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_decision_link(
+    connection: &Connection,
+    src_decision_id: i64,
+    dst_decision_id: i64,
+    relation_type: &str,
+) -> Result<Option<StoredDecisionLink>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                src_decision_id,
+                dst_decision_id,
+                relation_type,
+                status,
+                created_at
+            FROM decision_links
+            WHERE src_decision_id = ?1
+              AND dst_decision_id = ?2
+              AND relation_type = ?3
+            "#,
+            params![src_decision_id, dst_decision_id, relation_type],
+            map_decision_link_row,
         )
         .optional()
         .map_err(Into::into)

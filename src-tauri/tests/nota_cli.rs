@@ -194,6 +194,83 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     Ok(())
 }
 
+#[test]
+fn nota_decision_cli_persists_design_decisions_and_governance_links() -> Result<()> {
+    let temp_dir = TempDir::new("design-decision")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    let first_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "decision",
+            "--title",
+            "Chat and Do only",
+            "--statement",
+            "Human-facing surface should shrink to Chat / Do.",
+            "--rationale",
+            "Reduce ingress sprawl.",
+            "--decision-type",
+            "ui_surface",
+            "--scope-type",
+            "project",
+            "--scope-ref",
+            "Entrance",
+            "--source-ref",
+            "nota:test:first",
+        ],
+    )?;
+    let first: Value = serde_json::from_str(&first_output)
+        .context("first decision output should be valid JSON")?;
+    let first_id = first["decision"]["id"]
+        .as_i64()
+        .context("first decision id should be present")?;
+
+    let second_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "decision",
+            "--title",
+            "Cadence stays out of memory fragments",
+            "--statement",
+            "Cadence continuity must not be stored in memory_fragments.",
+            "--rationale",
+            "Continuity and memory curation are adjacent but distinct.",
+            "--decision-type",
+            "storage",
+            "--scope-type",
+            "project",
+            "--scope-ref",
+            "Entrance",
+            "--source-ref",
+            "nota:test:second",
+            "--supersedes",
+            &first_id.to_string(),
+            "--conflicts-with",
+            &first_id.to_string(),
+        ],
+    )?;
+    let second: Value = serde_json::from_str(&second_output)
+        .context("second decision output should be valid JSON")?;
+    assert_eq!(second["links"].as_array().map(Vec::len), Some(2));
+
+    let listed_output = run_nota_cli(&app_data_dir, &["nota", "decisions"])?;
+    let listed: Value = serde_json::from_str(&listed_output)
+        .context("nota decisions output should be valid JSON")?;
+    assert_eq!(listed["decision_count"], 2);
+    assert_eq!(listed["link_count"], 2);
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "decisions")?, 2);
+    assert_eq!(count_rows(&connection, "decision_links")?, 2);
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(
