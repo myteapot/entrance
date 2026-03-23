@@ -22,8 +22,8 @@ use crate::core::{
     bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
     data_store::DataStore,
     nota_runtime::{
-        list_nota_runtime_allocations, run_nota_do_agent_dispatch, write_runtime_checkpoint,
-        NotaCheckpointRequest, NotaDoAgentDispatchRequest,
+        list_nota_runtime_allocations, list_nota_runtime_receipts, run_nota_do_agent_dispatch,
+        write_runtime_checkpoint, NotaCheckpointRequest, NotaDoAgentDispatchRequest,
     },
     permission::{permission_for_mcp_tool, McpToolPermission},
     recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
@@ -290,6 +290,7 @@ impl McpServer {
             "forge_cancel" => self.handle_forge_cancel(arguments),
             "nota_runtime_overview" => self.handle_nota_runtime_overview(),
             "nota_runtime_allocations" => self.handle_nota_runtime_allocations(),
+            "nota_runtime_receipts" => self.handle_nota_runtime_receipts(arguments),
             "nota_do" => self.handle_nota_do(arguments),
             "nota_write_checkpoint" => self.handle_nota_write_checkpoint(arguments),
             "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
@@ -644,6 +645,24 @@ impl McpServer {
             .as_ref()
             .context("core data store is not available on the current MCP surface")?;
         Ok(json!(list_nota_runtime_allocations(data_store)?))
+    }
+
+    fn handle_nota_runtime_receipts(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let transaction_id = optional_i64(arguments, &["transaction_id", "transactionId"]);
+        if let Some(transaction_id) = transaction_id {
+            if transaction_id <= 0 {
+                bail!("runtime receipts `transaction_id` must be >= 1");
+            }
+        }
+        Ok(json!(list_nota_runtime_receipts(
+            data_store,
+            transaction_id
+        )?))
     }
 
     fn handle_nota_do(&self, arguments: &Value) -> Result<Value> {
@@ -1050,6 +1069,19 @@ fn build_tool_descriptors(
             input_schema: json!({
                 "type": "object",
                 "properties": {}
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "nota_runtime_receipts",
+            description: "Read the persisted NOTA runtime receipt history that powers `entrance nota receipts`, optionally filtered by transaction.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "transaction_id": { "type": "integer", "description": "Optional NOTA runtime transaction identifier used to filter receipt history." },
+                    "transactionId": { "type": "integer", "description": "CamelCase alias for transaction_id." }
+                }
             }),
             permission: None,
             dispatch_role: None,
@@ -1525,7 +1557,9 @@ fn tool_name_from_params(params: Option<&Value>) -> Option<&str> {
 
 fn permission_for_registered_tool(name: &str) -> Option<McpToolPermission> {
     permission_for_mcp_tool(name).or_else(|| match name {
-        "nota_runtime_allocations" => permission_for_mcp_tool("nota_runtime_overview"),
+        "nota_runtime_allocations" | "nota_runtime_receipts" => {
+            permission_for_mcp_tool("nota_runtime_overview")
+        }
         _ => None,
     })
 }
@@ -1616,6 +1650,7 @@ mod tests {
                 "forge_cancel",
                 "nota_runtime_overview",
                 "nota_runtime_allocations",
+                "nota_runtime_receipts",
                 "nota_do",
                 "nota_write_checkpoint",
                 "recovery_list_seed_runs",
@@ -1650,6 +1685,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_allocations")
             .expect("nota_runtime_allocations should exist");
+        let nota_receipts = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_runtime_receipts")
+            .expect("nota_runtime_receipts should exist");
         let nota_do = tools
             .iter()
             .find(|tool| tool["name"] == "nota_do")
@@ -1682,6 +1721,11 @@ mod tests {
         assert_eq!(nota_allocations["permission"]["room"], "surface");
         assert_eq!(nota_allocations["permission"]["targetLayer"], "cold");
         assert!(nota_allocations["dispatchRole"].is_null());
+        assert_eq!(nota_receipts["permission"]["actorRole"], "nota");
+        assert_eq!(nota_receipts["permission"]["primitive"], "chat");
+        assert_eq!(nota_receipts["permission"]["room"], "surface");
+        assert_eq!(nota_receipts["permission"]["targetLayer"], "cold");
+        assert!(nota_receipts["dispatchRole"].is_null());
         assert_eq!(nota_do["permission"]["actorRole"], "nota");
         assert_eq!(nota_do["permission"]["primitive"], "assign");
         assert_eq!(nota_do["permission"]["room"], "strategy");
@@ -1765,6 +1809,7 @@ mod tests {
                 "forge_cancel",
                 "nota_runtime_overview",
                 "nota_runtime_allocations",
+                "nota_runtime_receipts",
                 "nota_do",
                 "nota_write_checkpoint",
                 "recovery_list_seed_runs",
@@ -1791,6 +1836,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_allocations")
             .expect("nota_runtime_allocations should exist on nota surface");
+        let receipts_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_runtime_receipts")
+            .expect("nota_runtime_receipts should exist on nota surface");
         let do_tool = tools
             .iter()
             .find(|tool| tool["name"] == "nota_do")
@@ -1808,6 +1857,10 @@ mod tests {
         assert_eq!(allocations_tool["permission"]["primitive"], "chat");
         assert_eq!(allocations_tool["permission"]["room"], "surface");
         assert_eq!(allocations_tool["permission"]["targetLayer"], "cold");
+        assert_eq!(receipts_tool["permission"]["actorRole"], "nota");
+        assert_eq!(receipts_tool["permission"]["primitive"], "chat");
+        assert_eq!(receipts_tool["permission"]["room"], "surface");
+        assert_eq!(receipts_tool["permission"]["targetLayer"], "cold");
         assert_eq!(do_tool["permission"]["actorRole"], "nota");
         assert_eq!(do_tool["permission"]["primitive"], "assign");
         assert_eq!(do_tool["permission"]["room"], "strategy");
@@ -2082,6 +2135,29 @@ mod tests {
             response["structuredContent"]["allocations"]["allocation_count"],
             0
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn nota_surface_can_read_runtime_receipts() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Nota))?;
+
+        let response = call_tool(
+            &server,
+            "nota_runtime_receipts",
+            json!({ "transaction_id": 1 }),
+        )?;
+
+        assert_eq!(response["isError"], false);
+        assert_eq!(response["entranceSurface"]["actorRole"], "nota");
+        assert_eq!(response["permission"]["actorRole"], "nota");
+        assert_eq!(response["permission"]["primitive"], "chat");
+        assert_eq!(response["permission"]["room"], "surface");
+        assert_eq!(response["permission"]["targetLayer"], "cold");
+        assert_eq!(response["structuredContent"]["requested_transaction_id"], 1);
+        assert_eq!(response["structuredContent"]["receipt_count"], 0);
+        assert_eq!(response["structuredContent"]["receipts"], json!([]));
 
         Ok(())
     }

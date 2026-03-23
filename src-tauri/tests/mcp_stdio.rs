@@ -142,6 +142,8 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
             "forge_status",
             "forge_cancel",
             "nota_runtime_overview",
+            "nota_runtime_allocations",
+            "nota_runtime_receipts",
             "nota_do",
             "nota_write_checkpoint",
             "recovery_list_seed_runs",
@@ -171,6 +173,10 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
         .iter()
         .find(|tool| tool["name"] == "nota_runtime_overview")
         .context("nota_runtime_overview should be listed")?;
+    let nota_receipts = tools
+        .iter()
+        .find(|tool| tool["name"] == "nota_runtime_receipts")
+        .context("nota_runtime_receipts should be listed")?;
     let nota_do = tools
         .iter()
         .find(|tool| tool["name"] == "nota_do")
@@ -198,6 +204,11 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
     assert_eq!(nota_overview["permission"]["room"], "surface");
     assert_eq!(nota_overview["permission"]["targetLayer"], "cold");
     assert!(nota_overview["dispatchRole"].is_null());
+    assert_eq!(nota_receipts["permission"]["actorRole"], "nota");
+    assert_eq!(nota_receipts["permission"]["primitive"], "chat");
+    assert_eq!(nota_receipts["permission"]["room"], "surface");
+    assert_eq!(nota_receipts["permission"]["targetLayer"], "cold");
+    assert!(nota_receipts["dispatchRole"].is_null());
     assert_eq!(nota_do["permission"]["actorRole"], "nota");
     assert_eq!(nota_do["permission"]["primitive"], "assign");
     assert_eq!(nota_do["permission"]["room"], "strategy");
@@ -489,6 +500,7 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_stdio() -> Resu
             "forge_cancel",
             "nota_runtime_overview",
             "nota_runtime_allocations",
+            "nota_runtime_receipts",
             "nota_do",
             "nota_write_checkpoint",
             "recovery_list_seed_runs",
@@ -937,7 +949,7 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
         rusqlite::params![
             task_id,
             "Blocked",
-            "请先在 Vault 添加 openai",
+            "璇峰厛鍦?Vault 娣诲姞 openai",
             "2026-03-23T00:00:00Z"
         ],
     )?;
@@ -973,7 +985,7 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
     );
     assert_eq!(
         blocked_payload["terminal_outcome"]["child_execution_status_message"],
-        "请先在 Vault 添加 openai"
+        "璇峰厛鍦?Vault 娣诲姞 openai"
     );
 
     server.send(json!({
@@ -1007,7 +1019,62 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
     );
     assert_eq!(
         blocked_allocations_payload["terminal_outcome"]["child_execution_status_message"],
-        "请先在 Vault 添加 openai"
+        "璇峰厛鍦?Vault 娣诲姞 openai"
+    );
+
+    server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-receipts-terminal",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_receipts",
+            "arguments": {
+                "transaction_id": do_report["result"]["structuredContent"]["transaction"]["id"]
+            }
+        }
+    }))?;
+    let blocked_receipts = server.read_response()?;
+    assert_eq!(blocked_receipts["result"]["isError"], false);
+    assert_eq!(
+        blocked_receipts["result"]["permission"]["actorRole"],
+        "nota"
+    );
+    assert_eq!(
+        blocked_receipts["result"]["permission"]["primitive"],
+        "chat"
+    );
+    assert_eq!(blocked_receipts["result"]["permission"]["room"], "surface");
+    assert_eq!(
+        blocked_receipts["result"]["permission"]["targetLayer"],
+        "cold"
+    );
+    assert_eq!(
+        blocked_receipts["result"]["structuredContent"]["requested_transaction_id"],
+        do_report["result"]["structuredContent"]["transaction"]["id"]
+    );
+    assert_eq!(
+        blocked_receipts["result"]["structuredContent"]["receipt_count"],
+        6
+    );
+    assert_eq!(
+        blocked_receipts["result"]["structuredContent"]["receipts"][5]["receipt_kind"],
+        "ALLOCATION_TERMINAL_OUTCOME_RECORDED"
+    );
+    let blocked_receipt_payload_json = blocked_receipts["result"]["structuredContent"]["receipts"]
+        [5]["payload_json"]
+        .as_str()
+        .context("receipt payload_json should be present on dedicated MCP receipt surface")?;
+    let blocked_receipt_payload: Value = serde_json::from_str(blocked_receipt_payload_json)
+        .context("dedicated MCP receipt payload_json should stay valid JSON")?;
+    assert_eq!(
+        blocked_receipt_payload["lineage_ref"],
+        do_report["result"]["structuredContent"]["allocation"]["lineage_ref"]
+    );
+    assert_eq!(blocked_receipt_payload["boundary_kind"], "escalation");
+    assert_eq!(blocked_receipt_payload["child_execution_status"], "Blocked");
+    assert_eq!(
+        blocked_receipt_payload["child_execution_status_message"],
+        blocked_payload["terminal_outcome"]["child_execution_status_message"]
     );
 
     let stored_allocation_outcome = connection.query_row(

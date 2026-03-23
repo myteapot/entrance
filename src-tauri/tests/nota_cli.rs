@@ -197,6 +197,48 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     );
     assert_eq!(report["receipts"][2]["receipt_kind"], "ALLOCATION_RECORDED");
 
+    let transaction_id = report["transaction"]["id"]
+        .as_i64()
+        .context("transaction id should be present")?;
+    let receipts_output = run_nota_cli(&app_data_dir, &["nota", "receipts"])?;
+    let receipts: Value = serde_json::from_str(&receipts_output)
+        .context("nota receipts output should be valid JSON")?;
+    assert_eq!(receipts["receipt_count"], 5);
+    assert!(receipts["requested_transaction_id"].is_null());
+    assert_eq!(receipts["receipts"][0]["receipt_kind"], "DO_ACCEPTED");
+    assert_eq!(
+        receipts["receipts"][4]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
+
+    let filtered_receipts_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "receipts",
+            "--transaction-id",
+            &transaction_id.to_string(),
+        ],
+    )?;
+    let filtered_receipts: Value = serde_json::from_str(&filtered_receipts_output)
+        .context("filtered nota receipts output should be valid JSON")?;
+    assert_eq!(filtered_receipts["receipt_count"], 5);
+    assert_eq!(
+        filtered_receipts["requested_transaction_id"],
+        transaction_id
+    );
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let task_id = report["task_id"]
+        .as_i64()
+        .context("task id should be present")?;
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = NULL, finished_at = NULL WHERE id = ?1",
+        rusqlite::params![task_id, "Running"],
+    )?;
+
     let transactions_output = run_nota_cli(&app_data_dir, &["nota", "transactions"])?;
     let transactions: Value = serde_json::from_str(&transactions_output)
         .context("nota transactions output should be valid JSON")?;
@@ -221,11 +263,8 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
         report["transaction"]["id"]
     );
 
-    let db_path = app_data_dir.join("entrance.db");
-    let connection = Connection::open(&db_path)
-        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
-    assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 6);
+    assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
     assert_eq!(count_rows(&connection, "nota_runtime_allocations")?, 1);
     assert_eq!(count_rows(&connection, "cadence_objects")?, 1);
     assert_eq!(count_rows(&connection, "plugin_forge_tasks")?, 1);
@@ -301,6 +340,42 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     );
     assert_eq!(
         blocked_payload["terminal_outcome"]["target_ref"],
+        report["transaction"]["id"].to_string()
+    );
+
+    let blocked_receipts_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "receipts",
+            "--transaction-id",
+            &transaction_id.to_string(),
+        ],
+    )?;
+    let blocked_receipts: Value = serde_json::from_str(&blocked_receipts_output)
+        .context("blocked nota receipts output should be valid JSON")?;
+    assert_eq!(blocked_receipts["receipt_count"], 6);
+    assert_eq!(
+        blocked_receipts["receipts"][5]["receipt_kind"],
+        "ALLOCATION_TERMINAL_OUTCOME_RECORDED"
+    );
+    let blocked_receipt_payload_json = blocked_receipts["receipts"][5]["payload_json"]
+        .as_str()
+        .context("blocked receipt payload_json should be present")?;
+    let blocked_receipt_payload: Value = serde_json::from_str(blocked_receipt_payload_json)
+        .context("blocked receipt payload_json should stay valid JSON")?;
+    assert_eq!(
+        blocked_receipt_payload["lineage_ref"],
+        report["allocation"]["lineage_ref"]
+    );
+    assert_eq!(blocked_receipt_payload["boundary_kind"], "escalation");
+    assert_eq!(blocked_receipt_payload["child_execution_status"], "Blocked");
+    assert_eq!(
+        blocked_receipt_payload["child_execution_status_message"],
+        "请先在 Vault 添加 openai"
+    );
+    assert_eq!(
+        blocked_receipt_payload["target_ref"],
         report["transaction"]["id"].to_string()
     );
 

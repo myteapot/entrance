@@ -159,6 +159,13 @@ pub struct NotaRuntimeAllocationsReport {
     pub allocations: Vec<StoredNotaRuntimeAllocation>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaRuntimeReceiptsReport {
+    pub receipt_count: usize,
+    pub requested_transaction_id: Option<i64>,
+    pub receipts: Vec<StoredNotaRuntimeReceipt>,
+}
+
 pub fn write_runtime_checkpoint(
     data_store: &DataStore,
     request: NotaCheckpointRequest,
@@ -544,6 +551,18 @@ pub fn list_nota_runtime_allocations(
     Ok(NotaRuntimeAllocationsReport {
         allocation_count: allocations.len(),
         allocations,
+    })
+}
+
+pub fn list_nota_runtime_receipts(
+    data_store: &DataStore,
+    transaction_id: Option<i64>,
+) -> Result<NotaRuntimeReceiptsReport> {
+    let receipts = data_store.list_nota_runtime_receipts(transaction_id)?;
+    Ok(NotaRuntimeReceiptsReport {
+        receipt_count: receipts.len(),
+        requested_transaction_id: transaction_id,
+        receipts,
     })
 }
 
