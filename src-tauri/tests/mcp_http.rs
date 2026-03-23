@@ -604,6 +604,10 @@ fn external_client_can_read_nota_runtime_overview_over_http() -> Result<()> {
         0
     );
     assert_eq!(
+        overview["result"]["structuredContent"]["allocations"]["allocation_count"],
+        0
+    );
+    assert_eq!(
         overview["result"]["structuredContent"]["chat_policy"]["setting"]["archive_policy"],
         "full"
     );
@@ -801,6 +805,11 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
     assert_eq!(
         overview["transactions"]["transactions"][0]["surface_action"],
         "do"
+    );
+    assert_eq!(overview["allocations"]["allocation_count"], 1);
+    assert_eq!(
+        overview["allocations"]["allocations"][0]["source_transaction_id"],
+        do_report["result"]["structuredContent"]["transaction"]["id"]
     );
     assert_eq!(overview["checkpoints"]["checkpoint_count"], 1);
     assert_eq!(

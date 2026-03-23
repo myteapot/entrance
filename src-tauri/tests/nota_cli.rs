@@ -203,6 +203,15 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     assert_eq!(transactions["transaction_count"], 1);
     assert_eq!(transactions["transactions"][0]["surface_action"], "do");
 
+    let overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let overview: Value = serde_json::from_str(&overview_output)
+        .context("nota overview output should be valid JSON")?;
+    assert_eq!(overview["allocations"]["allocation_count"], 1);
+    assert_eq!(
+        overview["allocations"]["allocations"][0]["source_transaction_id"],
+        report["transaction"]["id"]
+    );
+
     let db_path = app_data_dir.join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
@@ -469,6 +478,7 @@ fn nota_overview_cli_returns_db_first_continuity_bundle() -> Result<()> {
     assert_eq!(overview["decisions"]["decision_count"], 1);
     assert_eq!(overview["chat_captures"]["capture_count"], 1);
     assert_eq!(overview["transactions"]["transaction_count"], 0);
+    assert_eq!(overview["allocations"]["allocation_count"], 0);
     assert_eq!(overview["chat_policy"]["setting"]["archive_policy"], "full");
     assert_eq!(
         overview["checkpoints"]["checkpoints"][0]["payload"]["stable_level"],

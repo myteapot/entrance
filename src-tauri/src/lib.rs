@@ -40,9 +40,10 @@ use core::{
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
-        list_nota_runtime_transactions, list_runtime_checkpoints, run_nota_do_agent_dispatch,
-        write_runtime_checkpoint, NotaCheckpointListReport, NotaCheckpointRequest,
-        NotaDoAgentDispatchRequest, NotaRuntimeTransactionsReport,
+        list_nota_runtime_allocations, list_nota_runtime_transactions, list_runtime_checkpoints,
+        run_nota_do_agent_dispatch, write_runtime_checkpoint, NotaCheckpointListReport,
+        NotaCheckpointRequest, NotaDoAgentDispatchRequest, NotaRuntimeAllocationsReport,
+        NotaRuntimeTransactionsReport,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -106,6 +107,7 @@ pub(crate) struct NotaRuntimeOverview {
     chat_policy: ChatArchivePolicyReport,
     checkpoints: NotaCheckpointListReport,
     transactions: NotaRuntimeTransactionsReport,
+    allocations: NotaRuntimeAllocationsReport,
     decisions: DesignDecisionListReport,
     chat_captures: ChatCaptureListReport,
 }
@@ -1187,6 +1189,7 @@ pub(crate) fn build_nota_runtime_overview(
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
         checkpoints: list_runtime_checkpoints(data_store)?,
         transactions: list_nota_runtime_transactions(data_store)?,
+        allocations: list_nota_runtime_allocations(data_store)?,
         decisions: list_design_decisions(data_store)?,
         chat_captures: list_chat_captures(data_store)?,
     })

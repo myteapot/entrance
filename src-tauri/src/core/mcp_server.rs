@@ -2030,6 +2030,10 @@ mod tests {
             response["structuredContent"]["transactions"]["transaction_count"],
             0
         );
+        assert_eq!(
+            response["structuredContent"]["allocations"]["allocation_count"],
+            0
+        );
 
         Ok(())
     }
