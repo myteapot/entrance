@@ -138,8 +138,8 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     fs::create_dir_all(&managed_worktree)?;
     init_git_repo(&managed_worktree)?;
 
-    let fake_agent = temp_dir.path().join("fake-agent.cmd");
-    fs::write(&fake_agent, "@echo off\r\nexit /b 0\r\n")?;
+    let _do_completion_marker = temp_dir.path().join("do-child-finished.txt");
+    let fake_agent = write_delayed_success_agent(temp_dir.path(), &_do_completion_marker)?;
 
     let output = run_nota_cli(
         &app_data_dir,
@@ -207,6 +207,17 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     let lineage_ref = report["allocation"]["lineage_ref"]
         .as_str()
         .context("allocation lineage_ref should be present")?;
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let task_id = report["task_id"]
+        .as_i64()
+        .context("task id should be present")?;
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = NULL, finished_at = NULL WHERE id = ?1",
+        rusqlite::params![task_id, "Running"],
+    )?;
+
     let receipts_output = run_nota_cli(&app_data_dir, &["nota", "receipts"])?;
     let receipts: Value = serde_json::from_str(&receipts_output)
         .context("nota receipts output should be valid JSON")?;
@@ -234,17 +245,6 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
         filtered_receipts["requested_transaction_id"],
         transaction_id
     );
-
-    let db_path = app_data_dir.join("entrance.db");
-    let connection = Connection::open(&db_path)
-        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
-    let task_id = report["task_id"]
-        .as_i64()
-        .context("task id should be present")?;
-    connection.execute(
-        "UPDATE plugin_forge_tasks SET status = ?2, status_message = NULL, finished_at = NULL WHERE id = ?1",
-        rusqlite::params![task_id, "Running"],
-    )?;
 
     let transactions_output = run_nota_cli(&app_data_dir, &["nota", "transactions"])?;
     let transactions: Value = serde_json::from_str(&transactions_output)
@@ -953,6 +953,10 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
         checkpoint_runtime_closure["checkpoint"]["id"]
     );
     assert_eq!(
+        post_materialization_status["latest_transaction"]["status"],
+        "checkpointed"
+    );
+    assert_eq!(
         post_materialization_status["current_checkpoint"]["title"],
         format!("Checkpoint: dev return acceptance truth for {issue_id}")
     );
@@ -967,7 +971,7 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     );
     assert_eq!(
         post_materialization_status["latest_receipt"]["receipt_kind"],
-        "CADENCE_CHECKPOINT_WRITTEN"
+        "DEV_RETURN_ACCEPTED"
     );
 
     let post_materialization_receipts_output = run_nota_cli(
@@ -982,15 +986,15 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     let post_materialization_receipts: Value =
         serde_json::from_str(&post_materialization_receipts_output)
             .context("post-materialization receipts output should be valid JSON")?;
-    assert_eq!(post_materialization_receipts["receipt_count"], 7);
+    assert_eq!(post_materialization_receipts["receipt_count"], 8);
     assert_eq!(
         post_materialization_receipts["receipts"][6]["receipt_kind"],
         "CADENCE_CHECKPOINT_WRITTEN"
     );
-    let post_materialization_receipt_payload_json =
-        post_materialization_receipts["receipts"][6]["payload_json"]
-            .as_str()
-            .context("post-materialization checkpoint receipt payload should be present")?;
+    let post_materialization_receipt_payload_json = post_materialization_receipts["receipts"][6]
+        ["payload_json"]
+        .as_str()
+        .context("post-materialization checkpoint receipt payload should be present")?;
     let post_materialization_receipt_payload: Value =
         serde_json::from_str(post_materialization_receipt_payload_json)
             .context("post-materialization checkpoint receipt payload should be valid JSON")?;
@@ -1002,13 +1006,45 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
         post_materialization_receipt_payload["selected_trunk"],
         "dev return acceptance truth"
     );
+    assert_eq!(
+        post_materialization_receipts["receipts"][7]["receipt_kind"],
+        "DEV_RETURN_ACCEPTED"
+    );
+    let dev_return_accepted_payload_json = post_materialization_receipts["receipts"][7]
+        ["payload_json"]
+        .as_str()
+        .context("dev return accepted receipt payload should be present")?;
+    let dev_return_accepted_payload: Value = serde_json::from_str(dev_return_accepted_payload_json)
+        .context("dev return accepted receipt payload should be valid JSON")?;
+    assert_eq!(dev_return_accepted_payload["allocation_id"], allocation_id);
+    assert_eq!(dev_return_accepted_payload["lineage_ref"], lineage_ref);
+    assert_eq!(
+        dev_return_accepted_payload["checkpoint_id"],
+        checkpoint_runtime_closure["checkpoint"]["id"]
+    );
+    assert_eq!(dev_return_accepted_payload["child_dispatch_role"], "dev");
+    assert_eq!(
+        dev_return_accepted_payload["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(
+        dev_return_accepted_payload["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        dev_return_accepted_payload["target_ref"],
+        transaction_id.to_string()
+    );
 
     let checkpoint_runtime_closure_again_output =
         run_nota_cli(&app_data_dir, &["nota", "checkpoint-runtime-closure"])?;
     let checkpoint_runtime_closure_again: Value =
         serde_json::from_str(&checkpoint_runtime_closure_again_output)
             .context("second checkpoint-runtime-closure output should be valid JSON")?;
-    assert_eq!(checkpoint_runtime_closure_again["status"], "already_current");
+    assert_eq!(
+        checkpoint_runtime_closure_again["status"],
+        "already_current"
+    );
     assert_eq!(
         checkpoint_runtime_closure_again["checkpoint"]["title"],
         format!("Checkpoint: dev return acceptance truth for {issue_id}")
@@ -1026,7 +1062,7 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     let post_second_materialization_receipts: Value =
         serde_json::from_str(&post_second_materialization_receipts_output)
             .context("post-second-materialization receipts output should be valid JSON")?;
-    assert_eq!(post_second_materialization_receipts["receipt_count"], 7);
+    assert_eq!(post_second_materialization_receipts["receipt_count"], 8);
 
     Ok(())
 }
