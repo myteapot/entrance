@@ -8,8 +8,8 @@ const Sidebar = () => {
         <div class="sidebar__brand-mark">EN</div>
         <div>
           <p class="sidebar__eyebrow">Entrance</p>
-          <h1 class="sidebar__title">Control deck</h1>
-          <p class="sidebar__summary">Tauri shell for launcher, forge, vault, board, and connector workflows.</p>
+          <h1 class="sidebar__title">NOTA host</h1>
+          <p class="sidebar__summary">Single-ingress shell with Chat for continuity and Do for automatic runtime transactions.</p>
         </div>
       </div>
 
@@ -38,7 +38,7 @@ const Sidebar = () => {
             <span class="sidebar__detail">{settingsRoute.description}</span>
           </span>
         </A>
-        <p class="sidebar__hint">Quick switch with Ctrl+1 to Ctrl+6.</p>
+        <p class="sidebar__hint">Quick switch with Ctrl+1 and Ctrl+2.</p>
       </div>
     </aside>
   );

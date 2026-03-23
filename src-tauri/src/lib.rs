@@ -21,10 +21,14 @@ use core::{
     },
     chat_archive::{
         capture_chat_message, get_chat_archive_policy, list_chat_captures, set_chat_archive_policy,
-        ChatArchivePolicyRequest, ChatCaptureRequest,
+        ChatArchivePolicyReport, ChatArchivePolicyRequest, ChatCaptureListReport,
+        ChatCaptureRequest,
     },
     data_store::StoredSourceIngestRun,
-    design_governance::{list_design_decisions, record_design_decision, DesignDecisionRequest},
+    design_governance::{
+        list_design_decisions, record_design_decision, DesignDecisionListReport,
+        DesignDecisionRequest,
+    },
     event_bus::EventBus,
     hotkey,
     hygiene::{list_spec_hygiene_v0, run_spec_hygiene_v0, SpecHygieneReport},
@@ -37,7 +41,8 @@ use core::{
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
         list_nota_runtime_transactions, list_runtime_checkpoints, run_nota_do_agent_dispatch,
-        write_runtime_checkpoint, NotaCheckpointRequest, NotaDoAgentDispatchRequest,
+        write_runtime_checkpoint, NotaCheckpointListReport, NotaCheckpointRequest,
+        NotaDoAgentDispatchRequest, NotaRuntimeTransactionsReport,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -94,6 +99,15 @@ struct DashboardSummary {
     token_count: usize,
     mcp_config_count: usize,
     enabled_mcp_count: usize,
+}
+
+#[derive(Clone, Serialize)]
+struct NotaRuntimeOverview {
+    chat_policy: ChatArchivePolicyReport,
+    checkpoints: NotaCheckpointListReport,
+    transactions: NotaRuntimeTransactionsReport,
+    decisions: DesignDecisionListReport,
+    chat_captures: ChatCaptureListReport,
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -1164,6 +1178,21 @@ fn dashboard_summary(
 }
 
 #[tauri::command]
+fn nota_runtime_overview(
+    data_store: tauri::State<'_, core::data_store::DataStore>,
+) -> Result<NotaRuntimeOverview, String> {
+    Ok(NotaRuntimeOverview {
+        chat_policy: get_chat_archive_policy(&data_store, None, None)
+            .map_err(|error| error.to_string())?,
+        checkpoints: list_runtime_checkpoints(&data_store).map_err(|error| error.to_string())?,
+        transactions: list_nota_runtime_transactions(&data_store)
+            .map_err(|error| error.to_string())?,
+        decisions: list_design_decisions(&data_store).map_err(|error| error.to_string())?,
+        chat_captures: list_chat_captures(&data_store).map_err(|error| error.to_string())?,
+    })
+}
+
+#[tauri::command]
 fn landing_import_snapshot(
     path: String,
     data_store: tauri::State<'_, core::data_store::DataStore>,
@@ -1240,6 +1269,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             launcher_hotkey,
             dashboard_summary,
+            nota_runtime_overview,
             landing_import_snapshot,
             landing_list_ingest_runs,
             landing_list_mirror_items,
