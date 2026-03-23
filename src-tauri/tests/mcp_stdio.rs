@@ -219,12 +219,12 @@ fn external_client_can_list_tools_and_call_forge_run_over_stdio() -> Result<()> 
     assert_eq!(nota_do["permission"]["primitive"], "assign");
     assert_eq!(nota_do["permission"]["room"], "strategy");
     assert_eq!(nota_do["permission"]["targetLayer"], "hot");
-    assert!(nota_do["dispatchRole"].is_null());
+    assert_eq!(nota_do["dispatchRole"], "agent");
     assert_eq!(nota_dev["permission"]["actorRole"], "nota");
     assert_eq!(nota_dev["permission"]["primitive"], "assign");
     assert_eq!(nota_dev["permission"]["room"], "strategy");
     assert_eq!(nota_dev["permission"]["targetLayer"], "hot");
-    assert!(nota_dev["dispatchRole"].is_null());
+    assert_eq!(nota_dev["dispatchRole"], "dev");
     assert_eq!(nota_checkpoint["permission"]["actorRole"], "nota");
     assert_eq!(nota_checkpoint["permission"]["primitive"], "learn");
     assert_eq!(nota_checkpoint["permission"]["room"], "memory");
@@ -886,6 +886,7 @@ fn external_client_can_create_nota_do_transaction_over_stdio() -> Result<()> {
     assert_eq!(do_report["result"]["permission"]["primitive"], "assign");
     assert_eq!(do_report["result"]["permission"]["room"], "strategy");
     assert_eq!(do_report["result"]["permission"]["targetLayer"], "hot");
+    assert_eq!(do_report["result"]["dispatchRole"], "agent");
     assert_eq!(
         do_report["result"]["structuredContent"]["transaction"]["surface_action"],
         "do"
@@ -1337,6 +1338,7 @@ fn external_client_can_create_nota_owned_dev_transaction_over_stdio() -> Result<
     assert_eq!(dev_report["result"]["permission"]["primitive"], "assign");
     assert_eq!(dev_report["result"]["permission"]["room"], "strategy");
     assert_eq!(dev_report["result"]["permission"]["targetLayer"], "hot");
+    assert_eq!(dev_report["result"]["dispatchRole"], "dev");
     assert_eq!(
         dev_report["result"]["structuredContent"]["transaction"]["surface_action"],
         "dev"

@@ -1627,6 +1627,8 @@ fn permission_for_registered_tool(name: &str) -> Option<McpToolPermission> {
 
 fn tool_dispatch_role_from_name(name: &str) -> Option<ActorRole> {
     match name {
+        "nota_do" => Some(ActorRole::Agent),
+        "nota_dev" => Some(ActorRole::Dev),
         "forge_prepare_dispatch"
         | "forge_verify_dispatch"
         | "forge_prepare_agent_dispatch"
@@ -1806,12 +1808,12 @@ mod tests {
         assert_eq!(nota_do["permission"]["primitive"], "assign");
         assert_eq!(nota_do["permission"]["room"], "strategy");
         assert_eq!(nota_do["permission"]["targetLayer"], "hot");
-        assert!(nota_do["dispatchRole"].is_null());
+        assert_eq!(nota_do["dispatchRole"], "agent");
         assert_eq!(nota_dev["permission"]["actorRole"], "nota");
         assert_eq!(nota_dev["permission"]["primitive"], "assign");
         assert_eq!(nota_dev["permission"]["room"], "strategy");
         assert_eq!(nota_dev["permission"]["targetLayer"], "hot");
-        assert!(nota_dev["dispatchRole"].is_null());
+        assert_eq!(nota_dev["dispatchRole"], "dev");
         assert_eq!(nota_checkpoint["permission"]["actorRole"], "nota");
         assert_eq!(nota_checkpoint["permission"]["primitive"], "learn");
         assert_eq!(nota_checkpoint["permission"]["room"], "memory");
@@ -1959,10 +1961,12 @@ mod tests {
         assert_eq!(do_tool["permission"]["primitive"], "assign");
         assert_eq!(do_tool["permission"]["room"], "strategy");
         assert_eq!(do_tool["permission"]["targetLayer"], "hot");
+        assert_eq!(do_tool["dispatchRole"], "agent");
         assert_eq!(dev_tool["permission"]["actorRole"], "nota");
         assert_eq!(dev_tool["permission"]["primitive"], "assign");
         assert_eq!(dev_tool["permission"]["room"], "strategy");
         assert_eq!(dev_tool["permission"]["targetLayer"], "hot");
+        assert_eq!(dev_tool["dispatchRole"], "dev");
         assert_eq!(checkpoint_tool["permission"]["primitive"], "learn");
         assert_eq!(checkpoint_tool["permission"]["room"], "memory");
         assert_eq!(checkpoint_tool["permission"]["targetLayer"], "cold");
