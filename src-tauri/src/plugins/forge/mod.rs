@@ -4,6 +4,7 @@ pub mod http;
 
 use std::{
     env,
+    ffi::OsStr,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     path::{Path, PathBuf},
     process::Command,
@@ -759,8 +760,11 @@ fn build_dispatch_task_request(
         }
     };
 
-    // Use custom agent_command if provided, otherwise use the default CLI name
-    let command = agent_command.unwrap_or(default_command);
+    // Resolve the stored command into a child entry point the OS can actually spawn.
+    let command = resolve_dispatch_command_for_runner(
+        runner,
+        agent_command.unwrap_or(default_command),
+    );
 
     push_required_token(&mut required_tokens, provider_token);
 
@@ -786,6 +790,110 @@ fn build_dispatch_task_request(
         metadata,
         dispatch_receipt: None,
     })
+}
+
+fn resolve_dispatch_command_for_runner(runner: &str, command: String) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        if matches!(runner, "codex" | "codex-cli") {
+            if let Some(resolved) =
+                resolve_windows_spawnable_command(&command, env::var_os("PATH").as_deref())
+            {
+                return resolved;
+            }
+        }
+    }
+
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_spawnable_command(command: &str, path_env: Option<&OsStr>) -> Option<String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return None;
+    }
+
+    if dispatch_command_looks_like_path(command) {
+        if let Some(resolved) = resolve_windows_spawnable_path(Path::new(command)) {
+            return Some(resolved);
+        }
+        return Some(command.to_string());
+    }
+
+    let path_env = path_env?;
+    for directory in env::split_paths(path_env) {
+        for candidate_name in windows_spawnable_command_candidates(command) {
+            let candidate = directory.join(candidate_name);
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn windows_spawnable_command_candidates(command: &str) -> Vec<String> {
+    let path = Path::new(command);
+    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        if is_windows_spawnable_extension(extension) {
+            return vec![command.to_string()];
+        }
+
+        if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
+            return windows_spawnable_command_variants(stem);
+        }
+    }
+
+    windows_spawnable_command_variants(command)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_spawnable_command_variants(stem: &str) -> Vec<String> {
+    vec![
+        format!("{stem}.cmd"),
+        format!("{stem}.exe"),
+        format!("{stem}.bat"),
+        format!("{stem}.com"),
+        stem.to_string(),
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_spawnable_path(path: &Path) -> Option<String> {
+    let extension = path.extension().and_then(|value| value.to_str())?;
+    if is_windows_spawnable_extension(extension) {
+        return Some(path.to_string_lossy().into_owned());
+    }
+
+    let stem = path.file_stem().and_then(|value| value.to_str())?;
+    for candidate_name in windows_spawnable_command_variants(stem) {
+        let candidate = path.with_file_name(candidate_name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_spawnable_extension(extension: &str) -> bool {
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "cmd" | "exe" | "bat" | "com"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn dispatch_command_looks_like_path(command: &str) -> bool {
+    Path::new(command).is_absolute()
+        || command.starts_with('.')
+        || command.contains(std::path::MAIN_SEPARATOR)
+        || command.contains('/')
+        || command.contains('\\')
 }
 
 fn actor_role_slug(role: ActorRole) -> &'static str {
@@ -1541,8 +1649,9 @@ mod tests {
     use super::{
         allocate_agent_slot_worktree, build_agent_task_request, build_dev_task_request,
         build_prepared_agent_dispatch, build_prepared_dev_dispatch, generate_agent_prompt,
-        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
-        prepare_agent_dispatch, prepare_agent_dispatch_for_worktree, prepare_dev_dispatch,
+        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, normalize_display_path,
+        parse_issue_id_from_branch, prepare_agent_dispatch,
+        prepare_agent_dispatch_for_worktree, prepare_dev_dispatch,
         resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
     };
 
@@ -1684,6 +1793,31 @@ mod tests {
             .expect("forge test lock should not be poisoned")
     }
 
+    fn assert_default_codex_command(command: &str) {
+        #[cfg(target_os = "windows")]
+        {
+            let normalized = command.replace('\\', "/").to_ascii_lowercase();
+            let is_spawnable_codex = normalized == "codex"
+                || normalized == "codex.cmd"
+                || normalized.ends_with("/codex.cmd")
+                || normalized == "codex.exe"
+                || normalized.ends_with("/codex.exe")
+                || normalized == "codex.bat"
+                || normalized.ends_with("/codex.bat")
+                || normalized == "codex.com"
+                || normalized.ends_with("/codex.com");
+            assert!(
+                is_spawnable_codex,
+                "expected a spawnable codex command, got {command}"
+            );
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(command, "codex");
+        }
+    }
+
     #[test]
     fn codex_agent_requests_are_translated_into_cli_tasks() {
         let request = build_agent_task_request(
@@ -1696,7 +1830,7 @@ mod tests {
         )
         .expect("agent request should be valid");
 
-        assert_eq!(request.command, "codex");
+        assert_default_codex_command(&request.command);
         assert_eq!(
             request.working_dir.as_deref(),
             Some("C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48")
@@ -1730,7 +1864,7 @@ mod tests {
         )
         .expect("dev request should be valid");
 
-        assert_eq!(request.command, "codex");
+        assert_default_codex_command(&request.command);
         assert_eq!(
             request.working_dir.as_deref(),
             Some("C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48")
@@ -1747,6 +1881,50 @@ mod tests {
         assert_eq!(
             metadata.dispatch_tool_name.as_deref(),
             Some("forge_dispatch_dev")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn codex_dev_requests_resolve_windows_spawnable_runner_entries() {
+        let _guard = forge_test_guard();
+
+        let temp_dir = TestDir::new("codex-runner-resolution");
+        let codex_cmd = temp_dir.path().join("codex.cmd");
+        let codex_ps1 = temp_dir.path().join("codex.ps1");
+        fs::write(&codex_cmd, "@echo off\r\n").expect("fake codex.cmd should be written");
+        fs::write(&codex_ps1, "Write-Output 'codex'\r\n")
+            .expect("fake codex.ps1 should be written");
+        let _path_guard = EnvVarGuard::set("PATH", temp_dir.path().as_os_str());
+
+        let request = build_dev_task_request(
+            "MYT-48".to_string(),
+            "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48".to_string(),
+            "codex:gpt-5-codex".to_string(),
+            "manage the issue".to_string(),
+            Vec::new(),
+            None,
+        )
+        .expect("dev request should resolve the default codex runner");
+
+        assert_eq!(
+            normalize_display_path(Path::new(&request.command)),
+            normalize_display_path(&codex_cmd)
+        );
+
+        let overridden_request = build_dev_task_request(
+            "MYT-48".to_string(),
+            "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48".to_string(),
+            "codex:gpt-5-codex".to_string(),
+            "manage the issue".to_string(),
+            Vec::new(),
+            Some(codex_ps1.to_string_lossy().into_owned()),
+        )
+        .expect("dev request should resolve a PowerShell codex shim to a spawnable sibling");
+
+        assert_eq!(
+            normalize_display_path(Path::new(&overridden_request.command)),
+            normalize_display_path(&codex_cmd)
         );
     }
 
