@@ -141,6 +141,8 @@ pub(crate) struct NotaRuntimeStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_decision: Option<StoredDecisionRecord>,
     chat_capture_count: usize,
+    vision_count: usize,
+    todo_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
 }
@@ -1396,6 +1398,8 @@ pub(crate) fn build_nota_runtime_status(
     let receipts = list_nota_runtime_receipts(data_store, None)?;
     let decisions = list_design_decisions(data_store)?;
     let chat_captures = list_chat_captures(data_store)?;
+    let visions = list_nota_visions(data_store)?;
+    let todos = list_nota_todos(data_store)?;
     let recommended_checkpoint = recommend_runtime_closure_checkpoint(
         data_store,
         &allocations.allocations,
@@ -1416,6 +1420,8 @@ pub(crate) fn build_nota_runtime_status(
         decision_count: decisions.decision_count,
         latest_decision: decisions.decisions.first().cloned(),
         chat_capture_count: chat_captures.capture_count,
+        vision_count: visions.vision_count,
+        todo_count: todos.todo_count,
         recommended_checkpoint,
     })
 }

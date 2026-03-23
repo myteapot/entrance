@@ -1441,6 +1441,70 @@ fn nota_cli_reads_canonical_vision_and_todo_surfaces() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn nota_status_surfaces_planning_counts_as_quick_summary() -> Result<()> {
+    let temp_dir = TempDir::new("status-planning-counts")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(&app_data_dir, &["nota", "status"])?;
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute(
+        r#"
+        INSERT INTO visions (
+            id, title, statement, horizon, vision_status, scope_type, scope_ref,
+            source_ref, confidence, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+        rusqlite::params![
+            1,
+            "Status planning vision",
+            "Status should expose planning counts without becoming a second overview.",
+            "v0",
+            "active",
+            "project",
+            "Entrance",
+            "nota:test:status-planning-vision",
+            0.95,
+            "2026-03-24T00:00:00Z",
+            "2026-03-24T00:05:00Z"
+        ],
+    )?;
+    connection.execute(
+        r#"
+        INSERT INTO todos (
+            id, title, status, priority, project, created_at, done_at, temperature,
+            due_on, remind_every_days, remind_next_on, last_reminded_at, reminder_status
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12)
+        "#,
+        rusqlite::params![
+            1,
+            "Status planning todo",
+            "pending",
+            2,
+            "Entrance",
+            "2026-03-24T00:10:00Z",
+            "warm",
+            "",
+            0,
+            "",
+            "",
+            "none"
+        ],
+    )?;
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["vision_count"], 1);
+    assert_eq!(status["todo_count"], 1);
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(
