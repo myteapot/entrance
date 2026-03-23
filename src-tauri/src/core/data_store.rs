@@ -35,12 +35,18 @@ const CORE_DECISION_LINKS_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0009_create_core_decision_links.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 5] = [
+const CORE_CHAT_ARCHIVE_MIGRATION: MigrationStep = MigrationStep {
+    name: "0010_create_core_chat_archive_tables",
+    sql: include_str!("../../migrations/0010_create_core_chat_archive_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 6] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
     CORE_NOTA_DO_RUNTIME_MIGRATION,
     CORE_DECISION_LINKS_MIGRATION,
+    CORE_CHAT_ARCHIVE_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -348,6 +354,31 @@ pub struct StoredDecisionLink {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StoredChatArchiveSetting {
+    pub id: i64,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub archive_policy: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredChatCaptureRecord {
+    pub id: i64,
+    pub session_ref: String,
+    pub role: String,
+    pub capture_mode: String,
+    pub archive_policy: String,
+    pub content: String,
+    pub summary: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub linked_decision_id: Option<i64>,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredMemoryFragment {
     pub id: i64,
     pub title: String,
@@ -480,6 +511,27 @@ pub struct NewDecisionLink<'a> {
     pub src_decision_id: i64,
     pub dst_decision_id: i64,
     pub relation_type: &'a str,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatArchiveSettingRecord<'a> {
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub archive_policy: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewChatCaptureRecord<'a> {
+    pub session_ref: &'a str,
+    pub role: &'a str,
+    pub capture_mode: &'a str,
+    pub archive_policy: &'a str,
+    pub content: &'a str,
+    pub summary: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub linked_decision_id: Option<i64>,
     pub status: &'a str,
 }
 
@@ -2779,6 +2831,134 @@ impl DataStore {
         })
     }
 
+    pub fn upsert_chat_archive_setting(
+        &self,
+        record: ChatArchiveSettingRecord<'_>,
+    ) -> Result<StoredChatArchiveSetting> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO chat_archive_settings (
+                    scope_type,
+                    scope_ref,
+                    archive_policy,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(scope_type, scope_ref) DO UPDATE SET
+                    archive_policy = excluded.archive_policy,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.scope_type,
+                    record.scope_ref,
+                    record.archive_policy,
+                    now,
+                ],
+            )?;
+
+            fetch_chat_archive_setting(conn, record.scope_type, record.scope_ref)?
+                .ok_or_else(|| anyhow!("chat archive setting disappeared after upsert"))
+        })
+    }
+
+    pub fn get_chat_archive_setting(
+        &self,
+        scope_type: &str,
+        scope_ref: &str,
+    ) -> Result<Option<StoredChatArchiveSetting>> {
+        self.with_connection(|conn| fetch_chat_archive_setting(conn, scope_type, scope_ref))
+    }
+
+    pub fn list_chat_archive_settings(&self) -> Result<Vec<StoredChatArchiveSetting>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    scope_type,
+                    scope_ref,
+                    archive_policy,
+                    updated_at
+                FROM chat_archive_settings
+                ORDER BY scope_type ASC, scope_ref ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_chat_archive_setting_row)?;
+            let settings = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(settings)
+        })
+    }
+
+    pub fn insert_chat_capture_record(
+        &self,
+        record: NewChatCaptureRecord<'_>,
+    ) -> Result<StoredChatCaptureRecord> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO chat_capture_records (
+                    session_ref,
+                    role,
+                    capture_mode,
+                    archive_policy,
+                    content,
+                    summary,
+                    scope_type,
+                    scope_ref,
+                    linked_decision_id,
+                    status,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                "#,
+                params![
+                    record.session_ref,
+                    record.role,
+                    record.capture_mode,
+                    record.archive_policy,
+                    record.content,
+                    record.summary,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.linked_decision_id,
+                    record.status,
+                    now,
+                ],
+            )?;
+
+            fetch_chat_capture_record(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("chat capture disappeared after insert"))
+        })
+    }
+
+    pub fn list_chat_capture_records(&self) -> Result<Vec<StoredChatCaptureRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    session_ref,
+                    role,
+                    capture_mode,
+                    archive_policy,
+                    content,
+                    summary,
+                    scope_type,
+                    scope_ref,
+                    linked_decision_id,
+                    status,
+                    created_at
+                FROM chat_capture_records
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_chat_capture_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_vision_record(&self, record: UpsertVisionRecord<'_>) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute(
@@ -3230,6 +3410,37 @@ fn map_decision_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDeci
         relation_type: row.get(3)?,
         status: row.get(4)?,
         created_at: row.get(5)?,
+    })
+}
+
+fn map_chat_archive_setting_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredChatArchiveSetting> {
+    Ok(StoredChatArchiveSetting {
+        id: row.get(0)?,
+        scope_type: row.get(1)?,
+        scope_ref: row.get(2)?,
+        archive_policy: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
+}
+
+fn map_chat_capture_record_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredChatCaptureRecord> {
+    Ok(StoredChatCaptureRecord {
+        id: row.get(0)?,
+        session_ref: row.get(1)?,
+        role: row.get(2)?,
+        capture_mode: row.get(3)?,
+        archive_policy: row.get(4)?,
+        content: row.get(5)?,
+        summary: row.get(6)?,
+        scope_type: row.get(7)?,
+        scope_ref: row.get(8)?,
+        linked_decision_id: row.get(9)?,
+        status: row.get(10)?,
+        created_at: row.get(11)?,
     })
 }
 
@@ -3709,6 +3920,61 @@ fn fetch_decision_link(
             "#,
             params![src_decision_id, dst_decision_id, relation_type],
             map_decision_link_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_chat_archive_setting(
+    connection: &Connection,
+    scope_type: &str,
+    scope_ref: &str,
+) -> Result<Option<StoredChatArchiveSetting>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                scope_type,
+                scope_ref,
+                archive_policy,
+                updated_at
+            FROM chat_archive_settings
+            WHERE scope_type = ?1
+              AND scope_ref = ?2
+            "#,
+            params![scope_type, scope_ref],
+            map_chat_archive_setting_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_chat_capture_record(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredChatCaptureRecord>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                session_ref,
+                role,
+                capture_mode,
+                archive_policy,
+                content,
+                summary,
+                scope_type,
+                scope_ref,
+                linked_decision_id,
+                status,
+                created_at
+            FROM chat_capture_records
+            WHERE id = ?1
+            "#,
+            [id],
+            map_chat_capture_record_row,
         )
         .optional()
         .map_err(Into::into)

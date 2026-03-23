@@ -19,6 +19,10 @@ use core::{
         run_forge_bootstrap_dev_task, run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions,
         ForgeBootstrapMcpCycleReport,
     },
+    chat_archive::{
+        capture_chat_message, get_chat_archive_policy, list_chat_captures, set_chat_archive_policy,
+        ChatArchivePolicyRequest, ChatCaptureRequest,
+    },
     data_store::StoredSourceIngestRun,
     design_governance::{list_design_decisions, record_design_decision, DesignDecisionRequest},
     event_bus::EventBus,
@@ -409,6 +413,12 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
     let startup = bootstrap_cli_state()?;
 
     match args {
+        [command] if command == "chat-policy" => {
+            print_json(&get_chat_archive_policy(&startup.data_store(), None, None)?)
+        }
+        [command] if command == "chat-captures" => {
+            print_json(&list_chat_captures(&startup.data_store())?)
+        }
         [command] if command == "checkpoints" => {
             print_json(&list_runtime_checkpoints(&startup.data_store())?)
         }
@@ -417,6 +427,14 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         }
         [command] if command == "transactions" => {
             print_json(&list_nota_runtime_transactions(&startup.data_store())?)
+        }
+        [command, rest @ ..] if command == "chat-policy" => {
+            let request = parse_nota_chat_policy_args(rest)?;
+            print_json(&set_chat_archive_policy(&startup.data_store(), request)?)
+        }
+        [command, rest @ ..] if command == "capture-chat" => {
+            let request = parse_nota_chat_capture_args(rest)?;
+            print_json(&capture_chat_message(&startup.data_store(), request)?)
         }
         [command, rest @ ..] if command == "decision" => {
             let request = parse_nota_decision_args(rest)?;
@@ -452,7 +470,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&write_runtime_checkpoint(&startup.data_store(), request)?)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, `entrance nota decisions`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota chat-captures`, or `entrance nota transactions`"
         ),
     }
 }
@@ -898,6 +916,118 @@ fn parse_nota_decision_args(args: &[String]) -> Result<DesignDecisionRequest> {
                 index += 2;
             }
             other => bail!("unsupported nota decision argument `{other}`"),
+        }
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_chat_policy_args(args: &[String]) -> Result<ChatArchivePolicyRequest> {
+    let mut request = ChatArchivePolicyRequest {
+        scope_type: None,
+        scope_ref: None,
+        archive_policy: "off".to_string(),
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--policy" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota chat-policy --policy` requires a value")?;
+                request.archive_policy = value.to_string();
+                index += 2;
+            }
+            "--scope-type" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota chat-policy --scope-type` requires a value")?;
+                request.scope_type = Some(value.to_string());
+                index += 2;
+            }
+            "--scope-ref" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota chat-policy --scope-ref` requires a value")?;
+                request.scope_ref = Some(value.to_string());
+                index += 2;
+            }
+            other => bail!("unsupported nota chat-policy argument `{other}`"),
+        }
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_chat_capture_args(args: &[String]) -> Result<ChatCaptureRequest> {
+    let mut request = ChatCaptureRequest {
+        session_ref: None,
+        role: String::new(),
+        content: String::new(),
+        summary: None,
+        scope_type: None,
+        scope_ref: None,
+        linked_decision_id: None,
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--session-ref" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota capture-chat --session-ref` requires a value")?;
+                request.session_ref = Some(value.to_string());
+                index += 2;
+            }
+            "--role" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota capture-chat --role` requires a value")?;
+                request.role = value.to_string();
+                index += 2;
+            }
+            "--content" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota capture-chat --content` requires a value")?;
+                request.content = value.to_string();
+                index += 2;
+            }
+            "--summary" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota capture-chat --summary` requires a value")?;
+                request.summary = Some(value.to_string());
+                index += 2;
+            }
+            "--scope-type" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota capture-chat --scope-type` requires a value")?;
+                request.scope_type = Some(value.to_string());
+                index += 2;
+            }
+            "--scope-ref" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota capture-chat --scope-ref` requires a value")?;
+                request.scope_ref = Some(value.to_string());
+                index += 2;
+            }
+            "--linked-decision-id" => {
+                let value = args.get(index + 1).context(
+                    "`entrance nota capture-chat --linked-decision-id` requires a value",
+                )?;
+                request.linked_decision_id = Some(
+                    value
+                        .parse::<i64>()
+                        .with_context(|| format!("invalid linked decision id `{value}`"))?,
+                );
+                index += 2;
+            }
+            other => bail!("unsupported nota capture-chat argument `{other}`"),
         }
     }
 

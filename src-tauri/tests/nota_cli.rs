@@ -271,6 +271,90 @@ fn nota_decision_cli_persists_design_decisions_and_governance_links() -> Result<
     Ok(())
 }
 
+#[test]
+fn nota_chat_archive_policy_and_capture_cli_keep_raw_chat_separate_from_decisions() -> Result<()> {
+    let temp_dir = TempDir::new("chat-archive")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    let summary_policy = run_nota_cli(
+        &app_data_dir,
+        &["nota", "chat-policy", "--policy", "summary"],
+    )?;
+    let summary_policy: Value = serde_json::from_str(&summary_policy)
+        .context("chat-policy summary output should be valid JSON")?;
+    assert_eq!(summary_policy["setting"]["archive_policy"], "summary");
+
+    let summary_capture = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "capture-chat",
+            "--role",
+            "human",
+            "--content",
+            "Raw chat should not be promoted into a design decision by default.",
+        ],
+    )?;
+    let summary_capture: Value = serde_json::from_str(&summary_capture)
+        .context("summary chat capture output should be valid JSON")?;
+    assert_eq!(summary_capture["stored"], true);
+    assert_eq!(summary_capture["record"]["capture_mode"], "summary_capture");
+    assert_eq!(summary_capture["record"]["content"], "");
+
+    run_nota_cli(&app_data_dir, &["nota", "chat-policy", "--policy", "full"])?;
+    let full_capture = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "capture-chat",
+            "--role",
+            "nota",
+            "--content",
+            "Checkpoint created; next step is to inspect the transaction receipt.",
+            "--summary",
+            "Checkpoint created and receipt inspection is next.",
+        ],
+    )?;
+    let full_capture: Value = serde_json::from_str(&full_capture)
+        .context("full chat capture output should be valid JSON")?;
+    assert_eq!(full_capture["record"]["capture_mode"], "raw_chat_capture");
+    assert_eq!(
+        full_capture["record"]["content"],
+        "Checkpoint created; next step is to inspect the transaction receipt."
+    );
+
+    run_nota_cli(&app_data_dir, &["nota", "chat-policy", "--policy", "off"])?;
+    let off_capture = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "capture-chat",
+            "--role",
+            "human",
+            "--content",
+            "This one should not be archived because policy is off.",
+        ],
+    )?;
+    let off_capture: Value = serde_json::from_str(&off_capture)
+        .context("off chat capture output should be valid JSON")?;
+    assert_eq!(off_capture["stored"], false);
+
+    let listed_output = run_nota_cli(&app_data_dir, &["nota", "chat-captures"])?;
+    let listed: Value = serde_json::from_str(&listed_output)
+        .context("chat-captures output should be valid JSON")?;
+    assert_eq!(listed["capture_count"], 2);
+
+    let db_path = app_data_dir.join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "chat_archive_settings")?, 1);
+    assert_eq!(count_rows(&connection, "chat_capture_records")?, 2);
+    assert_eq!(count_rows(&connection, "decisions")?, 0);
+
+    Ok(())
+}
+
 fn seed_app_state(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(app_data_dir)?;
     fs::write(
