@@ -20,7 +20,16 @@ const CORE_LANDING_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0005_create_core_landing_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 2] = [CORE_MIGRATION, CORE_LANDING_MIGRATION];
+const CORE_NOTA_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
+    name: "0007_create_core_nota_runtime_tables",
+    sql: include_str!("../../migrations/0007_create_core_nota_runtime_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 3] = [
+    CORE_MIGRATION,
+    CORE_LANDING_MIGRATION,
+    CORE_NOTA_RUNTIME_MIGRATION,
+];
 
 #[derive(Debug, Clone, Copy)]
 pub struct MigrationStep {
@@ -240,6 +249,35 @@ pub struct StoredPromotionRecord {
     pub promotion_state: String,
     pub reason: Option<String>,
     pub source_ingest_run_id: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredCadenceObject {
+    pub id: i64,
+    pub cadence_kind: String,
+    pub title: String,
+    pub summary: String,
+    pub payload_json: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub admission_policy: String,
+    pub projection_policy: String,
+    pub status: String,
+    pub is_current: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredCadenceLink {
+    pub id: i64,
+    pub src_cadence_object_id: i64,
+    pub dst_cadence_object_id: i64,
+    pub relation_type: String,
+    pub status: String,
     pub created_at: String,
 }
 
@@ -493,6 +531,30 @@ pub struct NewPromotionRecord<'a> {
     pub promotion_state: &'a str,
     pub reason: Option<&'a str>,
     pub source_ingest_run_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewCadenceObject<'a> {
+    pub cadence_kind: &'a str,
+    pub title: &'a str,
+    pub summary: &'a str,
+    pub payload_json: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub source_type: &'a str,
+    pub source_ref: &'a str,
+    pub admission_policy: &'a str,
+    pub projection_policy: &'a str,
+    pub status: &'a str,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewCadenceLink<'a> {
+    pub src_cadence_object_id: i64,
+    pub dst_cadence_object_id: i64,
+    pub relation_type: &'a str,
+    pub status: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -1848,6 +1910,193 @@ impl DataStore {
         })
     }
 
+    pub fn insert_cadence_object(
+        &self,
+        record: NewCadenceObject<'_>,
+    ) -> Result<StoredCadenceObject> {
+        let now = Utc::now().to_rfc3339();
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction()?;
+
+        if record.is_current {
+            transaction.execute(
+                r#"
+                UPDATE cadence_objects
+                SET is_current = 0,
+                    status = CASE
+                        WHEN status = 'active' THEN 'superseded'
+                        ELSE status
+                    END,
+                    updated_at = ?2
+                WHERE cadence_kind = ?1
+                  AND is_current != 0
+                "#,
+                params![record.cadence_kind, now],
+            )?;
+        }
+
+        transaction.execute(
+            r#"
+            INSERT INTO cadence_objects (
+                cadence_kind,
+                title,
+                summary,
+                payload_json,
+                scope_type,
+                scope_ref,
+                source_type,
+                source_ref,
+                admission_policy,
+                projection_policy,
+                status,
+                is_current,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+            "#,
+            params![
+                record.cadence_kind,
+                record.title,
+                record.summary,
+                record.payload_json,
+                record.scope_type,
+                record.scope_ref,
+                record.source_type,
+                record.source_ref,
+                record.admission_policy,
+                record.projection_policy,
+                record.status,
+                if record.is_current { 1 } else { 0 },
+                now,
+            ],
+        )?;
+        let row_id = transaction.last_insert_rowid();
+        let cadence_object = fetch_cadence_object_by_id(&transaction, row_id)?
+            .ok_or_else(|| anyhow!("cadence object disappeared after insert"))?;
+        transaction.commit()?;
+        Ok(cadence_object)
+    }
+
+    pub fn list_cadence_objects(&self) -> Result<Vec<StoredCadenceObject>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    cadence_kind,
+                    title,
+                    summary,
+                    payload_json,
+                    scope_type,
+                    scope_ref,
+                    source_type,
+                    source_ref,
+                    admission_policy,
+                    projection_policy,
+                    status,
+                    is_current,
+                    created_at,
+                    updated_at
+                FROM cadence_objects
+                ORDER BY cadence_kind ASC, is_current DESC, id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_cadence_object_row)?;
+            let objects = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(objects)
+        })
+    }
+
+    pub fn list_cadence_objects_by_kind(
+        &self,
+        cadence_kind: &str,
+    ) -> Result<Vec<StoredCadenceObject>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    cadence_kind,
+                    title,
+                    summary,
+                    payload_json,
+                    scope_type,
+                    scope_ref,
+                    source_type,
+                    source_ref,
+                    admission_policy,
+                    projection_policy,
+                    status,
+                    is_current,
+                    created_at,
+                    updated_at
+                FROM cadence_objects
+                WHERE cadence_kind = ?1
+                ORDER BY is_current DESC, id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([cadence_kind], map_cadence_object_row)?;
+            let objects = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(objects)
+        })
+    }
+
+    pub fn insert_cadence_link(&self, record: NewCadenceLink<'_>) -> Result<StoredCadenceLink> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO cadence_links (
+                    src_cadence_object_id,
+                    dst_cadence_object_id,
+                    relation_type,
+                    status,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(src_cadence_object_id, dst_cadence_object_id, relation_type) DO UPDATE SET
+                    status = excluded.status,
+                    created_at = excluded.created_at
+                "#,
+                params![
+                    record.src_cadence_object_id,
+                    record.dst_cadence_object_id,
+                    record.relation_type,
+                    record.status,
+                    now,
+                ],
+            )?;
+
+            fetch_cadence_link(
+                conn,
+                record.src_cadence_object_id,
+                record.dst_cadence_object_id,
+                record.relation_type,
+            )?
+            .ok_or_else(|| anyhow!("cadence link disappeared after upsert"))
+        })
+    }
+
+    pub fn list_cadence_links(&self) -> Result<Vec<StoredCadenceLink>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    src_cadence_object_id,
+                    dst_cadence_object_id,
+                    relation_type,
+                    status,
+                    created_at
+                FROM cadence_links
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_cadence_link_row)?;
+            let links = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(links)
+        })
+    }
+
     pub fn list_memory_fragment_records(&self) -> Result<Vec<StoredMemoryFragment>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
@@ -2459,6 +2708,37 @@ fn map_promotion_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredP
     })
 }
 
+fn map_cadence_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCadenceObject> {
+    Ok(StoredCadenceObject {
+        id: row.get(0)?,
+        cadence_kind: row.get(1)?,
+        title: row.get(2)?,
+        summary: row.get(3)?,
+        payload_json: row.get(4)?,
+        scope_type: row.get(5)?,
+        scope_ref: row.get(6)?,
+        source_type: row.get(7)?,
+        source_ref: row.get(8)?,
+        admission_policy: row.get(9)?,
+        projection_policy: row.get(10)?,
+        status: row.get(11)?,
+        is_current: row.get::<_, i64>(12)? != 0,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
+}
+
+fn map_cadence_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCadenceLink> {
+    Ok(StoredCadenceLink {
+        id: row.get(0)?,
+        src_cadence_object_id: row.get(1)?,
+        dst_cadence_object_id: row.get(2)?,
+        relation_type: row.get(3)?,
+        status: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
 fn map_memory_fragment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemoryFragment> {
     Ok(StoredMemoryFragment {
         id: row.get(0)?,
@@ -2763,6 +3043,67 @@ fn fetch_promotion_record(
             "#,
             [id],
             map_promotion_record_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_cadence_object_by_id(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredCadenceObject>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                cadence_kind,
+                title,
+                summary,
+                payload_json,
+                scope_type,
+                scope_ref,
+                source_type,
+                source_ref,
+                admission_policy,
+                projection_policy,
+                status,
+                is_current,
+                created_at,
+                updated_at
+            FROM cadence_objects
+            WHERE id = ?1
+            "#,
+            [id],
+            map_cadence_object_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_cadence_link(
+    connection: &Connection,
+    src_cadence_object_id: i64,
+    dst_cadence_object_id: i64,
+    relation_type: &str,
+) -> Result<Option<StoredCadenceLink>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                src_cadence_object_id,
+                dst_cadence_object_id,
+                relation_type,
+                status,
+                created_at
+            FROM cadence_links
+            WHERE src_cadence_object_id = ?1
+              AND dst_cadence_object_id = ?2
+              AND relation_type = ?3
+            "#,
+            params![src_cadence_object_id, dst_cadence_object_id, relation_type],
+            map_cadence_link_row,
         )
         .optional()
         .map_err(Into::into)

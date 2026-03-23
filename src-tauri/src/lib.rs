@@ -30,6 +30,9 @@ use core::{
     },
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
+    nota_runtime::{
+        list_runtime_checkpoints, write_runtime_checkpoint, NotaCheckpointRequest,
+    },
     plugin_manager::PluginManager,
     recovery::{
         import_recovery_seed, list_recovery_seed_rows, list_recovery_seed_runs,
@@ -195,6 +198,7 @@ pub fn dispatch_cli_or_run() -> Result<()> {
         [command, rest @ ..] if command == "landing" => run_landing_cli(rest),
         [command, rest @ ..] if command == "recovery" => run_recovery_cli(rest),
         [command, rest @ ..] if command == "hygiene" => run_hygiene_cli(rest),
+        [command, rest @ ..] if command == "nota" => run_nota_cli(rest),
         [command, rest @ ..] if command == "forge" => run_forge_cli(rest),
         [command, transport, rest @ ..] if command == "mcp" && transport == "stdio" => {
             run_mcp_stdio(rest)
@@ -399,6 +403,23 @@ fn run_hygiene_cli(args: &[String]) -> Result<()> {
     }
 }
 
+fn run_nota_cli(args: &[String]) -> Result<()> {
+    let startup = bootstrap_cli_state()?;
+
+    match args {
+        [command] if command == "checkpoints" => {
+            print_json(&list_runtime_checkpoints(&startup.data_store())?)
+        }
+        [command, rest @ ..] if command == "checkpoint" => {
+            let request = parse_nota_checkpoint_args(rest)?;
+            print_json(&write_runtime_checkpoint(&startup.data_store(), request)?)
+        }
+        _ => bail!(
+            "unsupported nota command, expected `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]` or `entrance nota checkpoints`"
+        ),
+    }
+}
+
 fn run_mcp_stdio(args: &[String]) -> Result<()> {
     let actor_role = parse_mcp_actor_role_args(args)?;
     let startup = bootstrap_headless()?;
@@ -584,6 +605,84 @@ fn bootstrap_forge_mcp_cycle_cli(
     let startup = bootstrap_forge_mcp_cli_state()?;
     let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
     run_forge_bootstrap_mcp_cycle(&forge_plugin, startup.paths().app_data_dir(), options)
+}
+
+fn parse_nota_checkpoint_args(args: &[String]) -> Result<NotaCheckpointRequest> {
+    let mut request = NotaCheckpointRequest {
+        title: None,
+        stable_level: String::new(),
+        landed: Vec::new(),
+        remaining: Vec::new(),
+        human_continuity_bus: String::new(),
+        selected_trunk: None,
+        next_start_hints: Vec::new(),
+        project_dir: None,
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--title" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota checkpoint --title` requires a value")?;
+                request.title = Some(value.to_string());
+                index += 2;
+            }
+            "--stable-level" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota checkpoint --stable-level` requires a value")?;
+                request.stable_level = value.to_string();
+                index += 2;
+            }
+            "--landed" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota checkpoint --landed` requires a value")?;
+                request.landed.push(value.to_string());
+                index += 2;
+            }
+            "--remaining" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota checkpoint --remaining` requires a value")?;
+                request.remaining.push(value.to_string());
+                index += 2;
+            }
+            "--human-continuity-bus" => {
+                let value = args.get(index + 1).context(
+                    "`entrance nota checkpoint --human-continuity-bus` requires a value",
+                )?;
+                request.human_continuity_bus = value.to_string();
+                index += 2;
+            }
+            "--selected-trunk" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota checkpoint --selected-trunk` requires a value")?;
+                request.selected_trunk = Some(value.to_string());
+                index += 2;
+            }
+            "--next-start-hint" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota checkpoint --next-start-hint` requires a value")?;
+                request.next_start_hints.push(value.to_string());
+                index += 2;
+            }
+            "--project-dir" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota checkpoint --project-dir` requires a value")?;
+                request.project_dir = Some(value.to_string());
+                index += 2;
+            }
+            other => bail!("unsupported nota checkpoint argument `{other}`"),
+        }
+    }
+
+    Ok(request)
 }
 
 fn run_forge_bootstrap_dev_plan_cli() -> Result<Value> {
