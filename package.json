@@ -1,8 +1,8 @@
 {
   "name": "entrance",
-  "version": "0.3.0",
+  "version": "0.3.1-headless-alpha.1",
   "private": true,
-  "description": "Entrance desktop shell powered by Tauri 2 and SolidJS",
+  "description": "Entrance V0 headless alpha runtime shell powered by Tauri 2 and SolidJS",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,7 @@
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "tauri": "tauri"
   },
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
     "@solidjs/router": "^0.16.1",
     "@tauri-apps/api": "^2",

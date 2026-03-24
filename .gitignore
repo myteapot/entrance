@@ -2,5 +2,8 @@ node_modules
 dist
 .vscode
 src-tauri/target
+src-tauri/.cargo/config.local.toml
+releases/*/package/
+releases/*/*.zip
 pnpm-debug.log*
 *.tsbuildinfo

@@ -1,9 +1,10 @@
 [package]
 name = "entrance"
-version = "0.3.0"
-description = "Entrance desktop shell"
+version = "0.3.1-headless-alpha.1"
+description = "Entrance V0 headless alpha runtime shell"
 authors = ["Entrance Contributors"]
 edition = "2021"
+license-file = "../LICENSE"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
