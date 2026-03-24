@@ -11,14 +11,18 @@ use self::{
 
 pub mod action;
 pub mod bootstrap_mcp_cycle;
+pub mod chat_archive;
 pub mod config_store;
 pub mod data_store;
+pub mod design_governance;
 pub mod event_bus;
 pub mod hotkey;
+pub mod hygiene;
 pub mod landing;
 pub mod logging;
 pub mod mcp_server;
 pub mod mcp_stdio_client;
+pub mod nota_runtime;
 pub mod permission;
 pub mod plugin_manager;
 pub mod recovery;

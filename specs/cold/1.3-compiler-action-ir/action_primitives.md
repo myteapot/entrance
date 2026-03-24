@@ -51,6 +51,10 @@ This is a good surface model.
 
 It is simple enough for Human interaction, and broad enough to cover most top-level NOTA duties.
 
+`do` should be read as a Human-to-NOTA control mode rather than as a raw internal primitive menu.
+Human should not be asked to drive `prepare / dispatch / review / integrate / archive / mark_conflict` directly at the top surface.
+`NOTA` receives `do`, refreshes context as needed, and lowers it into the stricter internal action graph.
+
 ### 3.2 But the compiler cannot stop there
 
 `chat / learn / do` is the Human-facing semantic shell.
@@ -474,6 +478,9 @@ So the design answer is:
 - yes, `chat / learn / do` covers the main responsibilities of NOTA
 - yes, it is viable
 - but only if lower nodes use stricter internal primitives
+
+If a later UI exposes top-surface modes, `chat / learn / do` is the right semantic set.
+`auto` should be treated as an execution or autonomy policy layered over those modes, not as a peer semantic action beside them.
 
 ## 14. Recommended Next-Step Primitive Sets
 

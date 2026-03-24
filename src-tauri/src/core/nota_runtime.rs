@@ -1,0 +1,644 @@
+use std::path::Path;
+use std::process::Command;
+
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::core::data_store::{
+    DataStore, NewCadenceLink, NewCadenceObject, NewNotaRuntimeReceipt, NewNotaRuntimeTransaction,
+    NotaRuntimeTransactionUpdate, StoredCadenceLink, StoredCadenceObject, StoredNotaRuntimeReceipt,
+    StoredNotaRuntimeTransaction,
+};
+use crate::plugins::forge::{
+    build_agent_task_request, prepare_agent_dispatch_blocking, ForgePlugin, PreparedAgentDispatch,
+};
+
+const CADENCE_CHECKPOINT_KIND: &str = "CADENCE_CHECKPOINT";
+const CADENCE_HANDOUT_KIND: &str = "CADENCE_HANDOUT";
+const CADENCE_WAKE_REQUEST_KIND: &str = "CADENCE_WAKE_REQUEST";
+const CADENCE_POLICY_NOTE_KIND: &str = "CADENCE_POLICY_NOTE";
+const NOTA_RUNTIME_SOURCE_TYPE: &str = "nota_runtime";
+const NOTA_RUNTIME_SCOPE_TYPE: &str = "runtime";
+const NOTA_RUNTIME_SCOPE_REF: &str = "Entrance";
+
+#[derive(Debug, Clone)]
+pub struct NotaCheckpointRequest {
+    pub title: Option<String>,
+    pub stable_level: String,
+    pub landed: Vec<String>,
+    pub remaining: Vec<String>,
+    pub human_continuity_bus: String,
+    pub selected_trunk: Option<String>,
+    pub next_start_hints: Vec<String>,
+    pub project_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoContext {
+    pub project_dir: String,
+    pub git_branch: Option<String>,
+    pub git_head: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotaCheckpointPayload {
+    pub stable_level: String,
+    pub landed: Vec<String>,
+    pub remaining: Vec<String>,
+    pub human_continuity_bus: String,
+    pub selected_trunk: Option<String>,
+    pub next_start_hints: Vec<String>,
+    pub repo_context: Option<RepoContext>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaCheckpointRecord {
+    #[serde(flatten)]
+    pub cadence_object: StoredCadenceObject,
+    pub payload: NotaCheckpointPayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaCheckpointWriteReport {
+    pub checkpoint: NotaCheckpointRecord,
+    pub superseded_checkpoint_id: Option<i64>,
+    pub supersession_link: Option<StoredCadenceLink>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaCheckpointListReport {
+    pub checkpoint_count: usize,
+    pub current_checkpoint_id: Option<i64>,
+    pub checkpoints: Vec<NotaCheckpointRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaDoAgentDispatchRequest {
+    pub project_dir: Option<String>,
+    pub model: String,
+    pub agent_command: Option<String>,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotaDoDispatchPayload {
+    pub issue_id: String,
+    pub issue_status: String,
+    pub issue_status_source: String,
+    pub issue_title: Option<String>,
+    pub project_root: String,
+    pub worktree_path: String,
+    pub prompt_source: String,
+    pub model: String,
+    pub agent_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaDoDispatchReport {
+    pub transaction: StoredNotaRuntimeTransaction,
+    pub receipts: Vec<StoredNotaRuntimeReceipt>,
+    pub dispatch: PreparedAgentDispatch,
+    pub task_id: i64,
+    pub task_status: String,
+    pub spawn_error: Option<String>,
+    pub checkpoint: NotaCheckpointRecord,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaRuntimeTransactionsReport {
+    pub transaction_count: usize,
+    pub transactions: Vec<StoredNotaRuntimeTransaction>,
+}
+
+pub fn write_runtime_checkpoint(
+    data_store: &DataStore,
+    request: NotaCheckpointRequest,
+) -> Result<NotaCheckpointWriteReport> {
+    let stable_level = request.stable_level.trim().to_string();
+    if stable_level.is_empty() {
+        return Err(anyhow!("`stable_level` must not be empty"));
+    }
+
+    let landed = normalize_list(request.landed);
+    if landed.is_empty() {
+        return Err(anyhow!("at least one `landed` item is required"));
+    }
+
+    let remaining = normalize_list(request.remaining);
+    let human_continuity_bus = request.human_continuity_bus.trim().to_string();
+    if human_continuity_bus.is_empty() {
+        return Err(anyhow!("`human_continuity_bus` must not be empty"));
+    }
+
+    let selected_trunk = normalize_optional(request.selected_trunk.as_deref());
+    let next_start_hints = normalize_list(request.next_start_hints);
+    let repo_context = request
+        .project_dir
+        .as_deref()
+        .map(capture_repo_context)
+        .transpose()?;
+
+    let payload = NotaCheckpointPayload {
+        stable_level: stable_level.clone(),
+        landed: landed.clone(),
+        remaining,
+        human_continuity_bus,
+        selected_trunk,
+        next_start_hints,
+        repo_context,
+    };
+    let payload_json =
+        serde_json::to_string(&payload).context("failed to serialize nota checkpoint payload")?;
+
+    let superseded_checkpoint = data_store
+        .list_cadence_objects_by_kind(CADENCE_CHECKPOINT_KIND)?
+        .into_iter()
+        .find(|object| object.is_current);
+
+    let title = request
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("NOTA runtime checkpoint: {stable_level}"));
+    let summary = build_checkpoint_summary(&stable_level, &landed);
+    let cadence_object = data_store.insert_cadence_object(NewCadenceObject {
+        cadence_kind: CADENCE_CHECKPOINT_KIND,
+        title: &title,
+        summary: &summary,
+        payload_json: &payload_json,
+        scope_type: NOTA_RUNTIME_SCOPE_TYPE,
+        scope_ref: NOTA_RUNTIME_SCOPE_REF,
+        source_type: NOTA_RUNTIME_SOURCE_TYPE,
+        source_ref: "nota_cli:checkpoint",
+        admission_policy: admission_policy_for_kind(CADENCE_CHECKPOINT_KIND),
+        projection_policy: projection_policy_for_kind(CADENCE_CHECKPOINT_KIND),
+        status: "active",
+        is_current: true,
+    })?;
+
+    let supersession_link = if let Some(previous) = superseded_checkpoint.as_ref() {
+        Some(data_store.insert_cadence_link(NewCadenceLink {
+            src_cadence_object_id: previous.id,
+            dst_cadence_object_id: cadence_object.id,
+            relation_type: "superseded_by",
+            status: "active",
+        })?)
+    } else {
+        None
+    };
+
+    Ok(NotaCheckpointWriteReport {
+        checkpoint: NotaCheckpointRecord {
+            cadence_object,
+            payload,
+        },
+        superseded_checkpoint_id: superseded_checkpoint.map(|object| object.id),
+        supersession_link,
+    })
+}
+
+pub fn list_runtime_checkpoints(data_store: &DataStore) -> Result<NotaCheckpointListReport> {
+    let checkpoints = data_store
+        .list_cadence_objects_by_kind(CADENCE_CHECKPOINT_KIND)?
+        .into_iter()
+        .map(parse_checkpoint_record)
+        .collect::<Result<Vec<_>>>()?;
+    let current_checkpoint_id = checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+        .map(|checkpoint| checkpoint.cadence_object.id);
+
+    Ok(NotaCheckpointListReport {
+        checkpoint_count: checkpoints.len(),
+        current_checkpoint_id,
+        checkpoints,
+    })
+}
+
+pub fn run_nota_do_agent_dispatch(
+    data_store: &DataStore,
+    forge: &ForgePlugin,
+    request: NotaDoAgentDispatchRequest,
+) -> Result<NotaDoDispatchReport> {
+    let model = request.model.trim().to_string();
+    if model.is_empty() {
+        return Err(anyhow!("`model` must not be empty"));
+    }
+
+    let dispatch = prepare_agent_dispatch_blocking(data_store.clone(), request.project_dir.clone())
+        .map_err(anyhow::Error::msg)?;
+    let payload = NotaDoDispatchPayload {
+        issue_id: dispatch.issue_id.clone(),
+        issue_status: dispatch.issue_status.clone(),
+        issue_status_source: dispatch.issue_status_source.clone(),
+        issue_title: dispatch.issue_title.clone(),
+        project_root: dispatch.project_root.clone(),
+        worktree_path: dispatch.worktree_path.clone(),
+        prompt_source: dispatch.prompt_source.clone(),
+        model: model.clone(),
+        agent_command: request.agent_command.clone(),
+    };
+    let payload_json =
+        serde_json::to_string(&payload).context("failed to serialize nota do payload")?;
+
+    let title = request
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Do dispatch {}", dispatch.issue_id));
+
+    let mut transaction =
+        data_store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "do",
+            transaction_kind: "forge_agent_dispatch",
+            title: &title,
+            payload_json: &payload_json,
+            status: "accepted",
+            forge_task_id: None,
+            cadence_checkpoint_id: None,
+        })?;
+    let mut receipts = Vec::new();
+    receipts.push(
+        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: transaction.id,
+            receipt_kind: "DO_ACCEPTED",
+            payload_json: &payload_json,
+            status: "recorded",
+        })?,
+    );
+
+    let task_request = build_agent_task_request(
+        dispatch.issue_id.clone(),
+        dispatch.worktree_path.clone(),
+        model.clone(),
+        dispatch.prompt.clone(),
+        Vec::new(),
+        request.agent_command.clone(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let task_id = forge.create_task(task_request)?;
+    let task = forge
+        .get_task(task_id)?
+        .ok_or_else(|| anyhow!("stored Forge task disappeared after nota do dispatch"))?;
+    transaction = data_store.update_nota_runtime_transaction(
+        transaction.id,
+        NotaRuntimeTransactionUpdate {
+            status: "task_created",
+            forge_task_id: Some(task_id),
+            cadence_checkpoint_id: None,
+        },
+    )?;
+    receipts.push(
+        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: transaction.id,
+            receipt_kind: "FORGE_TASK_CREATED",
+            payload_json: &serde_json::to_string(&json!({
+                "task_id": task_id,
+                "task_status": task.status,
+                "task_command": task.command,
+                "worktree_path": task.working_dir,
+            }))
+            .context("failed to serialize forge task receipt payload")?,
+            status: "recorded",
+        })?,
+    );
+
+    let spawn_error = forge
+        .engine()
+        .spawn_task(task_id)
+        .err()
+        .map(|error| error.to_string());
+    let task_after_spawn = forge
+        .get_task(task_id)?
+        .ok_or_else(|| anyhow!("stored Forge task disappeared after nota do spawn"))?;
+    let transaction_status = if spawn_error.is_some() {
+        "spawn_failed"
+    } else {
+        "dispatched"
+    };
+    transaction = data_store.update_nota_runtime_transaction(
+        transaction.id,
+        NotaRuntimeTransactionUpdate {
+            status: transaction_status,
+            forge_task_id: Some(task_id),
+            cadence_checkpoint_id: None,
+        },
+    )?;
+    let launch_receipt_kind = if spawn_error.is_some() {
+        "FORGE_TASK_SPAWN_FAILED"
+    } else {
+        "FORGE_TASK_DISPATCHED"
+    };
+    receipts.push(
+        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: transaction.id,
+            receipt_kind: launch_receipt_kind,
+            payload_json: &serde_json::to_string(&json!({
+                "task_id": task_id,
+                "task_status": task_after_spawn.status.clone(),
+                "status_message": task_after_spawn.status_message.clone(),
+                "spawn_error": spawn_error.clone(),
+            }))
+            .context("failed to serialize forge launch receipt payload")?,
+            status: "recorded",
+        })?,
+    );
+
+    let checkpoint_report = write_runtime_checkpoint(
+        data_store,
+        NotaCheckpointRequest {
+            title: Some(format!("Do receipt: {}", dispatch.issue_id)),
+            stable_level:
+                "single-ingress, checkpointed, DB-first NOTA host with automatic Do receipt"
+                    .to_string(),
+            landed: build_do_checkpoint_landed_items(
+                transaction.id,
+                task_id,
+                &dispatch,
+                &spawn_error,
+            ),
+            remaining: build_do_checkpoint_remaining_items(task_id, &spawn_error),
+            human_continuity_bus: if spawn_error.is_some() {
+                "still required for operator recovery".to_string()
+            } else {
+                "reduced but not eliminated".to_string()
+            },
+            selected_trunk: Some("Do automatic checkpoint/receipt".to_string()),
+            next_start_hints: build_do_checkpoint_hints(transaction.id, task_id, &spawn_error),
+            project_dir: Some(dispatch.project_root.clone()),
+        },
+    )?;
+    transaction = data_store.update_nota_runtime_transaction(
+        transaction.id,
+        NotaRuntimeTransactionUpdate {
+            status: if spawn_error.is_some() {
+                "checkpointed_with_spawn_failure"
+            } else {
+                "checkpointed"
+            },
+            forge_task_id: Some(task_id),
+            cadence_checkpoint_id: Some(checkpoint_report.checkpoint.cadence_object.id),
+        },
+    )?;
+    receipts.push(
+        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: transaction.id,
+            receipt_kind: "CADENCE_CHECKPOINT_WRITTEN",
+            payload_json: &serde_json::to_string(&json!({
+                "checkpoint_id": checkpoint_report.checkpoint.cadence_object.id,
+                "selected_trunk": checkpoint_report.checkpoint.payload.selected_trunk,
+            }))
+            .context("failed to serialize checkpoint receipt payload")?,
+            status: "recorded",
+        })?,
+    );
+
+    Ok(NotaDoDispatchReport {
+        transaction,
+        receipts,
+        dispatch,
+        task_id,
+        task_status: task_after_spawn.status.clone(),
+        spawn_error,
+        checkpoint: checkpoint_report.checkpoint,
+    })
+}
+
+pub fn list_nota_runtime_transactions(
+    data_store: &DataStore,
+) -> Result<NotaRuntimeTransactionsReport> {
+    let transactions = data_store.list_nota_runtime_transactions()?;
+    Ok(NotaRuntimeTransactionsReport {
+        transaction_count: transactions.len(),
+        transactions,
+    })
+}
+
+pub fn admission_policy_for_kind(cadence_kind: &str) -> &'static str {
+    match cadence_kind {
+        CADENCE_CHECKPOINT_KIND
+        | CADENCE_HANDOUT_KIND
+        | CADENCE_WAKE_REQUEST_KIND
+        | CADENCE_POLICY_NOTE_KIND => "AP_STORAGE_AND_COLD_ALWAYS",
+        _ => "AP_STORAGE_ALWAYS",
+    }
+}
+
+pub fn projection_policy_for_kind(cadence_kind: &str) -> &'static str {
+    match cadence_kind {
+        CADENCE_CHECKPOINT_KIND | CADENCE_HANDOUT_KIND => "PP_HOT_ACTIVE_ONLY",
+        CADENCE_WAKE_REQUEST_KIND => "PP_HOT_ON_ATTENTION_OR_REJECT",
+        CADENCE_POLICY_NOTE_KIND => "PP_HOT_NEVER",
+        _ => "PP_HOT_ACTIVE_ONLY",
+    }
+}
+
+fn build_do_checkpoint_landed_items(
+    transaction_id: i64,
+    task_id: i64,
+    dispatch: &PreparedAgentDispatch,
+    spawn_error: &Option<String>,
+) -> Vec<String> {
+    let mut landed = vec![
+        format!("Created NOTA runtime transaction {transaction_id}."),
+        format!(
+            "Created Forge task {task_id} for {} in {}.",
+            dispatch.issue_id, dispatch.worktree_path
+        ),
+    ];
+
+    if let Some(error) = spawn_error {
+        landed.push(format!(
+            "Recorded spawn failure for Forge task {task_id}: {error}."
+        ));
+    } else {
+        landed.push(format!(
+            "Dispatched Forge task {task_id} from the NOTA `Do` ingress."
+        ));
+    }
+
+    landed
+}
+
+fn build_do_checkpoint_remaining_items(task_id: i64, spawn_error: &Option<String>) -> Vec<String> {
+    if spawn_error.is_some() {
+        vec![
+            format!("Repair the execution environment for Forge task {task_id}."),
+            "Retry the `Do` transaction after the runner boundary is healthy.".to_string(),
+        ]
+    } else {
+        vec![
+            format!("Review Forge task {task_id} output and terminal status."),
+            "Decide whether the dispatched result should be integrated, repaired, or escalated."
+                .to_string(),
+        ]
+    }
+}
+
+fn build_do_checkpoint_hints(
+    transaction_id: i64,
+    task_id: i64,
+    spawn_error: &Option<String>,
+) -> Vec<String> {
+    let mut hints = vec![
+        format!("Resume from NOTA runtime transaction {transaction_id}."),
+        format!("Inspect Forge task {task_id} from runtime storage before re-entering chat."),
+    ];
+
+    if spawn_error.is_some() {
+        hints.push("Check runner availability before retrying `nota do`.".to_string());
+    }
+
+    hints
+}
+
+fn parse_checkpoint_record(object: StoredCadenceObject) -> Result<NotaCheckpointRecord> {
+    let payload: NotaCheckpointPayload =
+        serde_json::from_str(&object.payload_json).with_context(|| {
+            format!(
+                "failed to parse cadence checkpoint payload for row {}",
+                object.id
+            )
+        })?;
+
+    Ok(NotaCheckpointRecord {
+        cadence_object: object,
+        payload,
+    })
+}
+
+fn build_checkpoint_summary(stable_level: &str, landed: &[String]) -> String {
+    match landed.first() {
+        Some(first_landed) => format!("{stable_level}. Landed: {first_landed}"),
+        None => stable_level.to_string(),
+    }
+}
+
+fn normalize_list(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn normalize_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn capture_repo_context(project_dir: &str) -> Result<RepoContext> {
+    let project_path = Path::new(project_dir);
+    if !project_path.exists() {
+        return Err(anyhow!(
+            "nota checkpoint project directory `{}` does not exist",
+            project_path.display()
+        ));
+    }
+
+    Ok(RepoContext {
+        project_dir: project_path.to_string_lossy().replace('\\', "/"),
+        git_branch: run_git_command(project_path, &["rev-parse", "--abbrev-ref", "HEAD"]).ok(),
+        git_head: run_git_command(project_path, &["rev-parse", "HEAD"]).ok(),
+    })
+}
+
+fn run_git_command(project_path: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(project_path)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run git {} in {}",
+                args.join(" "),
+                project_path.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git {} failed in {}: {}",
+            args.join(" "),
+            project_path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let value = String::from_utf8(output.stdout)
+        .with_context(|| format!("git {} output was not valid UTF-8", args.join(" ")))?;
+    Ok(value.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+
+    use crate::core::data_store::{DataStore, MigrationPlan};
+
+    use super::{list_runtime_checkpoints, write_runtime_checkpoint, NotaCheckpointRequest};
+
+    #[test]
+    fn runtime_checkpoint_persists_in_dedicated_cadence_storage() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        let first = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: None,
+                stable_level: "single-ingress, checkpointed, DB-first NOTA host".to_string(),
+                landed: vec!["cadence object storage cut".to_string()],
+                remaining: vec!["Do automatic checkpoint/receipt".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("cadence storage cut".to_string()),
+                next_start_hints: vec!["wire Do receipts".to_string()],
+                project_dir: None,
+            },
+        )?;
+        assert!(first.checkpoint.cadence_object.is_current);
+        assert!(first.superseded_checkpoint_id.is_none());
+        assert_eq!(first.checkpoint.payload.landed.len(), 1);
+
+        let second = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: Some("Second checkpoint".to_string()),
+                stable_level: "single-ingress, checkpointed, DB-first NOTA host".to_string(),
+                landed: vec!["cadence link supersession".to_string()],
+                remaining: vec!["Do automatic checkpoint/receipt".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("Do automatic checkpoint/receipt".to_string()),
+                next_start_hints: vec!["persist Do transaction".to_string()],
+                project_dir: None,
+            },
+        )?;
+        assert_eq!(
+            second.superseded_checkpoint_id,
+            Some(first.checkpoint.cadence_object.id)
+        );
+        assert!(second.supersession_link.is_some());
+
+        let report = list_runtime_checkpoints(&store)?;
+        assert_eq!(report.checkpoint_count, 2);
+        assert_eq!(
+            report.current_checkpoint_id,
+            Some(second.checkpoint.cadence_object.id)
+        );
+        assert_eq!(
+            report.checkpoints[0].cadence_object.id,
+            second.checkpoint.cadence_object.id
+        );
+        assert!(!report.checkpoints[1].cadence_object.is_current);
+        assert_eq!(store.list_memory_fragment_records()?.len(), 0);
+
+        Ok(())
+    }
+}

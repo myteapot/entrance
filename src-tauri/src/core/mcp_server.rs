@@ -28,8 +28,9 @@ use crate::core::{
 use crate::plugins::{
     forge::{
         build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
-        prepare_dev_dispatch_blocking, verify_agent_dispatch, verify_dev_dispatch,
-        CreateTaskRequest, DispatchReceiptRequest, ForgePlugin,
+        prepare_agent_dispatch_for_worktree_blocking, prepare_dev_dispatch_blocking,
+        verify_agent_dispatch, verify_dev_dispatch, CreateTaskRequest, DispatchReceiptRequest,
+        ForgePlugin,
     },
     launcher::LauncherPlugin,
     vault::VaultPlugin,
@@ -358,8 +359,19 @@ impl McpServer {
         let project_dir = optional_string(arguments, "project_dir")
             .or_else(|| optional_string(arguments, "projectDir"))
             .map(str::to_string);
-        let dispatch = prepare_agent_dispatch_blocking(forge.data_store(), project_dir)
-            .map_err(anyhow::Error::msg)?;
+        let explicit_worktree = optional_string(arguments, "worktree_path")
+            .or_else(|| optional_string(arguments, "worktreePath"))
+            .map(str::to_string);
+        let dispatch = match explicit_worktree {
+            Some(worktree_path) => prepare_agent_dispatch_for_worktree_blocking(
+                forge.data_store(),
+                project_dir,
+                worktree_path,
+            )
+            .map_err(anyhow::Error::msg)?,
+            None => prepare_agent_dispatch_blocking(forge.data_store(), project_dir)
+                .map_err(anyhow::Error::msg)?,
+        };
         serde_json::to_value(dispatch).context("failed to serialize forge dispatch")
     }
 
@@ -546,6 +558,10 @@ impl McpServer {
         };
 
         let report = run_forge_bootstrap_mcp_cycle(
+            self.plugins
+                .forge
+                .as_ref()
+                .context("forge plugin is not enabled")?,
             &resolve_app_data_dir()?,
             ForgeBootstrapMcpCycleOptions {
                 project_dir,
@@ -810,7 +826,9 @@ fn build_tool_descriptors(
                 "type": "object",
                 "properties": {
                     "project_dir": { "type": "string", "description": "Optional repo root used to resolve the managed Forge worktree." },
-                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." }
+                    "projectDir": { "type": "string", "description": "CamelCase alias for project_dir." },
+                    "worktree_path": { "type": "string", "description": "Optional explicit managed worktree path. Useful for per-agent slot worktree allocation." },
+                    "worktreePath": { "type": "string", "description": "CamelCase alias for worktree_path." }
                 }
             }),
             permission: None,

@@ -1385,14 +1385,14 @@ fn external_client_can_bootstrap_allocator_cycle_over_nota_stdio_surface() -> Re
     fs::create_dir_all(&role_dir)?;
     fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
     fs::write(role_dir.join("dev.md"), "# test dev role\n")?;
+    init_git_repo_with_commit(&project_root)?;
 
     let managed_worktree = app_dir
         .path()
         .join("worktrees")
         .join("Entrance")
         .join("feat-MYT-48");
-    fs::create_dir_all(&managed_worktree)?;
-    init_git_repo(&managed_worktree)?;
+    add_git_worktree(&project_root, &managed_worktree, "feat-MYT-48")?;
 
     let agent_command = write_stub_agent_command(app_dir.path())?
         .to_string_lossy()
@@ -1447,36 +1447,78 @@ fn external_client_can_bootstrap_allocator_cycle_over_nota_stdio_surface() -> Re
         "forge_verify_dev_dispatch"
     );
     assert_eq!(
+        report["bootstrap_surface"]["dev_execution_mode"],
+        "bootstrap_dev_runtime_task"
+    );
+    assert_eq!(
         report["bootstrap_surface"]["agent_dispatch_surface"],
         "forge_dispatch_agent"
     );
+    assert_eq!(
+        report["bootstrap_surface"]["agent_wait_mode"],
+        "dev_parent_waits_children"
+    );
     assert_eq!(report["requested_agent_count"], 2);
+    assert_eq!(report["agent_worktree_mode"], "per_agent_slot_worktree");
+    assert!(report["shared_worktree_boundary"].is_null());
 
     let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
-    let shared_boundary = report["shared_worktree_boundary"]
-        .as_str()
-        .context("bootstrap cycle should report the current shared worktree boundary")?;
-    assert!(shared_boundary.contains("transport-level fan-out"));
-    assert!(shared_boundary.contains(&worktree_path));
+    let slot_one_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("slots")
+        .join("MYT-48")
+        .join("agent-1")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let slot_two_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("slots")
+        .join("MYT-48")
+        .join("agent-2")
+        .to_string_lossy()
+        .replace('\\', "/");
+    assert_ne!(slot_one_worktree, worktree_path);
+    assert_ne!(slot_two_worktree, worktree_path);
 
     let parent_task_id = report["dev_assignment"]["task_id"]
         .as_i64()
         .context("dev assignment should include a task id")?;
     assert!(parent_task_id > 0);
     assert_eq!(report["dev_assignment"]["dispatch"]["dispatch_role"], "dev");
+    assert_eq!(report["dev_assignment"]["task_status"], "Done");
+    assert_eq!(
+        report["dev_assignment"]["execution_mode"],
+        "bootstrap_dev_runtime_task"
+    );
     assert_eq!(
         report["dev_assignment"]["dispatch"]["dispatch_tool_name"],
         "forge_dispatch_dev"
     );
     assert!(report["dev_assignment"]["dispatch"]["prompt"].is_null());
+    assert_eq!(report["parent_status"]["task"]["status"], "Done");
 
     assert_eq!(report["agent_prepare"]["dispatch_role"], "agent");
     assert_eq!(
         report["agent_prepare"]["dispatch_tool_name"],
         "forge_dispatch_agent"
     );
-    assert_eq!(report["agent_prepare"]["worktree_path"], worktree_path);
+    assert_eq!(report["agent_prepare"]["worktree_path"], slot_one_worktree);
+    assert_eq!(report["agent_prepare"]["child_slot"], "agent-1");
     assert!(report["agent_prepare"]["prompt"].is_null());
+    let agent_prepares = report["agent_prepares"]
+        .as_array()
+        .context("agent_prepares should be an array")?;
+    assert_eq!(agent_prepares.len(), 2);
+    assert_eq!(agent_prepares[0]["child_slot"], "agent-1");
+    assert_eq!(agent_prepares[1]["child_slot"], "agent-2");
+    assert_eq!(agent_prepares[0]["worktree_path"], slot_one_worktree);
+    assert_eq!(agent_prepares[1]["worktree_path"], slot_two_worktree);
+    assert!(agent_prepares[0]["prompt"].is_null());
+    assert!(agent_prepares[1]["prompt"].is_null());
 
     let agent_dispatches = report["agent_dispatches"]
         .as_array()
@@ -1492,8 +1534,16 @@ fn external_client_can_bootstrap_allocator_cycle_over_nota_stdio_surface() -> Re
         "agent-1"
     );
     assert_eq!(
+        agent_dispatches[0]["dispatch"]["task"]["working_dir"],
+        slot_one_worktree
+    );
+    assert_eq!(
         agent_dispatches[1]["dispatch"]["supervision"]["parent_receipt"]["child_slot"],
         "agent-2"
+    );
+    assert_eq!(
+        agent_dispatches[1]["dispatch"]["task"]["working_dir"],
+        slot_two_worktree
     );
     assert_eq!(
         agent_dispatches[0]["final_status"]["task"]["status"],
@@ -1778,6 +1828,71 @@ fn init_git_repo(path: &PathBuf) -> Result<()> {
     if !output.status.success() {
         anyhow::bail!(
             "`git init --quiet` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    Ok(())
+}
+
+fn init_git_repo_with_commit(path: &PathBuf) -> Result<()> {
+    init_git_repo(path)?;
+
+    let add = Command::new("git")
+        .args(["add", "."])
+        .current_dir(path)
+        .output()
+        .context("failed to run `git add .`")?;
+    if !add.status.success() {
+        anyhow::bail!(
+            "`git add .` failed: {}",
+            String::from_utf8_lossy(&add.stderr).trim()
+        );
+    }
+
+    let commit = Command::new("git")
+        .args([
+            "-c",
+            "user.name=Entrance Test",
+            "-c",
+            "user.email=entrance@example.com",
+            "commit",
+            "--quiet",
+            "-m",
+            "initial commit",
+        ])
+        .current_dir(path)
+        .output()
+        .context("failed to run `git commit --quiet -m initial commit`")?;
+    if !commit.status.success() {
+        anyhow::bail!(
+            "`git commit --quiet -m initial commit` failed: {}",
+            String::from_utf8_lossy(&commit.stderr).trim()
+        );
+    }
+
+    Ok(())
+}
+
+fn add_git_worktree(repo_root: &PathBuf, worktree_path: &PathBuf, branch: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            branch,
+            worktree_path
+                .to_str()
+                .context("worktree path should be valid UTF-8")?,
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to run `git worktree add`")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "`git worktree add` failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }

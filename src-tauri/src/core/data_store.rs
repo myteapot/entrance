@@ -20,7 +20,34 @@ const CORE_LANDING_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0005_create_core_landing_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 2] = [CORE_MIGRATION, CORE_LANDING_MIGRATION];
+const CORE_NOTA_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
+    name: "0007_create_core_nota_runtime_tables",
+    sql: include_str!("../../migrations/0007_create_core_nota_runtime_tables.sql"),
+};
+
+const CORE_NOTA_DO_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
+    name: "0008_create_core_nota_do_runtime_tables",
+    sql: include_str!("../../migrations/0008_create_core_nota_do_runtime_tables.sql"),
+};
+
+const CORE_DECISION_LINKS_MIGRATION: MigrationStep = MigrationStep {
+    name: "0009_create_core_decision_links",
+    sql: include_str!("../../migrations/0009_create_core_decision_links.sql"),
+};
+
+const CORE_CHAT_ARCHIVE_MIGRATION: MigrationStep = MigrationStep {
+    name: "0010_create_core_chat_archive_tables",
+    sql: include_str!("../../migrations/0010_create_core_chat_archive_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 6] = [
+    CORE_MIGRATION,
+    CORE_LANDING_MIGRATION,
+    CORE_NOTA_RUNTIME_MIGRATION,
+    CORE_NOTA_DO_RUNTIME_MIGRATION,
+    CORE_DECISION_LINKS_MIGRATION,
+    CORE_CHAT_ARCHIVE_MIGRATION,
+];
 
 #[derive(Debug, Clone, Copy)]
 pub struct MigrationStep {
@@ -243,6 +270,149 @@ pub struct StoredPromotionRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredCadenceObject {
+    pub id: i64,
+    pub cadence_kind: String,
+    pub title: String,
+    pub summary: String,
+    pub payload_json: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub admission_policy: String,
+    pub projection_policy: String,
+    pub status: String,
+    pub is_current: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredCadenceLink {
+    pub id: i64,
+    pub src_cadence_object_id: i64,
+    pub dst_cadence_object_id: i64,
+    pub relation_type: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredNotaRuntimeTransaction {
+    pub id: i64,
+    pub actor_role: String,
+    pub surface_action: String,
+    pub transaction_kind: String,
+    pub title: String,
+    pub payload_json: String,
+    pub status: String,
+    pub forge_task_id: Option<i64>,
+    pub cadence_checkpoint_id: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredNotaRuntimeReceipt {
+    pub id: i64,
+    pub transaction_id: i64,
+    pub receipt_kind: String,
+    pub payload_json: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredDecisionRecord {
+    pub id: i64,
+    pub title: String,
+    pub statement: String,
+    pub rationale: String,
+    pub decision_type: String,
+    pub decision_status: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub source_ref: String,
+    pub decided_by: String,
+    pub enforcement_level: String,
+    pub actor_scope: String,
+    pub confidence: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredDecisionLink {
+    pub id: i64,
+    pub src_decision_id: i64,
+    pub dst_decision_id: i64,
+    pub relation_type: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredChatArchiveSetting {
+    pub id: i64,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub archive_policy: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredChatCaptureRecord {
+    pub id: i64,
+    pub session_ref: String,
+    pub role: String,
+    pub capture_mode: String,
+    pub archive_policy: String,
+    pub content: String,
+    pub summary: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub linked_decision_id: Option<i64>,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredMemoryFragment {
+    pub id: i64,
+    pub title: String,
+    pub content: String,
+    pub kind: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub source_hash: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub target_table: String,
+    pub target_ref: String,
+    pub status: String,
+    pub triage_status: String,
+    pub temperature: String,
+    pub tags: String,
+    pub notes: String,
+    pub confidence: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredMemoryLink {
+    pub id: i64,
+    pub src_kind: String,
+    pub src_id: i64,
+    pub dst_kind: String,
+    pub dst_id: i64,
+    pub relation_type: String,
+    pub status: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertDocumentRecord<'a> {
     pub id: i64,
@@ -318,6 +488,51 @@ pub struct UpsertDecisionRecord<'a> {
     pub confidence: f64,
     pub created_at: &'a str,
     pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewDecisionRecord<'a> {
+    pub title: &'a str,
+    pub statement: &'a str,
+    pub rationale: &'a str,
+    pub decision_type: &'a str,
+    pub decision_status: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub source_ref: &'a str,
+    pub decided_by: &'a str,
+    pub enforcement_level: &'a str,
+    pub actor_scope: &'a str,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewDecisionLink<'a> {
+    pub src_decision_id: i64,
+    pub dst_decision_id: i64,
+    pub relation_type: &'a str,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatArchiveSettingRecord<'a> {
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub archive_policy: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewChatCaptureRecord<'a> {
+    pub session_ref: &'a str,
+    pub role: &'a str,
+    pub capture_mode: &'a str,
+    pub archive_policy: &'a str,
+    pub content: &'a str,
+    pub summary: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub linked_decision_id: Option<i64>,
+    pub status: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -458,6 +673,57 @@ pub struct NewPromotionRecord<'a> {
     pub promotion_state: &'a str,
     pub reason: Option<&'a str>,
     pub source_ingest_run_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewCadenceObject<'a> {
+    pub cadence_kind: &'a str,
+    pub title: &'a str,
+    pub summary: &'a str,
+    pub payload_json: &'a str,
+    pub scope_type: &'a str,
+    pub scope_ref: &'a str,
+    pub source_type: &'a str,
+    pub source_ref: &'a str,
+    pub admission_policy: &'a str,
+    pub projection_policy: &'a str,
+    pub status: &'a str,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewCadenceLink<'a> {
+    pub src_cadence_object_id: i64,
+    pub dst_cadence_object_id: i64,
+    pub relation_type: &'a str,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewNotaRuntimeTransaction<'a> {
+    pub actor_role: &'a str,
+    pub surface_action: &'a str,
+    pub transaction_kind: &'a str,
+    pub title: &'a str,
+    pub payload_json: &'a str,
+    pub status: &'a str,
+    pub forge_task_id: Option<i64>,
+    pub cadence_checkpoint_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaRuntimeTransactionUpdate<'a> {
+    pub status: &'a str,
+    pub forge_task_id: Option<i64>,
+    pub cadence_checkpoint_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewNotaRuntimeReceipt<'a> {
+    pub transaction_id: i64,
+    pub receipt_kind: &'a str,
+    pub payload_json: &'a str,
+    pub status: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -861,6 +1127,50 @@ impl DataStore {
             }
             Ok(())
         })
+    }
+
+    pub fn update_pending_forge_task_request(
+        &self,
+        id: i64,
+        command: &str,
+        args: &str,
+        working_dir: Option<&str>,
+        stdin_text: Option<&str>,
+        required_tokens: &str,
+        metadata: &str,
+    ) -> Result<()> {
+        let changed = self.with_connection(|conn| {
+            Ok(conn.execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET command = ?2,
+                    args = ?3,
+                    working_dir = ?4,
+                    stdin_text = ?5,
+                    required_tokens = ?6,
+                    metadata = ?7
+                WHERE id = ?1
+                  AND status = 'Pending'
+                "#,
+                params![
+                    id,
+                    command,
+                    args,
+                    working_dir,
+                    stdin_text,
+                    required_tokens,
+                    metadata,
+                ],
+            )?)
+        })?;
+
+        if changed == 0 {
+            return Err(anyhow!(
+                "forge task `{id}` does not exist or is no longer Pending"
+            ));
+        }
+
+        Ok(())
     }
 
     pub fn list_forge_tasks(&self) -> Result<Vec<StoredForgeTask>> {
@@ -1769,6 +2079,428 @@ impl DataStore {
         })
     }
 
+    pub fn insert_cadence_object(
+        &self,
+        record: NewCadenceObject<'_>,
+    ) -> Result<StoredCadenceObject> {
+        let now = Utc::now().to_rfc3339();
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction()?;
+
+        if record.is_current {
+            transaction.execute(
+                r#"
+                UPDATE cadence_objects
+                SET is_current = 0,
+                    status = CASE
+                        WHEN status = 'active' THEN 'superseded'
+                        ELSE status
+                    END,
+                    updated_at = ?2
+                WHERE cadence_kind = ?1
+                  AND is_current != 0
+                "#,
+                params![record.cadence_kind, now],
+            )?;
+        }
+
+        transaction.execute(
+            r#"
+            INSERT INTO cadence_objects (
+                cadence_kind,
+                title,
+                summary,
+                payload_json,
+                scope_type,
+                scope_ref,
+                source_type,
+                source_ref,
+                admission_policy,
+                projection_policy,
+                status,
+                is_current,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+            "#,
+            params![
+                record.cadence_kind,
+                record.title,
+                record.summary,
+                record.payload_json,
+                record.scope_type,
+                record.scope_ref,
+                record.source_type,
+                record.source_ref,
+                record.admission_policy,
+                record.projection_policy,
+                record.status,
+                if record.is_current { 1 } else { 0 },
+                now,
+            ],
+        )?;
+        let row_id = transaction.last_insert_rowid();
+        let cadence_object = fetch_cadence_object_by_id(&transaction, row_id)?
+            .ok_or_else(|| anyhow!("cadence object disappeared after insert"))?;
+        transaction.commit()?;
+        Ok(cadence_object)
+    }
+
+    pub fn list_cadence_objects(&self) -> Result<Vec<StoredCadenceObject>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    cadence_kind,
+                    title,
+                    summary,
+                    payload_json,
+                    scope_type,
+                    scope_ref,
+                    source_type,
+                    source_ref,
+                    admission_policy,
+                    projection_policy,
+                    status,
+                    is_current,
+                    created_at,
+                    updated_at
+                FROM cadence_objects
+                ORDER BY cadence_kind ASC, is_current DESC, id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_cadence_object_row)?;
+            let objects = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(objects)
+        })
+    }
+
+    pub fn list_cadence_objects_by_kind(
+        &self,
+        cadence_kind: &str,
+    ) -> Result<Vec<StoredCadenceObject>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    cadence_kind,
+                    title,
+                    summary,
+                    payload_json,
+                    scope_type,
+                    scope_ref,
+                    source_type,
+                    source_ref,
+                    admission_policy,
+                    projection_policy,
+                    status,
+                    is_current,
+                    created_at,
+                    updated_at
+                FROM cadence_objects
+                WHERE cadence_kind = ?1
+                ORDER BY is_current DESC, id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([cadence_kind], map_cadence_object_row)?;
+            let objects = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(objects)
+        })
+    }
+
+    pub fn insert_cadence_link(&self, record: NewCadenceLink<'_>) -> Result<StoredCadenceLink> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO cadence_links (
+                    src_cadence_object_id,
+                    dst_cadence_object_id,
+                    relation_type,
+                    status,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(src_cadence_object_id, dst_cadence_object_id, relation_type) DO UPDATE SET
+                    status = excluded.status,
+                    created_at = excluded.created_at
+                "#,
+                params![
+                    record.src_cadence_object_id,
+                    record.dst_cadence_object_id,
+                    record.relation_type,
+                    record.status,
+                    now,
+                ],
+            )?;
+
+            fetch_cadence_link(
+                conn,
+                record.src_cadence_object_id,
+                record.dst_cadence_object_id,
+                record.relation_type,
+            )?
+            .ok_or_else(|| anyhow!("cadence link disappeared after upsert"))
+        })
+    }
+
+    pub fn list_cadence_links(&self) -> Result<Vec<StoredCadenceLink>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    src_cadence_object_id,
+                    dst_cadence_object_id,
+                    relation_type,
+                    status,
+                    created_at
+                FROM cadence_links
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_cadence_link_row)?;
+            let links = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(links)
+        })
+    }
+
+    pub fn insert_nota_runtime_transaction(
+        &self,
+        record: NewNotaRuntimeTransaction<'_>,
+    ) -> Result<StoredNotaRuntimeTransaction> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO nota_runtime_transactions (
+                    actor_role,
+                    surface_action,
+                    transaction_kind,
+                    title,
+                    payload_json,
+                    status,
+                    forge_task_id,
+                    cadence_checkpoint_id,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                "#,
+                params![
+                    record.actor_role,
+                    record.surface_action,
+                    record.transaction_kind,
+                    record.title,
+                    record.payload_json,
+                    record.status,
+                    record.forge_task_id,
+                    record.cadence_checkpoint_id,
+                    now,
+                ],
+            )?;
+
+            fetch_nota_runtime_transaction(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("nota runtime transaction disappeared after insert"))
+        })
+    }
+
+    pub fn update_nota_runtime_transaction(
+        &self,
+        id: i64,
+        update: NotaRuntimeTransactionUpdate<'_>,
+    ) -> Result<StoredNotaRuntimeTransaction> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                UPDATE nota_runtime_transactions
+                SET status = ?2,
+                    forge_task_id = COALESCE(?3, forge_task_id),
+                    cadence_checkpoint_id = COALESCE(?4, cadence_checkpoint_id),
+                    updated_at = ?5
+                WHERE id = ?1
+                "#,
+                params![
+                    id,
+                    update.status,
+                    update.forge_task_id,
+                    update.cadence_checkpoint_id,
+                    now,
+                ],
+            )?;
+
+            fetch_nota_runtime_transaction(conn, id)?
+                .ok_or_else(|| anyhow!("nota runtime transaction `{id}` does not exist"))
+        })
+    }
+
+    pub fn get_nota_runtime_transaction(
+        &self,
+        id: i64,
+    ) -> Result<Option<StoredNotaRuntimeTransaction>> {
+        self.with_connection(|conn| fetch_nota_runtime_transaction(conn, id))
+    }
+
+    pub fn list_nota_runtime_transactions(&self) -> Result<Vec<StoredNotaRuntimeTransaction>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    actor_role,
+                    surface_action,
+                    transaction_kind,
+                    title,
+                    payload_json,
+                    status,
+                    forge_task_id,
+                    cadence_checkpoint_id,
+                    created_at,
+                    updated_at
+                FROM nota_runtime_transactions
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_nota_runtime_transaction_row)?;
+            let transactions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(transactions)
+        })
+    }
+
+    pub fn append_nota_runtime_receipt(
+        &self,
+        record: NewNotaRuntimeReceipt<'_>,
+    ) -> Result<StoredNotaRuntimeReceipt> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO nota_runtime_receipts (
+                    transaction_id,
+                    receipt_kind,
+                    payload_json,
+                    status,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    record.transaction_id,
+                    record.receipt_kind,
+                    record.payload_json,
+                    record.status,
+                    now,
+                ],
+            )?;
+
+            fetch_nota_runtime_receipt(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("nota runtime receipt disappeared after insert"))
+        })
+    }
+
+    pub fn list_nota_runtime_receipts(
+        &self,
+        transaction_id: Option<i64>,
+    ) -> Result<Vec<StoredNotaRuntimeReceipt>> {
+        self.with_connection(|conn| {
+            let mut stmt = if transaction_id.is_some() {
+                conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        transaction_id,
+                        receipt_kind,
+                        payload_json,
+                        status,
+                        created_at
+                    FROM nota_runtime_receipts
+                    WHERE transaction_id = ?1
+                    ORDER BY id ASC
+                    "#,
+                )?
+            } else {
+                conn.prepare(
+                    r#"
+                    SELECT
+                        id,
+                        transaction_id,
+                        receipt_kind,
+                        payload_json,
+                        status,
+                        created_at
+                    FROM nota_runtime_receipts
+                    ORDER BY id ASC
+                    "#,
+                )?
+            };
+
+            let rows = if let Some(transaction_id) = transaction_id {
+                stmt.query_map([transaction_id], map_nota_runtime_receipt_row)?
+            } else {
+                stmt.query_map([], map_nota_runtime_receipt_row)?
+            };
+            let receipts = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(receipts)
+        })
+    }
+
+    pub fn list_memory_fragment_records(&self) -> Result<Vec<StoredMemoryFragment>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    title,
+                    content,
+                    kind,
+                    source_type,
+                    source_ref,
+                    source_hash,
+                    scope_type,
+                    scope_ref,
+                    target_table,
+                    target_ref,
+                    status,
+                    triage_status,
+                    temperature,
+                    tags,
+                    notes,
+                    confidence,
+                    created_at,
+                    updated_at
+                FROM memory_fragments
+                ORDER BY kind ASC, target_ref ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_memory_fragment_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn list_memory_link_records(&self) -> Result<Vec<StoredMemoryLink>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    src_kind,
+                    src_id,
+                    dst_kind,
+                    dst_id,
+                    relation_type,
+                    status,
+                    created_at
+                FROM memory_links
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_memory_link_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_document_record(&self, record: UpsertDocumentRecord<'_>) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute(
@@ -1959,6 +2691,271 @@ impl DataStore {
                 ],
             )?;
             Ok(())
+        })
+    }
+
+    pub fn insert_decision_record(
+        &self,
+        record: NewDecisionRecord<'_>,
+    ) -> Result<StoredDecisionRecord> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO decisions (
+                    title,
+                    statement,
+                    rationale,
+                    decision_type,
+                    decision_status,
+                    scope_type,
+                    scope_ref,
+                    source_ref,
+                    decided_by,
+                    enforcement_level,
+                    actor_scope,
+                    confidence,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+                "#,
+                params![
+                    record.title,
+                    record.statement,
+                    record.rationale,
+                    record.decision_type,
+                    record.decision_status,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.source_ref,
+                    record.decided_by,
+                    record.enforcement_level,
+                    record.actor_scope,
+                    record.confidence,
+                    now,
+                ],
+            )?;
+
+            fetch_decision_record(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("decision disappeared after insert"))
+        })
+    }
+
+    pub fn get_decision_record(&self, id: i64) -> Result<Option<StoredDecisionRecord>> {
+        self.with_connection(|conn| fetch_decision_record(conn, id))
+    }
+
+    pub fn list_decision_records(&self) -> Result<Vec<StoredDecisionRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    title,
+                    statement,
+                    rationale,
+                    decision_type,
+                    decision_status,
+                    scope_type,
+                    scope_ref,
+                    source_ref,
+                    decided_by,
+                    enforcement_level,
+                    actor_scope,
+                    confidence,
+                    created_at,
+                    updated_at
+                FROM decisions
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_decision_record_row)?;
+            let decisions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(decisions)
+        })
+    }
+
+    pub fn insert_decision_link(&self, record: NewDecisionLink<'_>) -> Result<StoredDecisionLink> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO decision_links (
+                    src_decision_id,
+                    dst_decision_id,
+                    relation_type,
+                    status,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(src_decision_id, dst_decision_id, relation_type) DO UPDATE SET
+                    status = excluded.status,
+                    created_at = excluded.created_at
+                "#,
+                params![
+                    record.src_decision_id,
+                    record.dst_decision_id,
+                    record.relation_type,
+                    record.status,
+                    now,
+                ],
+            )?;
+
+            fetch_decision_link(
+                conn,
+                record.src_decision_id,
+                record.dst_decision_id,
+                record.relation_type,
+            )?
+            .ok_or_else(|| anyhow!("decision link disappeared after upsert"))
+        })
+    }
+
+    pub fn list_decision_links(&self) -> Result<Vec<StoredDecisionLink>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    src_decision_id,
+                    dst_decision_id,
+                    relation_type,
+                    status,
+                    created_at
+                FROM decision_links
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_decision_link_row)?;
+            let links = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(links)
+        })
+    }
+
+    pub fn upsert_chat_archive_setting(
+        &self,
+        record: ChatArchiveSettingRecord<'_>,
+    ) -> Result<StoredChatArchiveSetting> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO chat_archive_settings (
+                    scope_type,
+                    scope_ref,
+                    archive_policy,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(scope_type, scope_ref) DO UPDATE SET
+                    archive_policy = excluded.archive_policy,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.scope_type,
+                    record.scope_ref,
+                    record.archive_policy,
+                    now,
+                ],
+            )?;
+
+            fetch_chat_archive_setting(conn, record.scope_type, record.scope_ref)?
+                .ok_or_else(|| anyhow!("chat archive setting disappeared after upsert"))
+        })
+    }
+
+    pub fn get_chat_archive_setting(
+        &self,
+        scope_type: &str,
+        scope_ref: &str,
+    ) -> Result<Option<StoredChatArchiveSetting>> {
+        self.with_connection(|conn| fetch_chat_archive_setting(conn, scope_type, scope_ref))
+    }
+
+    pub fn list_chat_archive_settings(&self) -> Result<Vec<StoredChatArchiveSetting>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    scope_type,
+                    scope_ref,
+                    archive_policy,
+                    updated_at
+                FROM chat_archive_settings
+                ORDER BY scope_type ASC, scope_ref ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_chat_archive_setting_row)?;
+            let settings = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(settings)
+        })
+    }
+
+    pub fn insert_chat_capture_record(
+        &self,
+        record: NewChatCaptureRecord<'_>,
+    ) -> Result<StoredChatCaptureRecord> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO chat_capture_records (
+                    session_ref,
+                    role,
+                    capture_mode,
+                    archive_policy,
+                    content,
+                    summary,
+                    scope_type,
+                    scope_ref,
+                    linked_decision_id,
+                    status,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                "#,
+                params![
+                    record.session_ref,
+                    record.role,
+                    record.capture_mode,
+                    record.archive_policy,
+                    record.content,
+                    record.summary,
+                    record.scope_type,
+                    record.scope_ref,
+                    record.linked_decision_id,
+                    record.status,
+                    now,
+                ],
+            )?;
+
+            fetch_chat_capture_record(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("chat capture disappeared after insert"))
+        })
+    }
+
+    pub fn list_chat_capture_records(&self) -> Result<Vec<StoredChatCaptureRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    session_ref,
+                    role,
+                    capture_mode,
+                    archive_policy,
+                    content,
+                    summary,
+                    scope_type,
+                    scope_ref,
+                    linked_decision_id,
+                    status,
+                    created_at
+                FROM chat_capture_records
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_chat_capture_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
         })
     }
 
@@ -2323,6 +3320,167 @@ fn map_promotion_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredP
     })
 }
 
+fn map_cadence_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCadenceObject> {
+    Ok(StoredCadenceObject {
+        id: row.get(0)?,
+        cadence_kind: row.get(1)?,
+        title: row.get(2)?,
+        summary: row.get(3)?,
+        payload_json: row.get(4)?,
+        scope_type: row.get(5)?,
+        scope_ref: row.get(6)?,
+        source_type: row.get(7)?,
+        source_ref: row.get(8)?,
+        admission_policy: row.get(9)?,
+        projection_policy: row.get(10)?,
+        status: row.get(11)?,
+        is_current: row.get::<_, i64>(12)? != 0,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
+}
+
+fn map_cadence_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCadenceLink> {
+    Ok(StoredCadenceLink {
+        id: row.get(0)?,
+        src_cadence_object_id: row.get(1)?,
+        dst_cadence_object_id: row.get(2)?,
+        relation_type: row.get(3)?,
+        status: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+fn map_nota_runtime_transaction_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredNotaRuntimeTransaction> {
+    Ok(StoredNotaRuntimeTransaction {
+        id: row.get(0)?,
+        actor_role: row.get(1)?,
+        surface_action: row.get(2)?,
+        transaction_kind: row.get(3)?,
+        title: row.get(4)?,
+        payload_json: row.get(5)?,
+        status: row.get(6)?,
+        forge_task_id: row.get(7)?,
+        cadence_checkpoint_id: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn map_nota_runtime_receipt_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredNotaRuntimeReceipt> {
+    Ok(StoredNotaRuntimeReceipt {
+        id: row.get(0)?,
+        transaction_id: row.get(1)?,
+        receipt_kind: row.get(2)?,
+        payload_json: row.get(3)?,
+        status: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+fn map_decision_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDecisionRecord> {
+    Ok(StoredDecisionRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        statement: row.get(2)?,
+        rationale: row.get(3)?,
+        decision_type: row.get(4)?,
+        decision_status: row.get(5)?,
+        scope_type: row.get(6)?,
+        scope_ref: row.get(7)?,
+        source_ref: row.get(8)?,
+        decided_by: row.get(9)?,
+        enforcement_level: row.get(10)?,
+        actor_scope: row.get(11)?,
+        confidence: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
+}
+
+fn map_decision_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDecisionLink> {
+    Ok(StoredDecisionLink {
+        id: row.get(0)?,
+        src_decision_id: row.get(1)?,
+        dst_decision_id: row.get(2)?,
+        relation_type: row.get(3)?,
+        status: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+fn map_chat_archive_setting_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredChatArchiveSetting> {
+    Ok(StoredChatArchiveSetting {
+        id: row.get(0)?,
+        scope_type: row.get(1)?,
+        scope_ref: row.get(2)?,
+        archive_policy: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
+}
+
+fn map_chat_capture_record_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredChatCaptureRecord> {
+    Ok(StoredChatCaptureRecord {
+        id: row.get(0)?,
+        session_ref: row.get(1)?,
+        role: row.get(2)?,
+        capture_mode: row.get(3)?,
+        archive_policy: row.get(4)?,
+        content: row.get(5)?,
+        summary: row.get(6)?,
+        scope_type: row.get(7)?,
+        scope_ref: row.get(8)?,
+        linked_decision_id: row.get(9)?,
+        status: row.get(10)?,
+        created_at: row.get(11)?,
+    })
+}
+
+fn map_memory_fragment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemoryFragment> {
+    Ok(StoredMemoryFragment {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        content: row.get(2)?,
+        kind: row.get(3)?,
+        source_type: row.get(4)?,
+        source_ref: row.get(5)?,
+        source_hash: row.get(6)?,
+        scope_type: row.get(7)?,
+        scope_ref: row.get(8)?,
+        target_table: row.get(9)?,
+        target_ref: row.get(10)?,
+        status: row.get(11)?,
+        triage_status: row.get(12)?,
+        temperature: row.get(13)?,
+        tags: row.get(14)?,
+        notes: row.get(15)?,
+        confidence: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
+    })
+}
+
+fn map_memory_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemoryLink> {
+    Ok(StoredMemoryLink {
+        id: row.get(0)?,
+        src_kind: row.get(1)?,
+        src_id: row.get(2)?,
+        dst_kind: row.get(3)?,
+        dst_id: row.get(4)?,
+        relation_type: row.get(5)?,
+        status: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
 fn fetch_vault_mcp_config(
     connection: &Connection,
     id: i64,
@@ -2590,6 +3748,233 @@ fn fetch_promotion_record(
             "#,
             [id],
             map_promotion_record_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_cadence_object_by_id(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredCadenceObject>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                cadence_kind,
+                title,
+                summary,
+                payload_json,
+                scope_type,
+                scope_ref,
+                source_type,
+                source_ref,
+                admission_policy,
+                projection_policy,
+                status,
+                is_current,
+                created_at,
+                updated_at
+            FROM cadence_objects
+            WHERE id = ?1
+            "#,
+            [id],
+            map_cadence_object_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_cadence_link(
+    connection: &Connection,
+    src_cadence_object_id: i64,
+    dst_cadence_object_id: i64,
+    relation_type: &str,
+) -> Result<Option<StoredCadenceLink>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                src_cadence_object_id,
+                dst_cadence_object_id,
+                relation_type,
+                status,
+                created_at
+            FROM cadence_links
+            WHERE src_cadence_object_id = ?1
+              AND dst_cadence_object_id = ?2
+              AND relation_type = ?3
+            "#,
+            params![src_cadence_object_id, dst_cadence_object_id, relation_type],
+            map_cadence_link_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_nota_runtime_transaction(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredNotaRuntimeTransaction>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                actor_role,
+                surface_action,
+                transaction_kind,
+                title,
+                payload_json,
+                status,
+                forge_task_id,
+                cadence_checkpoint_id,
+                created_at,
+                updated_at
+            FROM nota_runtime_transactions
+            WHERE id = ?1
+            "#,
+            [id],
+            map_nota_runtime_transaction_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_nota_runtime_receipt(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredNotaRuntimeReceipt>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                transaction_id,
+                receipt_kind,
+                payload_json,
+                status,
+                created_at
+            FROM nota_runtime_receipts
+            WHERE id = ?1
+            "#,
+            [id],
+            map_nota_runtime_receipt_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_decision_record(connection: &Connection, id: i64) -> Result<Option<StoredDecisionRecord>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                title,
+                statement,
+                rationale,
+                decision_type,
+                decision_status,
+                scope_type,
+                scope_ref,
+                source_ref,
+                decided_by,
+                enforcement_level,
+                actor_scope,
+                confidence,
+                created_at,
+                updated_at
+            FROM decisions
+            WHERE id = ?1
+            "#,
+            [id],
+            map_decision_record_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_decision_link(
+    connection: &Connection,
+    src_decision_id: i64,
+    dst_decision_id: i64,
+    relation_type: &str,
+) -> Result<Option<StoredDecisionLink>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                src_decision_id,
+                dst_decision_id,
+                relation_type,
+                status,
+                created_at
+            FROM decision_links
+            WHERE src_decision_id = ?1
+              AND dst_decision_id = ?2
+              AND relation_type = ?3
+            "#,
+            params![src_decision_id, dst_decision_id, relation_type],
+            map_decision_link_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_chat_archive_setting(
+    connection: &Connection,
+    scope_type: &str,
+    scope_ref: &str,
+) -> Result<Option<StoredChatArchiveSetting>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                scope_type,
+                scope_ref,
+                archive_policy,
+                updated_at
+            FROM chat_archive_settings
+            WHERE scope_type = ?1
+              AND scope_ref = ?2
+            "#,
+            params![scope_type, scope_ref],
+            map_chat_archive_setting_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_chat_capture_record(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredChatCaptureRecord>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                session_ref,
+                role,
+                capture_mode,
+                archive_policy,
+                content,
+                summary,
+                scope_type,
+                scope_ref,
+                linked_decision_id,
+                status,
+                created_at
+            FROM chat_capture_records
+            WHERE id = ?1
+            "#,
+            [id],
+            map_chat_capture_record_row,
         )
         .optional()
         .map_err(Into::into)

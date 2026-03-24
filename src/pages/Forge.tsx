@@ -383,8 +383,8 @@ export default function Forge() {
     <div class="forge-page">
       <div class="forge-header">
         <div>
-          <h1 class="forge-title">Forge</h1>
-          <p class="forge-subtitle">Task runner and real-time execution engine logs.</p>
+          <h1 class="forge-title">Do</h1>
+          <p class="forge-subtitle">Automatic runtime transaction, receipt stream, and execution follow-through.</p>
         </div>
         <div style={{ display: "flex", gap: "0.75rem" }}>
           <button
@@ -393,20 +393,20 @@ export default function Forge() {
             onClick={() => void handleLaunchPreparedAgent()}
           >
             {isLaunchingAgent()
-              ? "Launching Codex..."
+              ? "Running Do..."
               : isLoadingDispatchContext()
-                ? "Preparing Context..."
-                : "Launch Codex Agent"}
+                ? "Preparing Do..."
+                : "Run Do"}
           </button>
-          <button class="btn" onClick={() => setShowNewTaskModal(true)}>+ New Task</button>
+          <button class="btn" onClick={() => setShowNewTaskModal(true)}>+ Advanced Task</button>
         </div>
       </div>
 
       <div class="auto-dispatch-card">
         <div class="auto-dispatch-card__header">
           <div>
-            <p class="auto-dispatch-card__eyebrow">Auto Dispatch</p>
-            <h2 class="auto-dispatch-card__title">Zero-copy Agent handoff from the current worktree</h2>
+            <p class="auto-dispatch-card__eyebrow">Do</p>
+            <h2 class="auto-dispatch-card__title">Automatic NOTA dispatch from the current worktree</h2>
           </div>
           <div style={{ display: "flex", gap: "0.5rem", "align-items": "center" }}>
             <input
@@ -445,16 +445,16 @@ export default function Forge() {
           when={dispatchContext()}
           fallback={
             <div class="task-callout callout-failed">
-              {dispatchContextError() ?? "Forge could not resolve an issue worktree for auto-dispatch."}
+              {dispatchContextError() ?? "Do could not resolve an issue worktree for automatic dispatch."}
             </div>
           }
         >
           {(context) => (
             <>
               <p class="auto-dispatch-card__body">
-                Forge now derives the issue, worktree, and Agent prompt automatically from the
-                current `feat-*` branch. Launching dispatches a Codex Agent without copying any
-                prompt text.
+                Do derives the issue, worktree, and agent prompt automatically from the current
+                `feat-*` branch. Running it creates a runtime transaction, appends receipts, and
+                writes a cadence checkpoint before handing execution to the runner.
               </p>
               <div class="token-chip-list">
                 <span class="token-chip">{context().issue_id}</span>
@@ -483,7 +483,7 @@ export default function Forge() {
               </div>
               <Show when={context().issue_status_source === "fallback"}>
                 <div class="task-callout callout-blocked">
-                  Linear issue status was unavailable, so Forge used a generic `Todo` prompt
+                  Linear issue status was unavailable, so Do used a generic `Todo` prompt
                   fallback. Dispatch still works, but Request-specific auto-sync was skipped.
                 </div>
               </Show>
@@ -529,13 +529,13 @@ export default function Forge() {
               )}
             </For>
             <Show when={tasks().length === 0}>
-              <li class="empty-state">No tasks created yet.</li>
+              <li class="empty-state">No Do runs or advanced tasks yet.</li>
             </Show>
           </ul>
         </div>
 
         <div class="forge-main">
-          <Show when={selectedTask()} fallback={<div class="empty-selection">Select a task to view details and logs.</div>}>
+          <Show when={selectedTask()} fallback={<div class="empty-selection">Select a run to inspect details and logs.</div>}>
             {(task) => {
               const requiredTokens = () => parseStoredRequiredTokens(task().required_tokens);
               const metadata = () => parseForgeTaskMetadata(task().metadata);
@@ -609,7 +609,7 @@ export default function Forge() {
                       }}
                     </For>
                     <Show when={!isLoadingTaskDetails() && !taskDetailsError() && (logs()[task().id] || []).length === 0}>
-                      <div class="log-empty">No logs captured for this task yet.</div>
+                      <div class="log-empty">No logs captured for this run yet.</div>
                     </Show>
                   </div>
                 </div>
@@ -622,7 +622,7 @@ export default function Forge() {
       <Show when={showNewTaskModal()}>
         <div class="modal-backdrop">
           <div class="modal">
-            <h2 style={{ "margin-bottom": "var(--space-4)", "font-size": "var(--text-xl)" }}>New Task</h2>
+            <h2 style={{ "margin-bottom": "var(--space-4)", "font-size": "var(--text-xl)" }}>Advanced Task</h2>
             <div class="form-group">
               <label class="form-label">Task Name</label>
               <input class="form-input" type="text" value={newTaskName()} onInput={(event) => setNewTaskName(event.currentTarget.value)} placeholder="e.g. Echo Server" />
@@ -642,7 +642,7 @@ export default function Forge() {
             </div>
             <div class="modal-actions">
               <button class="btn" onClick={() => setShowNewTaskModal(false)}>Cancel</button>
-              <button class="btn btn-primary" onClick={() => void handleCreateTask()}>Spawn Task</button>
+              <button class="btn btn-primary" onClick={() => void handleCreateTask()}>Create Task</button>
             </div>
           </div>
         </div>
