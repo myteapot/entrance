@@ -39,6 +39,27 @@ impl Drop for TempAppDir {
     }
 }
 
+fn assert_spawnable_codex_command(command: &str) {
+    if cfg!(windows) {
+        let normalized = command.replace('\\', "/").to_ascii_lowercase();
+        let is_spawnable_codex = normalized == "codex"
+            || normalized == "codex.cmd"
+            || normalized.ends_with("/codex.cmd")
+            || normalized == "codex.exe"
+            || normalized.ends_with("/codex.exe")
+            || normalized == "codex.bat"
+            || normalized.ends_with("/codex.bat")
+            || normalized == "codex.com"
+            || normalized.ends_with("/codex.com");
+        assert!(
+            is_spawnable_codex,
+            "expected a spawnable codex command, got {command}"
+        );
+    } else {
+        assert_eq!(command, "codex");
+    }
+}
+
 struct SpawnedHttpMcp {
     child: Child,
     stderr: ChildStderr,
@@ -128,6 +149,13 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
             "forge_bootstrap_mcp_cycle",
             "forge_status",
             "forge_cancel",
+            "nota_runtime_overview",
+            "nota_runtime_status",
+            "nota_runtime_allocations",
+            "nota_runtime_receipts",
+            "nota_do",
+            "nota_dev",
+            "nota_write_checkpoint",
             "recovery_list_seed_runs",
             "recovery_list_seed_rows",
             "vault_get_token",
@@ -151,6 +179,26 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
         .iter()
         .find(|tool| tool["name"] == "forge_bootstrap_mcp_cycle")
         .context("forge_bootstrap_mcp_cycle should be listed")?;
+    let nota_overview = tools
+        .iter()
+        .find(|tool| tool["name"] == "nota_runtime_overview")
+        .context("nota_runtime_overview should be listed")?;
+    let nota_receipts = tools
+        .iter()
+        .find(|tool| tool["name"] == "nota_runtime_receipts")
+        .context("nota_runtime_receipts should be listed")?;
+    let nota_do = tools
+        .iter()
+        .find(|tool| tool["name"] == "nota_do")
+        .context("nota_do should be listed")?;
+    let nota_dev = tools
+        .iter()
+        .find(|tool| tool["name"] == "nota_dev")
+        .context("nota_dev should be listed")?;
+    let nota_checkpoint = tools
+        .iter()
+        .find(|tool| tool["name"] == "nota_write_checkpoint")
+        .context("nota_write_checkpoint should be listed")?;
     let prepare_agent = tools
         .iter()
         .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
@@ -165,6 +213,31 @@ fn external_client_can_list_tools_and_call_forge_run_over_http() -> Result<()> {
     assert_eq!(bootstrap_cycle["permission"]["primitive"], "assign");
     assert_eq!(bootstrap_cycle["permission"]["room"], "strategy");
     assert!(bootstrap_cycle["dispatchRole"].is_null());
+    assert_eq!(nota_overview["permission"]["actorRole"], "nota");
+    assert_eq!(nota_overview["permission"]["primitive"], "chat");
+    assert_eq!(nota_overview["permission"]["room"], "surface");
+    assert_eq!(nota_overview["permission"]["targetLayer"], "cold");
+    assert!(nota_overview["dispatchRole"].is_null());
+    assert_eq!(nota_receipts["permission"]["actorRole"], "nota");
+    assert_eq!(nota_receipts["permission"]["primitive"], "chat");
+    assert_eq!(nota_receipts["permission"]["room"], "surface");
+    assert_eq!(nota_receipts["permission"]["targetLayer"], "cold");
+    assert!(nota_receipts["dispatchRole"].is_null());
+    assert_eq!(nota_do["permission"]["actorRole"], "nota");
+    assert_eq!(nota_do["permission"]["primitive"], "assign");
+    assert_eq!(nota_do["permission"]["room"], "strategy");
+    assert_eq!(nota_do["permission"]["targetLayer"], "hot");
+    assert_eq!(nota_do["dispatchRole"], "agent");
+    assert_eq!(nota_dev["permission"]["actorRole"], "nota");
+    assert_eq!(nota_dev["permission"]["primitive"], "assign");
+    assert_eq!(nota_dev["permission"]["room"], "strategy");
+    assert_eq!(nota_dev["permission"]["targetLayer"], "hot");
+    assert_eq!(nota_dev["dispatchRole"], "dev");
+    assert_eq!(nota_checkpoint["permission"]["actorRole"], "nota");
+    assert_eq!(nota_checkpoint["permission"]["primitive"], "learn");
+    assert_eq!(nota_checkpoint["permission"]["room"], "memory");
+    assert_eq!(nota_checkpoint["permission"]["targetLayer"], "cold");
+    assert!(nota_checkpoint["dispatchRole"].is_null());
     assert_eq!(prepare_agent["dispatchRole"], "agent");
 
     let forge_run = server.send(json!({
@@ -427,6 +500,13 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
             "forge_bootstrap_mcp_cycle",
             "forge_status",
             "forge_cancel",
+            "nota_runtime_overview",
+            "nota_runtime_status",
+            "nota_runtime_allocations",
+            "nota_runtime_receipts",
+            "nota_do",
+            "nota_dev",
+            "nota_write_checkpoint",
             "recovery_list_seed_runs",
             "recovery_list_seed_rows",
             "vault_get_token",
@@ -515,6 +595,1659 @@ fn external_client_can_read_recovery_seed_runtime_surface_over_http() -> Result<
     assert_eq!(
         rows["result"]["structuredContent"]["rows"][0]["promotion_state"],
         "storage_only"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_read_nota_runtime_overview_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-overview")?;
+    seed_app_state(app_dir.path())?;
+    seed_nota_runtime_overview(app_dir.path())?;
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota-overview",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let overview = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-overview",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_overview",
+            "arguments": {}
+        }
+    }))?;
+
+    assert_eq!(overview["result"]["isError"], false);
+    assert_eq!(overview["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(overview["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(overview["result"]["permission"]["primitive"], "chat");
+    assert_eq!(overview["result"]["permission"]["room"], "surface");
+    assert_eq!(overview["result"]["permission"]["targetLayer"], "cold");
+    assert_eq!(
+        overview["result"]["structuredContent"]["checkpoints"]["checkpoint_count"],
+        1
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["decisions"]["decision_count"],
+        1
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["chat_captures"]["capture_count"],
+        1
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["transactions"]["transaction_count"],
+        0
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["allocations"]["allocation_count"],
+        0
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["chat_policy"]["setting"]["archive_policy"],
+        "full"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["checkpoints"]["checkpoints"][0]["payload"]
+            ["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_read_nota_runtime_status_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-status")?;
+    seed_app_state(app_dir.path())?;
+    seed_nota_runtime_overview(app_dir.path())?;
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota-status",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+
+    assert_eq!(status["result"]["isError"], false);
+    assert_eq!(status["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(status["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(status["result"]["permission"]["primitive"], "chat");
+    assert_eq!(status["result"]["permission"]["room"], "surface");
+    assert_eq!(status["result"]["permission"]["targetLayer"], "cold");
+    assert_eq!(status["result"]["structuredContent"]["checkpoint_count"], 1);
+    assert_eq!(
+        status["result"]["structuredContent"]["current_checkpoint_id"],
+        1
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["current_checkpoint"]["payload"]["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["transaction_count"],
+        0
+    );
+    assert!(status["result"]["structuredContent"]["latest_transaction"].is_null());
+    assert_eq!(status["result"]["structuredContent"]["allocation_count"], 0);
+    assert!(status["result"]["structuredContent"]["latest_allocation"].is_null());
+    assert_eq!(status["result"]["structuredContent"]["receipt_count"], 0);
+    assert!(status["result"]["structuredContent"]["latest_receipt"].is_null());
+    assert_eq!(status["result"]["structuredContent"]["decision_count"], 1);
+    assert_eq!(
+        status["result"]["structuredContent"]["latest_decision"]["title"],
+        "Chat is the continuity surface"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["chat_capture_count"],
+        1
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["chat_policy"]["setting"]["archive_policy"],
+        "full"
+    );
+    assert!(status["result"]["structuredContent"]["recommended_checkpoint"].is_null());
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_write_nota_runtime_checkpoint_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-write-checkpoint")?;
+    seed_app_state(app_dir.path())?;
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota-write",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let checkpoint = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-write-checkpoint",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_write_checkpoint",
+            "arguments": {
+                "title": "MCP checkpoint write",
+                "stable_level": "single-ingress, checkpointed, DB-first NOTA host with MCP checkpoint write",
+                "landed": ["MCP checkpoint write landed"],
+                "remaining": ["Drive a real MCP/runtime Do transaction"],
+                "human_continuity_bus": "reduced but still partially required",
+                "selected_trunk": "MCP/runtime Do host proof",
+                "next_start_hints": [
+                    "Call nota_runtime_overview before other MCP work."
+                ]
+            }
+        }
+    }))?;
+
+    assert_eq!(checkpoint["result"]["isError"], false);
+    assert_eq!(checkpoint["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(checkpoint["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(checkpoint["result"]["permission"]["primitive"], "learn");
+    assert_eq!(checkpoint["result"]["permission"]["room"], "memory");
+    assert_eq!(checkpoint["result"]["permission"]["targetLayer"], "cold");
+    assert_eq!(
+        checkpoint["result"]["structuredContent"]["checkpoint"]["title"],
+        "MCP checkpoint write"
+    );
+    assert_eq!(
+        checkpoint["result"]["structuredContent"]["checkpoint"]["payload"]["selected_trunk"],
+        "MCP/runtime Do host proof"
+    );
+
+    let overview = run_entrance_cli(app_dir.path(), &["nota", "overview"])?;
+    let overview: Value =
+        serde_json::from_str(&overview).context("nota overview output should be valid JSON")?;
+    assert_eq!(overview["checkpoints"]["checkpoint_count"], 1);
+    assert_eq!(overview["checkpoints"]["current_checkpoint_id"], 1);
+    assert_eq!(
+        overview["checkpoints"]["checkpoints"][0]["title"],
+        "MCP checkpoint write"
+    );
+    assert_eq!(
+        overview["checkpoints"]["checkpoints"][0]["payload"]["next_start_hints"][0],
+        "Call nota_runtime_overview before other MCP work."
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-do")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    fs::create_dir_all(&bootstrap_skill)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?;
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota-do",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let do_report = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-do",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_do",
+            "arguments": {
+                "project_dir": project_root,
+                "model": "codex",
+                "agent_command": agent_command,
+                "title": "MCP Do dispatch MYT-48"
+            }
+        }
+    }))?;
+
+    assert_eq!(do_report["result"]["isError"], false);
+    assert_eq!(do_report["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(do_report["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(do_report["result"]["permission"]["primitive"], "assign");
+    assert_eq!(do_report["result"]["permission"]["room"], "strategy");
+    assert_eq!(do_report["result"]["permission"]["targetLayer"], "hot");
+    assert_eq!(do_report["result"]["dispatchRole"], "agent");
+    assert_eq!(
+        do_report["result"]["structuredContent"]["transaction"]["surface_action"],
+        "do"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["transaction"]["transaction_kind"],
+        "forge_agent_dispatch"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["dispatch"]["issue_id"],
+        "MYT-48"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["allocator_role"],
+        "nota"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["allocator_surface"],
+        "nota_do"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["source_transaction_id"],
+        do_report["result"]["structuredContent"]["transaction"]["id"]
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["child_execution_kind"],
+        "forge_task"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["return_target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["allocation"]["escalation_target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["checkpoint"]["cadence_kind"],
+        "CADENCE_CHECKPOINT"
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["spawn_error"],
+        Value::Null
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["receipts"]
+            .as_array()
+            .context("nota_do receipts should be an array")?
+            .len(),
+        5
+    );
+    assert_eq!(
+        do_report["result"]["structuredContent"]["receipts"][2]["receipt_kind"],
+        "ALLOCATION_RECORDED"
+    );
+    let transaction_id = do_report["result"]["structuredContent"]["transaction"]["id"]
+        .as_i64()
+        .context("nota_do should return a transaction id")?;
+    let allocation_id = do_report["result"]["structuredContent"]["allocation"]["id"]
+        .as_i64()
+        .context("nota_do should return an allocation id")?;
+    let lineage_ref = do_report["result"]["structuredContent"]["allocation"]["lineage_ref"]
+        .as_str()
+        .context("nota_do should return an allocation lineage_ref")?;
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    let task_id = do_report["result"]["structuredContent"]["task_id"]
+        .as_i64()
+        .context("nota_do should return a task id")?;
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = NULL, finished_at = NULL WHERE id = ?1",
+        rusqlite::params![task_id, "Running"],
+    )?;
+
+    let allocations = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-allocations",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_allocations",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(allocations["result"]["isError"], false);
+    assert_eq!(
+        allocations["result"]["entranceSurface"]["actorRole"],
+        "nota"
+    );
+    assert_eq!(allocations["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(allocations["result"]["permission"]["primitive"], "chat");
+    assert_eq!(allocations["result"]["permission"]["room"], "surface");
+    assert_eq!(allocations["result"]["permission"]["targetLayer"], "cold");
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocation_count"],
+        1
+    );
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocations"][0]["source_transaction_id"],
+        do_report["result"]["structuredContent"]["transaction"]["id"]
+    );
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocations"][0]["child_dispatch_role"],
+        "agent"
+    );
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocations"][0]["child_dispatch_tool_name"],
+        "forge_dispatch_agent"
+    );
+
+    let overview = run_entrance_cli(app_dir.path(), &["nota", "overview"])?;
+    let overview: Value =
+        serde_json::from_str(&overview).context("nota overview output should be valid JSON")?;
+    assert_eq!(overview["transactions"]["transaction_count"], 1);
+    assert_eq!(
+        overview["transactions"]["transactions"][0]["surface_action"],
+        "do"
+    );
+    assert_eq!(overview["allocations"]["allocation_count"], 1);
+    assert_eq!(
+        overview["allocations"]["allocations"][0]["source_transaction_id"],
+        do_report["result"]["structuredContent"]["transaction"]["id"]
+    );
+    assert_eq!(
+        overview["allocations"]["allocations"][0]["child_dispatch_role"],
+        "agent"
+    );
+    assert_eq!(
+        overview["allocations"]["allocations"][0]["child_dispatch_tool_name"],
+        "forge_dispatch_agent"
+    );
+    assert_eq!(overview["checkpoints"]["checkpoint_count"], 1);
+    assert_eq!(
+        overview["checkpoints"]["checkpoints"][0]["title"],
+        "Do allocation: MYT-48"
+    );
+    assert!(overview["recommended_checkpoint"].is_null());
+    assert_eq!(
+        connection.query_row(
+            "SELECT COUNT(*) FROM nota_runtime_transactions",
+            [],
+            |row| { row.get::<_, i64>(0) }
+        )?,
+        1
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        5
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_allocations", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        1
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM cadence_objects", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        1
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM plugin_forge_tasks", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        1
+    );
+
+    let blocked_message = "add openai to Vault first";
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = ?3, finished_at = ?4 WHERE id = ?1",
+        rusqlite::params![task_id, "Blocked", blocked_message, "2026-03-23T00:00:00Z"],
+    )?;
+
+    let blocked_overview = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-overview-terminal",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_overview",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(blocked_overview["result"]["isError"], false);
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["allocations"]["allocations"][0]["status"],
+        "escalated_blocked"
+    );
+    let blocked_payload_json = blocked_overview["result"]["structuredContent"]["allocations"]
+        ["allocations"][0]["payload_json"]
+        .as_str()
+        .context("allocation payload_json should be present")?;
+    let blocked_payload: Value = serde_json::from_str(blocked_payload_json)
+        .context("allocation payload_json should stay valid JSON")?;
+    assert_eq!(
+        blocked_payload["terminal_outcome"]["boundary_kind"],
+        "escalation"
+    );
+    assert_eq!(
+        blocked_payload["terminal_outcome"]["child_execution_status"],
+        "Blocked"
+    );
+    assert_eq!(
+        blocked_payload["terminal_outcome"]["child_execution_status_message"],
+        blocked_message
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["stable_level"],
+        "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned agent escalation boundary checkpointed into runtime continuity"
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["selected_trunk"],
+        "agent escalation continuity"
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["landed"][0],
+        format!(
+            "NOTA-owned agent allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+            allocation_id, lineage_ref, transaction_id, task_id
+        )
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["landed"][2],
+        format!(
+            "Transaction {transaction_id} receipt history includes terminal receipt ALLOCATION_TERMINAL_OUTCOME_RECORDED capturing allocation {} back to nota_runtime_transaction {}.",
+            allocation_id, transaction_id
+        )
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["remaining"][0],
+        format!(
+            "L3 remains open until the current Blocked gate is cleared: {}.",
+            blocked_message
+        )
+    );
+    assert_eq!(
+        blocked_overview["result"]["structuredContent"]["recommended_checkpoint"]["next_start_hints"][2],
+        format!(
+            "Treat lineage `{}` as the current agent escalation boundary until the Blocked gate is cleared.",
+            lineage_ref
+        )
+    );
+    assert!(blocked_overview["result"]["structuredContent"]["next_step"].is_null());
+
+    let blocked_allocations = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-allocations-terminal",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_allocations",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(blocked_allocations["result"]["isError"], false);
+    assert_eq!(
+        blocked_allocations["result"]["structuredContent"]["allocations"][0]["status"],
+        "escalated_blocked"
+    );
+    let blocked_allocations_payload_json = blocked_allocations["result"]["structuredContent"]
+        ["allocations"][0]["payload_json"]
+        .as_str()
+        .context("allocation payload_json should be present on dedicated MCP surface")?;
+    let blocked_allocations_payload: Value = serde_json::from_str(blocked_allocations_payload_json)
+        .context("dedicated MCP allocation payload_json should stay valid JSON")?;
+    assert_eq!(
+        blocked_allocations_payload["terminal_outcome"]["boundary_kind"],
+        "escalation"
+    );
+    assert_eq!(
+        blocked_allocations_payload["terminal_outcome"]["child_execution_status"],
+        "Blocked"
+    );
+    assert_eq!(
+        blocked_allocations_payload["terminal_outcome"]["child_execution_status_message"],
+        blocked_message
+    );
+
+    let blocked_receipts = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-receipts-terminal",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_receipts",
+            "arguments": {
+                "transaction_id": do_report["result"]["structuredContent"]["transaction"]["id"]
+            }
+        }
+    }))?;
+    assert_eq!(blocked_receipts["result"]["isError"], false);
+    assert_eq!(
+        blocked_receipts["result"]["permission"]["actorRole"],
+        "nota"
+    );
+    assert_eq!(
+        blocked_receipts["result"]["permission"]["primitive"],
+        "chat"
+    );
+    assert_eq!(blocked_receipts["result"]["permission"]["room"], "surface");
+    assert_eq!(
+        blocked_receipts["result"]["permission"]["targetLayer"],
+        "cold"
+    );
+    assert_eq!(
+        blocked_receipts["result"]["structuredContent"]["requested_transaction_id"],
+        transaction_id
+    );
+    assert_eq!(
+        blocked_receipts["result"]["structuredContent"]["receipt_count"],
+        6
+    );
+    assert_eq!(
+        blocked_receipts["result"]["structuredContent"]["receipts"][5]["receipt_kind"],
+        "ALLOCATION_TERMINAL_OUTCOME_RECORDED"
+    );
+    let blocked_receipt_payload_json = blocked_receipts["result"]["structuredContent"]["receipts"]
+        [5]["payload_json"]
+        .as_str()
+        .context("receipt payload_json should be present on dedicated MCP receipt surface")?;
+    let blocked_receipt_payload: Value = serde_json::from_str(blocked_receipt_payload_json)
+        .context("dedicated MCP receipt payload_json should stay valid JSON")?;
+    assert_eq!(
+        blocked_receipt_payload["lineage_ref"],
+        do_report["result"]["structuredContent"]["allocation"]["lineage_ref"]
+    );
+    assert_eq!(blocked_receipt_payload["boundary_kind"], "escalation");
+    assert_eq!(blocked_receipt_payload["child_execution_status"], "Blocked");
+    assert_eq!(
+        blocked_receipt_payload["child_execution_status_message"],
+        blocked_message
+    );
+
+    let stored_allocation_outcome = connection.query_row(
+        "SELECT status, payload_json FROM nota_runtime_allocations",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    assert_eq!(stored_allocation_outcome.0, "escalated_blocked");
+    let stored_payload: Value = serde_json::from_str(&stored_allocation_outcome.1)
+        .context("stored allocation payload_json should be valid JSON")?;
+    assert_eq!(
+        stored_payload["terminal_outcome"]["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        6
+    );
+    assert_eq!(
+        connection.query_row(
+            "SELECT COUNT(*) FROM nota_runtime_receipts WHERE receipt_kind = 'ALLOCATION_TERMINAL_OUTCOME_RECORDED'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )?,
+        1
+    );
+    let terminal_receipt = connection.query_row(
+        "SELECT payload_json, created_at FROM nota_runtime_receipts WHERE receipt_kind = 'ALLOCATION_TERMINAL_OUTCOME_RECORDED'",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    assert!(!terminal_receipt.1.is_empty());
+    let terminal_receipt_payload: Value = serde_json::from_str(&terminal_receipt.0)
+        .context("terminal outcome receipt payload_json should be valid JSON")?;
+    assert_eq!(
+        terminal_receipt_payload["allocation_id"],
+        do_report["result"]["structuredContent"]["allocation"]["id"]
+    );
+    assert_eq!(
+        terminal_receipt_payload["lineage_ref"],
+        do_report["result"]["structuredContent"]["allocation"]["lineage_ref"]
+    );
+    assert_eq!(terminal_receipt_payload["boundary_kind"], "escalation");
+    assert_eq!(
+        terminal_receipt_payload["child_execution_status"],
+        "Blocked"
+    );
+    assert_eq!(
+        terminal_receipt_payload["child_execution_status_message"],
+        blocked_message
+    );
+    assert_eq!(
+        terminal_receipt_payload["target_kind"],
+        stored_payload["terminal_outcome"]["target_kind"]
+    );
+    assert_eq!(
+        terminal_receipt_payload["target_ref"],
+        stored_payload["terminal_outcome"]["target_ref"]
+    );
+    assert_eq!(
+        terminal_receipt_payload["allocation_status"],
+        "escalated_blocked"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_create_nota_owned_dev_transaction_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-dev")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?;
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-nota-dev",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let dev_report = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_dev",
+            "arguments": {
+                "project_dir": project_root,
+                "model": "codex",
+                "agent_command": agent_command,
+                "title": "MCP Dev dispatch MYT-48"
+            }
+        }
+    }))?;
+
+    assert_eq!(dev_report["result"]["isError"], false);
+    assert_eq!(dev_report["result"]["entranceSurface"]["actorRole"], "nota");
+    assert_eq!(dev_report["result"]["permission"]["actorRole"], "nota");
+    assert_eq!(dev_report["result"]["permission"]["primitive"], "assign");
+    assert_eq!(dev_report["result"]["permission"]["room"], "strategy");
+    assert_eq!(dev_report["result"]["permission"]["targetLayer"], "hot");
+    assert_eq!(dev_report["result"]["dispatchRole"], "dev");
+    assert_eq!(
+        dev_report["result"]["structuredContent"]["transaction"]["surface_action"],
+        "dev"
+    );
+    assert_eq!(
+        dev_report["result"]["structuredContent"]["transaction"]["transaction_kind"],
+        "forge_dev_dispatch"
+    );
+    assert_eq!(
+        dev_report["result"]["structuredContent"]["dispatch"]["dispatch_role"],
+        "dev"
+    );
+    assert_eq!(
+        dev_report["result"]["structuredContent"]["allocation"]["allocator_surface"],
+        "nota_dev"
+    );
+    assert_eq!(
+        dev_report["result"]["structuredContent"]["allocation"]["allocation_kind"],
+        "forge_dev_dispatch"
+    );
+    assert_eq!(
+        dev_report["result"]["structuredContent"]["checkpoint"]["title"],
+        "Dev allocation: MYT-48"
+    );
+    assert_eq!(
+        dev_report["result"]["structuredContent"]["checkpoint"]["payload"]["selected_trunk"],
+        "NOTA-owned dev runtime cut"
+    );
+    assert_eq!(
+        dev_report["result"]["structuredContent"]["receipts"]
+            .as_array()
+            .context("nota_dev receipts should be an array")?
+            .len(),
+        5
+    );
+
+    let allocation_payload_json = dev_report["result"]["structuredContent"]["allocation"]
+        ["payload_json"]
+        .as_str()
+        .context("nota_dev allocation payload_json should be present")?;
+    let allocation_payload: Value = serde_json::from_str(allocation_payload_json)
+        .context("nota_dev allocation payload_json should be valid JSON")?;
+    assert_eq!(allocation_payload["child_dispatch_role"], "dev");
+    assert_eq!(
+        allocation_payload["child_dispatch_tool_name"],
+        "forge_dispatch_dev"
+    );
+
+    let transaction_id = dev_report["result"]["structuredContent"]["transaction"]["id"]
+        .as_i64()
+        .context("nota_dev should return a transaction id")?;
+    let task_id = dev_report["result"]["structuredContent"]["task_id"]
+        .as_i64()
+        .context("nota_dev should return a task id")?;
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = NULL, finished_at = NULL WHERE id = ?1",
+        rusqlite::params![task_id, "Running"],
+    )?;
+
+    let status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(status["result"]["isError"], false);
+    assert_eq!(
+        status["result"]["structuredContent"]["latest_transaction"]["transaction_kind"],
+        "forge_dev_dispatch"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["latest_allocation"]["allocator_surface"],
+        "nota_dev"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["latest_allocation"]["child_dispatch_role"],
+        "dev"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["latest_allocation"]["child_dispatch_tool_name"],
+        "forge_dispatch_dev"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["current_checkpoint"]["title"],
+        "Dev allocation: MYT-48"
+    );
+    assert!(status["result"]["structuredContent"]["recommended_checkpoint"].is_null());
+    assert!(status["result"]["structuredContent"]["integrate"].is_null());
+    assert!(status["result"]["structuredContent"]["review"].is_null());
+    assert!(status["result"]["structuredContent"]["next_step"].is_null());
+
+    let allocations = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-allocations-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_allocations",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(allocations["result"]["isError"], false);
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocations"][0]["child_dispatch_role"],
+        "dev"
+    );
+    assert_eq!(
+        allocations["result"]["structuredContent"]["allocations"][0]["child_dispatch_tool_name"],
+        "forge_dispatch_dev"
+    );
+
+    let receipts = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-receipts-dev",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_receipts",
+            "arguments": {
+                "transaction_id": transaction_id
+            }
+        }
+    }))?;
+    assert_eq!(receipts["result"]["isError"], false);
+    assert_eq!(
+        receipts["result"]["structuredContent"]["requested_transaction_id"],
+        transaction_id
+    );
+    assert_eq!(receipts["result"]["structuredContent"]["receipt_count"], 5);
+    assert_eq!(
+        receipts["result"]["structuredContent"]["receipts"][4]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
+
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = ?3, finished_at = ?4 WHERE id = ?1",
+        rusqlite::params![task_id, "Blocked", "simulated escalation for next_step gating", "2026-03-24T00:00:00Z"],
+    )?;
+    let blocked_status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status-dev-blocked",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(blocked_status["result"]["isError"], false);
+    assert_eq!(
+        blocked_status["result"]["structuredContent"]["latest_allocation"]["status"],
+        "escalated_blocked"
+    );
+    assert!(blocked_status["result"]["structuredContent"]["integrate"].is_null());
+    assert!(blocked_status["result"]["structuredContent"]["review"].is_null());
+    assert!(blocked_status["result"]["structuredContent"]["next_step"].is_null());
+
+    assert_eq!(
+        connection.query_row(
+            "SELECT COUNT(*) FROM nota_runtime_transactions",
+            [],
+            |row| row.get::<_, i64>(0)
+        )?,
+        1
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        6
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_allocations", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        1
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_read_dev_review_ready_next_step_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-dev-review-ready")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-49");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?;
+    let dev_output = run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "dev",
+            "--project-dir",
+            project_root
+                .to_str()
+                .context("project root should be valid UTF-8")?,
+            "--model",
+            "codex",
+            "--agent-command",
+            agent_command
+                .to_str()
+                .context("agent command should be valid UTF-8")?,
+            "--title",
+            "HTTP review-ready MYT-49",
+        ],
+    )?;
+    let dev_report: Value =
+        serde_json::from_str(&dev_output).context("nota dev output should be valid JSON")?;
+    let transaction_id = dev_report["transaction"]["id"]
+        .as_i64()
+        .context("transaction id should be present")?;
+    let allocation_id = dev_report["allocation"]["id"]
+        .as_i64()
+        .context("allocation id should be present")?;
+    let lineage_ref = dev_report["allocation"]["lineage_ref"]
+        .as_str()
+        .context("allocation lineage_ref should be present")?
+        .to_string();
+    let task_id = dev_report["task_id"]
+        .as_i64()
+        .context("task id should be present")?;
+
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = NULL, finished_at = ?3 WHERE id = ?1",
+        rusqlite::params![task_id, "Done", "2026-03-24T00:00:00Z"],
+    )?;
+
+    run_entrance_cli(app_dir.path(), &["nota", "allocations"])?;
+    run_entrance_cli(app_dir.path(), &["nota", "checkpoint-runtime-closure"])?;
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-review-ready",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status-review-ready",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(status["result"]["isError"], false);
+    assert!(status["result"]["structuredContent"]["recommended_checkpoint"].is_null());
+    assert_eq!(
+        status["result"]["structuredContent"]["latest_receipt"]["receipt_kind"],
+        "DEV_RETURN_REVIEW_READY"
+    );
+    assert!(status["result"]["structuredContent"]["integrate"].is_null());
+    assert_eq!(
+        status["result"]["structuredContent"]["review"]["state"],
+        "review_ready"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["review"]["verdict"],
+        Value::Null
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["next_step"]["step"],
+        "review"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["next_step"]["transaction_id"],
+        transaction_id
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["next_step"]["allocation_id"],
+        allocation_id
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["next_step"]["lineage_ref"],
+        lineage_ref
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["next_step"]["child_dispatch_role"],
+        "dev"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["next_step"]["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["next_step"]["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["next_step"]["target_ref"],
+        transaction_id.to_string()
+    );
+
+    let overview = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-overview-review-ready",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_overview",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(overview["result"]["isError"], false);
+    assert!(overview["result"]["structuredContent"]["recommended_checkpoint"].is_null());
+    assert!(overview["result"]["structuredContent"]["integrate"].is_null());
+    assert_eq!(
+        overview["result"]["structuredContent"]["review"]["state"],
+        "review_ready"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"]["step"],
+        "review"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"]["transaction_id"],
+        transaction_id
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"]["allocation_id"],
+        allocation_id
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"]["lineage_ref"],
+        lineage_ref
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"]["child_dispatch_role"],
+        "dev"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"]["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"]["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"]["target_ref"],
+        transaction_id.to_string()
+    );
+
+    let receipts = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-receipts-review-ready",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_receipts",
+            "arguments": {
+                "transaction_id": transaction_id
+            }
+        }
+    }))?;
+    assert_eq!(receipts["result"]["isError"], false);
+    assert_eq!(
+        receipts["result"]["structuredContent"]["receipts"][8]["receipt_kind"],
+        "DEV_RETURN_REVIEW_READY"
+    );
+    let review_ready_payload_json = receipts["result"]["structuredContent"]["receipts"][8]
+        ["payload_json"]
+        .as_str()
+        .context("review-ready payload_json should be present")?;
+    let review_ready_payload: Value = serde_json::from_str(review_ready_payload_json)
+        .context("review-ready payload_json should be valid JSON")?;
+    assert_eq!(review_ready_payload["step"], "review");
+    assert_eq!(review_ready_payload["transaction_id"], transaction_id);
+    assert_eq!(review_ready_payload["allocation_id"], allocation_id);
+    assert_eq!(review_ready_payload["lineage_ref"], lineage_ref);
+    assert_eq!(review_ready_payload["child_dispatch_role"], "dev");
+    assert_eq!(
+        review_ready_payload["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(
+        review_ready_payload["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        review_ready_payload["target_ref"],
+        transaction_id.to_string()
+    );
+
+    let review_output = run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "review",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--verdict",
+            "changes_requested",
+            "--summary",
+            "HTTP review requested a repair pass before integration.",
+        ],
+    )?;
+    let review_report: Value =
+        serde_json::from_str(&review_output).context("HTTP review output should be valid JSON")?;
+    assert_eq!(review_report["status"], "recorded");
+    assert_eq!(review_report["review"]["state"], "review_recorded");
+    assert_eq!(review_report["review"]["verdict"], "changes_requested");
+    assert_eq!(review_report["next_step"]["step"], "repair");
+
+    let repaired_status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status-review-recorded",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(repaired_status["result"]["isError"], false);
+    assert_eq!(
+        repaired_status["result"]["structuredContent"]["latest_receipt"]["receipt_kind"],
+        "DEV_RETURN_REVIEW_RECORDED"
+    );
+    assert!(repaired_status["result"]["structuredContent"]["integrate"].is_null());
+    assert_eq!(
+        repaired_status["result"]["structuredContent"]["review"]["state"],
+        "review_recorded"
+    );
+    assert_eq!(
+        repaired_status["result"]["structuredContent"]["review"]["verdict"],
+        "changes_requested"
+    );
+    assert_eq!(
+        repaired_status["result"]["structuredContent"]["next_step"]["step"],
+        "repair"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_read_dev_integrate_truth_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-dev-integrate-http")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-50");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?;
+    let dev_output = run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "dev",
+            "--project-dir",
+            project_root
+                .to_str()
+                .context("project root should be valid UTF-8")?,
+            "--model",
+            "codex",
+            "--agent-command",
+            agent_command
+                .to_str()
+                .context("agent command should be valid UTF-8")?,
+            "--title",
+            "HTTP integrate MYT-50",
+        ],
+    )?;
+    let dev_report: Value =
+        serde_json::from_str(&dev_output).context("nota dev output should be valid JSON")?;
+    let transaction_id = dev_report["transaction"]["id"]
+        .as_i64()
+        .context("transaction id should be present")?;
+    let allocation_id = dev_report["allocation"]["id"]
+        .as_i64()
+        .context("allocation id should be present")?;
+    let lineage_ref = dev_report["allocation"]["lineage_ref"]
+        .as_str()
+        .context("allocation lineage_ref should be present")?
+        .to_string();
+    let task_id = dev_report["task_id"]
+        .as_i64()
+        .context("task id should be present")?;
+
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = NULL, finished_at = ?3 WHERE id = ?1",
+        rusqlite::params![task_id, "Done", "2026-03-24T00:00:00Z"],
+    )?;
+
+    run_entrance_cli(app_dir.path(), &["nota", "allocations"])?;
+    run_entrance_cli(app_dir.path(), &["nota", "checkpoint-runtime-closure"])?;
+    run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "review",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--verdict",
+            "approved",
+            "--summary",
+            "HTTP review accepted the returned dev boundary for integration.",
+        ],
+    )?;
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-integrate",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let review_status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status-integrate-review",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(review_status["result"]["isError"], false);
+    assert!(review_status["result"]["structuredContent"]["integrate"].is_null());
+    assert_eq!(
+        review_status["result"]["structuredContent"]["review"]["verdict"],
+        "approved"
+    );
+    assert_eq!(
+        review_status["result"]["structuredContent"]["next_step"]["step"],
+        "integrate"
+    );
+
+    let integrate_started_output = run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "integrate",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--state",
+            "started",
+            "--summary",
+            "HTTP integration is in progress.",
+        ],
+    )?;
+    let integrate_started_report: Value = serde_json::from_str(&integrate_started_output)
+        .context("HTTP integrate started output should be valid JSON")?;
+    assert_eq!(integrate_started_report["status"], "recorded");
+    assert_eq!(
+        integrate_started_report["integrate"]["state"],
+        "integrate_started"
+    );
+    assert_eq!(integrate_started_report["next_step"], Value::Null);
+
+    let started_status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status-integrate-started",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(started_status["result"]["isError"], false);
+    assert_eq!(
+        started_status["result"]["structuredContent"]["latest_receipt"]["receipt_kind"],
+        "DEV_RETURN_INTEGRATE_RECORDED"
+    );
+    assert_eq!(
+        started_status["result"]["structuredContent"]["integrate"]["state"],
+        "integrate_started"
+    );
+    assert_eq!(
+        started_status["result"]["structuredContent"]["integrate"]["transaction_id"],
+        transaction_id
+    );
+    assert_eq!(
+        started_status["result"]["structuredContent"]["integrate"]["allocation_id"],
+        allocation_id
+    );
+    assert_eq!(
+        started_status["result"]["structuredContent"]["integrate"]["lineage_ref"],
+        lineage_ref
+    );
+    assert_eq!(
+        started_status["result"]["structuredContent"]["integrate"]["summary"],
+        "HTTP integration is in progress."
+    );
+    assert_eq!(
+        started_status["result"]["structuredContent"]["next_step"],
+        Value::Null
+    );
+
+    let integrate_recorded_output = run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "integrate",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--state",
+            "repair_requested",
+            "--summary",
+            "HTTP integration requested repair before finalize.",
+        ],
+    )?;
+    let integrate_recorded_report: Value = serde_json::from_str(&integrate_recorded_output)
+        .context("HTTP integrate recorded output should be valid JSON")?;
+    assert_eq!(integrate_recorded_report["status"], "recorded");
+    assert_eq!(
+        integrate_recorded_report["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(
+        integrate_recorded_report["integrate"]["outcome"],
+        "repair_requested"
+    );
+    assert_eq!(integrate_recorded_report["next_step"]["step"], "repair");
+
+    let repair_status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status-integrate-recorded",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(repair_status["result"]["isError"], false);
+    assert_eq!(
+        repair_status["result"]["structuredContent"]["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(
+        repair_status["result"]["structuredContent"]["integrate"]["outcome"],
+        "repair_requested"
+    );
+    assert_eq!(
+        repair_status["result"]["structuredContent"]["next_step"]["step"],
+        "repair"
+    );
+
+    let overview = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-overview-integrate-recorded",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_overview",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(overview["result"]["isError"], false);
+    assert_eq!(
+        overview["result"]["structuredContent"]["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["integrate"]["outcome"],
+        "repair_requested"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"]["step"],
+        "repair"
+    );
+
+    let receipts = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-receipts-integrate-recorded",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_receipts",
+            "arguments": {
+                "transaction_id": transaction_id
+            }
+        }
+    }))?;
+    assert_eq!(receipts["result"]["isError"], false);
+    let integrate_payload_json = receipts["result"]["structuredContent"]["receipts"][11]
+        ["payload_json"]
+        .as_str()
+        .context("integrate payload_json should be present")?;
+    let integrate_payload: Value = serde_json::from_str(integrate_payload_json)
+        .context("integrate payload_json should be valid JSON")?;
+    assert_eq!(
+        integrate_payload["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(
+        integrate_payload["integrate"]["outcome"],
+        "repair_requested"
+    );
+    assert_eq!(integrate_payload["next_step"]["step"], "repair");
+
+    Ok(())
+}
+
+#[test]
+fn external_client_can_read_dev_finalize_truth_over_http() -> Result<()> {
+    let app_dir = TempAppDir::new("nota-dev-finalize-http")?;
+    seed_app_state(app_dir.path())?;
+
+    let project_root = app_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    let dev_role = bootstrap_skill.join("roles");
+    fs::create_dir_all(&dev_role)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
+
+    let managed_worktree = app_dir
+        .path()
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-51");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let agent_command = write_stub_agent_command(app_dir.path())?;
+    let dev_output = run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "dev",
+            "--project-dir",
+            project_root
+                .to_str()
+                .context("project root should be valid UTF-8")?,
+            "--model",
+            "codex",
+            "--agent-command",
+            agent_command
+                .to_str()
+                .context("agent command should be valid UTF-8")?,
+            "--title",
+            "HTTP finalize MYT-51",
+        ],
+    )?;
+    let dev_report: Value =
+        serde_json::from_str(&dev_output).context("nota dev output should be valid JSON")?;
+    let transaction_id = dev_report["transaction"]["id"]
+        .as_i64()
+        .context("transaction id should be present")?;
+    let allocation_id = dev_report["allocation"]["id"]
+        .as_i64()
+        .context("allocation id should be present")?;
+    let task_id = dev_report["task_id"]
+        .as_i64()
+        .context("task id should be present")?;
+
+    let db_path = app_dir.path().join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute(
+        "UPDATE plugin_forge_tasks SET status = ?2, status_message = NULL, finished_at = ?3 WHERE id = ?1",
+        rusqlite::params![task_id, "Done", "2026-03-24T00:00:00Z"],
+    )?;
+
+    run_entrance_cli(app_dir.path(), &["nota", "allocations"])?;
+    run_entrance_cli(app_dir.path(), &["nota", "checkpoint-runtime-closure"])?;
+    run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "review",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--verdict",
+            "approved",
+            "--summary",
+            "HTTP finalize review accepted the returned dev boundary.",
+        ],
+    )?;
+    run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "integrate",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--state",
+            "integrated",
+            "--summary",
+            "HTTP finalize path integrated cleanly.",
+        ],
+    )?;
+    let finalize_output = run_entrance_cli(
+        app_dir.path(),
+        &[
+            "nota",
+            "finalize",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--summary",
+            "HTTP finalize closed the boundary.",
+        ],
+    )?;
+    let finalize_report: Value = serde_json::from_str(&finalize_output)
+        .context("HTTP finalize output should be valid JSON")?;
+    assert_eq!(finalize_report["status"], "recorded");
+    assert_eq!(finalize_report["finalize"]["state"], "closed");
+    assert_eq!(finalize_report["next_step"], Value::Null);
+
+    let port = reserve_port()?;
+    let mut server =
+        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", None, Some("nota"))?;
+    let initialize = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "initialize-finalize",
+        "method": "initialize",
+        "params": {}
+    }))?;
+    assert_eq!(initialize["result"]["entranceSurface"]["actorRole"], "nota");
+
+    let status = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-status-finalize",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_status",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(status["result"]["isError"], false);
+    assert_eq!(
+        status["result"]["structuredContent"]["latest_receipt"]["receipt_kind"],
+        "DEV_RETURN_FINALIZE_RECORDED"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["integrate"]["outcome"],
+        "integrated"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["finalize"]["state"],
+        "closed"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["next_step"],
+        Value::Null
+    );
+
+    let overview = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-overview-finalize",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_overview",
+            "arguments": {}
+        }
+    }))?;
+    assert_eq!(overview["result"]["isError"], false);
+    assert_eq!(
+        overview["result"]["structuredContent"]["finalize"]["state"],
+        "closed"
+    );
+    assert_eq!(
+        overview["result"]["structuredContent"]["next_step"],
+        Value::Null
+    );
+
+    let receipts = server.send(json!({
+        "jsonrpc": "2.0",
+        "id": "nota-runtime-receipts-finalize",
+        "method": "tools/call",
+        "params": {
+            "name": "nota_runtime_receipts",
+            "arguments": {
+                "transaction_id": transaction_id
+            }
+        }
+    }))?;
+    assert_eq!(receipts["result"]["isError"], false);
+    let finalize_payload_json = receipts["result"]["structuredContent"]["receipts"][11]
+        ["payload_json"]
+        .as_str()
+        .context("HTTP finalize payload_json should be present")?;
+    let finalize_payload: Value = serde_json::from_str(finalize_payload_json)
+        .context("HTTP finalize payload_json should be valid JSON")?;
+    assert_eq!(finalize_payload["finalize"]["state"], "closed");
+    assert_eq!(
+        finalize_payload["finalize"]["summary"],
+        "HTTP finalize closed the boundary."
     );
 
     Ok(())
@@ -643,9 +2376,10 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
         verify["result"]["structuredContent"]["task_status"],
         "Pending"
     );
-    assert_eq!(
-        verify["result"]["structuredContent"]["task_command"],
-        "codex"
+    assert_spawnable_codex_command(
+        verify["result"]["structuredContent"]["task_command"]
+            .as_str()
+            .context("forge_verify_dispatch should return a task_command string")?,
     );
     assert_eq!(
         verify["result"]["structuredContent"]["prompt_via_stdin"],
@@ -675,7 +2409,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
     )?;
 
     assert_eq!(stored.0, "Pending");
-    assert_eq!(stored.1, "codex");
+    assert_spawnable_codex_command(&stored.1);
     assert_eq!(stored.2.as_deref(), Some(worktree_path.as_str()));
     assert_eq!(stored.3.as_deref(), Some(prompt));
     assert!(!stored.3.as_deref().unwrap_or_default().contains(".agents"));
@@ -805,9 +2539,10 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_http_without_a
         verify["result"]["structuredContent"]["task_status"],
         "Pending"
     );
-    assert_eq!(
-        verify["result"]["structuredContent"]["task_command"],
-        "codex"
+    assert_spawnable_codex_command(
+        verify["result"]["structuredContent"]["task_command"]
+            .as_str()
+            .context("forge_verify_dev_dispatch should return a task_command string")?,
     );
     assert_eq!(
         verify["result"]["structuredContent"]["prompt_via_stdin"],
@@ -837,7 +2572,7 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_http_without_a
     )?;
 
     assert_eq!(stored.0, "Pending");
-    assert_eq!(stored.1, "codex");
+    assert_spawnable_codex_command(&stored.1);
     assert_eq!(stored.2.as_deref(), Some(worktree_path.as_str()));
     assert_eq!(stored.3.as_deref(), Some(prompt));
     let metadata: Value =
@@ -1551,6 +3286,59 @@ fn seed_recovery_runtime_surface(app_dir: &PathBuf) -> Result<()> {
                 .context("recovery seed path should be valid UTF-8")?,
         ],
     )?;
+    Ok(())
+}
+
+fn seed_nota_runtime_overview(app_dir: &PathBuf) -> Result<()> {
+    run_entrance_cli(
+        app_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--stable-level",
+            "single-ingress, checkpointed, DB-first NOTA host",
+            "--landed",
+            "cadence cut landed",
+            "--remaining",
+            "headless continuity bundle",
+            "--human-continuity-bus",
+            "reduced but still present",
+        ],
+    )?;
+    run_entrance_cli(
+        app_dir,
+        &[
+            "nota",
+            "decision",
+            "--title",
+            "Chat is the continuity surface",
+            "--statement",
+            "Chat should read the runtime DB continuity bundle instead of replaying raw chat.",
+            "--rationale",
+            "Resume should start from canonical runtime state.",
+            "--decision-type",
+            "ui_surface",
+            "--scope-type",
+            "project",
+            "--scope-ref",
+            "Entrance",
+            "--source-ref",
+            "nota:test:mcp-http-overview",
+        ],
+    )?;
+    run_entrance_cli(app_dir, &["nota", "chat-policy", "--policy", "full"])?;
+    run_entrance_cli(
+        app_dir,
+        &[
+            "nota",
+            "capture-chat",
+            "--role",
+            "nota",
+            "--content",
+            "Overview should expose checkpoint, decision, and archive state together.",
+        ],
+    )?;
+
     Ok(())
 }
 

@@ -2,6 +2,17 @@
 
 > Purpose: continuation packet for resuming Entrance from the compressed top root into the newly landed minimal landing layer, without reheating root ambiguity or losing the reconciliation queue
 
+## Superseding v0 Continuation Note
+
+- The historical landing snapshot below remains useful context, but it is no longer sufficient as the only continuation source.
+- Before acting, read `entrance nota checkpoints` for the active `v0` operating cut and `entrance nota decisions` for longer-lived direction.
+- Current `v0` continuation policy is:
+  - one persistent `NOTA` monitor/planner window owns global continuation, level judgment, and checkpoint updates
+  - worker windows may execute bounded local lanes, but they do not become peer continuation controllers
+  - parallelism is allowed only under one `NOTA`-selected milestone and must return to `NOTA` for continue, escalate, or stop
+  - current runtime truth is still single-lane `NOTA -> agent`; do not overclaim `Dev` or a multi-role allocator
+- Treat old branch or commit stamps in this handout as historical unless they match live `git` and runtime DB state.
+
 ## Current Snapshot
 
 - Branch: `codex/docs-top-self-cycle-handout-20260322`
@@ -172,18 +183,20 @@
 
 Read in this order:
 
-1. `specs/chore/top_self_cycle_handout.md`
-2. `specs/top/README.md`
-3. `specs/top/machine.md`
-4. `specs/top/control.md`
-5. `specs/top/truth.md`
-6. `specs/top/phase-todo.md`
-7. `specs/top/pending.md`
-8. `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
-9. `src-tauri/migrations/0005_create_core_landing_tables.sql`
-10. `src-tauri/src/core/landing.rs`
-11. `src-tauri/src/core/data_store.rs`
-12. `src-tauri/src/lib.rs`
+1. `entrance nota checkpoints`
+2. `entrance nota decisions`
+3. `specs/chore/top_self_cycle_handout.md`
+4. `specs/top/README.md`
+5. `specs/top/machine.md`
+6. `specs/top/control.md`
+7. `specs/top/truth.md`
+8. `specs/top/phase-todo.md`
+9. `specs/top/pending.md`
+10. `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
+11. `src-tauri/migrations/0005_create_core_landing_tables.sql`
+12. `src-tauri/src/core/landing.rs`
+13. `src-tauri/src/core/data_store.rs`
+14. `src-tauri/src/lib.rs`
 
 Then descend only into the single selected trunk or substrate lane for the current cycle.
 
@@ -293,8 +306,9 @@ Local caution:
 ### `IN`
 
 1. Verify branch/MR context and confirm the read set above.
-2. Confirm that the compressed hot root is still canonical.
-3. Choose exactly one semantic trunk or substrate lane for this cycle:
+2. Confirm that the compressed hot root is still canonical and that the active checkpoint matches the intended `v0` cut.
+3. If this is the persistent `NOTA` window, act as monitor/planner first: audit shared truth, pick the active milestone, and define worker boundaries.
+4. Choose exactly one semantic trunk or substrate lane for this cycle:
    - `Machine`
    - `Truth`
    - `Control`
@@ -327,6 +341,10 @@ Local caution:
 7. If ambiguity remains unresolved after local critique:
    - park it in cold or `pending.md`
    - do not bloat the hot root with speculative text
+8. If multiple worker windows are active:
+   - keep them inside one `NOTA`-selected milestone
+   - require them to return evidence or blockers back to `NOTA`
+   - do not let them self-advance the global level or fork a second continuation loop
 
 ### `OUT`
 

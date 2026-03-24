@@ -162,7 +162,8 @@ impl SpawnedMcpStdioClient {
                 continue;
             }
 
-            return serde_json::from_str(payload).context("failed to parse MCP stdio response JSON");
+            return serde_json::from_str(payload)
+                .context("failed to parse MCP stdio response JSON");
         }
     }
 }

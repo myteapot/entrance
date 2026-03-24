@@ -5,6 +5,8 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
+#[cfg(test)]
+use rusqlite::OpenFlags;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
@@ -40,13 +42,19 @@ const CORE_CHAT_ARCHIVE_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0010_create_core_chat_archive_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 6] = [
+const CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION: MigrationStep = MigrationStep {
+    name: "0011_create_core_nota_runtime_allocations",
+    sql: include_str!("../../migrations/0011_create_core_nota_runtime_allocations.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 7] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
     CORE_NOTA_DO_RUNTIME_MIGRATION,
     CORE_DECISION_LINKS_MIGRATION,
     CORE_CHAT_ARCHIVE_MIGRATION,
+    CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -105,6 +113,7 @@ pub struct StoredForgeTask {
     pub status_message: Option<String>,
     pub exit_code: Option<i64>,
     pub created_at: String,
+    pub heartbeat_at: Option<String>,
     pub finished_at: Option<String>,
 }
 
@@ -325,6 +334,26 @@ pub struct StoredNotaRuntimeReceipt {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StoredNotaRuntimeAllocation {
+    pub id: i64,
+    pub allocator_role: String,
+    pub allocator_surface: String,
+    pub allocation_kind: String,
+    pub source_transaction_id: i64,
+    pub lineage_ref: String,
+    pub child_execution_kind: String,
+    pub child_execution_ref: String,
+    pub return_target_kind: String,
+    pub return_target_ref: String,
+    pub escalation_target_kind: String,
+    pub escalation_target_ref: String,
+    pub status: String,
+    pub payload_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredDecisionRecord {
     pub id: i64,
     pub title: String,
@@ -376,6 +405,38 @@ pub struct StoredChatCaptureRecord {
     pub linked_decision_id: Option<i64>,
     pub status: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredTodoRecord {
+    pub id: i64,
+    pub title: String,
+    pub status: String,
+    pub priority: i64,
+    pub project: String,
+    pub created_at: String,
+    pub done_at: Option<String>,
+    pub temperature: String,
+    pub due_on: String,
+    pub remind_every_days: i64,
+    pub remind_next_on: String,
+    pub last_reminded_at: String,
+    pub reminder_status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredVisionRecord {
+    pub id: i64,
+    pub title: String,
+    pub statement: String,
+    pub horizon: String,
+    pub vision_status: String,
+    pub scope_type: String,
+    pub scope_ref: String,
+    pub source_ref: String,
+    pub confidence: f64,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -727,6 +788,29 @@ pub struct NewNotaRuntimeReceipt<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct NewNotaRuntimeAllocation<'a> {
+    pub allocator_role: &'a str,
+    pub allocator_surface: &'a str,
+    pub allocation_kind: &'a str,
+    pub source_transaction_id: i64,
+    pub lineage_ref: &'a str,
+    pub child_execution_kind: &'a str,
+    pub child_execution_ref: &'a str,
+    pub return_target_kind: &'a str,
+    pub return_target_ref: &'a str,
+    pub escalation_target_kind: &'a str,
+    pub escalation_target_ref: &'a str,
+    pub status: &'a str,
+    pub payload_json: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaRuntimeAllocationUpdate<'a> {
+    pub status: &'a str,
+    pub payload_json: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
 pub struct NewForgeDispatchReceipt<'a> {
     pub parent_task_id: i64,
     pub supervision_scope: &'a str,
@@ -759,6 +843,22 @@ impl DataStore {
         }
 
         let connection = Connection::open(&path)?;
+
+        let store = Self {
+            connection: Arc::new(Mutex::new(connection)),
+            path: Arc::new(path),
+        };
+        store.migrate(migration_plan)?;
+        Ok(store)
+    }
+
+    #[cfg(test)]
+    pub fn open_read_only(
+        path: impl AsRef<Path>,
+        migration_plan: MigrationPlan<'_>,
+    ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
 
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -1000,8 +1100,8 @@ impl DataStore {
             conn.execute(
                 r#"
                 INSERT INTO plugin_forge_tasks (
-                    name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL)
+                    name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, heartbeat_at, finished_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL, NULL)
                 "#,
                 params![
                     name,
@@ -1035,8 +1135,8 @@ impl DataStore {
         transaction.execute(
             r#"
             INSERT INTO plugin_forge_tasks (
-                name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL)
+                name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, heartbeat_at, finished_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL, NULL)
             "#,
             params![
                 name,
@@ -1100,20 +1200,25 @@ impl DataStore {
         exit_code: Option<i32>,
         status_message: Option<&str>,
     ) -> Result<()> {
-        let now = if matches!(status, "Done" | "Failed" | "Cancelled" | "Blocked") {
-            Some(Utc::now().to_rfc3339())
-        } else {
-            None
-        };
+        let now = Utc::now().to_rfc3339();
         self.with_connection(|conn| {
-            if let Some(finished_at) = now {
+            if status == "Running" {
+                conn.execute(
+                    r#"
+                    UPDATE plugin_forge_tasks
+                    SET status = ?2, exit_code = ?3, status_message = ?4, heartbeat_at = ?5, finished_at = NULL
+                    WHERE id = ?1
+                    "#,
+                    params![id, status, exit_code, status_message, now],
+                )?;
+            } else if matches!(status, "Done" | "Failed" | "Cancelled" | "Blocked") {
                 conn.execute(
                     r#"
                     UPDATE plugin_forge_tasks
                     SET status = ?2, exit_code = ?3, status_message = ?4, finished_at = ?5
                     WHERE id = ?1
                     "#,
-                    params![id, status, exit_code, status_message, finished_at],
+                    params![id, status, exit_code, status_message, now],
                 )?;
             } else {
                 conn.execute(
@@ -1125,6 +1230,22 @@ impl DataStore {
                     params![id, status, exit_code, status_message],
                 )?;
             }
+            Ok(())
+        })
+    }
+
+    pub fn touch_forge_task_heartbeat(&self, id: i64) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET heartbeat_at = ?2
+                WHERE id = ?1
+                  AND status = 'Running'
+                "#,
+                params![id, now],
+            )?;
             Ok(())
         })
     }
@@ -1176,7 +1297,7 @@ impl DataStore {
     pub fn list_forge_tasks(&self) -> Result<Vec<StoredForgeTask>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks ORDER BY created_at DESC"
+                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, heartbeat_at, finished_at FROM plugin_forge_tasks ORDER BY created_at DESC"
             )?;
             let rows = stmt.query_map([], map_forge_row)?;
             let tasks = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1187,7 +1308,7 @@ impl DataStore {
     pub fn get_forge_task(&self, id: i64) -> Result<Option<StoredForgeTask>> {
         self.with_connection(|conn| {
             conn.query_row(
-                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, finished_at FROM plugin_forge_tasks WHERE id = ?1",
+                "SELECT id, name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, heartbeat_at, finished_at FROM plugin_forge_tasks WHERE id = ?1",
                 [id],
                 map_forge_row,
             )
@@ -1211,6 +1332,15 @@ impl DataStore {
                 ) VALUES (?1, ?2, ?3, ?4)
                 "#,
                 params![task_id, stream, line, now],
+            )?;
+            conn.execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET heartbeat_at = ?2
+                WHERE id = ?1
+                  AND status = 'Running'
+                "#,
+                params![task_id, now],
             )?;
             Ok(StoredForgeTaskLog {
                 id: conn.last_insert_rowid(),
@@ -2444,6 +2574,109 @@ impl DataStore {
         })
     }
 
+    pub fn insert_nota_runtime_allocation(
+        &self,
+        record: NewNotaRuntimeAllocation<'_>,
+    ) -> Result<StoredNotaRuntimeAllocation> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO nota_runtime_allocations (
+                    allocator_role,
+                    allocator_surface,
+                    allocation_kind,
+                    source_transaction_id,
+                    lineage_ref,
+                    child_execution_kind,
+                    child_execution_ref,
+                    return_target_kind,
+                    return_target_ref,
+                    escalation_target_kind,
+                    escalation_target_ref,
+                    status,
+                    payload_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
+                "#,
+                params![
+                    record.allocator_role,
+                    record.allocator_surface,
+                    record.allocation_kind,
+                    record.source_transaction_id,
+                    record.lineage_ref,
+                    record.child_execution_kind,
+                    record.child_execution_ref,
+                    record.return_target_kind,
+                    record.return_target_ref,
+                    record.escalation_target_kind,
+                    record.escalation_target_ref,
+                    record.status,
+                    record.payload_json,
+                    now,
+                ],
+            )?;
+
+            fetch_nota_runtime_allocation(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("nota runtime allocation disappeared after insert"))
+        })
+    }
+
+    pub fn update_nota_runtime_allocation(
+        &self,
+        id: i64,
+        update: NotaRuntimeAllocationUpdate<'_>,
+    ) -> Result<StoredNotaRuntimeAllocation> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                UPDATE nota_runtime_allocations
+                SET status = ?2,
+                    payload_json = COALESCE(?3, payload_json),
+                    updated_at = ?4
+                WHERE id = ?1
+                "#,
+                params![id, update.status, update.payload_json, now],
+            )?;
+
+            fetch_nota_runtime_allocation(conn, id)?
+                .ok_or_else(|| anyhow!("nota runtime allocation `{id}` does not exist"))
+        })
+    }
+
+    pub fn list_nota_runtime_allocations(&self) -> Result<Vec<StoredNotaRuntimeAllocation>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    allocator_role,
+                    allocator_surface,
+                    allocation_kind,
+                    source_transaction_id,
+                    lineage_ref,
+                    child_execution_kind,
+                    child_execution_ref,
+                    return_target_kind,
+                    return_target_ref,
+                    escalation_target_kind,
+                    escalation_target_ref,
+                    status,
+                    payload_json,
+                    created_at,
+                    updated_at
+                FROM nota_runtime_allocations
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_nota_runtime_allocation_row)?;
+            let allocations = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(allocations)
+        })
+    }
+
     pub fn list_memory_fragment_records(&self) -> Result<Vec<StoredMemoryFragment>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
@@ -2569,6 +2802,34 @@ impl DataStore {
                 ],
             )?;
             Ok(())
+        })
+    }
+
+    pub fn list_todo_records(&self) -> Result<Vec<StoredTodoRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    title,
+                    status,
+                    priority,
+                    project,
+                    created_at,
+                    done_at,
+                    temperature,
+                    due_on,
+                    remind_every_days,
+                    remind_next_on,
+                    last_reminded_at,
+                    reminder_status
+                FROM todos
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_todo_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
         })
     }
 
@@ -2997,6 +3258,32 @@ impl DataStore {
         })
     }
 
+    pub fn list_vision_records(&self) -> Result<Vec<StoredVisionRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    title,
+                    statement,
+                    horizon,
+                    vision_status,
+                    scope_type,
+                    scope_ref,
+                    source_ref,
+                    confidence,
+                    created_at,
+                    updated_at
+                FROM visions
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_vision_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_memory_fragment_record(
         &self,
         record: UpsertMemoryFragmentRecord<'_>,
@@ -3149,7 +3436,8 @@ fn map_forge_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTask> {
         status_message: row.get(9)?,
         exit_code: row.get(10)?,
         created_at: row.get(11)?,
-        finished_at: row.get(12)?,
+        heartbeat_at: row.get(12)?,
+        finished_at: row.get(13)?,
     })
 }
 
@@ -3382,6 +3670,29 @@ fn map_nota_runtime_receipt_row(
     })
 }
 
+fn map_nota_runtime_allocation_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredNotaRuntimeAllocation> {
+    Ok(StoredNotaRuntimeAllocation {
+        id: row.get(0)?,
+        allocator_role: row.get(1)?,
+        allocator_surface: row.get(2)?,
+        allocation_kind: row.get(3)?,
+        source_transaction_id: row.get(4)?,
+        lineage_ref: row.get(5)?,
+        child_execution_kind: row.get(6)?,
+        child_execution_ref: row.get(7)?,
+        return_target_kind: row.get(8)?,
+        return_target_ref: row.get(9)?,
+        escalation_target_kind: row.get(10)?,
+        escalation_target_ref: row.get(11)?,
+        status: row.get(12)?,
+        payload_json: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
+}
+
 fn map_decision_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDecisionRecord> {
     Ok(StoredDecisionRecord {
         id: row.get(0)?,
@@ -3441,6 +3752,40 @@ fn map_chat_capture_record_row(
         linked_decision_id: row.get(9)?,
         status: row.get(10)?,
         created_at: row.get(11)?,
+    })
+}
+
+fn map_todo_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTodoRecord> {
+    Ok(StoredTodoRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        status: row.get(2)?,
+        priority: row.get(3)?,
+        project: row.get(4)?,
+        created_at: row.get(5)?,
+        done_at: row.get(6)?,
+        temperature: row.get(7)?,
+        due_on: row.get(8)?,
+        remind_every_days: row.get(9)?,
+        remind_next_on: row.get(10)?,
+        last_reminded_at: row.get(11)?,
+        reminder_status: row.get(12)?,
+    })
+}
+
+fn map_vision_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVisionRecord> {
+    Ok(StoredVisionRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        statement: row.get(2)?,
+        horizon: row.get(3)?,
+        vision_status: row.get(4)?,
+        scope_type: row.get(5)?,
+        scope_ref: row.get(6)?,
+        source_ref: row.get(7)?,
+        confidence: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 
@@ -3867,6 +4212,40 @@ fn fetch_nota_runtime_receipt(
         .map_err(Into::into)
 }
 
+fn fetch_nota_runtime_allocation(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredNotaRuntimeAllocation>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                allocator_role,
+                allocator_surface,
+                allocation_kind,
+                source_transaction_id,
+                lineage_ref,
+                child_execution_kind,
+                child_execution_ref,
+                return_target_kind,
+                return_target_ref,
+                escalation_target_kind,
+                escalation_target_ref,
+                status,
+                payload_json,
+                created_at,
+                updated_at
+            FROM nota_runtime_allocations
+            WHERE id = ?1
+            "#,
+            [id],
+            map_nota_runtime_allocation_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
 fn fetch_decision_record(connection: &Connection, id: i64) -> Result<Option<StoredDecisionRecord>> {
     connection
         .query_row(
@@ -4020,6 +4399,13 @@ fn ensure_forge_task_columns(connection: &Connection) -> Result<()> {
     if !columns.iter().any(|column| column == "metadata") {
         connection.execute(
             "ALTER TABLE plugin_forge_tasks ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'",
+            [],
+        )?;
+    }
+
+    if !columns.iter().any(|column| column == "heartbeat_at") {
+        connection.execute(
+            "ALTER TABLE plugin_forge_tasks ADD COLUMN heartbeat_at TEXT",
             [],
         )?;
     }
@@ -4266,6 +4652,7 @@ fn fallback_app_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{thread, time::Duration};
 
     #[test]
     fn forge_task_logs_round_trip() -> Result<()> {
@@ -4292,6 +4679,58 @@ mod tests {
         assert_eq!(logs[0].line, "hello");
         assert_eq!(logs[1].stream, "stderr");
         assert_eq!(logs[1].line, "warn");
+
+        Ok(())
+    }
+
+    #[test]
+    fn forge_task_heartbeat_advances_while_running() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+
+        let task_id =
+            store.insert_forge_task("Echo", "echo", r#"["hello"]"#, None, None, "[]", "{}")?;
+        let pending = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert!(pending.heartbeat_at.is_none());
+
+        store.update_forge_task_status(task_id, "Running", None, None)?;
+        let running = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        let first_heartbeat = running
+            .heartbeat_at
+            .clone()
+            .expect("running task should record an initial heartbeat");
+
+        thread::sleep(Duration::from_millis(2));
+        store.append_forge_task_log(task_id, "stdout", "hello")?;
+        let after_log = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert_ne!(
+            after_log.heartbeat_at.as_deref(),
+            Some(first_heartbeat.as_str())
+        );
+
+        let last_heartbeat = after_log
+            .heartbeat_at
+            .clone()
+            .expect("running task heartbeat should stay present");
+        store.update_forge_task_status(task_id, "Done", Some(0), None)?;
+        let done = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert_eq!(done.heartbeat_at.as_deref(), Some(last_heartbeat.as_str()));
 
         Ok(())
     }

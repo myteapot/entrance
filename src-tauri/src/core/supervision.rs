@@ -111,8 +111,8 @@ pub const DEFAULT_SESSION_BUNDLE_POLICY: SupervisionPolicy = SupervisionPolicy {
 #[cfg(test)]
 mod tests {
     use super::{
-        FailureVisibility, RestartPolicy, RuntimeChildState, SupervisionScope,
-        SupervisionStrategy, DEFAULT_AGENT_PROCESS_POLICY, DEFAULT_DISPATCH_PIPELINE_POLICY,
+        FailureVisibility, RestartPolicy, RuntimeChildState, SupervisionScope, SupervisionStrategy,
+        DEFAULT_AGENT_PROCESS_POLICY, DEFAULT_DISPATCH_PIPELINE_POLICY,
         DEFAULT_SESSION_BUNDLE_POLICY,
     };
 

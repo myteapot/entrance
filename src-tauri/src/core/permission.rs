@@ -64,8 +64,35 @@ const HOT_ASSIGN_NOTA: McpToolPermission = McpToolPermission::new(
     KnowledgeLayer::Hot,
 );
 
+const HOT_DO_NOTA: McpToolPermission = McpToolPermission::new(
+    ActorRole::Nota,
+    ActionPrimitive::Assign,
+    ActionRoom::Strategy,
+    KnowledgeLayer::Hot,
+);
+
+const COLD_CHAT_NOTA: McpToolPermission = McpToolPermission::new(
+    ActorRole::Nota,
+    ActionPrimitive::Chat,
+    ActionRoom::Surface,
+    KnowledgeLayer::Cold,
+);
+
+const COLD_LEARN_NOTA: McpToolPermission = McpToolPermission::new(
+    ActorRole::Nota,
+    ActionPrimitive::Learn,
+    ActionRoom::Memory,
+    KnowledgeLayer::Cold,
+);
+
 pub fn permission_for_mcp_tool(name: &str) -> Option<McpToolPermission> {
     match name {
+        "nota_runtime_overview"
+        | "nota_runtime_status"
+        | "nota_runtime_allocations"
+        | "nota_runtime_receipts" => Some(COLD_CHAT_NOTA),
+        "nota_do" | "nota_dev" => Some(HOT_DO_NOTA),
+        "nota_write_checkpoint" => Some(COLD_LEARN_NOTA),
         "forge_prepare_dispatch"
         | "forge_verify_dispatch"
         | "forge_prepare_agent_dispatch"
@@ -86,6 +113,13 @@ mod tests {
     #[test]
     fn current_dispatch_tools_are_mapped_into_valid_action_records() {
         for name in [
+            "nota_runtime_overview",
+            "nota_runtime_status",
+            "nota_runtime_allocations",
+            "nota_runtime_receipts",
+            "nota_do",
+            "nota_dev",
+            "nota_write_checkpoint",
             "forge_prepare_dispatch",
             "forge_verify_dispatch",
             "forge_prepare_agent_dispatch",
@@ -152,6 +186,97 @@ mod tests {
     fn bootstrap_allocator_tool_is_currently_nota_owned_assignment_surface() {
         assert_eq!(
             permission_for_mcp_tool("forge_bootstrap_mcp_cycle"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Assign,
+                ActionRoom::Strategy,
+                KnowledgeLayer::Hot,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_runtime_overview_is_nota_owned_cold_surface_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_runtime_overview"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Chat,
+                ActionRoom::Surface,
+                KnowledgeLayer::Cold,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_runtime_status_is_nota_owned_cold_surface_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_runtime_status"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Chat,
+                ActionRoom::Surface,
+                KnowledgeLayer::Cold,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_runtime_allocations_is_nota_owned_cold_surface_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_runtime_allocations"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Chat,
+                ActionRoom::Surface,
+                KnowledgeLayer::Cold,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_runtime_receipts_is_nota_owned_cold_surface_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_runtime_receipts"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Chat,
+                ActionRoom::Surface,
+                KnowledgeLayer::Cold,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_write_checkpoint_is_nota_owned_cold_memory_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_write_checkpoint"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Learn,
+                ActionRoom::Memory,
+                KnowledgeLayer::Cold,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_do_is_nota_owned_hot_strategy_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_do"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Assign,
+                ActionRoom::Strategy,
+                KnowledgeLayer::Hot,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_dev_is_nota_owned_hot_strategy_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_dev"),
             Some(super::McpToolPermission::new(
                 ActorRole::Nota,
                 ActionPrimitive::Assign,

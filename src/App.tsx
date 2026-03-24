@@ -12,6 +12,8 @@ import {
 import Sidebar from "./components/Sidebar";
 import { appRoutes, shortcutRoutes } from "./router";
 
+const PUBLIC_UPDATER_ENABLED = import.meta.env.VITE_ENABLE_UPDATER === "true";
+
 const isEditableTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -28,7 +30,7 @@ const isEditableTarget = (target: EventTarget | null) => {
 };
 
 const checkForAppUpdates = async () => {
-  if (import.meta.env.DEV) {
+  if (import.meta.env.DEV || !PUBLIC_UPDATER_ENABLED) {
     return;
   }
 

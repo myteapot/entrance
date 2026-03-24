@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::async_runtime::JoinHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -13,11 +14,14 @@ use crate::plugins::{
     vault::VaultCipher,
 };
 
+const TASK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+
 pub struct TaskEngine {
     data_store: DataStore,
     event_bus: EventBus,
     vault_cipher: Option<Arc<VaultCipher>>,
     active_tasks: Mutex<HashMap<i64, JoinHandle<()>>>,
+    heartbeat_interval: Duration,
 }
 
 impl TaskEngine {
@@ -27,6 +31,7 @@ impl TaskEngine {
             event_bus,
             vault_cipher: VaultCipher::from_device().ok().map(Arc::new),
             active_tasks: Mutex::new(HashMap::new()),
+            heartbeat_interval: TASK_HEARTBEAT_INTERVAL,
         }
     }
 
@@ -163,8 +168,21 @@ impl TaskEngine {
             }
         });
 
-        let status: std::result::Result<std::process::ExitStatus, std::io::Error> =
-            child.wait().await;
+        let mut heartbeat = tokio::time::interval_at(
+            tokio::time::Instant::now() + self.heartbeat_interval,
+            self.heartbeat_interval,
+        );
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let wait = child.wait();
+        tokio::pin!(wait);
+        let status: std::result::Result<std::process::ExitStatus, std::io::Error> = loop {
+            tokio::select! {
+                result = &mut wait => break result,
+                _ = heartbeat.tick() => {
+                    let _ = self.data_store.touch_forge_task_heartbeat(id);
+                }
+            }
+        };
         if let Some(stdin_task) = stdin_task {
             let _ = stdin_task.await;
         }
@@ -324,6 +342,7 @@ impl TaskEngine {
             event_bus,
             vault_cipher: Some(Arc::new(vault_cipher)),
             active_tasks: Mutex::new(HashMap::new()),
+            heartbeat_interval: TASK_HEARTBEAT_INTERVAL,
         }
     }
 }
@@ -604,6 +623,58 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn silent_running_process_refreshes_storage_backed_heartbeat() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+        let engine = Arc::new(TaskEngine {
+            data_store: store.clone(),
+            event_bus: EventBus::new(),
+            vault_cipher: None,
+            active_tasks: Mutex::new(std::collections::HashMap::new()),
+            heartbeat_interval: Duration::from_millis(50),
+        });
+
+        let task_id = store.insert_forge_task(
+            "Quiet wait",
+            test_shell(),
+            &test_shell_args(quiet_wait_expression())?,
+            None,
+            None,
+            r#"[]"#,
+            "{}",
+        )?;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            engine.spawn_task(task_id)?;
+            let initial_heartbeat = wait_for_heartbeat_async(&store, task_id).await?;
+            let refreshed_heartbeat =
+                wait_for_heartbeat_change_async(&store, task_id, &initial_heartbeat).await?;
+            assert_ne!(refreshed_heartbeat, initial_heartbeat);
+            engine.cancel_task(task_id)?;
+            wait_for_terminal_status_async(&store, task_id).await
+        })?;
+
+        let task = store
+            .get_forge_task(task_id)?
+            .expect("task should remain queryable");
+        assert_eq!(task.status, "Cancelled");
+        assert!(task.heartbeat_at.is_some());
+
+        Ok(())
+    }
+
     async fn wait_for_terminal_status_async(store: &DataStore, task_id: i64) -> Result<()> {
         for _ in 0..1_000 {
             let task = store
@@ -621,6 +692,44 @@ mod tests {
 
         Err(anyhow!(
             "task {task_id} did not reach a terminal status in time"
+        ))
+    }
+
+    async fn wait_for_heartbeat_async(store: &DataStore, task_id: i64) -> Result<String> {
+        for _ in 0..1_000 {
+            let task = store
+                .get_forge_task(task_id)?
+                .expect("task should remain queryable");
+            if let Some(heartbeat_at) = task.heartbeat_at {
+                return Ok(heartbeat_at);
+            }
+            tokio::task::yield_now().await;
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        Err(anyhow!("task {task_id} did not record a heartbeat in time"))
+    }
+
+    async fn wait_for_heartbeat_change_async(
+        store: &DataStore,
+        task_id: i64,
+        previous_heartbeat: &str,
+    ) -> Result<String> {
+        for _ in 0..1_000 {
+            let task = store
+                .get_forge_task(task_id)?
+                .expect("task should remain queryable");
+            if let Some(heartbeat_at) = task.heartbeat_at {
+                if heartbeat_at != previous_heartbeat {
+                    return Ok(heartbeat_at);
+                }
+            }
+            tokio::task::yield_now().await;
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        Err(anyhow!(
+            "task {task_id} heartbeat did not advance beyond `{previous_heartbeat}` in time"
         ))
     }
 
@@ -682,6 +791,16 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     fn failing_expression() -> &'static str {
         "exit 7"
+    }
+
+    #[cfg(target_os = "windows")]
+    fn quiet_wait_expression() -> &'static str {
+        "ping -n 6 127.0.0.1 > nul"
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn quiet_wait_expression() -> &'static str {
+        "sleep 2"
     }
 
     fn create_test_working_dir(prefix: &str) -> Result<PathBuf> {

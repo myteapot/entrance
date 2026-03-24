@@ -22,7 +22,8 @@ fn forge_bootstrap_skill_points_to_entrance_owned_dispatch_runtime() -> Result<(
     assert!(contents.contains("%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}"));
 
     assert!(!contents.contains("**DB 查询**: `python .agents/nota/scripts/db.py doc list`"));
-    assert!(!contents.contains("**Agent Prompt 生成**: `python .agents/nota/scripts/control.py prompt ...`"));
+    assert!(!contents
+        .contains("**Agent Prompt 生成**: `python .agents/nota/scripts/control.py prompt ...`"));
     assert!(!contents.contains("**Git 操作**: `python .agents/nota/scripts/control.py [check|init|commit|worktree|merge] ...`"));
     assert!(!contents.contains("- ❌ 不建 worktree、不生成 prompt、不跑 control.py"));
     assert!(!contents.contains("- 创建 Worktree (control.py worktree add)"));
@@ -44,8 +45,12 @@ fn arch_bootstrap_role_points_to_entrance_owned_dispatch_runtime() -> Result<()>
         .join("duet")
         .join("roles")
         .join("arch.md");
-    let contents = fs::read_to_string(&role_path)
-        .with_context(|| format!("failed to read arch bootstrap role at {}", role_path.display()))?;
+    let contents = fs::read_to_string(&role_path).with_context(|| {
+        format!(
+            "failed to read arch bootstrap role at {}",
+            role_path.display()
+        )
+    })?;
 
     assert!(contents.contains("harness/bootstrap/nota/identity.md"));
     assert!(contents.contains("harness/bootstrap/nota/rules.md"));

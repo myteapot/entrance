@@ -129,8 +129,12 @@ fn seed_pre_landing_runtime_db(db_path: &Path) -> Result<()> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute_batch(include_str!("../migrations/0000_create_core_tables.sql"))?;
-    connection.execute_batch(include_str!("../migrations/0002_create_plugin_forge_tasks.sql"))?;
-    connection.execute_batch(include_str!("../migrations/0004_create_plugin_forge_task_logs.sql"))?;
+    connection.execute_batch(include_str!(
+        "../migrations/0002_create_plugin_forge_tasks.sql"
+    ))?;
+    connection.execute_batch(include_str!(
+        "../migrations/0004_create_plugin_forge_task_logs.sql"
+    ))?;
 
     connection.execute(
         "INSERT INTO core_event_log (topic, payload, created_at) VALUES (?1, ?2, ?3)",
