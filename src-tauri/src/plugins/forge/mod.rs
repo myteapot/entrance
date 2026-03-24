@@ -761,10 +761,8 @@ fn build_dispatch_task_request(
     };
 
     // Resolve the stored command into a child entry point the OS can actually spawn.
-    let command = resolve_dispatch_command_for_runner(
-        runner,
-        agent_command.unwrap_or(default_command),
-    );
+    let command =
+        resolve_dispatch_command_for_runner(runner, agent_command.unwrap_or(default_command));
 
     push_required_token(&mut required_tokens, provider_token);
 
@@ -1650,9 +1648,8 @@ mod tests {
         allocate_agent_slot_worktree, build_agent_task_request, build_dev_task_request,
         build_prepared_agent_dispatch, build_prepared_dev_dispatch, generate_agent_prompt,
         generate_dev_prompt, managed_worktrees_root_for_app_data_dir, normalize_display_path,
-        parse_issue_id_from_branch, prepare_agent_dispatch,
-        prepare_agent_dispatch_for_worktree, prepare_dev_dispatch,
-        resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
+        parse_issue_id_from_branch, prepare_agent_dispatch, prepare_agent_dispatch_for_worktree,
+        prepare_dev_dispatch, resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
     };
 
     static FORGE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();

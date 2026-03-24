@@ -43,13 +43,17 @@ use core::{
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
-        list_nota_runtime_allocations, list_nota_runtime_receipts, list_nota_runtime_transactions,
-        list_runtime_checkpoints, materialize_runtime_closure_checkpoint,
-        recommend_runtime_closure_checkpoint, run_nota_dev_dispatch, run_nota_do_agent_dispatch,
-        write_runtime_checkpoint, NotaCheckpointListReport, NotaCheckpointRequest,
-        NotaDevDispatchRequest, NotaDispatchExecutionHost, NotaDoAgentDispatchRequest,
-        NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport,
-        NotaRuntimeTransactionsReport,
+        active_checkpoint_scope_ids, derive_nota_runtime_finalize, derive_nota_runtime_integrate,
+        derive_nota_runtime_next_step, derive_nota_runtime_review, list_nota_runtime_allocations,
+        list_nota_runtime_receipts, list_nota_runtime_transactions, list_runtime_checkpoints,
+        materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
+        record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
+        run_nota_dev_dispatch, run_nota_do_agent_dispatch, write_runtime_checkpoint,
+        NotaCheckpointListReport, NotaCheckpointRequest, NotaDevDispatchRequest,
+        NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest,
+        NotaDispatchExecutionHost, NotaDoAgentDispatchRequest, NotaRuntimeAllocationReadRecord,
+        NotaRuntimeAllocationsReport, NotaRuntimeFinalize, NotaRuntimeIntegrate,
+        NotaRuntimeNextStep, NotaRuntimeReview, NotaRuntimeTransactionsReport,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -118,6 +122,15 @@ pub(crate) struct NotaRuntimeOverview {
     todos: NotaTodoListReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review: Option<NotaRuntimeReview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    integrate: Option<NotaRuntimeIntegrate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finalize: Option<NotaRuntimeFinalize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_step: Option<NotaRuntimeNextStep>,
+    front_door: NotaFrontDoorProjection,
     decisions: DesignDecisionListReport,
     chat_captures: ChatCaptureListReport,
 }
@@ -146,6 +159,15 @@ pub(crate) struct NotaRuntimeStatus {
     todo_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review: Option<NotaRuntimeReview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    integrate: Option<NotaRuntimeIntegrate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finalize: Option<NotaRuntimeFinalize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_step: Option<NotaRuntimeNextStep>,
+    front_door: NotaFrontDoorProjection,
 }
 
 #[derive(Clone, Serialize)]
@@ -158,6 +180,251 @@ pub(crate) struct NotaTodoListReport {
 pub(crate) struct NotaVisionListReport {
     vision_count: usize,
     visions: Vec<StoredVisionRecord>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct NotaFrontDoorProjection {
+    posture: String,
+    summary: String,
+    next_action_label: String,
+    next_action_detail: String,
+    dashboard_hook: String,
+    progress_tracks: Vec<NotaFrontDoorProgressTrack>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct NotaFrontDoorProgressTrack {
+    id: String,
+    label: String,
+    value: u8,
+    tone: String,
+    summary: String,
+}
+
+fn build_nota_front_door_projection(
+    current_checkpoint: Option<&core::nota_runtime::NotaCheckpointRecord>,
+    decision_count: usize,
+    transaction_count: usize,
+    allocation_count: usize,
+    receipt_count: usize,
+    recommended_checkpoint: Option<&NotaCheckpointRequest>,
+    review: Option<&NotaRuntimeReview>,
+    integrate: Option<&NotaRuntimeIntegrate>,
+    finalize: Option<&NotaRuntimeFinalize>,
+    next_step: Option<&NotaRuntimeNextStep>,
+) -> NotaFrontDoorProjection {
+    let posture = if current_checkpoint.is_some() {
+        "Checkpoint-backed native front door".to_string()
+    } else {
+        "Native front door waiting for first checkpoint".to_string()
+    };
+
+    let summary = if let Some(checkpoint) = current_checkpoint {
+        checkpoint.cadence_object.summary.clone()
+    } else if let Some(checkpoint) = recommended_checkpoint {
+        checkpoint.stable_level.clone()
+    } else {
+        "Write the first checkpoint so the GUI can resume from runtime truth instead of terminal recap."
+            .to_string()
+    };
+
+    let (next_action_label, next_action_detail) = if let Some(step) = next_step {
+        (
+            "Next runtime move".to_string(),
+            describe_nota_front_door_next_step(step),
+        )
+    } else if let Some(checkpoint) = current_checkpoint {
+        (
+            "Current slice".to_string(),
+            checkpoint
+                .payload
+                .selected_trunk
+                .clone()
+                .unwrap_or_else(|| checkpoint.cadence_object.title.clone()),
+        )
+    } else if let Some(checkpoint) = recommended_checkpoint {
+        (
+            "Suggested checkpoint".to_string(),
+            checkpoint
+                .remaining
+                .first()
+                .cloned()
+                .unwrap_or_else(|| {
+                    checkpoint
+                        .selected_trunk
+                        .clone()
+                        .unwrap_or_else(|| "Checkpoint the current closure boundary.".to_string())
+                }),
+        )
+    } else if let Some(finalize) = finalize {
+        (
+            "Latest closure".to_string(),
+            finalize.summary.clone().unwrap_or_else(|| {
+                format!(
+                    "Finalize closed allocation {} on lineage {}.",
+                    finalize.allocation_id, finalize.lineage_ref
+                )
+            }),
+        )
+    } else if let Some(integrate) = integrate {
+        (
+            "Latest integration".to_string(),
+            integrate.summary.clone().unwrap_or_else(|| {
+                format!(
+                    "Integration recorded {} on allocation {}.",
+                    integrate
+                        .outcome
+                        .clone()
+                        .unwrap_or_else(|| integrate.state.clone()),
+                    integrate.allocation_id
+                )
+            }),
+        )
+    } else if let Some(review) = review {
+        (
+            "Latest review".to_string(),
+            review.summary.clone().unwrap_or_else(|| {
+                format!(
+                    "Review is tracking allocation {} on lineage {}.",
+                    review.allocation_id, review.lineage_ref
+                )
+            }),
+        )
+    } else {
+        (
+            "Current slice".to_string(),
+            "No active checkpoint is recorded yet.".to_string(),
+        )
+    };
+
+    let truth_spine_value = front_door_truth_spine_value(
+        current_checkpoint.is_some(),
+        decision_count,
+        transaction_count,
+        allocation_count,
+        receipt_count,
+    );
+    let shell_reach_value = if current_checkpoint.is_some() { 82 } else { 72 };
+    let relay_relief_summary = current_checkpoint
+        .map(|checkpoint| checkpoint.payload.human_continuity_bus.clone())
+        .or_else(|| {
+            recommended_checkpoint.map(|checkpoint| checkpoint.human_continuity_bus.clone())
+        })
+        .unwrap_or_else(|| "Human relay is still heavy because no checkpoint is active yet.".to_string());
+    let relay_relief_value = front_door_relay_relief_value(
+        relay_relief_summary.as_str(),
+        next_step.is_some(),
+        recommended_checkpoint.is_some(),
+    );
+
+    NotaFrontDoorProjection {
+        posture,
+        summary,
+        next_action_label,
+        next_action_detail,
+        dashboard_hook:
+            "Dashboard stays a separate future surface; this round only leaves a bounded runway."
+                .to_string(),
+        progress_tracks: vec![
+            NotaFrontDoorProgressTrack {
+                id: "truth-spine".to_string(),
+                label: "Grounded in truth".to_string(),
+                value: truth_spine_value,
+                tone: if truth_spine_value >= 80 {
+                    "steady".to_string()
+                } else {
+                    "warming".to_string()
+                },
+                summary:
+                    "Checkpoint, decision, transaction, and receipt reads are all coming from the NOTA runtime."
+                        .to_string(),
+            },
+            NotaFrontDoorProgressTrack {
+                id: "front-door-slice".to_string(),
+                label: "Front-door reach".to_string(),
+                value: shell_reach_value,
+                tone: "active".to_string(),
+                summary:
+                    "This build exposes a Chat-first shell, a live state rail, mission progress, and a real import entry."
+                        .to_string(),
+            },
+            NotaFrontDoorProgressTrack {
+                id: "relay-relief".to_string(),
+                label: "Human relay relief".to_string(),
+                value: relay_relief_value,
+                tone: if relay_relief_value >= 70 {
+                    "steady".to_string()
+                } else {
+                    "caution".to_string()
+                },
+                summary: relay_relief_summary,
+            },
+        ],
+    }
+}
+
+fn describe_nota_front_door_next_step(step: &NotaRuntimeNextStep) -> String {
+    let action = match step.step.as_str() {
+        "review" => "Review the returned boundary",
+        "integrate" => "Record the integration result",
+        "finalize" => "Close the integrated boundary",
+        other => return format!("Follow `{other}` for allocation {}.", step.allocation_id),
+    };
+
+    format!(
+        "{action} for allocation {} on lineage {}.",
+        step.allocation_id, step.lineage_ref
+    )
+}
+
+fn front_door_truth_spine_value(
+    has_checkpoint: bool,
+    decision_count: usize,
+    transaction_count: usize,
+    allocation_count: usize,
+    receipt_count: usize,
+) -> u8 {
+    let mut value = 18_u8;
+    if has_checkpoint {
+        value = value.saturating_add(30);
+    }
+    if decision_count > 0 {
+        value = value.saturating_add(14);
+    }
+    if transaction_count > 0 {
+        value = value.saturating_add(14);
+    }
+    if allocation_count > 0 {
+        value = value.saturating_add(12);
+    }
+    if receipt_count > 0 {
+        value = value.saturating_add(12);
+    }
+    value.min(100)
+}
+
+fn front_door_relay_relief_value(
+    human_continuity_bus: &str,
+    has_next_step: bool,
+    has_recommended_checkpoint: bool,
+) -> u8 {
+    let normalized = human_continuity_bus.to_ascii_lowercase();
+    let mut value: u8 = if normalized.contains("further reduced") {
+        78
+    } else if normalized.contains("reduced") {
+        64
+    } else {
+        42
+    };
+
+    if has_next_step {
+        value = value.saturating_sub(8);
+    }
+    if has_recommended_checkpoint {
+        value = value.saturating_sub(6);
+    }
+
+    value
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -584,11 +851,23 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             let request = parse_nota_checkpoint_args(rest)?;
             print_json(&write_runtime_checkpoint(&startup.data_store(), request)?)
         }
+        [command, rest @ ..] if command == "review" => {
+            let request = parse_nota_review_args(rest)?;
+            print_json(&record_dev_return_review(&startup.data_store(), request)?)
+        }
+        [command, rest @ ..] if command == "integrate" => {
+            let request = parse_nota_integrate_args(rest)?;
+            print_json(&record_dev_return_integration(&startup.data_store(), request)?)
+        }
+        [command, rest @ ..] if command == "finalize" => {
+            let request = parse_nota_finalize_args(rest)?;
+            print_json(&record_dev_return_finalize(&startup.data_store(), request)?)
+        }
         [command] if command == "checkpoint-runtime-closure" => print_json(
             &materialize_runtime_closure_checkpoint(&startup.data_store())?,
         ),
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -924,6 +1203,193 @@ fn parse_nota_checkpoint_args(args: &[String]) -> Result<NotaCheckpointRequest> 
             }
             other => bail!("unsupported nota checkpoint argument `{other}`"),
         }
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_review_args(args: &[String]) -> Result<NotaDevReturnReviewRequest> {
+    let mut request = NotaDevReturnReviewRequest {
+        transaction_id: 0,
+        allocation_id: 0,
+        verdict: String::new(),
+        summary: None,
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--transaction-id" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota review --transaction-id` requires a value")?;
+                request.transaction_id = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid runtime transaction id `{value}`"))?;
+                if request.transaction_id <= 0 {
+                    bail!("`entrance nota review --transaction-id` must be >= 1");
+                }
+                index += 2;
+            }
+            "--allocation-id" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota review --allocation-id` requires a value")?;
+                request.allocation_id = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid runtime allocation id `{value}`"))?;
+                if request.allocation_id <= 0 {
+                    bail!("`entrance nota review --allocation-id` must be >= 1");
+                }
+                index += 2;
+            }
+            "--verdict" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota review --verdict` requires a value")?;
+                request.verdict = value.to_string();
+                index += 2;
+            }
+            "--summary" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota review --summary` requires a value")?;
+                request.summary = Some(value.to_string());
+                index += 2;
+            }
+            other => bail!("unsupported nota review argument `{other}`"),
+        }
+    }
+
+    if request.transaction_id <= 0 {
+        bail!("`entrance nota review --transaction-id` is required");
+    }
+    if request.allocation_id <= 0 {
+        bail!("`entrance nota review --allocation-id` is required");
+    }
+    if request.verdict.trim().is_empty() {
+        bail!("`entrance nota review --verdict` is required");
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_integrate_args(args: &[String]) -> Result<NotaDevReturnIntegrateRequest> {
+    let mut request = NotaDevReturnIntegrateRequest {
+        transaction_id: 0,
+        allocation_id: 0,
+        state: String::new(),
+        summary: None,
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--transaction-id" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota integrate --transaction-id` requires a value")?;
+                request.transaction_id = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid runtime transaction id `{value}`"))?;
+                if request.transaction_id <= 0 {
+                    bail!("`entrance nota integrate --transaction-id` must be >= 1");
+                }
+                index += 2;
+            }
+            "--allocation-id" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota integrate --allocation-id` requires a value")?;
+                request.allocation_id = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid runtime allocation id `{value}`"))?;
+                if request.allocation_id <= 0 {
+                    bail!("`entrance nota integrate --allocation-id` must be >= 1");
+                }
+                index += 2;
+            }
+            "--state" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota integrate --state` requires a value")?;
+                request.state = value.to_string();
+                index += 2;
+            }
+            "--summary" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota integrate --summary` requires a value")?;
+                request.summary = Some(value.to_string());
+                index += 2;
+            }
+            other => bail!("unsupported nota integrate argument `{other}`"),
+        }
+    }
+
+    if request.transaction_id <= 0 {
+        bail!("`entrance nota integrate --transaction-id` is required");
+    }
+    if request.allocation_id <= 0 {
+        bail!("`entrance nota integrate --allocation-id` is required");
+    }
+    if request.state.trim().is_empty() {
+        bail!("`entrance nota integrate --state` is required");
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_finalize_args(args: &[String]) -> Result<NotaDevReturnFinalizeRequest> {
+    let mut request = NotaDevReturnFinalizeRequest {
+        transaction_id: 0,
+        allocation_id: 0,
+        summary: None,
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--transaction-id" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota finalize --transaction-id` requires a value")?;
+                request.transaction_id = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid runtime transaction id `{value}`"))?;
+                if request.transaction_id <= 0 {
+                    bail!("`entrance nota finalize --transaction-id` must be >= 1");
+                }
+                index += 2;
+            }
+            "--allocation-id" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota finalize --allocation-id` requires a value")?;
+                request.allocation_id = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid runtime allocation id `{value}`"))?;
+                if request.allocation_id <= 0 {
+                    bail!("`entrance nota finalize --allocation-id` must be >= 1");
+                }
+                index += 2;
+            }
+            "--summary" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota finalize --summary` requires a value")?;
+                request.summary = Some(value.to_string());
+                index += 2;
+            }
+            other => bail!("unsupported nota finalize argument `{other}`"),
+        }
+    }
+
+    if request.transaction_id <= 0 {
+        bail!("`entrance nota finalize --transaction-id` is required");
+    }
+    if request.allocation_id <= 0 {
+        bail!("`entrance nota finalize --allocation-id` is required");
     }
 
     Ok(request)
@@ -1360,27 +1826,69 @@ pub(crate) fn build_nota_runtime_overview(
     data_store: &core::data_store::DataStore,
 ) -> Result<NotaRuntimeOverview> {
     let checkpoints = list_runtime_checkpoints(data_store)?;
+    let current_checkpoint = checkpoints
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current);
+    let checkpoint_scope_ids = active_checkpoint_scope_ids(data_store, current_checkpoint)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
+    let receipts = list_nota_runtime_receipts(data_store, None)?;
     let visions = list_nota_visions(data_store)?;
     let todos = list_nota_todos(data_store)?;
     let recommended_checkpoint = recommend_runtime_closure_checkpoint(
         data_store,
         allocations.stored_allocations(),
-        checkpoints
-            .checkpoints
-            .iter()
-            .find(|checkpoint| checkpoint.cadence_object.is_current),
+        current_checkpoint,
     )?;
+    let review = derive_nota_runtime_review(
+        &checkpoint_scope_ids,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let integrate = derive_nota_runtime_integrate(
+        &checkpoint_scope_ids,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let finalize = derive_nota_runtime_finalize(
+        &checkpoint_scope_ids,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let next_step = derive_nota_runtime_next_step(
+        &checkpoint_scope_ids,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let transactions = list_nota_runtime_transactions(data_store)?;
+    let decisions = list_design_decisions(data_store)?;
+    let front_door = build_nota_front_door_projection(
+        current_checkpoint,
+        decisions.decision_count,
+        transactions.transaction_count,
+        allocations.allocation_count,
+        receipts.receipt_count,
+        recommended_checkpoint.as_ref(),
+        review.as_ref(),
+        integrate.as_ref(),
+        finalize.as_ref(),
+        next_step.as_ref(),
+    );
 
     Ok(NotaRuntimeOverview {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
         checkpoints,
-        transactions: list_nota_runtime_transactions(data_store)?,
+        transactions,
         allocations,
         visions,
         todos,
         recommended_checkpoint,
-        decisions: list_design_decisions(data_store)?,
+        review,
+        integrate,
+        finalize,
+        next_step,
+        front_door,
+        decisions,
         chat_captures: list_chat_captures(data_store)?,
     })
 }
@@ -1394,6 +1902,8 @@ pub(crate) fn build_nota_runtime_status(
         .iter()
         .find(|checkpoint| checkpoint.cadence_object.is_current)
         .cloned();
+    let checkpoint_scope_ids =
+        active_checkpoint_scope_ids(data_store, current_checkpoint.as_ref())?;
     let transactions = list_nota_runtime_transactions(data_store)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
@@ -1406,6 +1916,38 @@ pub(crate) fn build_nota_runtime_status(
         allocations.stored_allocations(),
         current_checkpoint.as_ref(),
     )?;
+    let review = derive_nota_runtime_review(
+        &checkpoint_scope_ids,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let integrate = derive_nota_runtime_integrate(
+        &checkpoint_scope_ids,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let finalize = derive_nota_runtime_finalize(
+        &checkpoint_scope_ids,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let next_step = derive_nota_runtime_next_step(
+        &checkpoint_scope_ids,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let front_door = build_nota_front_door_projection(
+        current_checkpoint.as_ref(),
+        decisions.decision_count,
+        transactions.transaction_count,
+        allocations.allocation_count,
+        receipts.receipt_count,
+        recommended_checkpoint.as_ref(),
+        review.as_ref(),
+        integrate.as_ref(),
+        finalize.as_ref(),
+        next_step.as_ref(),
+    );
 
     Ok(NotaRuntimeStatus {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
@@ -1424,6 +1966,11 @@ pub(crate) fn build_nota_runtime_status(
         vision_count: visions.vision_count,
         todo_count: todos.todo_count,
         recommended_checkpoint,
+        review,
+        integrate,
+        finalize,
+        next_step,
+        front_door,
     })
 }
 

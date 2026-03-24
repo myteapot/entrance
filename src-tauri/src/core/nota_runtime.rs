@@ -1,10 +1,11 @@
-use std::path::Path;
+use std::collections::HashSet;
 use std::ops::Deref;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -30,8 +31,20 @@ const NOTA_RUNTIME_SCOPE_REF: &str = "Entrance";
 const CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND: &str = "CADENCE_CHECKPOINT_WRITTEN";
 const AGENT_RETURN_ACCEPTED_RECEIPT_KIND: &str = "AGENT_RETURN_ACCEPTED";
 const DEV_RETURN_ACCEPTED_RECEIPT_KIND: &str = "DEV_RETURN_ACCEPTED";
+const DEV_RETURN_REVIEW_READY_RECEIPT_KIND: &str = "DEV_RETURN_REVIEW_READY";
+const DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND: &str = "DEV_RETURN_REVIEW_RECORDED";
+const DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND: &str = "DEV_RETURN_INTEGRATE_RECORDED";
+const DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND: &str = "DEV_RETURN_FINALIZE_RECORDED";
 const ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND: &str =
     "ALLOCATION_TERMINAL_OUTCOME_RECORDED";
+const DEV_RETURN_REVIEW_APPROVED_VERDICT: &str = "approved";
+const DEV_RETURN_REVIEW_CHANGES_REQUESTED_VERDICT: &str = "changes_requested";
+const DEV_RETURN_INTEGRATE_STARTED_STATE: &str = "started";
+const DEV_RETURN_INTEGRATE_INTEGRATED_STATE: &str = "integrated";
+const DEV_RETURN_INTEGRATE_REPAIR_REQUESTED_STATE: &str = "repair_requested";
+const DEV_RETURN_INTEGRATE_STARTED_RUNTIME_STATE: &str = "integrate_started";
+const DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE: &str = "integrate_recorded";
+const DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE: &str = "closed";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NotaCheckpointRequest {
@@ -469,6 +482,141 @@ pub struct NotaRuntimeReceiptsReport {
     pub receipts: Vec<StoredNotaRuntimeReceipt>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotaRuntimeReview {
+    pub state: String,
+    pub transaction_id: i64,
+    pub allocation_id: i64,
+    pub lineage_ref: String,
+    pub child_dispatch_role: String,
+    pub execution_host: String,
+    pub target_kind: String,
+    pub target_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotaRuntimeNextStep {
+    pub step: String,
+    pub transaction_id: i64,
+    pub allocation_id: i64,
+    pub lineage_ref: String,
+    pub child_dispatch_role: String,
+    pub execution_host: String,
+    pub target_kind: String,
+    pub target_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotaRuntimeIntegrate {
+    pub state: String,
+    pub transaction_id: i64,
+    pub allocation_id: i64,
+    pub lineage_ref: String,
+    pub child_dispatch_role: String,
+    pub execution_host: String,
+    pub target_kind: String,
+    pub target_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotaRuntimeFinalize {
+    pub state: String,
+    pub transaction_id: i64,
+    pub allocation_id: i64,
+    pub lineage_ref: String,
+    pub child_dispatch_role: String,
+    pub execution_host: String,
+    pub target_kind: String,
+    pub target_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DevReturnReviewReadyReceiptPayload {
+    checkpoint_id: i64,
+    #[serde(flatten)]
+    next_step: NotaRuntimeNextStep,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DevReturnReviewRecordedReceiptPayload {
+    checkpoint_id: i64,
+    review: NotaRuntimeReview,
+    next_step: NotaRuntimeNextStep,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DevReturnIntegrateRecordedReceiptPayload {
+    checkpoint_id: i64,
+    integrate: NotaRuntimeIntegrate,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_step: Option<NotaRuntimeNextStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DevReturnFinalizeRecordedReceiptPayload {
+    checkpoint_id: i64,
+    finalize: NotaRuntimeFinalize,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaDevReturnReviewRequest {
+    pub transaction_id: i64,
+    pub allocation_id: i64,
+    pub verdict: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaDevReturnReviewReport {
+    pub status: String,
+    pub review: NotaRuntimeReview,
+    pub next_step: NotaRuntimeNextStep,
+    pub receipt: StoredNotaRuntimeReceipt,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaDevReturnIntegrateRequest {
+    pub transaction_id: i64,
+    pub allocation_id: i64,
+    pub state: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaDevReturnIntegrateReport {
+    pub status: String,
+    pub integrate: NotaRuntimeIntegrate,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<NotaRuntimeNextStep>,
+    pub receipt: StoredNotaRuntimeReceipt,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaDevReturnFinalizeRequest {
+    pub transaction_id: i64,
+    pub allocation_id: i64,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaDevReturnFinalizeReport {
+    pub status: String,
+    pub finalize: NotaRuntimeFinalize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<NotaRuntimeNextStep>,
+    pub receipt: StoredNotaRuntimeReceipt,
+}
+
 struct RecommendedCheckpointCandidate {
     kind: RecommendedCheckpointCandidateKind,
     allocation_id: i64,
@@ -481,6 +629,7 @@ enum RecommendedCheckpointCandidateKind {
     AgentEscalationContinuity,
     AgentReturnAcceptance,
     DevReturnAcceptance,
+    DevReturnClosure,
 }
 
 pub fn write_runtime_checkpoint(
@@ -588,6 +737,35 @@ pub fn list_runtime_checkpoints(data_store: &DataStore) -> Result<NotaCheckpoint
         current_checkpoint_id,
         checkpoints,
     })
+}
+
+pub(crate) fn active_checkpoint_scope_ids(
+    data_store: &DataStore,
+    current_checkpoint: Option<&NotaCheckpointRecord>,
+) -> Result<Vec<i64>> {
+    let Some(current_checkpoint) = current_checkpoint else {
+        return Ok(Vec::new());
+    };
+
+    let links = data_store.list_cadence_links()?;
+    let mut scope_ids = vec![current_checkpoint.cadence_object.id];
+    let mut seen = HashSet::from([current_checkpoint.cadence_object.id]);
+    let mut frontier = vec![current_checkpoint.cadence_object.id];
+
+    while let Some(checkpoint_id) = frontier.pop() {
+        for link in links.iter().filter(|link| {
+            link.status == "active"
+                && link.relation_type == "superseded_by"
+                && link.dst_cadence_object_id == checkpoint_id
+        }) {
+            if seen.insert(link.src_cadence_object_id) {
+                scope_ids.push(link.src_cadence_object_id);
+                frontier.push(link.src_cadence_object_id);
+            }
+        }
+    }
+
+    Ok(scope_ids)
 }
 
 pub fn run_nota_do_agent_dispatch(
@@ -1636,8 +1814,10 @@ fn ensure_runtime_closure_acceptance_receipt(
             ensure_agent_return_accepted_receipt(data_store, candidate, checkpoint)
         }
         RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
-            ensure_dev_return_accepted_receipt(data_store, candidate, checkpoint)
+            ensure_dev_return_accepted_receipt(data_store, candidate, checkpoint)?;
+            ensure_dev_return_review_ready_receipt(data_store, candidate, checkpoint)
         }
+        RecommendedCheckpointCandidateKind::DevReturnClosure => Ok(()),
     }
 }
 
@@ -1776,6 +1956,788 @@ fn ensure_dev_return_accepted_receipt(
     Ok(())
 }
 
+fn ensure_dev_return_review_ready_receipt(
+    data_store: &DataStore,
+    candidate: &RecommendedCheckpointCandidate,
+    checkpoint: &NotaCheckpointRecord,
+) -> Result<()> {
+    let Some(allocation) = data_store
+        .list_nota_runtime_allocations()?
+        .into_iter()
+        .find(|allocation| allocation.id == candidate.allocation_id)
+    else {
+        return Ok(());
+    };
+    if allocation.allocation_kind != "forge_dev_dispatch" {
+        return Ok(());
+    }
+
+    let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse dev review-ready payload for allocation {}",
+                allocation.id
+            )
+        })?;
+    let Some(outcome) = payload.terminal_outcome.as_ref() else {
+        return Ok(());
+    };
+    if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
+        return Ok(());
+    }
+
+    let receipt_payload = DevReturnReviewReadyReceiptPayload {
+        checkpoint_id: checkpoint.cadence_object.id,
+        next_step: build_dev_return_review_next_step(
+            candidate.source_transaction_id,
+            &allocation,
+            &payload,
+            outcome,
+        ),
+    };
+    let has_receipt = data_store
+        .list_nota_runtime_receipts(Some(candidate.source_transaction_id))?
+        .into_iter()
+        .any(|receipt| {
+            if receipt.receipt_kind != DEV_RETURN_REVIEW_READY_RECEIPT_KIND {
+                return false;
+            }
+
+            let Ok(payload) =
+                serde_json::from_str::<DevReturnReviewReadyReceiptPayload>(&receipt.payload_json)
+            else {
+                return false;
+            };
+            payload == receipt_payload
+        });
+    if has_receipt {
+        return Ok(());
+    }
+
+    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+        transaction_id: candidate.source_transaction_id,
+        receipt_kind: DEV_RETURN_REVIEW_READY_RECEIPT_KIND,
+        payload_json: &serde_json::to_string(&receipt_payload)
+            .context("failed to serialize dev review-ready receipt payload")?,
+        status: "recorded",
+    })?;
+
+    Ok(())
+}
+
+pub fn record_dev_return_review(
+    data_store: &DataStore,
+    request: NotaDevReturnReviewRequest,
+) -> Result<NotaDevReturnReviewReport> {
+    let verdict = normalize_dev_return_review_verdict(&request.verdict)?;
+    let summary = normalize_optional(request.summary.as_deref());
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    let current_checkpoint = checkpoints
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+        .cloned()
+        .context("dev return review requires a current runtime checkpoint")?;
+    let allocation = data_store
+        .list_nota_runtime_allocations()?
+        .into_iter()
+        .find(|allocation| allocation.id == request.allocation_id)
+        .with_context(|| {
+            format!(
+                "runtime allocation `{}` was not found",
+                request.allocation_id
+            )
+        })?;
+    if allocation.source_transaction_id != request.transaction_id {
+        bail!(
+            "runtime allocation `{}` does not belong to transaction `{}`",
+            request.allocation_id,
+            request.transaction_id
+        );
+    }
+    if allocation.allocation_kind != "forge_dev_dispatch" {
+        bail!(
+            "runtime allocation `{}` is not a dev dispatch boundary",
+            allocation.id
+        );
+    }
+    if allocation.status != "return_ready" {
+        bail!(
+            "runtime allocation `{}` is not reviewable because status is `{}`",
+            allocation.id,
+            allocation.status
+        );
+    }
+
+    let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse dev review payload for allocation {}",
+                allocation.id
+            )
+        })?;
+    let outcome = payload
+        .terminal_outcome
+        .as_ref()
+        .context("dev return review requires a terminal outcome")?;
+    if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
+        bail!(
+            "runtime allocation `{}` is not a returned Done dev boundary",
+            allocation.id
+        );
+    }
+
+    let receipts = data_store.list_nota_runtime_receipts(Some(request.transaction_id))?;
+    let review_ready_exists = receipts.iter().any(|receipt| {
+        if receipt.receipt_kind != DEV_RETURN_REVIEW_READY_RECEIPT_KIND {
+            return false;
+        }
+        let Ok(payload) =
+            serde_json::from_str::<DevReturnReviewReadyReceiptPayload>(&receipt.payload_json)
+        else {
+            return false;
+        };
+        payload.checkpoint_id == current_checkpoint.cadence_object.id
+            && payload.next_step.transaction_id == request.transaction_id
+            && payload.next_step.allocation_id == request.allocation_id
+            && payload.next_step.lineage_ref == allocation.lineage_ref
+    });
+    if !review_ready_exists {
+        bail!(
+            "runtime transaction `{}` allocation `{}` is not review-ready on the current checkpoint",
+            request.transaction_id,
+            request.allocation_id
+        );
+    }
+
+    let review = build_dev_return_review(
+        request.transaction_id,
+        &allocation,
+        &payload,
+        outcome,
+        Some(verdict.as_str()),
+        summary.as_deref(),
+    );
+    let next_step = build_dev_return_next_step(
+        match verdict.as_str() {
+            DEV_RETURN_REVIEW_APPROVED_VERDICT => "integrate",
+            DEV_RETURN_REVIEW_CHANGES_REQUESTED_VERDICT => "repair",
+            _ => unreachable!("verdict should be normalized"),
+        },
+        request.transaction_id,
+        &allocation,
+        &payload,
+        outcome,
+    );
+    let receipt_payload = DevReturnReviewRecordedReceiptPayload {
+        checkpoint_id: current_checkpoint.cadence_object.id,
+        review: review.clone(),
+        next_step: next_step.clone(),
+    };
+
+    let matching_receipts = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == request.transaction_id
+        })
+        .filter_map(|receipt| {
+            let payload = serde_json::from_str::<DevReturnReviewRecordedReceiptPayload>(
+                &receipt.payload_json,
+            )
+            .ok()?;
+            Some((receipt, payload))
+        })
+        .filter(|(_, payload)| {
+            payload.checkpoint_id == current_checkpoint.cadence_object.id
+                && payload.review.transaction_id == request.transaction_id
+                && payload.review.allocation_id == request.allocation_id
+                && payload.review.lineage_ref == allocation.lineage_ref
+        })
+        .collect::<Vec<_>>();
+    if let Some((receipt, existing_payload)) = matching_receipts.last() {
+        if existing_payload == &receipt_payload {
+            return Ok(NotaDevReturnReviewReport {
+                status: "already_recorded".to_string(),
+                review,
+                next_step,
+                receipt: (*receipt).clone(),
+            });
+        }
+        bail!(
+            "a review outcome is already recorded for transaction `{}` allocation `{}` on checkpoint `{}`",
+            request.transaction_id,
+            request.allocation_id,
+            current_checkpoint.cadence_object.id
+        );
+    }
+
+    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+        transaction_id: request.transaction_id,
+        receipt_kind: DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
+        payload_json: &serde_json::to_string(&receipt_payload)
+            .context("failed to serialize dev review recorded receipt payload")?,
+        status: "recorded",
+    })?;
+
+    let receipt = data_store
+        .list_nota_runtime_receipts(Some(request.transaction_id))?
+        .into_iter()
+        .rev()
+        .find(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+                && serde_json::from_str::<DevReturnReviewRecordedReceiptPayload>(
+                    &receipt.payload_json,
+                )
+                .map(|payload| payload == receipt_payload)
+                .unwrap_or(false)
+        })
+        .context("dev review recorded receipt should be readable after append")?;
+
+    Ok(NotaDevReturnReviewReport {
+        status: "recorded".to_string(),
+        review,
+        next_step,
+        receipt,
+    })
+}
+
+pub fn record_dev_return_integration(
+    data_store: &DataStore,
+    request: NotaDevReturnIntegrateRequest,
+) -> Result<NotaDevReturnIntegrateReport> {
+    let state = normalize_dev_return_integrate_state(&request.state)?;
+    let summary = normalize_optional(request.summary.as_deref());
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    let current_checkpoint = checkpoints
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+        .cloned()
+        .context("dev return integrate requires a current runtime checkpoint")?;
+    let allocation = data_store
+        .list_nota_runtime_allocations()?
+        .into_iter()
+        .find(|allocation| allocation.id == request.allocation_id)
+        .with_context(|| {
+            format!(
+                "runtime allocation `{}` was not found",
+                request.allocation_id
+            )
+        })?;
+    if allocation.source_transaction_id != request.transaction_id {
+        bail!(
+            "runtime allocation `{}` does not belong to transaction `{}`",
+            request.allocation_id,
+            request.transaction_id
+        );
+    }
+    if allocation.allocation_kind != "forge_dev_dispatch" {
+        bail!(
+            "runtime allocation `{}` is not a dev dispatch boundary",
+            allocation.id
+        );
+    }
+    if allocation.status != "return_ready" {
+        bail!(
+            "runtime allocation `{}` is not integrate-ready because status is `{}`",
+            allocation.id,
+            allocation.status
+        );
+    }
+
+    let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse dev integrate payload for allocation {}",
+                allocation.id
+            )
+        })?;
+    let outcome = payload
+        .terminal_outcome
+        .as_ref()
+        .context("dev return integrate requires a terminal outcome")?;
+    if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
+        bail!(
+            "runtime allocation `{}` is not a returned Done dev boundary",
+            allocation.id
+        );
+    }
+
+    let receipts = data_store.list_nota_runtime_receipts(Some(request.transaction_id))?;
+    let Some((_, approved_review)) = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == request.transaction_id
+        })
+        .filter_map(|receipt| {
+            let payload = serde_json::from_str::<DevReturnReviewRecordedReceiptPayload>(
+                &receipt.payload_json,
+            )
+            .ok()?;
+            Some((receipt.id, payload))
+        })
+        .filter(|(_, payload)| {
+            payload.checkpoint_id == current_checkpoint.cadence_object.id
+                && payload.review.transaction_id == request.transaction_id
+                && payload.review.allocation_id == request.allocation_id
+                && payload.review.lineage_ref == allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+    else {
+        bail!(
+            "runtime transaction `{}` allocation `{}` is not integrate-ready on the current checkpoint",
+            request.transaction_id,
+            request.allocation_id
+        );
+    };
+    if approved_review.review.verdict.as_deref() != Some(DEV_RETURN_REVIEW_APPROVED_VERDICT) {
+        bail!(
+            "runtime transaction `{}` allocation `{}` requires an approved review before integrate",
+            request.transaction_id,
+            request.allocation_id
+        );
+    }
+
+    let integrate = build_dev_return_integrate(
+        request.transaction_id,
+        &allocation,
+        &payload,
+        outcome,
+        state.as_str(),
+        summary.as_deref(),
+    );
+    let next_step = build_dev_return_integrate_next_step(
+        state.as_str(),
+        request.transaction_id,
+        &allocation,
+        &payload,
+        outcome,
+    );
+    let receipt_payload = DevReturnIntegrateRecordedReceiptPayload {
+        checkpoint_id: current_checkpoint.cadence_object.id,
+        integrate: integrate.clone(),
+        next_step: next_step.clone(),
+    };
+
+    let matching_receipts = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == request.transaction_id
+        })
+        .filter_map(|receipt| {
+            let payload = serde_json::from_str::<DevReturnIntegrateRecordedReceiptPayload>(
+                &receipt.payload_json,
+            )
+            .ok()?;
+            Some((receipt, payload))
+        })
+        .filter(|(_, payload)| {
+            payload.checkpoint_id == current_checkpoint.cadence_object.id
+                && payload.integrate.transaction_id == request.transaction_id
+                && payload.integrate.allocation_id == request.allocation_id
+                && payload.integrate.lineage_ref == allocation.lineage_ref
+        })
+        .collect::<Vec<_>>();
+    if let Some((receipt, existing_payload)) = matching_receipts.last() {
+        if existing_payload == &receipt_payload {
+            return Ok(NotaDevReturnIntegrateReport {
+                status: "already_recorded".to_string(),
+                integrate,
+                next_step,
+                receipt: (*receipt).clone(),
+            });
+        }
+        if existing_payload.integrate.outcome.is_some() {
+            bail!(
+                "an integrate outcome is already recorded for transaction `{}` allocation `{}` on checkpoint `{}`",
+                request.transaction_id,
+                request.allocation_id,
+                current_checkpoint.cadence_object.id
+            );
+        }
+        if existing_payload.integrate.state == DEV_RETURN_INTEGRATE_STARTED_RUNTIME_STATE
+            && integrate.outcome.is_none()
+        {
+            bail!(
+                "integration is already started for transaction `{}` allocation `{}` on checkpoint `{}`",
+                request.transaction_id,
+                request.allocation_id,
+                current_checkpoint.cadence_object.id
+            );
+        }
+    }
+
+    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+        transaction_id: request.transaction_id,
+        receipt_kind: DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND,
+        payload_json: &serde_json::to_string(&receipt_payload)
+            .context("failed to serialize dev integrate recorded receipt payload")?,
+        status: "recorded",
+    })?;
+
+    let receipt = data_store
+        .list_nota_runtime_receipts(Some(request.transaction_id))?
+        .into_iter()
+        .rev()
+        .find(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+                && serde_json::from_str::<DevReturnIntegrateRecordedReceiptPayload>(
+                    &receipt.payload_json,
+                )
+                .map(|payload| payload == receipt_payload)
+                .unwrap_or(false)
+        })
+        .context("dev integrate recorded receipt should be readable after append")?;
+
+    Ok(NotaDevReturnIntegrateReport {
+        status: "recorded".to_string(),
+        integrate,
+        next_step,
+        receipt,
+    })
+}
+
+pub fn record_dev_return_finalize(
+    data_store: &DataStore,
+    request: NotaDevReturnFinalizeRequest,
+) -> Result<NotaDevReturnFinalizeReport> {
+    let summary = normalize_optional(request.summary.as_deref());
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    let current_checkpoint = checkpoints
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+        .cloned()
+        .context("dev return finalize requires a current runtime checkpoint")?;
+    let allocation = data_store
+        .list_nota_runtime_allocations()?
+        .into_iter()
+        .find(|allocation| allocation.id == request.allocation_id)
+        .with_context(|| {
+            format!(
+                "runtime allocation `{}` was not found",
+                request.allocation_id
+            )
+        })?;
+    if allocation.source_transaction_id != request.transaction_id {
+        bail!(
+            "runtime allocation `{}` does not belong to transaction `{}`",
+            request.allocation_id,
+            request.transaction_id
+        );
+    }
+    if allocation.allocation_kind != "forge_dev_dispatch" {
+        bail!(
+            "runtime allocation `{}` is not a dev dispatch boundary",
+            allocation.id
+        );
+    }
+    if allocation.status != "return_ready" {
+        bail!(
+            "runtime allocation `{}` is not finalize-ready because status is `{}`",
+            allocation.id,
+            allocation.status
+        );
+    }
+
+    let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse dev finalize payload for allocation {}",
+                allocation.id
+            )
+        })?;
+    let outcome = payload
+        .terminal_outcome
+        .as_ref()
+        .context("dev return finalize requires a terminal outcome")?;
+    if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
+        bail!(
+            "runtime allocation `{}` is not a returned Done dev boundary",
+            allocation.id
+        );
+    }
+
+    let receipts = data_store.list_nota_runtime_receipts(Some(request.transaction_id))?;
+    let Some((_, integrated_receipt)) = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == request.transaction_id
+        })
+        .filter_map(|receipt| {
+            let payload = serde_json::from_str::<DevReturnIntegrateRecordedReceiptPayload>(
+                &receipt.payload_json,
+            )
+            .ok()?;
+            Some((receipt.id, payload))
+        })
+        .filter(|(_, payload)| {
+            payload.checkpoint_id == current_checkpoint.cadence_object.id
+                && payload.integrate.transaction_id == request.transaction_id
+                && payload.integrate.allocation_id == request.allocation_id
+                && payload.integrate.lineage_ref == allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+    else {
+        bail!(
+            "runtime transaction `{}` allocation `{}` is not finalize-ready on the current checkpoint",
+            request.transaction_id,
+            request.allocation_id
+        );
+    };
+    if integrated_receipt.integrate.outcome.as_deref()
+        != Some(DEV_RETURN_INTEGRATE_INTEGRATED_STATE)
+    {
+        bail!(
+            "runtime transaction `{}` allocation `{}` requires an integrated outcome before finalize",
+            request.transaction_id,
+            request.allocation_id
+        );
+    }
+
+    let finalize = build_dev_return_finalize(
+        request.transaction_id,
+        &allocation,
+        &payload,
+        outcome,
+        summary.as_deref(),
+    );
+    let receipt_payload = DevReturnFinalizeRecordedReceiptPayload {
+        checkpoint_id: current_checkpoint.cadence_object.id,
+        finalize: finalize.clone(),
+    };
+
+    let matching_receipts = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == request.transaction_id
+        })
+        .filter_map(|receipt| {
+            let payload = serde_json::from_str::<DevReturnFinalizeRecordedReceiptPayload>(
+                &receipt.payload_json,
+            )
+            .ok()?;
+            Some((receipt, payload))
+        })
+        .filter(|(_, payload)| {
+            payload.checkpoint_id == current_checkpoint.cadence_object.id
+                && payload.finalize.transaction_id == request.transaction_id
+                && payload.finalize.allocation_id == request.allocation_id
+                && payload.finalize.lineage_ref == allocation.lineage_ref
+        })
+        .collect::<Vec<_>>();
+    if let Some((receipt, existing_payload)) = matching_receipts.last() {
+        if existing_payload == &receipt_payload {
+            return Ok(NotaDevReturnFinalizeReport {
+                status: "already_recorded".to_string(),
+                finalize,
+                next_step: None,
+                receipt: (*receipt).clone(),
+            });
+        }
+        bail!(
+            "a finalize outcome is already recorded for transaction `{}` allocation `{}` on checkpoint `{}`",
+            request.transaction_id,
+            request.allocation_id,
+            current_checkpoint.cadence_object.id
+        );
+    }
+
+    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+        transaction_id: request.transaction_id,
+        receipt_kind: DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND,
+        payload_json: &serde_json::to_string(&receipt_payload)
+            .context("failed to serialize dev finalize recorded receipt payload")?,
+        status: "recorded",
+    })?;
+
+    let receipt = data_store
+        .list_nota_runtime_receipts(Some(request.transaction_id))?
+        .into_iter()
+        .rev()
+        .find(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
+                && serde_json::from_str::<DevReturnFinalizeRecordedReceiptPayload>(
+                    &receipt.payload_json,
+                )
+                .map(|payload| payload == receipt_payload)
+                .unwrap_or(false)
+        })
+        .context("dev finalize recorded receipt should be readable after append")?;
+
+    Ok(NotaDevReturnFinalizeReport {
+        status: "recorded".to_string(),
+        finalize,
+        next_step: None,
+        receipt,
+    })
+}
+
+fn normalize_dev_return_review_verdict(raw: &str) -> Result<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        DEV_RETURN_REVIEW_APPROVED_VERDICT | DEV_RETURN_REVIEW_CHANGES_REQUESTED_VERDICT => {
+            Ok(normalized)
+        }
+        _ => bail!(
+            "unsupported dev return review verdict `{raw}`; use `approved` or `changes_requested`"
+        ),
+    }
+}
+
+fn normalize_dev_return_integrate_state(raw: &str) -> Result<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        DEV_RETURN_INTEGRATE_STARTED_STATE
+        | DEV_RETURN_INTEGRATE_INTEGRATED_STATE
+        | DEV_RETURN_INTEGRATE_REPAIR_REQUESTED_STATE => Ok(normalized),
+        _ => bail!(
+            "unsupported dev return integrate state `{raw}`; use `started`, `integrated`, or `repair_requested`"
+        ),
+    }
+}
+
+fn build_dev_return_review(
+    transaction_id: i64,
+    allocation: &StoredNotaRuntimeAllocation,
+    payload: &NotaDoAllocationPayload,
+    outcome: &NotaDoAllocationTerminalOutcome,
+    verdict: Option<&str>,
+    summary: Option<&str>,
+) -> NotaRuntimeReview {
+    NotaRuntimeReview {
+        state: if verdict.is_some() {
+            "review_recorded".to_string()
+        } else {
+            "review_ready".to_string()
+        },
+        transaction_id,
+        allocation_id: allocation.id,
+        lineage_ref: allocation.lineage_ref.clone(),
+        child_dispatch_role: payload.child_dispatch_role.clone(),
+        execution_host: payload.execution_host.clone(),
+        target_kind: outcome.target_kind.clone(),
+        target_ref: outcome.target_ref.clone(),
+        verdict: verdict.map(str::to_string),
+        summary: normalize_optional(summary),
+    }
+}
+
+fn build_dev_return_integrate(
+    transaction_id: i64,
+    allocation: &StoredNotaRuntimeAllocation,
+    payload: &NotaDoAllocationPayload,
+    outcome: &NotaDoAllocationTerminalOutcome,
+    state: &str,
+    summary: Option<&str>,
+) -> NotaRuntimeIntegrate {
+    let (runtime_state, integrate_outcome) = match state {
+        DEV_RETURN_INTEGRATE_STARTED_STATE => (DEV_RETURN_INTEGRATE_STARTED_RUNTIME_STATE, None),
+        DEV_RETURN_INTEGRATE_INTEGRATED_STATE => (
+            DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE,
+            Some(DEV_RETURN_INTEGRATE_INTEGRATED_STATE.to_string()),
+        ),
+        DEV_RETURN_INTEGRATE_REPAIR_REQUESTED_STATE => (
+            DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE,
+            Some(DEV_RETURN_INTEGRATE_REPAIR_REQUESTED_STATE.to_string()),
+        ),
+        _ => unreachable!("integrate state should be normalized"),
+    };
+
+    NotaRuntimeIntegrate {
+        state: runtime_state.to_string(),
+        transaction_id,
+        allocation_id: allocation.id,
+        lineage_ref: allocation.lineage_ref.clone(),
+        child_dispatch_role: payload.child_dispatch_role.clone(),
+        execution_host: payload.execution_host.clone(),
+        target_kind: outcome.target_kind.clone(),
+        target_ref: outcome.target_ref.clone(),
+        outcome: integrate_outcome,
+        summary: normalize_optional(summary),
+    }
+}
+
+fn build_dev_return_finalize(
+    transaction_id: i64,
+    allocation: &StoredNotaRuntimeAllocation,
+    payload: &NotaDoAllocationPayload,
+    outcome: &NotaDoAllocationTerminalOutcome,
+    summary: Option<&str>,
+) -> NotaRuntimeFinalize {
+    NotaRuntimeFinalize {
+        state: DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE.to_string(),
+        transaction_id,
+        allocation_id: allocation.id,
+        lineage_ref: allocation.lineage_ref.clone(),
+        child_dispatch_role: payload.child_dispatch_role.clone(),
+        execution_host: payload.execution_host.clone(),
+        target_kind: outcome.target_kind.clone(),
+        target_ref: outcome.target_ref.clone(),
+        summary: normalize_optional(summary),
+    }
+}
+
+fn build_dev_return_next_step(
+    step: &str,
+    transaction_id: i64,
+    allocation: &StoredNotaRuntimeAllocation,
+    payload: &NotaDoAllocationPayload,
+    outcome: &NotaDoAllocationTerminalOutcome,
+) -> NotaRuntimeNextStep {
+    NotaRuntimeNextStep {
+        step: step.to_string(),
+        transaction_id,
+        allocation_id: allocation.id,
+        lineage_ref: allocation.lineage_ref.clone(),
+        child_dispatch_role: payload.child_dispatch_role.clone(),
+        execution_host: payload.execution_host.clone(),
+        target_kind: outcome.target_kind.clone(),
+        target_ref: outcome.target_ref.clone(),
+    }
+}
+
+fn build_dev_return_integrate_next_step(
+    state: &str,
+    transaction_id: i64,
+    allocation: &StoredNotaRuntimeAllocation,
+    payload: &NotaDoAllocationPayload,
+    outcome: &NotaDoAllocationTerminalOutcome,
+) -> Option<NotaRuntimeNextStep> {
+    match state {
+        DEV_RETURN_INTEGRATE_STARTED_STATE => None,
+        DEV_RETURN_INTEGRATE_INTEGRATED_STATE => Some(build_dev_return_next_step(
+            "finalize",
+            transaction_id,
+            allocation,
+            payload,
+            outcome,
+        )),
+        DEV_RETURN_INTEGRATE_REPAIR_REQUESTED_STATE => Some(build_dev_return_next_step(
+            "repair",
+            transaction_id,
+            allocation,
+            payload,
+            outcome,
+        )),
+        _ => unreachable!("integrate state should be normalized"),
+    }
+}
+
+fn build_dev_return_review_next_step(
+    transaction_id: i64,
+    allocation: &StoredNotaRuntimeAllocation,
+    payload: &NotaDoAllocationPayload,
+    outcome: &NotaDoAllocationTerminalOutcome,
+) -> NotaRuntimeNextStep {
+    build_dev_return_next_step("review", transaction_id, allocation, payload, outcome)
+}
+
 fn recommend_single_lane_allocator_checkpoint_candidate(
     data_store: &DataStore,
     allocations: &[StoredNotaRuntimeAllocation],
@@ -1811,9 +2773,10 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
         return Ok(None);
     };
 
-    let (kind, recommendation) =
-        if outcome.boundary_kind == "return" && outcome.child_execution_status == "Done" {
-            (
+    let (kind, recommendation) = if outcome.boundary_kind == "return"
+        && outcome.child_execution_status == "Done"
+    {
+        (
                 RecommendedCheckpointCandidateKind::AgentReturnAcceptance,
                 NotaCheckpointRequest {
                     title: Some(format!(
@@ -1879,8 +2842,8 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
                     project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
                 },
             )
-        } else {
-            let outcome_fact = match outcome.child_execution_status_message.as_deref() {
+    } else {
+        let outcome_fact = match outcome.child_execution_status_message.as_deref() {
                 Some(message) => format!(
                     "Allocation {} terminal outcome is {} / {} back to {} {} with status message `{message}`.",
                     latest_allocation.id,
@@ -1898,18 +2861,18 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
                     outcome.target_ref
                 ),
             };
-            let current_gate = match outcome.child_execution_status_message.as_deref() {
-                Some(message) => format!(
-                    "L3 remains open until the current {} gate is cleared: {message}.",
-                    outcome.child_execution_status
-                ),
-                None => format!(
-                    "L3 remains open until the current {} gate is cleared.",
-                    outcome.child_execution_status
-                ),
-            };
+        let current_gate = match outcome.child_execution_status_message.as_deref() {
+            Some(message) => format!(
+                "L3 remains open until the current {} gate is cleared: {message}.",
+                outcome.child_execution_status
+            ),
+            None => format!(
+                "L3 remains open until the current {} gate is cleared.",
+                outcome.child_execution_status
+            ),
+        };
 
-            (
+        (
                 RecommendedCheckpointCandidateKind::AgentEscalationContinuity,
                 NotaCheckpointRequest {
                     title: Some(format!(
@@ -1962,7 +2925,7 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
                     project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
                 },
             )
-        };
+    };
 
     Ok(Some(RecommendedCheckpointCandidate {
         kind,
@@ -2009,6 +2972,98 @@ fn recommend_dev_return_checkpoint_candidate(
     else {
         return Ok(None);
     };
+
+    let latest_review =
+        latest_dev_return_review_recorded_for_boundary(&receipts, latest_allocation)?;
+    let latest_integrate =
+        latest_dev_return_integrate_recorded_for_boundary(&receipts, latest_allocation)?;
+    let latest_finalize =
+        latest_dev_return_finalize_recorded_for_boundary(&receipts, latest_allocation)?;
+
+    if latest_review
+        .as_ref()
+        .and_then(|review| review.verdict.as_deref())
+        == Some(DEV_RETURN_REVIEW_APPROVED_VERDICT)
+        && latest_integrate
+            .as_ref()
+            .and_then(|integrate| integrate.outcome.as_deref())
+            == Some(DEV_RETURN_INTEGRATE_INTEGRATED_STATE)
+        && latest_finalize
+            .as_ref()
+            .map(|finalize| finalize.state.as_str())
+            == Some(DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE)
+    {
+        let recommendation = NotaCheckpointRequest {
+            title: Some(format!(
+                "Checkpoint: dev return closure truth for {}",
+                allocation_payload.issue_id
+            )),
+            stable_level:
+                "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned closed dev-return boundary carried forward as storage-backed checkpoint truth"
+                    .to_string(),
+            landed: vec![
+                format!(
+                    "NOTA-owned dev allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+                    latest_allocation.id,
+                    latest_allocation.lineage_ref,
+                    transaction_id,
+                    latest_allocation.child_execution_ref
+                ),
+                format!(
+                    "Review truth is recorded as `{}` for transaction {} allocation {}.",
+                    DEV_RETURN_REVIEW_APPROVED_VERDICT,
+                    transaction_id,
+                    latest_allocation.id
+                ),
+                format!(
+                    "Integrate truth is recorded as `{}` for transaction {} allocation {}.",
+                    DEV_RETURN_INTEGRATE_INTEGRATED_STATE,
+                    transaction_id,
+                    latest_allocation.id
+                ),
+                format!(
+                    "Finalize truth is recorded as `{}` for transaction {} allocation {} on lineage `{}`.",
+                    DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE,
+                    transaction_id,
+                    latest_allocation.id,
+                    latest_allocation.lineage_ref
+                ),
+                format!(
+                    "Transaction {transaction_id} receipt history preserves {DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND}, {DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND}, and {DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND} for allocation {}.",
+                    latest_allocation.id
+                ),
+            ],
+            remaining: vec![
+                "This cut closes the current dev-return boundary, not full V0 closure or a general multi-role allocator."
+                    .to_string(),
+                "Keep this checkpoint scoped to checkpoint-side carry-forward for the already-closed boundary; do not infer a second truth plane or a new human round."
+                    .to_string(),
+            ],
+            human_continuity_bus:
+                "further reduced for this boundary; a fresh window can resume from checkpoint and receipt closure truth"
+                    .to_string(),
+            selected_trunk: Some("dev return closure truth".to_string()),
+            next_start_hints: vec![
+                "Start from `entrance nota status`, then `entrance nota overview`, then `entrance nota checkpoints`."
+                    .to_string(),
+                format!(
+                    "Treat lineage `{}` as a closed dev-return boundary; do not reopen review / integrate / finalize unless a new runtime transaction or allocation is created.",
+                    latest_allocation.lineage_ref
+                ),
+                format!(
+                    "Use `entrance nota receipts --transaction-id {transaction_id}` when you need the full receipt chain behind the active closure checkpoint."
+                ),
+            ],
+            project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
+        };
+
+        return Ok(Some(RecommendedCheckpointCandidate {
+            kind: RecommendedCheckpointCandidateKind::DevReturnClosure,
+            allocation_id: latest_allocation.id,
+            source_transaction_id: transaction_id,
+            request: recommendation,
+        }));
+    }
 
     let recommendation = NotaCheckpointRequest {
         title: Some(format!(
@@ -2105,6 +3160,434 @@ fn latest_terminal_receipt_for_allocation(
         })
         .max_by_key(|(receipt_id, _)| *receipt_id)
         .map(|(_, payload)| payload))
+}
+
+fn latest_dev_return_review_recorded_for_boundary(
+    receipts: &[StoredNotaRuntimeReceipt],
+    allocation: &StoredNotaRuntimeAllocation,
+) -> Result<Option<NotaRuntimeReview>> {
+    Ok(receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnReviewRecordedReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!("failed to parse dev review recorded receipt {}", receipt.id)
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            payload.review.allocation_id == allocation.id
+                && payload.review.transaction_id == allocation.source_transaction_id
+                && payload.review.lineage_ref == allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+        .map(|(_, payload)| payload.review))
+}
+
+fn latest_dev_return_integrate_recorded_for_boundary(
+    receipts: &[StoredNotaRuntimeReceipt],
+    allocation: &StoredNotaRuntimeAllocation,
+) -> Result<Option<NotaRuntimeIntegrate>> {
+    Ok(receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnIntegrateRecordedReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!(
+                        "failed to parse dev integrate recorded receipt {}",
+                        receipt.id
+                    )
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            payload.integrate.allocation_id == allocation.id
+                && payload.integrate.transaction_id == allocation.source_transaction_id
+                && payload.integrate.lineage_ref == allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+        .map(|(_, payload)| payload.integrate))
+}
+
+fn latest_dev_return_finalize_recorded_for_boundary(
+    receipts: &[StoredNotaRuntimeReceipt],
+    allocation: &StoredNotaRuntimeAllocation,
+) -> Result<Option<NotaRuntimeFinalize>> {
+    Ok(receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnFinalizeRecordedReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!(
+                        "failed to parse dev finalize recorded receipt {}",
+                        receipt.id
+                    )
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            payload.finalize.allocation_id == allocation.id
+                && payload.finalize.transaction_id == allocation.source_transaction_id
+                && payload.finalize.lineage_ref == allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+        .map(|(_, payload)| payload.finalize))
+}
+
+fn checkpoint_scope_contains(checkpoint_scope_ids: &[i64], checkpoint_id: i64) -> bool {
+    checkpoint_scope_ids.contains(&checkpoint_id)
+}
+
+pub fn derive_nota_runtime_review(
+    checkpoint_scope_ids: &[i64],
+    allocations: &[StoredNotaRuntimeAllocation],
+    receipts: &[StoredNotaRuntimeReceipt],
+) -> Result<Option<NotaRuntimeReview>> {
+    if checkpoint_scope_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(latest_dev_allocation) = allocations
+        .iter()
+        .filter(|allocation| {
+            allocation.allocator_role == "nota"
+                && allocation.allocation_kind == "forge_dev_dispatch"
+                && allocation.child_execution_kind == "forge_task"
+        })
+        .max_by_key(|allocation| allocation.id)
+    else {
+        return Ok(None);
+    };
+    if latest_dev_allocation.status != "return_ready" {
+        return Ok(None);
+    }
+
+    let allocation_payload: NotaDoAllocationPayload =
+        serde_json::from_str(&latest_dev_allocation.payload_json).with_context(|| {
+            format!(
+                "failed to parse latest dev review payload for allocation {}",
+                latest_dev_allocation.id
+            )
+        })?;
+    let Some(outcome) = allocation_payload.terminal_outcome.as_ref() else {
+        return Ok(None);
+    };
+    if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
+        return Ok(None);
+    }
+
+    if let Some((_, payload)) = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnReviewRecordedReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!("failed to parse dev review recorded receipt {}", receipt.id)
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                && payload.review.allocation_id == latest_dev_allocation.id
+                && payload.review.transaction_id == latest_dev_allocation.source_transaction_id
+                && payload.review.lineage_ref == latest_dev_allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+    {
+        return Ok(Some(payload.review));
+    }
+
+    Ok(receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_REVIEW_READY_RECEIPT_KIND
+                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnReviewReadyReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!("failed to parse dev review-ready receipt {}", receipt.id)
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                && payload.next_step.allocation_id == latest_dev_allocation.id
+                && payload.next_step.transaction_id == latest_dev_allocation.source_transaction_id
+                && payload.next_step.lineage_ref == latest_dev_allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+        .map(|(_, _)| {
+            build_dev_return_review(
+                latest_dev_allocation.source_transaction_id,
+                latest_dev_allocation,
+                &allocation_payload,
+                outcome,
+                None,
+                None,
+            )
+        }))
+}
+
+pub fn derive_nota_runtime_integrate(
+    checkpoint_scope_ids: &[i64],
+    allocations: &[StoredNotaRuntimeAllocation],
+    receipts: &[StoredNotaRuntimeReceipt],
+) -> Result<Option<NotaRuntimeIntegrate>> {
+    if checkpoint_scope_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(latest_dev_allocation) = allocations
+        .iter()
+        .filter(|allocation| {
+            allocation.allocator_role == "nota"
+                && allocation.allocation_kind == "forge_dev_dispatch"
+                && allocation.child_execution_kind == "forge_task"
+        })
+        .max_by_key(|allocation| allocation.id)
+    else {
+        return Ok(None);
+    };
+    if latest_dev_allocation.status != "return_ready" {
+        return Ok(None);
+    }
+
+    Ok(receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnIntegrateRecordedReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!(
+                        "failed to parse dev integrate recorded receipt {}",
+                        receipt.id
+                    )
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                && payload.integrate.allocation_id == latest_dev_allocation.id
+                && payload.integrate.transaction_id == latest_dev_allocation.source_transaction_id
+                && payload.integrate.lineage_ref == latest_dev_allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+        .map(|(_, payload)| payload.integrate))
+}
+
+pub fn derive_nota_runtime_finalize(
+    checkpoint_scope_ids: &[i64],
+    allocations: &[StoredNotaRuntimeAllocation],
+    receipts: &[StoredNotaRuntimeReceipt],
+) -> Result<Option<NotaRuntimeFinalize>> {
+    if checkpoint_scope_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(latest_dev_allocation) = allocations
+        .iter()
+        .filter(|allocation| {
+            allocation.allocator_role == "nota"
+                && allocation.allocation_kind == "forge_dev_dispatch"
+                && allocation.child_execution_kind == "forge_task"
+        })
+        .max_by_key(|allocation| allocation.id)
+    else {
+        return Ok(None);
+    };
+    if latest_dev_allocation.status != "return_ready" {
+        return Ok(None);
+    }
+
+    Ok(receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnFinalizeRecordedReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!(
+                        "failed to parse dev finalize recorded receipt {}",
+                        receipt.id
+                    )
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                && payload.finalize.allocation_id == latest_dev_allocation.id
+                && payload.finalize.transaction_id == latest_dev_allocation.source_transaction_id
+                && payload.finalize.lineage_ref == latest_dev_allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+        .map(|(_, payload)| payload.finalize))
+}
+
+pub fn derive_nota_runtime_next_step(
+    checkpoint_scope_ids: &[i64],
+    allocations: &[StoredNotaRuntimeAllocation],
+    receipts: &[StoredNotaRuntimeReceipt],
+) -> Result<Option<NotaRuntimeNextStep>> {
+    if checkpoint_scope_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(latest_dev_allocation) = allocations
+        .iter()
+        .filter(|allocation| {
+            allocation.allocator_role == "nota"
+                && allocation.allocation_kind == "forge_dev_dispatch"
+                && allocation.child_execution_kind == "forge_task"
+        })
+        .max_by_key(|allocation| allocation.id)
+    else {
+        return Ok(None);
+    };
+    if latest_dev_allocation.status != "return_ready" {
+        return Ok(None);
+    }
+
+    if receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnFinalizeRecordedReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!(
+                        "failed to parse dev finalize recorded receipt {}",
+                        receipt.id
+                    )
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .any(|(_, payload)| {
+            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                && payload.finalize.allocation_id == latest_dev_allocation.id
+                && payload.finalize.transaction_id == latest_dev_allocation.source_transaction_id
+                && payload.finalize.lineage_ref == latest_dev_allocation.lineage_ref
+        })
+    {
+        return Ok(None);
+    }
+
+    if let Some((_, payload)) = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnIntegrateRecordedReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!(
+                        "failed to parse dev integrate recorded receipt {}",
+                        receipt.id
+                    )
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                && payload.integrate.allocation_id == latest_dev_allocation.id
+                && payload.integrate.transaction_id == latest_dev_allocation.source_transaction_id
+                && payload.integrate.lineage_ref == latest_dev_allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+    {
+        return Ok(payload.next_step);
+    }
+
+    if let Some((_, payload)) = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnReviewRecordedReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!("failed to parse dev review recorded receipt {}", receipt.id)
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                && payload.review.allocation_id == latest_dev_allocation.id
+                && payload.review.transaction_id == latest_dev_allocation.source_transaction_id
+                && payload.review.lineage_ref == latest_dev_allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+    {
+        return Ok(Some(payload.next_step));
+    }
+
+    Ok(receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.receipt_kind == DEV_RETURN_REVIEW_READY_RECEIPT_KIND
+                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+        })
+        .map(|receipt| {
+            let payload: DevReturnReviewReadyReceiptPayload =
+                serde_json::from_str(&receipt.payload_json).with_context(|| {
+                    format!("failed to parse dev review-ready receipt {}", receipt.id)
+                })?;
+            Ok((receipt.id, payload))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, payload)| {
+            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                && payload.next_step.allocation_id == latest_dev_allocation.id
+                && payload.next_step.transaction_id == latest_dev_allocation.source_transaction_id
+                && payload.next_step.lineage_ref == latest_dev_allocation.lineage_ref
+        })
+        .max_by_key(|(receipt_id, _)| *receipt_id)
+        .map(|(_, payload)| payload.next_step))
 }
 
 fn checkpoint_request_matches_current(
@@ -2247,12 +3730,21 @@ mod tests {
     };
 
     use super::{
-        default_nota_dispatch_execution_host, list_nota_runtime_allocations,
-        list_nota_runtime_receipts, list_runtime_checkpoints, recommend_runtime_closure_checkpoint,
-        write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
+        active_checkpoint_scope_ids, default_nota_dispatch_execution_host,
+        derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
+        derive_nota_runtime_review, list_nota_runtime_allocations, list_nota_runtime_receipts,
+        list_runtime_checkpoints, materialize_runtime_closure_checkpoint,
+        recommend_runtime_closure_checkpoint, record_dev_return_finalize,
+        record_dev_return_integration, record_dev_return_review, write_runtime_checkpoint,
+        AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
+        NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest,
         NotaDispatchExecutionHost, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
         AGENT_RETURN_ACCEPTED_RECEIPT_KIND, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
         CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND, DEV_RETURN_ACCEPTED_RECEIPT_KIND,
+        DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE, DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND,
+        DEV_RETURN_INTEGRATE_INTEGRATED_STATE, DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND,
+        DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE, DEV_RETURN_REVIEW_APPROVED_VERDICT,
+        DEV_RETURN_REVIEW_READY_RECEIPT_KIND, DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
     };
 
     struct TempDbPath {
@@ -2693,12 +4185,13 @@ mod tests {
 
         let seeded_receipts = store.list_nota_runtime_receipts(Some(transaction.id))?;
         assert_eq!(seeded_receipts.len(), 2);
-        assert!(seeded_receipts
-            .iter()
-            .all(|receipt| receipt.receipt_kind != DEV_RETURN_ACCEPTED_RECEIPT_KIND));
+        assert!(seeded_receipts.iter().all(|receipt| {
+            receipt.receipt_kind != DEV_RETURN_ACCEPTED_RECEIPT_KIND
+                && receipt.receipt_kind != DEV_RETURN_REVIEW_READY_RECEIPT_KIND
+        }));
 
         let report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(report.receipt_count, 3);
+        assert_eq!(report.receipt_count, 4);
         assert_eq!(
             report.receipts[2].receipt_kind,
             DEV_RETURN_ACCEPTED_RECEIPT_KIND
@@ -2719,8 +4212,397 @@ mod tests {
         assert_eq!(accepted_payload["target_kind"], "nota_runtime_transaction");
         assert_eq!(accepted_payload["target_ref"], transaction.id.to_string());
 
-        let second_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(second_report.receipt_count, 3);
+        assert_eq!(
+            report.receipts[3].receipt_kind,
+            DEV_RETURN_REVIEW_READY_RECEIPT_KIND
+        );
+        let review_ready_payload: Value = serde_json::from_str(&report.receipts[3].payload_json)?;
+        assert_eq!(
+            review_ready_payload["checkpoint_id"],
+            checkpoint_report.checkpoint.cadence_object.id
+        );
+        assert_eq!(review_ready_payload["step"], "review");
+        assert_eq!(review_ready_payload["transaction_id"], transaction.id);
+        assert_eq!(review_ready_payload["allocation_id"], allocation.id);
+        assert_eq!(review_ready_payload["lineage_ref"], allocation.lineage_ref);
+        assert_eq!(review_ready_payload["child_dispatch_role"], "dev");
+        assert_eq!(
+            review_ready_payload["execution_host"],
+            "detached_forge_cli_supervisor"
+        );
+        assert_eq!(
+            review_ready_payload["target_kind"],
+            "nota_runtime_transaction"
+        );
+        assert_eq!(
+            review_ready_payload["target_ref"],
+            transaction.id.to_string()
+        );
+
+        let checkpoints = list_runtime_checkpoints(&store)?;
+        let current_checkpoint = checkpoints
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.cadence_object.is_current);
+        let checkpoint_scope_ids = active_checkpoint_scope_ids(&store, current_checkpoint)?;
+        let next_step = derive_nota_runtime_next_step(
+            &checkpoint_scope_ids,
+            allocations.stored_allocations(),
+            &report.receipts,
+        )?
+        .context("review-ready next step should be exposed")?;
+        assert_eq!(next_step.step, "review");
+        assert_eq!(next_step.transaction_id, transaction.id);
+        assert_eq!(next_step.allocation_id, allocation.id);
+        assert_eq!(next_step.lineage_ref, allocation.lineage_ref);
+        assert_eq!(next_step.child_dispatch_role, "dev");
+        assert_eq!(next_step.execution_host, "detached_forge_cli_supervisor");
+        assert_eq!(next_step.target_kind, "nota_runtime_transaction");
+        assert_eq!(next_step.target_ref, transaction.id.to_string());
+
+        let review_recorded = record_dev_return_review(
+            &store,
+            NotaDevReturnReviewRequest {
+                transaction_id: transaction.id,
+                allocation_id: allocation.id,
+                verdict: "approved".to_string(),
+                summary: Some("Review accepted for integration".to_string()),
+            },
+        )?;
+        assert_eq!(review_recorded.status, "recorded");
+        assert_eq!(review_recorded.review.state, "review_recorded");
+        assert_eq!(review_recorded.review.verdict.as_deref(), Some("approved"));
+        assert_eq!(
+            review_recorded.review.summary.as_deref(),
+            Some("Review accepted for integration")
+        );
+        assert_eq!(review_recorded.next_step.step, "integrate");
+        assert_eq!(
+            review_recorded.receipt.receipt_kind,
+            DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+        );
+
+        let recorded_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
+        assert_eq!(recorded_report.receipt_count, 5);
+        assert_eq!(
+            recorded_report.receipts[4].receipt_kind,
+            DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+        );
+
+        let review = derive_nota_runtime_review(
+            &checkpoint_scope_ids,
+            allocations.stored_allocations(),
+            &recorded_report.receipts,
+        )?
+        .context("recorded dev review should be exposed")?;
+        assert_eq!(review.state, "review_recorded");
+        assert_eq!(review.verdict.as_deref(), Some("approved"));
+        assert_eq!(
+            review.summary.as_deref(),
+            Some("Review accepted for integration")
+        );
+        assert_eq!(review.transaction_id, transaction.id);
+        assert_eq!(review.allocation_id, allocation.id);
+        assert_eq!(review.lineage_ref, allocation.lineage_ref);
+
+        let integrated_next_step = derive_nota_runtime_next_step(
+            &checkpoint_scope_ids,
+            allocations.stored_allocations(),
+            &recorded_report.receipts,
+        )?
+        .context("recorded approved review should advance next step")?;
+        assert_eq!(integrated_next_step.step, "integrate");
+        assert_eq!(integrated_next_step.transaction_id, transaction.id);
+        assert_eq!(integrated_next_step.allocation_id, allocation.id);
+        assert_eq!(integrated_next_step.lineage_ref, allocation.lineage_ref);
+
+        let duplicate_record = record_dev_return_review(
+            &store,
+            NotaDevReturnReviewRequest {
+                transaction_id: transaction.id,
+                allocation_id: allocation.id,
+                verdict: "approved".to_string(),
+                summary: Some("Review accepted for integration".to_string()),
+            },
+        )?;
+        assert_eq!(duplicate_record.status, "already_recorded");
+
+        let conflicting_review_result = record_dev_return_review(
+            &store,
+            NotaDevReturnReviewRequest {
+                transaction_id: transaction.id,
+                allocation_id: allocation.id,
+                verdict: "changes_requested".to_string(),
+                summary: Some("Needs repair".to_string()),
+            },
+        );
+        assert!(conflicting_review_result.is_err());
+
+        let integrate_started = record_dev_return_integration(
+            &store,
+            NotaDevReturnIntegrateRequest {
+                transaction_id: transaction.id,
+                allocation_id: allocation.id,
+                state: "started".to_string(),
+                summary: Some("Integration is now in progress".to_string()),
+            },
+        )?;
+        assert_eq!(integrate_started.status, "recorded");
+        assert_eq!(integrate_started.integrate.state, "integrate_started");
+        assert_eq!(integrate_started.integrate.outcome, None);
+        assert_eq!(
+            integrate_started.integrate.summary.as_deref(),
+            Some("Integration is now in progress")
+        );
+        assert!(integrate_started.next_step.is_none());
+        assert_eq!(
+            integrate_started.receipt.receipt_kind,
+            DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+        );
+
+        let integrate_started_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
+        assert_eq!(integrate_started_report.receipt_count, 6);
+        assert_eq!(
+            integrate_started_report.receipts[5].receipt_kind,
+            DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+        );
+
+        let started_integrate = derive_nota_runtime_integrate(
+            &checkpoint_scope_ids,
+            allocations.stored_allocations(),
+            &integrate_started_report.receipts,
+        )?
+        .context("started integration should be exposed")?;
+        assert_eq!(started_integrate.state, "integrate_started");
+        assert_eq!(started_integrate.outcome, None);
+        assert_eq!(
+            started_integrate.summary.as_deref(),
+            Some("Integration is now in progress")
+        );
+        assert!(derive_nota_runtime_next_step(
+            &checkpoint_scope_ids,
+            allocations.stored_allocations(),
+            &integrate_started_report.receipts,
+        )?
+        .is_none());
+
+        let integrated = record_dev_return_integration(
+            &store,
+            NotaDevReturnIntegrateRequest {
+                transaction_id: transaction.id,
+                allocation_id: allocation.id,
+                state: "integrated".to_string(),
+                summary: Some("Integration landed and is ready to finalize".to_string()),
+            },
+        )?;
+        assert_eq!(integrated.status, "recorded");
+        assert_eq!(integrated.integrate.state, "integrate_recorded");
+        assert_eq!(integrated.integrate.outcome.as_deref(), Some("integrated"));
+        assert_eq!(
+            integrated.integrate.summary.as_deref(),
+            Some("Integration landed and is ready to finalize")
+        );
+        assert_eq!(
+            integrated
+                .next_step
+                .as_ref()
+                .context("integrated next step should be present")?
+                .step,
+            "finalize"
+        );
+
+        let integrated_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
+        assert_eq!(integrated_report.receipt_count, 7);
+        assert_eq!(
+            integrated_report.receipts[6].receipt_kind,
+            DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+        );
+
+        let recorded_integrate = derive_nota_runtime_integrate(
+            &checkpoint_scope_ids,
+            allocations.stored_allocations(),
+            &integrated_report.receipts,
+        )?
+        .context("recorded integration should be exposed")?;
+        assert_eq!(recorded_integrate.state, "integrate_recorded");
+        assert_eq!(recorded_integrate.outcome.as_deref(), Some("integrated"));
+        assert_eq!(
+            recorded_integrate.summary.as_deref(),
+            Some("Integration landed and is ready to finalize")
+        );
+
+        let finalize_next_step = derive_nota_runtime_next_step(
+            &checkpoint_scope_ids,
+            allocations.stored_allocations(),
+            &integrated_report.receipts,
+        )?
+        .context("integrated next step should advance to finalize")?;
+        assert_eq!(finalize_next_step.step, "finalize");
+
+        let finalized = record_dev_return_finalize(
+            &store,
+            NotaDevReturnFinalizeRequest {
+                transaction_id: transaction.id,
+                allocation_id: allocation.id,
+                summary: Some("Boundary closed after finalize".to_string()),
+            },
+        )?;
+        assert_eq!(finalized.status, "recorded");
+        assert_eq!(finalized.finalize.state, "closed");
+        assert_eq!(
+            finalized.finalize.summary.as_deref(),
+            Some("Boundary closed after finalize")
+        );
+        assert!(finalized.next_step.is_none());
+        assert_eq!(
+            finalized.receipt.receipt_kind,
+            DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
+        );
+
+        let finalized_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
+        assert_eq!(finalized_report.receipt_count, 8);
+        assert_eq!(
+            finalized_report.receipts[7].receipt_kind,
+            DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
+        );
+
+        let recorded_finalize = derive_nota_runtime_finalize(
+            &checkpoint_scope_ids,
+            allocations.stored_allocations(),
+            &finalized_report.receipts,
+        )?
+        .context("recorded finalize should be exposed")?;
+        assert_eq!(recorded_finalize.state, "closed");
+        assert_eq!(
+            recorded_finalize.summary.as_deref(),
+            Some("Boundary closed after finalize")
+        );
+        assert!(derive_nota_runtime_next_step(
+            &checkpoint_scope_ids,
+            allocations.stored_allocations(),
+            &finalized_report.receipts,
+        )?
+        .is_none());
+
+        let duplicate_finalized = record_dev_return_finalize(
+            &store,
+            NotaDevReturnFinalizeRequest {
+                transaction_id: transaction.id,
+                allocation_id: allocation.id,
+                summary: Some("Boundary closed after finalize".to_string()),
+            },
+        )?;
+        assert_eq!(duplicate_finalized.status, "already_recorded");
+
+        let duplicate_integrated = record_dev_return_integration(
+            &store,
+            NotaDevReturnIntegrateRequest {
+                transaction_id: transaction.id,
+                allocation_id: allocation.id,
+                state: "integrated".to_string(),
+                summary: Some("Integration landed and is ready to finalize".to_string()),
+            },
+        )?;
+        assert_eq!(duplicate_integrated.status, "already_recorded");
+
+        let conflicting_integrate_result = record_dev_return_integration(
+            &store,
+            NotaDevReturnIntegrateRequest {
+                transaction_id: transaction.id,
+                allocation_id: allocation.id,
+                state: "repair_requested".to_string(),
+                summary: Some("Integration found a regression".to_string()),
+            },
+        );
+        assert!(conflicting_integrate_result.is_err());
+
+        let closure_checkpoint = materialize_runtime_closure_checkpoint(&store)?;
+        assert_eq!(closure_checkpoint.status, "applied");
+        assert_eq!(
+            closure_checkpoint
+                .source_recommendation
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.selected_trunk.as_deref()),
+            Some("dev return closure truth")
+        );
+        assert_eq!(
+            closure_checkpoint.superseded_checkpoint_id,
+            current_checkpoint.map(|checkpoint| checkpoint.cadence_object.id)
+        );
+
+        let closure_checkpoints = list_runtime_checkpoints(&store)?;
+        let closure_checkpoint_record = closure_checkpoints
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.cadence_object.is_current)
+            .context("closure checkpoint should become current")?;
+        assert_eq!(
+            closure_checkpoint_record.payload.selected_trunk.as_deref(),
+            Some("dev return closure truth")
+        );
+
+        let closure_scope_ids =
+            active_checkpoint_scope_ids(&store, Some(closure_checkpoint_record))?;
+        assert_eq!(
+            closure_scope_ids[0],
+            closure_checkpoint_record.cadence_object.id
+        );
+        assert!(closure_scope_ids.contains(&current_checkpoint.unwrap().cadence_object.id));
+
+        let closure_receipts = list_nota_runtime_receipts(&store, Some(transaction.id))?;
+        assert_eq!(closure_receipts.receipt_count, 9);
+        assert_eq!(
+            closure_receipts.receipts[8].receipt_kind,
+            CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND
+        );
+
+        let carried_review = derive_nota_runtime_review(
+            &closure_scope_ids,
+            allocations.stored_allocations(),
+            &closure_receipts.receipts,
+        )?
+        .context("review truth should survive checkpoint supersession")?;
+        assert_eq!(carried_review.state, "review_recorded");
+        assert_eq!(
+            carried_review.verdict.as_deref(),
+            Some(DEV_RETURN_REVIEW_APPROVED_VERDICT)
+        );
+
+        let carried_integrate = derive_nota_runtime_integrate(
+            &closure_scope_ids,
+            allocations.stored_allocations(),
+            &closure_receipts.receipts,
+        )?
+        .context("integrate truth should survive checkpoint supersession")?;
+        assert_eq!(
+            carried_integrate.state,
+            DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE
+        );
+        assert_eq!(
+            carried_integrate.outcome.as_deref(),
+            Some(DEV_RETURN_INTEGRATE_INTEGRATED_STATE)
+        );
+
+        let carried_finalize = derive_nota_runtime_finalize(
+            &closure_scope_ids,
+            allocations.stored_allocations(),
+            &closure_receipts.receipts,
+        )?
+        .context("finalize truth should survive checkpoint supersession")?;
+        assert_eq!(
+            carried_finalize.state,
+            DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE
+        );
+        assert_eq!(
+            carried_finalize.summary.as_deref(),
+            Some("Boundary closed after finalize")
+        );
+        assert!(derive_nota_runtime_next_step(
+            &closure_scope_ids,
+            allocations.stored_allocations(),
+            &closure_receipts.receipts,
+        )?
+        .is_none());
 
         Ok(())
     }
@@ -2945,11 +4827,15 @@ mod tests {
         assert_eq!(readonly_report.allocation_count, 1);
         assert_eq!(readonly_report.allocations[0].status, "escalated_blocked");
         assert_eq!(
-            readonly_report.allocations[0].child_dispatch_role.as_deref(),
+            readonly_report.allocations[0]
+                .child_dispatch_role
+                .as_deref(),
             Some("agent")
         );
         assert_eq!(
-            readonly_report.allocations[0].child_dispatch_tool_name.as_deref(),
+            readonly_report.allocations[0]
+                .child_dispatch_tool_name
+                .as_deref(),
             Some("forge_dispatch_agent")
         );
         let readonly_payload: NotaDoAllocationPayload =

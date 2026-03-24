@@ -132,13 +132,107 @@ export interface ChatCaptureListReport {
   captures: StoredChatCaptureRecord[];
 }
 
+export interface NotaRuntimeBoundaryStep {
+  state: string;
+  transaction_id: number;
+  allocation_id: number;
+  lineage_ref: string;
+  child_dispatch_role: string;
+  execution_host: string;
+  target_kind: string;
+  target_ref: string;
+}
+
+export interface NotaRuntimeReview extends NotaRuntimeBoundaryStep {
+  verdict?: string;
+  summary?: string;
+}
+
+export interface NotaRuntimeIntegrate extends NotaRuntimeBoundaryStep {
+  outcome?: string;
+  summary?: string;
+}
+
+export interface NotaRuntimeFinalize extends NotaRuntimeBoundaryStep {
+  summary?: string;
+}
+
+export interface NotaRuntimeNextStep {
+  step: string;
+  transaction_id: number;
+  allocation_id: number;
+  lineage_ref: string;
+  child_dispatch_role: string;
+  execution_host: string;
+  target_kind: string;
+  target_ref: string;
+}
+
+export interface NotaCheckpointRequest {
+  title?: string;
+  stable_level: string;
+  landed: string[];
+  remaining: string[];
+  human_continuity_bus: string;
+  selected_trunk?: string | null;
+  next_start_hints: string[];
+}
+
+export interface NotaFrontDoorProgressTrack {
+  id: string;
+  label: string;
+  value: number;
+  tone: string;
+  summary: string;
+}
+
+export interface NotaFrontDoorProjection {
+  posture: string;
+  summary: string;
+  next_action_label: string;
+  next_action_detail: string;
+  dashboard_hook: string;
+  progress_tracks: NotaFrontDoorProgressTrack[];
+}
+
+export interface NotaRuntimeStatus {
+  chat_policy: ChatArchivePolicyReport;
+  checkpoint_count: number;
+  current_checkpoint_id: number | null;
+  current_checkpoint?: NotaCheckpointRecord | null;
+  transaction_count: number;
+  latest_transaction?: StoredNotaRuntimeTransaction | null;
+  allocation_count: number;
+  receipt_count: number;
+  decision_count: number;
+  latest_decision?: StoredDecisionRecord | null;
+  chat_capture_count: number;
+  vision_count: number;
+  todo_count: number;
+  recommended_checkpoint?: NotaCheckpointRequest | null;
+  review?: NotaRuntimeReview | null;
+  integrate?: NotaRuntimeIntegrate | null;
+  finalize?: NotaRuntimeFinalize | null;
+  next_step?: NotaRuntimeNextStep | null;
+  front_door: NotaFrontDoorProjection;
+}
+
 export interface NotaRuntimeOverview {
   chat_policy: ChatArchivePolicyReport;
   checkpoints: NotaCheckpointListReport;
   transactions: NotaRuntimeTransactionsReport;
   decisions: DesignDecisionListReport;
   chat_captures: ChatCaptureListReport;
+  recommended_checkpoint?: NotaCheckpointRequest | null;
+  review?: NotaRuntimeReview | null;
+  integrate?: NotaRuntimeIntegrate | null;
+  finalize?: NotaRuntimeFinalize | null;
+  next_step?: NotaRuntimeNextStep | null;
+  front_door: NotaFrontDoorProjection;
 }
 
 export const fetchNotaRuntimeOverview = () =>
   invoke<NotaRuntimeOverview>("nota_runtime_overview");
+
+export const fetchNotaRuntimeStatus = () =>
+  invoke<NotaRuntimeStatus>("nota_runtime_status");

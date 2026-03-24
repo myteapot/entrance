@@ -260,7 +260,10 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
         allocations["allocations"][0]["source_transaction_id"],
         report["transaction"]["id"]
     );
-    assert_eq!(allocations["allocations"][0]["child_dispatch_role"], "agent");
+    assert_eq!(
+        allocations["allocations"][0]["child_dispatch_role"],
+        "agent"
+    );
     assert_eq!(
         allocations["allocations"][0]["child_dispatch_tool_name"],
         "forge_dispatch_agent"
@@ -676,6 +679,7 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
         "CADENCE_CHECKPOINT_WRITTEN"
     );
     assert!(status["recommended_checkpoint"].is_null());
+    assert!(status["next_step"].is_null());
 
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
     assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
@@ -752,6 +756,8 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
         "ALLOCATION_TERMINAL_OUTCOME_RECORDED"
     );
     assert!(blocked_status["recommended_checkpoint"].is_null());
+    assert!(blocked_status["review"].is_null());
+    assert!(blocked_status["next_step"].is_null());
 
     Ok(())
 }
@@ -946,8 +952,9 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
         ["payload_json"]
         .as_str()
         .context("checkpoint receipt payload_json should be present")?;
-    let checkpoint_receipt_payload: Value = serde_json::from_str(checkpoint_receipt_payload_json)
-        .context("checkpoint receipt payload_json should be valid JSON")?;
+    let checkpoint_receipt_payload: Value =
+        serde_json::from_str(checkpoint_receipt_payload_json)
+            .context("checkpoint receipt payload_json should be valid JSON")?;
     assert_eq!(
         checkpoint_receipt_payload["selected_trunk"],
         "agent return acceptance truth"
@@ -963,13 +970,19 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     let agent_return_accepted_payload: Value =
         serde_json::from_str(agent_return_accepted_payload_json)
             .context("agent return accepted receipt payload should be valid JSON")?;
-    assert_eq!(agent_return_accepted_payload["allocation_id"], allocation_id);
+    assert_eq!(
+        agent_return_accepted_payload["allocation_id"],
+        allocation_id
+    );
     assert_eq!(agent_return_accepted_payload["lineage_ref"], lineage_ref);
     assert_eq!(
         agent_return_accepted_payload["checkpoint_id"],
         checkpoint_runtime_closure["checkpoint"]["id"]
     );
-    assert_eq!(agent_return_accepted_payload["child_dispatch_role"], "agent");
+    assert_eq!(
+        agent_return_accepted_payload["child_dispatch_role"],
+        "agent"
+    );
     assert_eq!(
         agent_return_accepted_payload["execution_host"],
         "detached_forge_cli_supervisor"
@@ -988,7 +1001,10 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     let checkpoint_runtime_closure_again: Value =
         serde_json::from_str(&checkpoint_runtime_closure_again_output)
             .context("second checkpoint-runtime-closure output should be valid JSON")?;
-    assert_eq!(checkpoint_runtime_closure_again["status"], "already_current");
+    assert_eq!(
+        checkpoint_runtime_closure_again["status"],
+        "already_current"
+    );
     assert_eq!(
         checkpoint_runtime_closure_again["checkpoint"]["title"],
         format!("Checkpoint: agent return acceptance truth for {issue_id}")
@@ -1149,6 +1165,7 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
         overview["recommended_checkpoint"]["remaining"][0],
         "This is a returned dev child boundary, not a completed review / integrate / repair loop; M9 return closure is still open."
     );
+    assert!(overview["next_step"].is_null());
 
     let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
     let status: Value = serde_json::from_str(&status_output)
@@ -1169,6 +1186,8 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
             lineage_ref
         )
     );
+    assert!(status["review"].is_null());
+    assert!(status["next_step"].is_null());
 
     let checkpoint_runtime_closure_output =
         run_nota_cli(&app_data_dir, &["nota", "checkpoint-runtime-closure"])?;
@@ -1236,7 +1255,97 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     );
     assert_eq!(
         post_materialization_status["latest_receipt"]["receipt_kind"],
-        "DEV_RETURN_ACCEPTED"
+        "DEV_RETURN_REVIEW_READY"
+    );
+    assert!(post_materialization_status["integrate"].is_null());
+    assert_eq!(
+        post_materialization_status["review"]["state"],
+        "review_ready"
+    );
+    assert_eq!(
+        post_materialization_status["review"]["transaction_id"],
+        transaction_id
+    );
+    assert_eq!(
+        post_materialization_status["review"]["allocation_id"],
+        allocation_id
+    );
+    assert_eq!(
+        post_materialization_status["review"]["lineage_ref"],
+        lineage_ref
+    );
+    assert_eq!(
+        post_materialization_status["review"]["verdict"],
+        Value::Null
+    );
+    assert_eq!(post_materialization_status["next_step"]["step"], "review");
+    assert_eq!(
+        post_materialization_status["next_step"]["transaction_id"],
+        transaction_id
+    );
+    assert_eq!(
+        post_materialization_status["next_step"]["allocation_id"],
+        allocation_id
+    );
+    assert_eq!(
+        post_materialization_status["next_step"]["lineage_ref"],
+        lineage_ref
+    );
+    assert_eq!(
+        post_materialization_status["next_step"]["child_dispatch_role"],
+        "dev"
+    );
+    assert_eq!(
+        post_materialization_status["next_step"]["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(
+        post_materialization_status["next_step"]["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        post_materialization_status["next_step"]["target_ref"],
+        transaction_id.to_string()
+    );
+
+    let post_materialization_overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let post_materialization_overview: Value =
+        serde_json::from_str(&post_materialization_overview_output)
+            .context("post-materialization overview output should be valid JSON")?;
+    assert!(post_materialization_overview["recommended_checkpoint"].is_null());
+    assert!(post_materialization_overview["integrate"].is_null());
+    assert_eq!(
+        post_materialization_overview["review"]["state"],
+        "review_ready"
+    );
+    assert_eq!(post_materialization_overview["next_step"]["step"], "review");
+    assert_eq!(
+        post_materialization_overview["next_step"]["transaction_id"],
+        transaction_id
+    );
+    assert_eq!(
+        post_materialization_overview["next_step"]["allocation_id"],
+        allocation_id
+    );
+    assert_eq!(
+        post_materialization_overview["next_step"]["lineage_ref"],
+        lineage_ref
+    );
+    assert_eq!(
+        post_materialization_overview["next_step"]["child_dispatch_role"],
+        "dev"
+    );
+    assert_eq!(
+        post_materialization_overview["next_step"]["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(
+        post_materialization_overview["next_step"]["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        post_materialization_overview["next_step"]["target_ref"],
+        transaction_id.to_string()
     );
 
     let post_materialization_receipts_output = run_nota_cli(
@@ -1251,7 +1360,7 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     let post_materialization_receipts: Value =
         serde_json::from_str(&post_materialization_receipts_output)
             .context("post-materialization receipts output should be valid JSON")?;
-    assert_eq!(post_materialization_receipts["receipt_count"], 8);
+    assert_eq!(post_materialization_receipts["receipt_count"], 9);
     assert_eq!(
         post_materialization_receipts["receipts"][6]["receipt_kind"],
         "CADENCE_CHECKPOINT_WRITTEN"
@@ -1300,19 +1409,341 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
         dev_return_accepted_payload["target_ref"],
         transaction_id.to_string()
     );
+    assert_eq!(
+        post_materialization_receipts["receipts"][8]["receipt_kind"],
+        "DEV_RETURN_REVIEW_READY"
+    );
+    let dev_review_ready_payload_json = post_materialization_receipts["receipts"][8]
+        ["payload_json"]
+        .as_str()
+        .context("dev review ready receipt payload should be present")?;
+    let dev_review_ready_payload: Value = serde_json::from_str(dev_review_ready_payload_json)
+        .context("dev review ready receipt payload should be valid JSON")?;
+    assert_eq!(
+        dev_review_ready_payload["checkpoint_id"],
+        checkpoint_runtime_closure["checkpoint"]["id"]
+    );
+    assert_eq!(dev_review_ready_payload["step"], "review");
+    assert_eq!(dev_review_ready_payload["transaction_id"], transaction_id);
+    assert_eq!(dev_review_ready_payload["allocation_id"], allocation_id);
+    assert_eq!(dev_review_ready_payload["lineage_ref"], lineage_ref);
+    assert_eq!(dev_review_ready_payload["child_dispatch_role"], "dev");
+    assert_eq!(
+        dev_review_ready_payload["execution_host"],
+        "detached_forge_cli_supervisor"
+    );
+    assert_eq!(
+        dev_review_ready_payload["target_kind"],
+        "nota_runtime_transaction"
+    );
+    assert_eq!(
+        dev_review_ready_payload["target_ref"],
+        transaction_id.to_string()
+    );
+
+    let review_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "review",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--verdict",
+            "approved",
+            "--summary",
+            "Review accepted the returned dev boundary for integration.",
+        ],
+    )?;
+    let review_report: Value =
+        serde_json::from_str(&review_output).context("review output should be valid JSON")?;
+    assert_eq!(review_report["status"], "recorded");
+    assert_eq!(review_report["review"]["state"], "review_recorded");
+    assert_eq!(review_report["review"]["verdict"], "approved");
+    assert_eq!(
+        review_report["review"]["summary"],
+        "Review accepted the returned dev boundary for integration."
+    );
+    assert_eq!(review_report["next_step"]["step"], "integrate");
+    assert_eq!(
+        review_report["receipt"]["receipt_kind"],
+        "DEV_RETURN_REVIEW_RECORDED"
+    );
+
+    let post_review_status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let post_review_status: Value = serde_json::from_str(&post_review_status_output)
+        .context("post-review status output should be valid JSON")?;
+    assert_eq!(
+        post_review_status["latest_receipt"]["receipt_kind"],
+        "DEV_RETURN_REVIEW_RECORDED"
+    );
+    assert!(post_review_status["integrate"].is_null());
+    assert_eq!(post_review_status["review"]["state"], "review_recorded");
+    assert_eq!(post_review_status["review"]["verdict"], "approved");
+    assert_eq!(
+        post_review_status["review"]["summary"],
+        "Review accepted the returned dev boundary for integration."
+    );
+    assert_eq!(post_review_status["next_step"]["step"], "integrate");
+
+    let post_review_overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let post_review_overview: Value = serde_json::from_str(&post_review_overview_output)
+        .context("post-review overview output should be valid JSON")?;
+    assert!(post_review_overview["integrate"].is_null());
+    assert_eq!(post_review_overview["review"]["state"], "review_recorded");
+    assert_eq!(post_review_overview["review"]["verdict"], "approved");
+    assert_eq!(post_review_overview["next_step"]["step"], "integrate");
+
+    let integrate_started_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "integrate",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--state",
+            "started",
+            "--summary",
+            "Integration is in progress on the returned dev boundary.",
+        ],
+    )?;
+    let integrate_started_report: Value = serde_json::from_str(&integrate_started_output)
+        .context("integrate started output should be valid JSON")?;
+    assert_eq!(integrate_started_report["status"], "recorded");
+    assert_eq!(
+        integrate_started_report["integrate"]["state"],
+        "integrate_started"
+    );
+    assert_eq!(
+        integrate_started_report["integrate"]["outcome"],
+        Value::Null
+    );
+    assert_eq!(
+        integrate_started_report["integrate"]["summary"],
+        "Integration is in progress on the returned dev boundary."
+    );
+    assert_eq!(integrate_started_report["next_step"], Value::Null);
+    assert_eq!(
+        integrate_started_report["receipt"]["receipt_kind"],
+        "DEV_RETURN_INTEGRATE_RECORDED"
+    );
+
+    let post_integrate_started_status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let post_integrate_started_status: Value =
+        serde_json::from_str(&post_integrate_started_status_output)
+            .context("post-integrate-started status output should be valid JSON")?;
+    assert_eq!(
+        post_integrate_started_status["latest_receipt"]["receipt_kind"],
+        "DEV_RETURN_INTEGRATE_RECORDED"
+    );
+    assert_eq!(
+        post_integrate_started_status["integrate"]["state"],
+        "integrate_started"
+    );
+    assert_eq!(
+        post_integrate_started_status["integrate"]["summary"],
+        "Integration is in progress on the returned dev boundary."
+    );
+    assert_eq!(post_integrate_started_status["next_step"], Value::Null);
+
+    let integrate_recorded_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "integrate",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--state",
+            "integrated",
+            "--summary",
+            "Integration landed cleanly and is ready to finalize.",
+        ],
+    )?;
+    let integrate_recorded_report: Value = serde_json::from_str(&integrate_recorded_output)
+        .context("integrate recorded output should be valid JSON")?;
+    assert_eq!(integrate_recorded_report["status"], "recorded");
+    assert_eq!(
+        integrate_recorded_report["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(
+        integrate_recorded_report["integrate"]["outcome"],
+        "integrated"
+    );
+    assert_eq!(
+        integrate_recorded_report["integrate"]["summary"],
+        "Integration landed cleanly and is ready to finalize."
+    );
+    assert_eq!(integrate_recorded_report["next_step"]["step"], "finalize");
+
+    let post_integrated_status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let post_integrated_status: Value = serde_json::from_str(&post_integrated_status_output)
+        .context("post-integrated status output should be valid JSON")?;
+    assert_eq!(
+        post_integrated_status["latest_receipt"]["receipt_kind"],
+        "DEV_RETURN_INTEGRATE_RECORDED"
+    );
+    assert_eq!(
+        post_integrated_status["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(post_integrated_status["integrate"]["outcome"], "integrated");
+    assert_eq!(post_integrated_status["next_step"]["step"], "finalize");
+
+    let post_integrated_overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let post_integrated_overview: Value = serde_json::from_str(&post_integrated_overview_output)
+        .context("post-integrated overview output should be valid JSON")?;
+    assert_eq!(
+        post_integrated_overview["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(
+        post_integrated_overview["integrate"]["outcome"],
+        "integrated"
+    );
+    assert_eq!(post_integrated_overview["next_step"]["step"], "finalize");
+
+    let finalize_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "finalize",
+            "--transaction-id",
+            &transaction_id.to_string(),
+            "--allocation-id",
+            &allocation_id.to_string(),
+            "--summary",
+            "Finalize closed the current integrated dev-return boundary.",
+        ],
+    )?;
+    let finalize_report: Value =
+        serde_json::from_str(&finalize_output).context("finalize output should be valid JSON")?;
+    assert_eq!(finalize_report["status"], "recorded");
+    assert_eq!(finalize_report["finalize"]["state"], "closed");
+    assert_eq!(
+        finalize_report["finalize"]["summary"],
+        "Finalize closed the current integrated dev-return boundary."
+    );
+    assert_eq!(finalize_report["next_step"], Value::Null);
+    assert_eq!(
+        finalize_report["receipt"]["receipt_kind"],
+        "DEV_RETURN_FINALIZE_RECORDED"
+    );
+
+    let post_finalize_status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let post_finalize_status: Value = serde_json::from_str(&post_finalize_status_output)
+        .context("post-finalize status output should be valid JSON")?;
+    assert_eq!(
+        post_finalize_status["latest_receipt"]["receipt_kind"],
+        "DEV_RETURN_FINALIZE_RECORDED"
+    );
+    assert_eq!(
+        post_finalize_status["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(post_finalize_status["integrate"]["outcome"], "integrated");
+    assert_eq!(post_finalize_status["finalize"]["state"], "closed");
+    assert_eq!(
+        post_finalize_status["finalize"]["summary"],
+        "Finalize closed the current integrated dev-return boundary."
+    );
+    assert_eq!(post_finalize_status["next_step"], Value::Null);
+
+    let post_finalize_overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let post_finalize_overview: Value = serde_json::from_str(&post_finalize_overview_output)
+        .context("post-finalize overview output should be valid JSON")?;
+    assert_eq!(
+        post_finalize_overview["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(post_finalize_overview["integrate"]["outcome"], "integrated");
+    assert_eq!(post_finalize_overview["finalize"]["state"], "closed");
+    assert_eq!(post_finalize_overview["next_step"], Value::Null);
 
     let checkpoint_runtime_closure_again_output =
         run_nota_cli(&app_data_dir, &["nota", "checkpoint-runtime-closure"])?;
     let checkpoint_runtime_closure_again: Value =
         serde_json::from_str(&checkpoint_runtime_closure_again_output)
             .context("second checkpoint-runtime-closure output should be valid JSON")?;
+    assert_eq!(checkpoint_runtime_closure_again["status"], "applied");
     assert_eq!(
-        checkpoint_runtime_closure_again["status"],
-        "already_current"
+        checkpoint_runtime_closure_again["source_recommendation"]["selected_trunk"],
+        "dev return closure truth"
     );
     assert_eq!(
         checkpoint_runtime_closure_again["checkpoint"]["title"],
-        format!("Checkpoint: dev return acceptance truth for {issue_id}")
+        format!("Checkpoint: dev return closure truth for {issue_id}")
+    );
+    assert_eq!(
+        checkpoint_runtime_closure_again["checkpoint"]["payload"]["selected_trunk"],
+        "dev return closure truth"
+    );
+    assert_eq!(
+        checkpoint_runtime_closure_again["superseded_checkpoint_id"],
+        checkpoint_runtime_closure["checkpoint"]["id"]
+    );
+    assert_eq!(
+        checkpoint_runtime_closure_again["supersession_link"]["relation_type"],
+        "superseded_by"
+    );
+
+    let post_second_materialization_status_output =
+        run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let post_second_materialization_status: Value =
+        serde_json::from_str(&post_second_materialization_status_output)
+            .context("post-second-materialization status output should be valid JSON")?;
+    assert_eq!(
+        post_second_materialization_status["latest_receipt"]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
+    assert_eq!(
+        post_second_materialization_status["current_checkpoint"]["title"],
+        format!("Checkpoint: dev return closure truth for {issue_id}")
+    );
+    assert_eq!(
+        post_second_materialization_status["current_checkpoint"]["payload"]["selected_trunk"],
+        "dev return closure truth"
+    );
+    assert_eq!(
+        post_second_materialization_status["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(
+        post_second_materialization_status["integrate"]["outcome"],
+        "integrated"
+    );
+    assert_eq!(
+        post_second_materialization_status["finalize"]["state"],
+        "closed"
+    );
+    assert_eq!(post_second_materialization_status["next_step"], Value::Null);
+    assert!(post_second_materialization_status["recommended_checkpoint"].is_null());
+
+    let post_second_materialization_overview_output =
+        run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let post_second_materialization_overview: Value =
+        serde_json::from_str(&post_second_materialization_overview_output)
+            .context("post-second-materialization overview output should be valid JSON")?;
+    assert_eq!(
+        post_second_materialization_overview["checkpoints"]["checkpoints"][0]["title"],
+        format!("Checkpoint: dev return closure truth for {issue_id}")
+    );
+    assert_eq!(
+        post_second_materialization_overview["integrate"]["state"],
+        "integrate_recorded"
+    );
+    assert_eq!(
+        post_second_materialization_overview["integrate"]["outcome"],
+        "integrated"
+    );
+    assert_eq!(
+        post_second_materialization_overview["finalize"]["state"],
+        "closed"
     );
 
     let post_second_materialization_receipts_output = run_nota_cli(
@@ -1327,7 +1758,29 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     let post_second_materialization_receipts: Value =
         serde_json::from_str(&post_second_materialization_receipts_output)
             .context("post-second-materialization receipts output should be valid JSON")?;
-    assert_eq!(post_second_materialization_receipts["receipt_count"], 8);
+    assert_eq!(post_second_materialization_receipts["receipt_count"], 14);
+    assert_eq!(
+        post_second_materialization_receipts["receipts"][13]["receipt_kind"],
+        "CADENCE_CHECKPOINT_WRITTEN"
+    );
+    assert_eq!(
+        post_second_materialization_receipts["receipts"][12]["receipt_kind"],
+        "DEV_RETURN_FINALIZE_RECORDED"
+    );
+
+    let checkpoint_runtime_closure_final_output =
+        run_nota_cli(&app_data_dir, &["nota", "checkpoint-runtime-closure"])?;
+    let checkpoint_runtime_closure_final: Value =
+        serde_json::from_str(&checkpoint_runtime_closure_final_output)
+            .context("third checkpoint-runtime-closure output should be valid JSON")?;
+    assert_eq!(
+        checkpoint_runtime_closure_final["status"],
+        "already_current"
+    );
+    assert_eq!(
+        checkpoint_runtime_closure_final["checkpoint"]["title"],
+        format!("Checkpoint: dev return closure truth for {issue_id}")
+    );
 
     Ok(())
 }
@@ -1616,6 +2069,95 @@ fn nota_overview_cli_returns_db_first_continuity_bundle() -> Result<()> {
     assert_eq!(
         overview["checkpoints"]["checkpoints"][0]["payload"]["stable_level"],
         "single-ingress, checkpointed, DB-first NOTA host"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn nota_status_and_overview_surface_runtime_owned_front_door_projection() -> Result<()> {
+    let temp_dir = TempDir::new("front-door-projection")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Front door checkpoint",
+            "--stable-level",
+            "checkpoint-backed native front door",
+            "--landed",
+            "shared front door projection",
+            "--remaining",
+            "bounded dashboard runway",
+            "--human-continuity-bus",
+            "further reduced for the native front door",
+            "--selected-trunk",
+            "native front door round 1",
+        ],
+    )?;
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "decision",
+            "--title",
+            "Front door uses runtime truth",
+            "--statement",
+            "The native front door should read the same NOTA truth plane as status and overview.",
+            "--rationale",
+            "This prevents a GUI-only shadow model.",
+            "--decision-type",
+            "product_surface",
+            "--scope-type",
+            "project",
+            "--scope-ref",
+            "Entrance",
+            "--source-ref",
+            "nota:test:front-door",
+        ],
+    )?;
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("status output should be valid JSON")?;
+    assert_eq!(
+        status["front_door"]["posture"],
+        "Checkpoint-backed native front door"
+    );
+    assert_eq!(status["front_door"]["next_action_label"], "Current slice");
+    assert_eq!(
+        status["front_door"]["progress_tracks"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
+    );
+    assert_eq!(
+        status["front_door"]["progress_tracks"][0]["label"],
+        "Grounded in truth"
+    );
+    assert_eq!(
+        status["front_door"]["progress_tracks"][1]["label"],
+        "Front-door reach"
+    );
+    assert_eq!(
+        status["front_door"]["progress_tracks"][2]["summary"],
+        "further reduced for the native front door"
+    );
+
+    let overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let overview: Value =
+        serde_json::from_str(&overview_output).context("overview output should be valid JSON")?;
+    assert_eq!(
+        overview["front_door"]["dashboard_hook"],
+        "Dashboard stays a separate future surface; this round only leaves a bounded runway."
+    );
+    assert_eq!(
+        overview["front_door"]["progress_tracks"][2]["label"],
+        "Human relay relief"
     );
 
     Ok(())

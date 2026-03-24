@@ -29,7 +29,7 @@ export const primaryRoutes: AppRoute[] = [
     path: "/",
     label: "Chat",
     glyph: "CH",
-    description: "Resume from runtime DB state",
+    description: "Native front door and current state",
     hotkey: "Ctrl+1",
     component: Chat,
   },

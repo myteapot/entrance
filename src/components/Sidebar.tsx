@@ -8,8 +8,11 @@ const Sidebar = () => {
         <div class="sidebar__brand-mark">EN</div>
         <div>
           <p class="sidebar__eyebrow">Entrance</p>
-          <h1 class="sidebar__title">NOTA host</h1>
-          <p class="sidebar__summary">Single-ingress shell with Chat for continuity and Do for automatic runtime transactions.</p>
+          <h1 class="sidebar__title">Native NOTA front door</h1>
+          <p class="sidebar__summary">
+            Chat opens on live runtime truth, while Do remains the bounded action lane for
+            automatic transactions.
+          </p>
         </div>
       </div>
 

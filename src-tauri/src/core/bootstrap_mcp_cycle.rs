@@ -126,10 +126,7 @@ pub fn run_forge_bootstrap_mcp_cycle(
         let prompt = json_string(&child_prepare, &["prompt"])
             .context("forge_prepare_agent_dispatch should return prompt")?;
 
-        prepared_agent_reports.push(strip_prompt_fields(with_child_slot(
-            child_prepare,
-            &slot,
-        )));
+        prepared_agent_reports.push(strip_prompt_fields(with_child_slot(child_prepare, &slot)));
         prepared_agent_plans.push(BootstrapPreparedAgentPlan {
             child_slot: slot,
             issue_id,

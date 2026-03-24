@@ -189,7 +189,10 @@ enabled = false
     assert!(table_exists(paths.db_path(), "plugin_launcher_apps")?);
     assert!(table_exists(paths.db_path(), "plugin_forge_tasks")?);
     assert!(table_exists(paths.db_path(), "plugin_forge_task_logs")?);
-    assert!(table_exists(paths.db_path(), "plugin_forge_dispatch_receipts")?);
+    assert!(table_exists(
+        paths.db_path(),
+        "plugin_forge_dispatch_receipts"
+    )?);
 
     Ok(())
 }

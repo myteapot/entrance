@@ -706,9 +706,7 @@ impl McpServer {
             .as_ref()
             .context("forge plugin is not enabled")?;
         let request = parse_nota_dev_request(arguments);
-        Ok(json!(run_nota_dev_dispatch(
-            data_store, forge, request
-        )?))
+        Ok(json!(run_nota_dev_dispatch(data_store, forge, request)?))
     }
 
     fn handle_nota_write_checkpoint(&self, arguments: &Value) -> Result<Value> {

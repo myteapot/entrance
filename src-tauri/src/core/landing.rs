@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    fs,
-    path::Path,
-};
+use std::{collections::HashMap, fs, path::Path};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -491,7 +487,8 @@ pub fn list_landing_mirror_items(data_store: &DataStore) -> Result<Vec<LandingMi
     Ok(mirrors
         .into_iter()
         .map(|mirror| {
-            let promotion = latest_promotions.get(&("external_issue_mirror".to_string(), mirror.id));
+            let promotion =
+                latest_promotions.get(&("external_issue_mirror".to_string(), mirror.id));
             LandingMirrorSummary {
                 mirror,
                 promotion_state: promotion.map(|record| record.promotion_state.clone()),
