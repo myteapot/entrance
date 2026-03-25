@@ -91,8 +91,10 @@ pub fn permission_for_mcp_tool(name: &str) -> Option<McpToolPermission> {
         | "nota_runtime_status"
         | "nota_runtime_allocations"
         | "nota_runtime_receipts" => Some(COLD_CHAT_NOTA),
-        "nota_do" | "nota_dev" => Some(HOT_DO_NOTA),
-        "nota_write_checkpoint" => Some(COLD_LEARN_NOTA),
+        "nota_do" | "nota_dev" | "nota_review" | "nota_integrate" | "nota_finalize" => {
+            Some(HOT_DO_NOTA)
+        }
+        "nota_write_checkpoint" | "nota_checkpoint_runtime_closure" => Some(COLD_LEARN_NOTA),
         "forge_prepare_dispatch"
         | "forge_verify_dispatch"
         | "forge_prepare_agent_dispatch"
@@ -119,7 +121,11 @@ mod tests {
             "nota_runtime_receipts",
             "nota_do",
             "nota_dev",
+            "nota_review",
+            "nota_integrate",
+            "nota_finalize",
             "nota_write_checkpoint",
+            "nota_checkpoint_runtime_closure",
             "forge_prepare_dispatch",
             "forge_verify_dispatch",
             "forge_prepare_agent_dispatch",
@@ -282,6 +288,34 @@ mod tests {
                 ActionPrimitive::Assign,
                 ActionRoom::Strategy,
                 KnowledgeLayer::Hot,
+            ))
+        );
+    }
+
+    #[test]
+    fn nota_review_family_stays_nota_owned_hot_strategy_tooling() {
+        for name in ["nota_review", "nota_integrate", "nota_finalize"] {
+            assert_eq!(
+                permission_for_mcp_tool(name),
+                Some(super::McpToolPermission::new(
+                    ActorRole::Nota,
+                    ActionPrimitive::Assign,
+                    ActionRoom::Strategy,
+                    KnowledgeLayer::Hot,
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn nota_checkpoint_runtime_closure_is_nota_owned_cold_memory_tool() {
+        assert_eq!(
+            permission_for_mcp_tool("nota_checkpoint_runtime_closure"),
+            Some(super::McpToolPermission::new(
+                ActorRole::Nota,
+                ActionPrimitive::Learn,
+                ActionRoom::Memory,
+                KnowledgeLayer::Cold,
             ))
         );
     }

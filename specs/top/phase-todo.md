@@ -9,20 +9,21 @@
 
 ## Current Focus
 
-- finish the `V0` post-consolidation sharpening cut rather than opening new product surface sprawl
-- keep runtime owner root, cadence truth, and file projections all converging on one DB-first law
-- formalize `passed human round = acceptance` as a governed cadence object
-- surface anti-Zeno in runtime status, overview, and exported hot-root views
-- keep hot-root and cold-doc projections downstream of DB truth
+- hold the landed `V0` post-consolidation sharpening cut closed rather than reopening product surface sprawl
+- keep runtime owner root, cadence truth, repair lane truth, and file projections converging on one DB-first law
+- keep `human round`, `acceptance`, and `fully settled` governed by runtime predicates rather than narrative summaries
+- keep anti-Zeno, invariants, and repair lane visible in runtime status, overview, and exported hot-root views
+- keep hot-root and cold-doc projections rebuildable from DB truth rather than authoring authority
 - keep human relay burden shrinking by resuming from checkpointed and acceptance-backed truth before replaying chat
 
 ## Execution Strategy
 
 1. start from `entrance nota status`, `entrance nota overview`, `entrance nota checkpoints`, and `entrance nota decisions`
 2. update runtime truth first
-3. after human-round writes land, refresh exported hot-root projections
-4. only treat a round as fully settled after acceptance, no next step, and checkpoint carry-forward all hold
-5. do not reopen expansion work until the post-consolidation architecture is sharp
+3. bind each human interaction to one current human round
+4. after human-round writes land, refresh exported hot-root projections
+5. only treat a round as fully settled after acceptance, no next step, checkpoint carry-forward, and projection freshness all hold
+6. do not reopen expansion work until the post-consolidation architecture is sharp
 
 ## Current Boundary
 
@@ -36,9 +37,13 @@
 
 - `Owner root unification`
   keep runtime files and exported views under `~/.entrance`
+- `Human-round objectification`
+  make round state, checkpoint, acceptance, projection freshness, and repair explicitly resumable
 - `Cadence acceptance formalization`
   materialize human-round acceptance as a durable cadence object
-- `Anti-Zeno first-class visibility`
-  keep boundary progress explicit in runtime read surfaces
+- `Anti-Zeno first-class enforcement`
+  keep boundary progress explicit and prevent unbounded review / integrate / repair loops
 - `Projection hardening`
-  keep top docs and exported views downstream of DB truth
+  keep top docs and exported views downstream of DB truth with explicit dirty / repair semantics
+- `Recovery lowering`
+  keep recovery import-only and route rebuild through canonical runtime truth instead of seed promotion

@@ -10,11 +10,15 @@ use self::{
 };
 
 pub mod action;
+pub mod anti_zeno_runtime;
 pub mod bootstrap_mcp_cycle;
 pub mod chat_archive;
+pub mod cold_docs_runtime;
 pub mod config_store;
 pub mod data_store;
 pub mod design_governance;
+pub mod environment_runtime;
+pub mod invariant_runtime;
 pub mod event_bus;
 pub mod hotkey;
 pub mod hygiene;
@@ -25,6 +29,7 @@ pub mod mcp_stdio_client;
 pub mod nota_runtime;
 pub mod permission;
 pub mod plugin_manager;
+pub mod projection_runtime;
 pub mod recovery;
 pub mod supervision;
 pub mod theme;
@@ -229,6 +234,7 @@ pub fn bootstrap_for_paths(paths: AppPaths) -> Result<StartupState> {
     let plugin_migrations = enabled_plugin_migrations(&config);
     let migration_plan = MigrationPlan::new(plugin_migrations.as_slice());
     let data_store = DataStore::open(paths.db_path(), migration_plan)?;
+    environment_runtime::record_runtime_environment(&data_store, &paths)?;
 
     Ok(StartupState {
         paths,

@@ -16,6 +16,7 @@ use tauri::{Emitter, Manager};
 
 use core::{
     action::ActorRole,
+    anti_zeno_runtime::{build_anti_zeno_budget_report, AntiZenoBudgetReport},
     bootstrap_for_paths,
     bootstrap_mcp_cycle::{
         run_forge_bootstrap_dev_task, run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions,
@@ -26,6 +27,10 @@ use core::{
         ChatArchivePolicyReport, ChatArchivePolicyRequest, ChatCaptureListReport,
         ChatCaptureRequest,
     },
+    cold_docs_runtime::{
+        canonicalize_cold_docs_from_repo, export_cold_docs_to_repo, list_cold_documents,
+        NotaColdDocExportReport, NotaColdDocListReport,
+    },
     data_store::{
         StoredDecisionRecord, StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
         StoredSourceIngestRun, StoredTodoRecord, StoredVisionRecord,
@@ -34,9 +39,16 @@ use core::{
         list_design_decisions, record_design_decision, DesignDecisionListReport,
         DesignDecisionRequest,
     },
+    environment_runtime::{
+        current_runtime_host, list_owned_worktrees, OwnedWorktreeRegistryReport,
+    },
     event_bus::EventBus,
     hotkey,
     hygiene::{list_spec_hygiene_v0, run_spec_hygiene_v0, SpecHygieneReport},
+    invariant_runtime::{
+        project_runtime_invariants, refresh_runtime_invariants, RepairLaneReport,
+        RuntimeInvariantReport,
+    },
     landing::{
         import_linear_entrance_snapshot, list_landing_ingest_runs, list_landing_mirror_items,
         list_landing_planning_items, list_landing_unreconciled_items, LandingImportReport,
@@ -46,25 +58,33 @@ use core::{
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
         active_checkpoint_scope_ids, derive_anti_zeno_projection,
-        derive_current_runtime_acceptance_bundle, derive_nota_runtime_finalize,
-        derive_nota_runtime_integrate, derive_nota_runtime_next_step, derive_nota_runtime_review,
+        derive_current_runtime_acceptance_bundle, derive_current_runtime_handout,
+        derive_current_runtime_human_round, derive_current_runtime_wake_request,
+        derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
+        derive_nota_runtime_review, derive_runtime_round_state_projection,
         list_nota_runtime_allocations, list_nota_runtime_receipts, list_nota_runtime_transactions,
-        list_runtime_acceptance_bundles, list_runtime_checkpoints,
+        list_runtime_acceptance_bundles, list_runtime_checkpoints, list_runtime_human_rounds,
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
         run_nota_dev_dispatch, run_nota_do_agent_dispatch, write_runtime_checkpoint,
         NotaAcceptanceBundleListReport, NotaAntiZenoProjection, NotaCheckpointListReport,
         NotaCheckpointRequest, NotaDevDispatchRequest, NotaDevReturnFinalizeRequest,
         NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest, NotaDispatchExecutionHost,
-        NotaDoAgentDispatchRequest, NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport,
+        NotaDoAgentDispatchRequest, NotaHandoutRecord, NotaHumanRoundListReport,
+        NotaRoundStateProjection, NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport,
         NotaRuntimeFinalize, NotaRuntimeIntegrate, NotaRuntimeNextStep, NotaRuntimeReview,
-        NotaRuntimeTransactionsReport,
+        NotaRuntimeTransactionsReport, NotaWakeRequestRecord,
     },
     plugin_manager::PluginManager,
+    projection_runtime::{
+        build_projection_status_report, record_projection_failure, record_projection_success,
+        ProjectionStatusReport, ProjectionTargetSpec, ProjectionTruthRevision,
+        HOT_ROOT_PROJECTION_CLASS, OPTIONAL_PROJECTION_POLICY, ORACLE_PROJECTION_CLASS,
+        REQUIRED_PROJECTION_POLICY,
+    },
     recovery::{
-        import_recovery_seed, list_recovery_seed_rows, list_recovery_seed_runs,
-        promote_remaining_recovery_seed_v0, promote_safe_recovery_seed_v0,
-        RecoverySeedPromotionQuery, RecoverySeedRowsQuery,
+        build_recovery_status_report, import_recovery_seed, list_recovery_seed_rows,
+        list_recovery_seed_runs, RecoveryImportOnlyStatusReport, RecoverySeedRowsQuery,
     },
     resolve_app_data_dir,
     theme::ThemeSystem,
@@ -121,13 +141,23 @@ struct DashboardSummary {
 pub(crate) struct NotaRuntimeOverview {
     chat_policy: ChatArchivePolicyReport,
     checkpoints: NotaCheckpointListReport,
+    human_rounds: NotaHumanRoundListReport,
     acceptance_bundles: NotaAcceptanceBundleListReport,
     transactions: NotaRuntimeTransactionsReport,
     allocations: NotaRuntimeAllocationsReport,
     visions: NotaVisionListReport,
     todos: NotaTodoListReport,
+    cold_docs: NotaColdDocListReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<core::data_store::StoredRuntimeHost>,
+    worktrees: OwnedWorktreeRegistryReport,
+    recovery: RecoveryImportOnlyStatusReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handout: Option<NotaHandoutRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wake_request: Option<NotaWakeRequestRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     review: Option<NotaRuntimeReview>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -136,8 +166,13 @@ pub(crate) struct NotaRuntimeOverview {
     finalize: Option<NotaRuntimeFinalize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_step: Option<NotaRuntimeNextStep>,
+    round_state: NotaRoundStateProjection,
     anti_zeno: NotaAntiZenoProjection,
+    anti_zeno_budget: AntiZenoBudgetReport,
     front_door: NotaFrontDoorProjection,
+    projections: ProjectionStatusReport,
+    invariants: RuntimeInvariantReport,
+    repair_lane: RepairLaneReport,
     decisions: DesignDecisionListReport,
     chat_captures: ChatCaptureListReport,
 }
@@ -145,6 +180,9 @@ pub(crate) struct NotaRuntimeOverview {
 #[derive(Clone, Serialize)]
 pub(crate) struct NotaRuntimeStatus {
     chat_policy: ChatArchivePolicyReport,
+    human_round_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_human_round: Option<core::nota_runtime::NotaHumanRoundRecord>,
     checkpoint_count: usize,
     current_checkpoint_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,8 +205,19 @@ pub(crate) struct NotaRuntimeStatus {
     chat_capture_count: usize,
     vision_count: usize,
     todo_count: usize,
+    cold_doc_count: usize,
+    cold_docs: NotaColdDocListReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<core::data_store::StoredRuntimeHost>,
+    worktree_count: usize,
+    worktrees: OwnedWorktreeRegistryReport,
+    recovery: RecoveryImportOnlyStatusReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handout: Option<NotaHandoutRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wake_request: Option<NotaWakeRequestRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     review: Option<NotaRuntimeReview>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,8 +226,13 @@ pub(crate) struct NotaRuntimeStatus {
     finalize: Option<NotaRuntimeFinalize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_step: Option<NotaRuntimeNextStep>,
+    round_state: NotaRoundStateProjection,
     anti_zeno: NotaAntiZenoProjection,
+    anti_zeno_budget: AntiZenoBudgetReport,
     front_door: NotaFrontDoorProjection,
+    projections: ProjectionStatusReport,
+    invariants: RuntimeInvariantReport,
+    repair_lane: RepairLaneReport,
 }
 
 #[derive(Clone, Serialize)]
@@ -218,6 +272,31 @@ pub(crate) struct HotRootProjectionWriteReport {
     files_written: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mirrored_repo_top_dir: Option<String>,
+    truth_revision: ProjectionTruthRevision,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct ProjectionRebuildReport {
+    status: String,
+    truth_revision: ProjectionTruthRevision,
+    hot_root: HotRootProjectionWriteReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cold_docs: Option<NotaColdDocExportReport>,
+    required_targets_fresh: bool,
+    dirty_required_target_count: usize,
+    repair_lane_open_count: usize,
+}
+
+fn build_projection_truth_revision(
+    current_checkpoint_id: Option<i64>,
+    current_human_round_id: Option<i64>,
+    current_acceptance_bundle_id: Option<i64>,
+) -> ProjectionTruthRevision {
+    ProjectionTruthRevision {
+        checkpoint_id: current_checkpoint_id,
+        human_round_id: current_human_round_id,
+        acceptance_bundle_id: current_acceptance_bundle_id,
+    }
 }
 
 fn build_nota_front_door_projection(
@@ -572,7 +651,7 @@ Commands:
   mcp        Serve Entrance as an MCP server over stdio or HTTP
   forge      Run Forge dispatch and bootstrap helpers
   landing    Import and inspect landing snapshots
-  recovery   Inspect and promote recovery seed data
+  recovery   Inspect import-only recovery seed data
   hygiene    Run runtime and spec hygiene checks
 
 Notes:
@@ -590,12 +669,11 @@ const LANDING_CLI_HELP: &str = r#"Usage:
 "#;
 
 const RECOVERY_CLI_HELP: &str = r#"Usage:
+  entrance recovery status
   entrance recovery import-seed --file <path>
   entrance recovery import-seed <path>
   entrance recovery runs
   entrance recovery rows [--ingest-run-id <id>] [--table <name>] [--limit <n>]
-  entrance recovery promote-safe-v0 [--ingest-run-id <id>] [--table <name>]
-  entrance recovery promote-remaining-v0 [--ingest-run-id <id>] [--table <name>]
 "#;
 
 const HYGIENE_CLI_HELP: &str = r#"Usage:
@@ -619,8 +697,19 @@ const NOTA_CLI_HELP: &str = r#"Usage:
   entrance nota chat-policy [--policy <off|summary|full>]
   entrance nota chat-captures
   entrance nota checkpoints
+  entrance nota rounds
   entrance nota acceptance-bundles
+  entrance nota projections
+  entrance nota anti-zeno
+  entrance nota invariants
+  entrance nota repair
+  entrance nota cold-docs
+  entrance nota host
+  entrance nota worktrees
+  entrance nota canonicalize-cold-docs --project-dir <path>
+  entrance nota export-cold-docs --project-dir <path>
   entrance nota export-hot-root [--project-dir <path>]
+  entrance nota rebuild-projections [--project-dir <path>]
   entrance nota decisions
   entrance nota visions
   entrance nota todos
@@ -628,7 +717,7 @@ const NOTA_CLI_HELP: &str = r#"Usage:
   entrance nota receipts [--transaction-id <id>]
   entrance nota transactions
   entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]
-  entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]
+  entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>] [--repair-of-allocation-id <id>]
   entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]
   entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]
   entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]
@@ -704,6 +793,9 @@ fn run_recovery_cli(args: &[String]) -> Result<()> {
     let startup = bootstrap_cli_state()?;
 
     match args {
+        [command] if command == "status" => {
+            print_json(&build_recovery_status_report(&startup.data_store())?)
+        }
         [command, flag, value] if command == "import-seed" && flag == "--file" => {
             let report = import_recovery_seed(&startup.data_store(), value)?;
             print_json(&report)
@@ -718,18 +810,27 @@ fn run_recovery_cli(args: &[String]) -> Result<()> {
             print_json(&list_recovery_seed_rows(&startup.data_store(), query)?)
         }
         [command, rest @ ..] if command == "promote-safe-v0" => {
-            let query = parse_recovery_promotion_args(rest)?;
-            print_json(&promote_safe_recovery_seed_v0(&startup.data_store(), query)?)
+            let suffix = if rest.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", rest.join(" "))
+            };
+            bail!(
+                "recovery promotion is permanently disabled; `entrance recovery promote-safe-v0{suffix}` is no longer available because recovery is import-only"
+            )
         }
         [command, rest @ ..] if command == "promote-remaining-v0" => {
-            let query = parse_recovery_promotion_args(rest)?;
-            print_json(&promote_remaining_recovery_seed_v0(
-                &startup.data_store(),
-                query,
-            )?)
+            let suffix = if rest.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", rest.join(" "))
+            };
+            bail!(
+                "recovery promotion is permanently disabled; `entrance recovery promote-remaining-v0{suffix}` is no longer available because recovery is import-only"
+            )
         }
         _ => bail!(
-            "unsupported recovery command, expected `entrance recovery import-seed --file <path>`, `entrance recovery runs`, `entrance recovery rows [--ingest-run-id <id>] [--table <name>] [--limit <n>]`, `entrance recovery promote-safe-v0 [--ingest-run-id <id>] [--table <name>]`, or `entrance recovery promote-remaining-v0 [--ingest-run-id <id>] [--table <name>]`"
+            "unsupported recovery command, expected `entrance recovery status`, `entrance recovery import-seed --file <path>`, `entrance recovery runs`, or `entrance recovery rows [--ingest-run-id <id>] [--table <name>] [--limit <n>]`"
         ),
     }
 }
@@ -776,41 +877,6 @@ fn parse_recovery_rows_args(args: &[String]) -> Result<RecoverySeedRowsQuery> {
                 index += 2;
             }
             other => bail!("unsupported recovery rows argument `{other}`"),
-        }
-    }
-
-    Ok(query)
-}
-
-fn parse_recovery_promotion_args(args: &[String]) -> Result<RecoverySeedPromotionQuery> {
-    let mut query = RecoverySeedPromotionQuery::default();
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--ingest-run-id" => {
-                let value = args.get(index + 1).context(
-                    "`entrance recovery promote-safe-v0 --ingest-run-id` requires a value",
-                )?;
-                query.ingest_run_id = Some(
-                    value
-                        .parse::<i64>()
-                        .with_context(|| format!("invalid recovery ingest run id `{value}`"))?,
-                );
-                index += 2;
-            }
-            "--table" => {
-                let value = args
-                    .get(index + 1)
-                    .context("`entrance recovery promote-safe-v0 --table` requires a value")?;
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    bail!("`entrance recovery promote-safe-v0 --table` must not be empty");
-                }
-                query.table_name = Some(trimmed.to_string());
-                index += 2;
-            }
-            other => bail!("unsupported recovery promote-safe-v0 argument `{other}`"),
         }
     }
 
@@ -909,14 +975,60 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "checkpoints" => {
             print_json(&list_runtime_checkpoints(&startup.data_store())?)
         }
+        [command] if command == "rounds" => {
+            print_json(&list_runtime_human_rounds(&startup.data_store())?)
+        }
         [command] if command == "acceptance-bundles" => {
             print_json(&list_runtime_acceptance_bundles(&startup.data_store())?)
+        }
+        [command] if command == "projections" => {
+            print_json(&build_nota_runtime_status(&startup.data_store())?.projections)
+        }
+        [command] if command == "anti-zeno" => {
+            print_json(&build_nota_runtime_status(&startup.data_store())?.anti_zeno_budget)
+        }
+        [command] if command == "invariants" => {
+            print_json(&build_nota_runtime_status(&startup.data_store())?.invariants)
+        }
+        [command] if command == "repair" => {
+            print_json(&build_nota_runtime_status(&startup.data_store())?.repair_lane)
+        }
+        [command] if command == "cold-docs" => {
+            let status = build_nota_runtime_status(&startup.data_store())?;
+            print_json(&status.cold_docs)
+        }
+        [command] if command == "host" => {
+            print_json(&current_runtime_host(&startup.data_store())?)
+        }
+        [command] if command == "worktrees" => {
+            let host = current_runtime_host(&startup.data_store())?;
+            print_json(&list_owned_worktrees(
+                &startup.data_store(),
+                host.as_ref().map(|value| value.host_key.as_str()),
+            )?)
+        }
+        [command, flag, value] if command == "canonicalize-cold-docs" && flag == "--project-dir" => {
+            let report = canonicalize_cold_docs_from_repo(&startup.data_store(), value)?;
+            refresh_runtime_invariant_truth(&startup.data_store())?;
+            print_json(&report)
+        }
+        [command, flag, value] if command == "export-cold-docs" && flag == "--project-dir" => {
+            let status = build_nota_runtime_status(&startup.data_store())?;
+            let report = export_cold_docs_to_repo(&startup.data_store(), value, &status.projections.current_truth_revision)?;
+            refresh_runtime_invariant_truth(&startup.data_store())?;
+            print_json(&report)
         }
         [command] if command == "export-hot-root" => {
             print_json(&write_hot_root_projection(&startup, None)?)
         }
         [command, flag, value] if command == "export-hot-root" && flag == "--project-dir" => {
             print_json(&write_hot_root_projection(&startup, Some(value))?)
+        }
+        [command] if command == "rebuild-projections" => {
+            print_json(&rebuild_nota_projections(&startup, None)?)
+        }
+        [command, flag, value] if command == "rebuild-projections" && flag == "--project-dir" => {
+            print_json(&rebuild_nota_projections(&startup, Some(value))?)
         }
         [command] if command == "decisions" => {
             print_json(&list_design_decisions(&startup.data_store())?)
@@ -977,6 +1089,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                     model: request.model,
                     agent_command,
                     title: request.title,
+                    repair_of_allocation_id: request.repair_of_allocation_id,
                     execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor,
                 },
             )?;
@@ -1005,6 +1118,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                     model: request.model,
                     agent_command,
                     title: request.title,
+                    repair_of_allocation_id: request.repair_of_allocation_id,
                     execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor,
                 },
             )?;
@@ -1047,7 +1161,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&report)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota acceptance-bundles`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>] [--repair-of-allocation-id <id>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota anti-zeno`, `entrance nota invariants`, `entrance nota repair`, `entrance nota cold-docs`, `entrance nota host`, `entrance nota worktrees`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota rebuild-projections [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -1584,6 +1698,7 @@ fn parse_nota_dispatch_args(
         model: "codex".to_string(),
         agent_command: None,
         title: None,
+        repair_of_allocation_id: None,
         execution_host: NotaDispatchExecutionHost::InProcess,
     };
     let mut index = 0;
@@ -1616,6 +1731,26 @@ fn parse_nota_dispatch_args(
                     format!("`entrance nota {command_name} --title` requires a value")
                 })?;
                 request.title = Some(value.to_string());
+                index += 2;
+            }
+            "--repair-of-allocation-id" => {
+                if command_name != "dev" {
+                    bail!(
+                        "`entrance nota {command_name}` does not support `--repair-of-allocation-id`"
+                    );
+                }
+                let value = args.get(index + 1).with_context(|| {
+                    format!(
+                        "`entrance nota {command_name} --repair-of-allocation-id` requires a value"
+                    )
+                })?;
+                let parsed = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid runtime allocation id `{value}`"))?;
+                if parsed <= 0 {
+                    bail!("`entrance nota {command_name} --repair-of-allocation-id` must be >= 1");
+                }
+                request.repair_of_allocation_id = Some(parsed);
                 index += 2;
             }
             other => bail!("unsupported nota {command_name} argument `{other}`"),
@@ -2011,9 +2146,12 @@ pub(crate) fn build_nota_runtime_overview(
         .iter()
         .find(|checkpoint| checkpoint.cadence_object.is_current);
     let checkpoint_scope_ids = active_checkpoint_scope_ids(data_store, current_checkpoint)?;
+    let transactions = list_nota_runtime_transactions(data_store)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let human_rounds = list_runtime_human_rounds(data_store)?;
     let acceptance_bundles = list_runtime_acceptance_bundles(data_store)?;
+    let current_human_round = derive_current_runtime_human_round(data_store)?;
     let visions = list_nota_visions(data_store)?;
     let todos = list_nota_todos(data_store)?;
     let recommended_checkpoint = recommend_runtime_closure_checkpoint(
@@ -2021,35 +2159,73 @@ pub(crate) fn build_nota_runtime_overview(
         allocations.stored_allocations(),
         current_checkpoint,
     )?;
+    let handout = derive_current_runtime_handout(data_store)?;
+    let wake_request = derive_current_runtime_wake_request(data_store)?;
     let review = derive_nota_runtime_review(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let integrate = derive_nota_runtime_integrate(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let finalize = derive_nota_runtime_finalize(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let next_step = derive_nota_runtime_next_step(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let current_acceptance_bundle =
         derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?;
+    let projection_truth_revision = build_projection_truth_revision(
+        current_checkpoint.map(|checkpoint| checkpoint.cadence_object.id),
+        current_human_round
+            .as_ref()
+            .map(|round| round.cadence_object.id),
+        current_acceptance_bundle
+            .as_ref()
+            .map(|bundle| bundle.cadence_object.id),
+    );
+    let projections =
+        build_projection_status_report(data_store, projection_truth_revision.clone())?;
+    let cold_docs = list_cold_documents(data_store, projection_truth_revision)?;
+    let host = current_runtime_host(data_store)?;
+    let worktrees = list_owned_worktrees(
+        data_store,
+        host.as_ref().map(|value| value.host_key.as_str()),
+    )?;
+    let recovery = build_recovery_status_report(data_store)?;
+    let round_state = derive_runtime_round_state_projection(
+        current_checkpoint,
+        current_acceptance_bundle.as_ref(),
+        next_step.as_ref(),
+    );
     let anti_zeno = derive_anti_zeno_projection(
         current_checkpoint,
         current_acceptance_bundle.as_ref(),
         next_step.as_ref(),
         recommended_checkpoint.as_ref(),
     );
-    let transactions = list_nota_runtime_transactions(data_store)?;
+    let anti_zeno_budget = build_anti_zeno_budget_report(
+        data_store,
+        round_state.checkpoint_id,
+        round_state.acceptance_bundle_id,
+        round_state.acceptance_present,
+        round_state.fully_settled,
+        round_state.next_step_open,
+        projections.dirty_required_target_count,
+    )?;
+    let (invariants, repair_lane) = project_runtime_invariants(data_store)?;
     let decisions = list_design_decisions(data_store)?;
     let front_door = build_nota_front_door_projection(
         current_checkpoint,
@@ -2068,18 +2244,30 @@ pub(crate) fn build_nota_runtime_overview(
     Ok(NotaRuntimeOverview {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
         checkpoints,
+        human_rounds,
         acceptance_bundles,
         transactions,
         allocations,
         visions,
         todos,
+        cold_docs,
+        host,
+        worktrees,
+        recovery,
         recommended_checkpoint,
+        handout,
+        wake_request,
         review,
         integrate,
         finalize,
         next_step,
+        round_state,
         anti_zeno,
+        anti_zeno_budget,
         front_door,
+        projections,
+        invariants,
+        repair_lane,
         decisions,
         chat_captures: list_chat_captures(data_store)?,
     })
@@ -2099,6 +2287,7 @@ pub(crate) fn build_nota_runtime_status(
     let transactions = list_nota_runtime_transactions(data_store)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let human_rounds = list_runtime_human_rounds(data_store)?;
     let acceptance_bundles = list_runtime_acceptance_bundles(data_store)?;
     let decisions = list_design_decisions(data_store)?;
     let chat_captures = list_chat_captures(data_store)?;
@@ -2109,34 +2298,76 @@ pub(crate) fn build_nota_runtime_status(
         allocations.stored_allocations(),
         current_checkpoint.as_ref(),
     )?;
+    let handout = derive_current_runtime_handout(data_store)?;
+    let wake_request = derive_current_runtime_wake_request(data_store)?;
     let review = derive_nota_runtime_review(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let integrate = derive_nota_runtime_integrate(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let finalize = derive_nota_runtime_finalize(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let next_step = derive_nota_runtime_next_step(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
+    let current_human_round = derive_current_runtime_human_round(data_store)?;
     let current_acceptance_bundle =
         derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?;
+    let projection_truth_revision = build_projection_truth_revision(
+        current_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.cadence_object.id),
+        current_human_round
+            .as_ref()
+            .map(|round| round.cadence_object.id),
+        current_acceptance_bundle
+            .as_ref()
+            .map(|bundle| bundle.cadence_object.id),
+    );
+    let projections =
+        build_projection_status_report(data_store, projection_truth_revision.clone())?;
+    let cold_docs = list_cold_documents(data_store, projection_truth_revision)?;
+    let host = current_runtime_host(data_store)?;
+    let worktrees = list_owned_worktrees(
+        data_store,
+        host.as_ref().map(|value| value.host_key.as_str()),
+    )?;
+    let recovery = build_recovery_status_report(data_store)?;
+    let round_state = derive_runtime_round_state_projection(
+        current_checkpoint.as_ref(),
+        current_acceptance_bundle.as_ref(),
+        next_step.as_ref(),
+    );
     let anti_zeno = derive_anti_zeno_projection(
         current_checkpoint.as_ref(),
         current_acceptance_bundle.as_ref(),
         next_step.as_ref(),
         recommended_checkpoint.as_ref(),
     );
+    let anti_zeno_budget = build_anti_zeno_budget_report(
+        data_store,
+        round_state.checkpoint_id,
+        round_state.acceptance_bundle_id,
+        round_state.acceptance_present,
+        round_state.fully_settled,
+        round_state.next_step_open,
+        projections.dirty_required_target_count,
+    )?;
+    let (invariants, repair_lane) = project_runtime_invariants(data_store)?;
     let front_door = build_nota_front_door_projection(
         current_checkpoint.as_ref(),
         decisions.decision_count,
@@ -2153,6 +2384,8 @@ pub(crate) fn build_nota_runtime_status(
 
     Ok(NotaRuntimeStatus {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
+        human_round_count: human_rounds.human_round_count,
+        current_human_round,
         checkpoint_count: checkpoints.checkpoint_count,
         current_checkpoint_id: checkpoints.current_checkpoint_id,
         current_checkpoint,
@@ -2169,13 +2402,26 @@ pub(crate) fn build_nota_runtime_status(
         chat_capture_count: chat_captures.capture_count,
         vision_count: visions.vision_count,
         todo_count: todos.todo_count,
+        cold_doc_count: cold_docs.cold_doc_count,
+        cold_docs,
+        host,
+        worktree_count: worktrees.worktree_count,
+        worktrees,
+        recovery,
         recommended_checkpoint,
+        handout,
+        wake_request,
         review,
         integrate,
         finalize,
         next_step,
+        round_state,
         anti_zeno,
+        anti_zeno_budget,
         front_door,
+        projections,
+        invariants,
+        repair_lane,
     })
 }
 
@@ -2185,21 +2431,64 @@ fn write_hot_root_projection(
 ) -> Result<HotRootProjectionWriteReport> {
     let status = build_nota_runtime_status(&startup.data_store())?;
     let hot_root_dir = startup.paths().exports_dir().join("hot-root");
-    fs::create_dir_all(&hot_root_dir).with_context(|| {
+    let truth_revision = build_projection_truth_revision(
+        status.current_checkpoint_id,
+        status
+            .current_human_round
+            .as_ref()
+            .map(|round| round.cadence_object.id),
+        status
+            .current_acceptance_bundle
+            .as_ref()
+            .map(|bundle| bundle.cadence_object.id),
+    );
+    let hot_root_dir_display = hot_root_dir.to_string_lossy().replace('\\', "/");
+    let oracle_readme_path = hot_root_dir
+        .join("README.md")
+        .to_string_lossy()
+        .replace('\\', "/");
+    if let Err(error) = fs::create_dir_all(&hot_root_dir).with_context(|| {
         format!(
             "failed to create hot-root export directory at {}",
             hot_root_dir.display()
         )
-    })?;
+    }) {
+        record_hot_root_projection_failure(
+            startup,
+            &truth_revision,
+            &hot_root_dir_display,
+            &oracle_readme_path,
+            &error.to_string(),
+        )?;
+        refresh_runtime_invariant_truth(&startup.data_store())?;
+        return Err(error);
+    }
 
     let files = render_hot_root_files(startup, &status);
     let mut files_written = Vec::new();
     for (name, content) in &files {
         let path = hot_root_dir.join(name);
-        fs::write(&path, content)
-            .with_context(|| format!("failed to write hot-root export at {}", path.display()))?;
+        if let Err(error) = fs::write(&path, content)
+            .with_context(|| format!("failed to write hot-root export at {}", path.display()))
+        {
+            record_hot_root_projection_failure(
+                startup,
+                &truth_revision,
+                &hot_root_dir_display,
+                &oracle_readme_path,
+                &error.to_string(),
+            )?;
+            refresh_runtime_invariant_truth(&startup.data_store())?;
+            return Err(error);
+        }
         files_written.push(path.display().to_string());
     }
+    record_hot_root_projection_success(
+        startup,
+        &truth_revision,
+        &hot_root_dir_display,
+        &oracle_readme_path,
+    )?;
 
     let mirrored_repo_top_dir = mirror_project_dir
         .map(str::trim)
@@ -2207,22 +2496,82 @@ fn write_hot_root_projection(
         .map(|project_dir| project_dir.to_string());
     if let Some(project_dir) = mirrored_repo_top_dir.as_deref() {
         let repo_top_dir = Path::new(project_dir).join("specs").join("top");
-        fs::create_dir_all(&repo_top_dir).with_context(|| {
+        let repo_top_dir_display = repo_top_dir.to_string_lossy().replace('\\', "/");
+        let mirror_target_key = format!("mirror:{repo_top_dir_display}");
+        if let Err(error) = fs::create_dir_all(&repo_top_dir).with_context(|| {
             format!(
                 "failed to create mirrored repo top directory at {}",
                 repo_top_dir.display()
             )
-        })?;
+        }) {
+            record_projection_failure(
+                &startup.data_store(),
+                ProjectionTargetSpec {
+                    projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+                    target_key: mirror_target_key.as_str().into(),
+                    title: "Mirrored repo hot root".into(),
+                    target_path: repo_top_dir_display.as_str().into(),
+                    source_scope: "runtime:Entrance".into(),
+                    repair_action: "entrance nota export-hot-root --project-dir <path>".into(),
+                    projection_policy: OPTIONAL_PROJECTION_POLICY.into(),
+                    is_required: false,
+                },
+                &truth_revision,
+                "hot_root_export",
+                "failed to create mirrored repo top directory",
+                &error.to_string(),
+            )?;
+            refresh_runtime_invariant_truth(&startup.data_store())?;
+            return Err(error);
+        }
         for (name, content) in &files {
             let path = repo_top_dir.join(name);
-            fs::write(&path, content).with_context(|| {
+            if let Err(error) = fs::write(&path, content).with_context(|| {
                 format!(
                     "failed to write mirrored hot-root projection at {}",
                     path.display()
                 )
-            })?;
+            }) {
+                record_projection_failure(
+                    &startup.data_store(),
+                    ProjectionTargetSpec {
+                        projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+                        target_key: mirror_target_key.as_str().into(),
+                        title: "Mirrored repo hot root".into(),
+                        target_path: repo_top_dir_display.as_str().into(),
+                        source_scope: "runtime:Entrance".into(),
+                        repair_action: "entrance nota export-hot-root --project-dir <path>".into(),
+                        projection_policy: OPTIONAL_PROJECTION_POLICY.into(),
+                        is_required: false,
+                    },
+                    &truth_revision,
+                    "hot_root_export",
+                    "failed to write mirrored repo hot root",
+                    &error.to_string(),
+                )?;
+                refresh_runtime_invariant_truth(&startup.data_store())?;
+                return Err(error);
+            }
         }
+        record_projection_success(
+            &startup.data_store(),
+            ProjectionTargetSpec {
+                projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+                target_key: mirror_target_key.as_str().into(),
+                title: "Mirrored repo hot root".into(),
+                target_path: repo_top_dir_display.as_str().into(),
+                source_scope: "runtime:Entrance".into(),
+                repair_action: "entrance nota export-hot-root --project-dir <path>".into(),
+                projection_policy: OPTIONAL_PROJECTION_POLICY.into(),
+                is_required: false,
+            },
+            &truth_revision,
+            "hot_root_export",
+            "Mirrored repo hot root is current with runtime truth.",
+        )?;
     }
+
+    refresh_runtime_invariant_truth(&startup.data_store())?;
 
     Ok(HotRootProjectionWriteReport {
         export_root: hot_root_dir.display().to_string(),
@@ -2230,7 +2579,131 @@ fn write_hot_root_projection(
         mirrored_repo_top_dir: mirrored_repo_top_dir
             .map(|project_dir| Path::new(&project_dir).join("specs").join("top"))
             .map(|path| path.display().to_string()),
+        truth_revision,
     })
+}
+
+fn rebuild_nota_projections(
+    startup: &StartupState,
+    project_dir: Option<&str>,
+) -> Result<ProjectionRebuildReport> {
+    let before = build_nota_runtime_status(&startup.data_store())?;
+    let truth_revision = before.projections.current_truth_revision.clone();
+    let hot_root = write_hot_root_projection(startup, project_dir)?;
+    let cold_docs = if let Some(project_dir) = project_dir {
+        Some(export_cold_docs_to_repo(
+            &startup.data_store(),
+            project_dir,
+            &truth_revision,
+        )?)
+    } else {
+        None
+    };
+    refresh_runtime_invariant_truth(&startup.data_store())?;
+    let after = build_nota_runtime_status(&startup.data_store())?;
+
+    Ok(ProjectionRebuildReport {
+        status: if after.projections.required_targets_fresh {
+            "rebuilt".to_string()
+        } else {
+            "repair_required".to_string()
+        },
+        truth_revision,
+        hot_root,
+        cold_docs,
+        required_targets_fresh: after.projections.required_targets_fresh,
+        dirty_required_target_count: after.projections.dirty_required_target_count,
+        repair_lane_open_count: after.repair_lane.open_count,
+    })
+}
+
+fn refresh_runtime_invariant_truth(data_store: &core::data_store::DataStore) -> Result<()> {
+    refresh_runtime_invariants(data_store).map(|_| ())
+}
+
+fn record_hot_root_projection_success(
+    startup: &StartupState,
+    truth_revision: &ProjectionTruthRevision,
+    hot_root_dir: &str,
+    oracle_readme_path: &str,
+) -> Result<()> {
+    record_projection_success(
+        &startup.data_store(),
+        ProjectionTargetSpec {
+            projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+            target_key: "exports/hot-root".into(),
+            title: "Hot-root export".into(),
+            target_path: hot_root_dir.into(),
+            source_scope: "runtime:Entrance".into(),
+            repair_action: "entrance nota export-hot-root".into(),
+            projection_policy: REQUIRED_PROJECTION_POLICY.into(),
+            is_required: true,
+        },
+        truth_revision,
+        "hot_root_export",
+        "Hot-root export is current with runtime truth.",
+    )?;
+    record_projection_success(
+        &startup.data_store(),
+        ProjectionTargetSpec {
+            projection_class: ORACLE_PROJECTION_CLASS.into(),
+            target_key: "exports/hot-root/README.md".into(),
+            title: "Oracle README export".into(),
+            target_path: oracle_readme_path.into(),
+            source_scope: "runtime:Entrance".into(),
+            repair_action: "entrance nota export-hot-root".into(),
+            projection_policy: REQUIRED_PROJECTION_POLICY.into(),
+            is_required: true,
+        },
+        truth_revision,
+        "hot_root_export",
+        "Oracle README projection is current with runtime truth.",
+    )?;
+    Ok(())
+}
+
+fn record_hot_root_projection_failure(
+    startup: &StartupState,
+    truth_revision: &ProjectionTruthRevision,
+    hot_root_dir: &str,
+    oracle_readme_path: &str,
+    error_message: &str,
+) -> Result<()> {
+    record_projection_failure(
+        &startup.data_store(),
+        ProjectionTargetSpec {
+            projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+            target_key: "exports/hot-root".into(),
+            title: "Hot-root export".into(),
+            target_path: hot_root_dir.into(),
+            source_scope: "runtime:Entrance".into(),
+            repair_action: "entrance nota export-hot-root".into(),
+            projection_policy: REQUIRED_PROJECTION_POLICY.into(),
+            is_required: true,
+        },
+        truth_revision,
+        "hot_root_export",
+        "Hot-root export failed.",
+        error_message,
+    )?;
+    record_projection_failure(
+        &startup.data_store(),
+        ProjectionTargetSpec {
+            projection_class: ORACLE_PROJECTION_CLASS.into(),
+            target_key: "exports/hot-root/README.md".into(),
+            title: "Oracle README export".into(),
+            target_path: oracle_readme_path.into(),
+            source_scope: "runtime:Entrance".into(),
+            repair_action: "entrance nota export-hot-root".into(),
+            projection_policy: REQUIRED_PROJECTION_POLICY.into(),
+            is_required: true,
+        },
+        truth_revision,
+        "hot_root_export",
+        "Oracle README export failed.",
+        error_message,
+    )?;
+    Ok(())
 }
 
 fn render_hot_root_files(
@@ -2249,6 +2722,16 @@ fn render_hot_root_files(
         .unwrap_or_else(|| {
             "Checkpoint the current human round before relying on exported views.".to_string()
         });
+    let human_round_line = status
+        .current_human_round
+        .as_ref()
+        .map(|round| {
+            format!(
+                "{} on checkpoint {}",
+                round.payload.round_state, round.payload.checkpoint_id
+            )
+        })
+        .unwrap_or_else(|| "No current human round is materialized yet.".to_string());
     let acceptance_line = status
         .current_acceptance_bundle
         .as_ref()
@@ -2266,19 +2749,46 @@ fn render_hot_root_files(
         .as_ref()
         .map(|step| format!("{} for allocation {}", step.step, step.allocation_id))
         .unwrap_or_else(|| "No follow-on runtime step is currently open.".to_string());
+    let round_state_line = format!(
+        "{} ({})",
+        status.round_state.state, status.round_state.summary
+    );
+    let projection_line = format!(
+        "{}/{} required projections fresh",
+        status.projections.fresh_required_target_count, status.projections.required_target_count
+    );
+    let invariant_line = format!(
+        "{} passed, {} repairable, {} blocked",
+        status.invariants.passed_count,
+        status.invariants.repairable_count,
+        status.invariants.blocked_count
+    );
+    let repair_lane_line = format!(
+        "{} open, {} resolved",
+        status.repair_lane.open_count, status.repair_lane.resolved_count
+    );
+    let recovery_line = format!("{} ({})", status.recovery.mode, status.recovery.summary);
     let owner_root = startup.paths().app_data_dir().display().to_string();
     let config_path = startup.paths().config_path().display().to_string();
     let db_path = startup.paths().db_path().display().to_string();
+    let host_line = status
+        .host
+        .as_ref()
+        .map(|host| format!("{} on {}", host.host_label, host.os_family))
+        .unwrap_or_else(|| "No host snapshot has been recorded yet.".to_string());
 
     let readme = format!(
-        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n\nCurrent round:\n\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
+        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- host: {host_line}\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n- observed worktrees: {}\n\nCurrent round:\n\n- human round: {human_round_line}\n- round state: {round_state_line}\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- anti-Zeno budget: {} ({})\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n- recovery: {recovery_line}\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
         startup.paths().exports_dir().join("hot-root").display(),
+        status.worktree_count,
         status.anti_zeno.summary,
-        status.anti_zeno.state
+        status.anti_zeno.state,
+        status.anti_zeno_budget.summary,
+        status.anti_zeno_budget.state
     );
 
     let machine = format!(
-        "# Machine\n\n> Status: hot root projection\n\n## Current Runtime Cut\n\n- current checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance bundle count: {}\n- current acceptance: {acceptance_line}\n- anti-Zeno state: {} ({})\n\n## State Law\n\n- runtime continuity is resumed from checkpoint, allocation, receipt, and cadence-object truth\n- `passed human round` is formalized as `CADENCE_ACCEPTANCE_BUNDLE`\n- `fully settled round` is stricter than acceptance and only holds after follow-on closure has been carried forward\n- phase is projection, not a peer truth plane\n",
+        "# Machine\n\n> Status: hot root projection\n\n## Current Runtime Cut\n\n- current human round: {human_round_line}\n- round state: {round_state_line}\n- current checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance bundle count: {}\n- current acceptance: {acceptance_line}\n- anti-Zeno state: {} ({})\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n\n## State Law\n\n- runtime continuity is resumed from checkpoint, human-round, allocation, receipt, and cadence-object truth\n- `passed human round` is formalized as `CADENCE_ACCEPTANCE_BUNDLE`\n- `fully settled round` is stricter than acceptance and only holds after follow-on closure has been carried forward\n- phase is projection, not a peer truth plane\n",
         status.acceptance_bundle_count, status.anti_zeno.state, status.anti_zeno.summary
     );
 
@@ -2290,16 +2800,21 @@ fn render_hot_root_files(
     );
 
     let truth = format!(
-        "# Truth\n\n> Status: hot root projection\n\n## Canonical Law\n\n- DB-first is mandatory.\n- Every operation must write runtime truth before any projection is considered valid.\n- Files are preserved projections and may be regenerated from DB truth.\n- Cold docs remain canonicalized in DB and may be periodically projected back to files.\n\n## Projection Boundary\n\n- owner root: `{owner_root}`\n- config TOML: `{config_path}`\n- runtime DB: `{db_path}`\n- files are downstream of truth, never upstream of truth\n- anti-Zeno is a derived progress discipline, not a second truth plane\n",
+        "# Truth\n\n> Status: hot root projection\n\n## Canonical Law\n\n- DB-first is mandatory.\n- Every operation must write runtime truth before any projection is considered valid.\n- Files are preserved projections and may be regenerated from DB truth.\n- Cold docs remain canonicalized in DB and may be periodically projected back to files.\n\n## Projection Boundary\n\n- owner root: `{owner_root}`\n- host visibility: {host_line}\n- config TOML: `{config_path}`\n- runtime DB: `{db_path}`\n- files are downstream of truth, never upstream of truth\n- anti-Zeno is a derived progress discipline, not a second truth plane\n- recovery mode: {recovery_line}\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n- required projection freshness: {projection_line}\n- required dirty projections: {}\n- owned worktree count: {}\n",
+        status.projections.dirty_required_target_count,
+        status.worktree_count
     );
 
     let phase_todo = format!(
-        "# Phase Todo\n\n> Status: hot root projection\n\n## Current Focus\n\n- current checkpoint: {checkpoint_label}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n\n## Ordered Work\n\n- keep runtime truth sharper than file projections\n- keep acceptance formalized as a cadence object rather than chat implication\n- keep anti-Zeno visible in status, overview, and exported hot root\n- keep hot-root export synchronized from DB truth after human-round writes\n",
-        status.anti_zeno.state, status.anti_zeno.summary
+        "# Phase Todo\n\n> Status: hot root projection\n\n## Current Focus\n\n- current checkpoint: {checkpoint_label}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- anti-Zeno budget: {} ({})\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\n## Ordered Work\n\n- keep runtime truth sharper than file projections\n- keep acceptance formalized as a cadence object rather than chat implication\n- keep anti-Zeno visible in status, overview, and exported hot root\n- keep invariant failure and repair lane truth explicit in DB\n- keep hot-root export synchronized from DB truth after human-round writes\n",
+        status.anti_zeno.state,
+        status.anti_zeno.summary,
+        status.anti_zeno_budget.state,
+        status.anti_zeno_budget.summary
     );
 
     let pending = format!(
-        "# Pending\n\n> Status: hot utility projection\n\n## Current Pending Boundary\n\n- recommended checkpoint present: {}\n- current next step: {next_step_line}\n- fully settled: {}\n\n## Rule\n\n- pending only holds unresolved items that are not yet oracle truth\n- once a pending item becomes truth, it must be carried by DB and then projected back out\n- do not let file-local TODOs outrank runtime truth\n",
+        "# Pending\n\n> Status: hot utility projection\n\n## Current Pending Boundary\n\n- recommended checkpoint present: {}\n- current next step: {next_step_line}\n- fully settled: {}\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n- recovery mode: {recovery_line}\n\n## Rule\n\n- pending only holds unresolved items that are not yet oracle truth\n- once a pending item becomes truth, it must be carried by DB and then projected back out\n- do not let file-local TODOs outrank runtime truth\n",
         status.recommended_checkpoint.is_some(),
         status.anti_zeno.fully_settled
     );
@@ -2472,10 +2987,11 @@ mod tests {
     use anyhow::Result;
 
     use crate::core::config_store::{render_config, EntranceConfig};
+    use crate::core::data_store::{DataStore, MigrationPlan};
 
     use super::{
-        cli_help_for_args, prepare_forge_dispatch_cli, verify_forge_dispatch_cli, FORGE_CLI_HELP,
-        MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
+        build_nota_runtime_status, cli_help_for_args, prepare_forge_dispatch_cli,
+        verify_forge_dispatch_cli, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
     };
 
     static CLI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2561,6 +3077,33 @@ mod tests {
 
         let forge = vec!["forge".to_string(), "--help".to_string()];
         assert_eq!(cli_help_for_args(&forge), Some(FORGE_CLI_HELP));
+    }
+
+    #[test]
+    fn nota_status_can_project_runtime_invariants_on_readonly_store() -> Result<()> {
+        let temp_dir = TestDir::new("nota-status-readonly");
+        let db_path = temp_dir.path().join("data").join("entrance.db");
+        if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+        let writable_store = DataStore::open(&db_path, migration_plan)?;
+        drop(writable_store);
+
+        let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+        let readonly_store = DataStore::open_read_only(&db_path, migration_plan)?;
+        let status = build_nota_runtime_status(&readonly_store)?;
+
+        assert_eq!(status.invariants.failed_count, 1);
+        assert_eq!(status.repair_lane.open_count, 1);
+        assert!(status
+            .invariants
+            .invariants
+            .iter()
+            .any(|invariant| invariant.invariant_key == "runtime_host_snapshot"));
+
+        Ok(())
     }
 
     fn init_git_repo(path: &Path) {

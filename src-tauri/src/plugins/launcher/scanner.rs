@@ -534,6 +534,7 @@ fn is_shortcut(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(target_os = "windows")]
 fn is_launchable_target(path: &Path) -> bool {
     path.exists()
         && path
@@ -543,6 +544,7 @@ fn is_launchable_target(path: &Path) -> bool {
             .unwrap_or(true)
 }
 
+#[cfg(target_os = "windows")]
 fn is_launchable_extension(extension: &str) -> bool {
     matches!(
         extension.to_ascii_lowercase().as_str(),

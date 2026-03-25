@@ -21,9 +21,12 @@ use crate::core::{
     bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
     data_store::DataStore,
     nota_runtime::{
-        list_nota_runtime_allocations, list_nota_runtime_receipts, run_nota_dev_dispatch,
+        list_nota_runtime_allocations, list_nota_runtime_receipts,
+        materialize_runtime_closure_checkpoint, record_dev_return_finalize,
+        record_dev_return_integration, record_dev_return_review, run_nota_dev_dispatch,
         run_nota_do_agent_dispatch, write_runtime_checkpoint, NotaCheckpointRequest,
-        NotaDevDispatchRequest, NotaDispatchExecutionHost, NotaDoAgentDispatchRequest,
+        NotaDevDispatchRequest, NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest,
+        NotaDevReturnReviewRequest, NotaDispatchExecutionHost, NotaDoAgentDispatchRequest,
     },
     permission::{permission_for_mcp_tool, McpToolPermission},
     recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
@@ -295,7 +298,11 @@ impl McpServer {
             "nota_runtime_receipts" => self.handle_nota_runtime_receipts(arguments),
             "nota_do" => self.handle_nota_do(arguments),
             "nota_dev" => self.handle_nota_dev(arguments),
+            "nota_review" => self.handle_nota_review(arguments),
+            "nota_integrate" => self.handle_nota_integrate(arguments),
+            "nota_finalize" => self.handle_nota_finalize(arguments),
             "nota_write_checkpoint" => self.handle_nota_write_checkpoint(arguments),
+            "nota_checkpoint_runtime_closure" => self.handle_nota_checkpoint_runtime_closure(),
             "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
             "recovery_list_seed_rows" => self.handle_recovery_list_seed_rows(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
@@ -709,6 +716,36 @@ impl McpServer {
         Ok(json!(run_nota_dev_dispatch(data_store, forge, request)?))
     }
 
+    fn handle_nota_review(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let request = parse_nota_review_request(arguments)?;
+        Ok(json!(record_dev_return_review(data_store, request)?))
+    }
+
+    fn handle_nota_integrate(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let request = parse_nota_integrate_request(arguments)?;
+        Ok(json!(record_dev_return_integration(data_store, request)?))
+    }
+
+    fn handle_nota_finalize(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let request = parse_nota_finalize_request(arguments)?;
+        Ok(json!(record_dev_return_finalize(data_store, request)?))
+    }
+
     fn handle_nota_write_checkpoint(&self, arguments: &Value) -> Result<Value> {
         let data_store = self
             .plugins
@@ -717,6 +754,15 @@ impl McpServer {
             .context("core data store is not available on the current MCP surface")?;
         let request = parse_nota_checkpoint_request(arguments)?;
         Ok(json!(write_runtime_checkpoint(data_store, request)?))
+    }
+
+    fn handle_nota_checkpoint_runtime_closure(&self) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        Ok(json!(materialize_runtime_closure_checkpoint(data_store)?))
     }
 
     fn handle_recovery_list_seed_rows(&self, arguments: &Value) -> Result<Value> {
@@ -1153,7 +1199,59 @@ fn build_tool_descriptors(
                         "model": { "type": "string", "description": "Runner or runner:model string used for the dispatched task. Defaults to codex." },
                         "agent_command": { "type": "string", "description": "Optional executable path overriding the default agent CLI." },
                         "agentCommand": { "type": "string", "description": "CamelCase alias for agent_command." },
-                        "title": { "type": "string", "description": "Optional human-readable transaction title." }
+                        "title": { "type": "string", "description": "Optional human-readable transaction title." },
+                        "repair_of_allocation_id": { "type": "integer", "description": "Optional source allocation id when this dev dispatch is the canonical repair follow-up for the active repair boundary." },
+                        "repairOfAllocationId": { "type": "integer", "description": "CamelCase alias for repair_of_allocation_id." }
+                    }
+                }),
+                permission: None,
+                dispatch_role: None,
+            });
+            tools.push(McpToolDescriptor {
+                name: "nota_review",
+                description: "Record the review verdict for the current returned dev boundary on the active checkpoint.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "transaction_id": { "type": "integer", "description": "Runtime transaction identifier." },
+                        "transactionId": { "type": "integer", "description": "CamelCase alias for transaction_id." },
+                        "allocation_id": { "type": "integer", "description": "Runtime allocation identifier." },
+                        "allocationId": { "type": "integer", "description": "CamelCase alias for allocation_id." },
+                        "verdict": { "type": "string", "description": "Review verdict: approved or changes_requested." },
+                        "summary": { "type": "string", "description": "Optional review summary." }
+                    }
+                }),
+                permission: None,
+                dispatch_role: None,
+            });
+            tools.push(McpToolDescriptor {
+                name: "nota_integrate",
+                description: "Record the integration state for the current returned dev boundary on the active checkpoint.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "transaction_id": { "type": "integer", "description": "Runtime transaction identifier." },
+                        "transactionId": { "type": "integer", "description": "CamelCase alias for transaction_id." },
+                        "allocation_id": { "type": "integer", "description": "Runtime allocation identifier." },
+                        "allocationId": { "type": "integer", "description": "CamelCase alias for allocation_id." },
+                        "state": { "type": "string", "description": "Integration state: started, integrated, or repair_requested." },
+                        "summary": { "type": "string", "description": "Optional integration summary." }
+                    }
+                }),
+                permission: None,
+                dispatch_role: None,
+            });
+            tools.push(McpToolDescriptor {
+                name: "nota_finalize",
+                description: "Finalize the current integrated dev boundary on the active checkpoint.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "transaction_id": { "type": "integer", "description": "Runtime transaction identifier." },
+                        "transactionId": { "type": "integer", "description": "CamelCase alias for transaction_id." },
+                        "allocation_id": { "type": "integer", "description": "Runtime allocation identifier." },
+                        "allocationId": { "type": "integer", "description": "CamelCase alias for allocation_id." },
+                        "summary": { "type": "string", "description": "Optional finalize summary." }
                     }
                 }),
                 permission: None,
@@ -1223,6 +1321,16 @@ fn build_tool_descriptors(
                     "tableName": { "type": "string", "description": "CamelCase alias for table_name." },
                     "limit": { "type": "integer", "description": "Optional maximum number of rows to return. Defaults to 50." }
                 }
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "nota_checkpoint_runtime_closure",
+            description: "Materialize the current NOTA runtime closure checkpoint when the active boundary recommends a carry-forward cut.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
             }),
             permission: None,
             dispatch_role: None,
@@ -1489,6 +1597,10 @@ fn parse_nota_dispatch_request(arguments: &Value) -> NotaDoAgentDispatchRequest 
         agent_command: optional_string_any(arguments, &["agent_command", "agentCommand"])
             .map(str::to_string),
         title: optional_string(arguments, "title").map(str::to_string),
+        repair_of_allocation_id: optional_i64(
+            arguments,
+            &["repair_of_allocation_id", "repairOfAllocationId"],
+        ),
         execution_host: NotaDispatchExecutionHost::InProcess,
     }
 }
@@ -1499,6 +1611,56 @@ fn parse_nota_do_request(arguments: &Value) -> NotaDoAgentDispatchRequest {
 
 fn parse_nota_dev_request(arguments: &Value) -> NotaDevDispatchRequest {
     parse_nota_dispatch_request(arguments)
+}
+
+fn parse_nota_review_request(arguments: &Value) -> Result<NotaDevReturnReviewRequest> {
+    let transaction_id = require_i64(arguments, &["transaction_id", "transactionId"])?;
+    let allocation_id = require_i64(arguments, &["allocation_id", "allocationId"])?;
+    if transaction_id <= 0 {
+        bail!("nota review `transaction_id` must be >= 1");
+    }
+    if allocation_id <= 0 {
+        bail!("nota review `allocation_id` must be >= 1");
+    }
+    Ok(NotaDevReturnReviewRequest {
+        transaction_id,
+        allocation_id,
+        verdict: require_string(arguments, "verdict")?.to_string(),
+        summary: optional_string(arguments, "summary").map(str::to_string),
+    })
+}
+
+fn parse_nota_integrate_request(arguments: &Value) -> Result<NotaDevReturnIntegrateRequest> {
+    let transaction_id = require_i64(arguments, &["transaction_id", "transactionId"])?;
+    let allocation_id = require_i64(arguments, &["allocation_id", "allocationId"])?;
+    if transaction_id <= 0 {
+        bail!("nota integrate `transaction_id` must be >= 1");
+    }
+    if allocation_id <= 0 {
+        bail!("nota integrate `allocation_id` must be >= 1");
+    }
+    Ok(NotaDevReturnIntegrateRequest {
+        transaction_id,
+        allocation_id,
+        state: require_string(arguments, "state")?.to_string(),
+        summary: optional_string(arguments, "summary").map(str::to_string),
+    })
+}
+
+fn parse_nota_finalize_request(arguments: &Value) -> Result<NotaDevReturnFinalizeRequest> {
+    let transaction_id = require_i64(arguments, &["transaction_id", "transactionId"])?;
+    let allocation_id = require_i64(arguments, &["allocation_id", "allocationId"])?;
+    if transaction_id <= 0 {
+        bail!("nota finalize `transaction_id` must be >= 1");
+    }
+    if allocation_id <= 0 {
+        bail!("nota finalize `allocation_id` must be >= 1");
+    }
+    Ok(NotaDevReturnFinalizeRequest {
+        transaction_id,
+        allocation_id,
+        summary: optional_string(arguments, "summary").map(str::to_string),
+    })
 }
 
 fn json_rpc_result(id: Value, result: Value) -> Value {
@@ -1715,9 +1877,13 @@ mod tests {
                 "nota_runtime_receipts",
                 "nota_do",
                 "nota_dev",
+                "nota_review",
+                "nota_integrate",
+                "nota_finalize",
                 "nota_write_checkpoint",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
+                "nota_checkpoint_runtime_closure",
                 "vault_get_token",
                 "vault_list_mcp",
                 "launcher_search",
@@ -1764,10 +1930,26 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_dev")
             .expect("nota_dev should exist");
+        let nota_review = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_review")
+            .expect("nota_review should exist");
+        let nota_integrate = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_integrate")
+            .expect("nota_integrate should exist");
+        let nota_finalize = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_finalize")
+            .expect("nota_finalize should exist");
         let nota_checkpoint = tools
             .iter()
             .find(|tool| tool["name"] == "nota_write_checkpoint")
             .expect("nota_write_checkpoint should exist");
+        let nota_checkpoint_runtime_closure = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_checkpoint_runtime_closure")
+            .expect("nota_checkpoint_runtime_closure should exist");
         let prepare_agent = tools
             .iter()
             .find(|tool| tool["name"] == "forge_prepare_agent_dispatch")
@@ -1812,11 +1994,22 @@ mod tests {
         assert_eq!(nota_dev["permission"]["room"], "strategy");
         assert_eq!(nota_dev["permission"]["targetLayer"], "hot");
         assert_eq!(nota_dev["dispatchRole"], "dev");
+        assert_eq!(nota_review["permission"]["primitive"], "assign");
+        assert_eq!(nota_integrate["permission"]["primitive"], "assign");
+        assert_eq!(nota_finalize["permission"]["primitive"], "assign");
+        assert!(nota_review["dispatchRole"].is_null());
+        assert!(nota_integrate["dispatchRole"].is_null());
+        assert!(nota_finalize["dispatchRole"].is_null());
         assert_eq!(nota_checkpoint["permission"]["actorRole"], "nota");
         assert_eq!(nota_checkpoint["permission"]["primitive"], "learn");
         assert_eq!(nota_checkpoint["permission"]["room"], "memory");
         assert_eq!(nota_checkpoint["permission"]["targetLayer"], "cold");
         assert!(nota_checkpoint["dispatchRole"].is_null());
+        assert_eq!(
+            nota_checkpoint_runtime_closure["permission"]["primitive"],
+            "learn"
+        );
+        assert!(nota_checkpoint_runtime_closure["dispatchRole"].is_null());
         assert_eq!(prepare_agent["dispatchRole"], "agent");
 
         Ok(())
@@ -1894,9 +2087,13 @@ mod tests {
                 "nota_runtime_receipts",
                 "nota_do",
                 "nota_dev",
+                "nota_review",
+                "nota_integrate",
+                "nota_finalize",
                 "nota_write_checkpoint",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
+                "nota_checkpoint_runtime_closure",
                 "vault_get_token",
                 "vault_list_mcp",
                 "launcher_search",
@@ -1935,10 +2132,26 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "nota_dev")
             .expect("nota_dev should exist on nota surface");
+        let review_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_review")
+            .expect("nota_review should exist on nota surface");
+        let integrate_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_integrate")
+            .expect("nota_integrate should exist on nota surface");
+        let finalize_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_finalize")
+            .expect("nota_finalize should exist on nota surface");
         let checkpoint_tool = tools
             .iter()
             .find(|tool| tool["name"] == "nota_write_checkpoint")
             .expect("nota_write_checkpoint should exist on nota surface");
+        let checkpoint_runtime_closure_tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "nota_checkpoint_runtime_closure")
+            .expect("nota_checkpoint_runtime_closure should exist on nota surface");
         assert!(bootstrap_tool["dispatchRole"].is_null());
         assert_eq!(bootstrap_tool["permission"]["actorRole"], "nota");
         assert_eq!(overview_tool["permission"]["primitive"], "chat");
@@ -1965,9 +2178,27 @@ mod tests {
         assert_eq!(dev_tool["permission"]["room"], "strategy");
         assert_eq!(dev_tool["permission"]["targetLayer"], "hot");
         assert_eq!(dev_tool["dispatchRole"], "dev");
+        assert_eq!(
+            dev_tool["inputSchema"]["properties"]["repairOfAllocationId"]["type"],
+            "integer"
+        );
+        assert_eq!(review_tool["permission"]["primitive"], "assign");
+        assert_eq!(integrate_tool["permission"]["primitive"], "assign");
+        assert_eq!(finalize_tool["permission"]["primitive"], "assign");
+        assert!(review_tool["dispatchRole"].is_null());
+        assert!(integrate_tool["dispatchRole"].is_null());
+        assert!(finalize_tool["dispatchRole"].is_null());
         assert_eq!(checkpoint_tool["permission"]["primitive"], "learn");
         assert_eq!(checkpoint_tool["permission"]["room"], "memory");
         assert_eq!(checkpoint_tool["permission"]["targetLayer"], "cold");
+        assert_eq!(
+            checkpoint_runtime_closure_tool["permission"]["primitive"],
+            "learn"
+        );
+        assert_eq!(
+            checkpoint_runtime_closure_tool["permission"]["targetLayer"],
+            "cold"
+        );
 
         Ok(())
     }
@@ -2304,6 +2535,20 @@ mod tests {
             overview["structuredContent"]["checkpoints"]["checkpoints"][0]["title"],
             "MCP checkpoint"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn nota_surface_can_materialize_runtime_closure_checkpoint() -> Result<()> {
+        let server = build_test_server_with_actor_role(Some(ActorRole::Nota))?;
+
+        let response = call_tool(&server, "nota_checkpoint_runtime_closure", json!({}))?;
+
+        assert_eq!(response["isError"], false);
+        assert_eq!(response["entranceSurface"]["actorRole"], "nota");
+        assert_eq!(response["permission"]["primitive"], "learn");
+        assert_eq!(response["structuredContent"]["status"], "unavailable");
 
         Ok(())
     }

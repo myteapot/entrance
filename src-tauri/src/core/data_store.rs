@@ -1,13 +1,15 @@
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 #[cfg(test)]
 use rusqlite::OpenFlags;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 
 use crate::plugins::launcher::scanner::DiscoveredApp;
@@ -47,7 +49,27 @@ const CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0011_create_core_nota_runtime_allocations.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 7] = [
+const CORE_PROJECTION_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
+    name: "0012_create_core_projection_runtime_tables",
+    sql: include_str!("../../migrations/0012_create_core_projection_runtime_tables.sql"),
+};
+
+const CORE_RUNTIME_ENVIRONMENT_MIGRATION: MigrationStep = MigrationStep {
+    name: "0013_create_core_runtime_environment_tables",
+    sql: include_str!("../../migrations/0013_create_core_runtime_environment_tables.sql"),
+};
+
+const CORE_ANTI_ZENO_MIGRATION: MigrationStep = MigrationStep {
+    name: "0014_create_core_anti_zeno_tables",
+    sql: include_str!("../../migrations/0014_create_core_anti_zeno_tables.sql"),
+};
+
+const CORE_RUNTIME_INVARIANT_MIGRATION: MigrationStep = MigrationStep {
+    name: "0015_create_core_runtime_invariant_tables",
+    sql: include_str!("../../migrations/0015_create_core_runtime_invariant_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 11] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -55,6 +77,10 @@ const CORE_MIGRATIONS: [MigrationStep; 7] = [
     CORE_DECISION_LINKS_MIGRATION,
     CORE_CHAT_ARCHIVE_MIGRATION,
     CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION,
+    CORE_PROJECTION_RUNTIME_MIGRATION,
+    CORE_RUNTIME_ENVIRONMENT_MIGRATION,
+    CORE_ANTI_ZENO_MIGRATION,
+    CORE_RUNTIME_INVARIANT_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -425,6 +451,17 @@ pub struct StoredTodoRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StoredDocumentRecord {
+    pub id: i64,
+    pub slug: String,
+    pub title: String,
+    pub content: String,
+    pub category: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredVisionRecord {
     pub id: i64,
     pub title: String,
@@ -474,6 +511,122 @@ pub struct StoredMemoryLink {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredProjectionTarget {
+    pub id: i64,
+    pub projection_class: String,
+    pub target_key: String,
+    pub title: String,
+    pub target_path: String,
+    pub source_scope: String,
+    pub repair_action: String,
+    pub projection_policy: String,
+    pub is_required: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredProjectionRun {
+    pub id: i64,
+    pub target_id: i64,
+    pub truth_checkpoint_id: Option<i64>,
+    pub truth_human_round_id: Option<i64>,
+    pub truth_acceptance_bundle_id: Option<i64>,
+    pub run_state: String,
+    pub freshness_state: String,
+    pub trigger_kind: String,
+    pub summary: String,
+    pub error_message: Option<String>,
+    pub repair_hint: Option<String>,
+    pub started_at: String,
+    pub completed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredRuntimeHost {
+    pub id: i64,
+    pub host_key: String,
+    pub os_family: String,
+    pub host_label: String,
+    pub kernel_label: String,
+    pub user_home: String,
+    pub owner_root: String,
+    pub config_path: String,
+    pub runtime_db_path: String,
+    pub exports_path: String,
+    pub worktrees_root: String,
+    pub wsl_distro_name: Option<String>,
+    pub path_style: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredOwnedWorktree {
+    pub id: i64,
+    pub host_key: String,
+    pub project_name: String,
+    pub issue_id: Option<String>,
+    pub branch_name: String,
+    pub worktree_kind: String,
+    pub worktree_path: String,
+    pub repo_root: Option<String>,
+    pub slot_name: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredAntiZenoEvent {
+    pub id: i64,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub event_kind: String,
+    pub boundary_ref: String,
+    pub budget_axis: String,
+    pub event_weight: i64,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredRuntimeInvariant {
+    pub id: i64,
+    pub invariant_key: String,
+    pub title: String,
+    pub status: String,
+    pub severity: String,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub human_round_id: Option<i64>,
+    pub summary: String,
+    pub evidence_json: String,
+    pub repair_action: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredRepairLaneItem {
+    pub id: i64,
+    pub repair_key: String,
+    pub source_invariant_key: Option<String>,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub item_kind: String,
+    pub urgency: String,
+    pub status: String,
+    pub summary: String,
+    pub repair_action: String,
+    pub evidence_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub resolved_at: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertDocumentRecord<'a> {
     pub id: i64,
@@ -483,6 +636,14 @@ pub struct UpsertDocumentRecord<'a> {
     pub category: &'a str,
     pub created_at: &'a str,
     pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertDocumentRecordBySlug<'a> {
+    pub slug: &'a str,
+    pub title: &'a str,
+    pub content: &'a str,
+    pub category: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -644,6 +805,103 @@ pub struct UpsertMemoryLinkRecord<'a> {
     pub relation_type: &'a str,
     pub status: &'a str,
     pub created_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertProjectionTarget<'a> {
+    pub projection_class: &'a str,
+    pub target_key: &'a str,
+    pub title: &'a str,
+    pub target_path: &'a str,
+    pub source_scope: &'a str,
+    pub repair_action: &'a str,
+    pub projection_policy: &'a str,
+    pub is_required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewProjectionRun<'a> {
+    pub target_id: i64,
+    pub truth_checkpoint_id: Option<i64>,
+    pub truth_human_round_id: Option<i64>,
+    pub truth_acceptance_bundle_id: Option<i64>,
+    pub run_state: &'a str,
+    pub freshness_state: &'a str,
+    pub trigger_kind: &'a str,
+    pub summary: &'a str,
+    pub error_message: Option<&'a str>,
+    pub repair_hint: Option<&'a str>,
+    pub started_at: &'a str,
+    pub completed_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertRuntimeHost<'a> {
+    pub host_key: &'a str,
+    pub os_family: &'a str,
+    pub host_label: &'a str,
+    pub kernel_label: &'a str,
+    pub user_home: &'a str,
+    pub owner_root: &'a str,
+    pub config_path: &'a str,
+    pub runtime_db_path: &'a str,
+    pub exports_path: &'a str,
+    pub worktrees_root: &'a str,
+    pub wsl_distro_name: Option<&'a str>,
+    pub path_style: &'a str,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertOwnedWorktree<'a> {
+    pub host_key: &'a str,
+    pub project_name: &'a str,
+    pub issue_id: Option<&'a str>,
+    pub branch_name: &'a str,
+    pub worktree_kind: &'a str,
+    pub worktree_path: &'a str,
+    pub repo_root: Option<&'a str>,
+    pub slot_name: Option<&'a str>,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewAntiZenoEvent<'a> {
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub event_kind: &'a str,
+    pub boundary_ref: &'a str,
+    pub budget_axis: &'a str,
+    pub event_weight: i64,
+    pub summary: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertRuntimeInvariant<'a> {
+    pub invariant_key: &'a str,
+    pub title: &'a str,
+    pub status: &'a str,
+    pub severity: &'a str,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub human_round_id: Option<i64>,
+    pub summary: &'a str,
+    pub evidence_json: &'a str,
+    pub repair_action: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertRepairLaneItem<'a> {
+    pub repair_key: &'a str,
+    pub source_invariant_key: Option<&'a str>,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub item_kind: &'a str,
+    pub urgency: &'a str,
+    pub status: &'a str,
+    pub summary: &'a str,
+    pub repair_action: &'a str,
+    pub evidence_json: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -824,6 +1082,469 @@ pub struct NewForgeDispatchReceipt<'a> {
 pub struct DataStore {
     connection: Arc<Mutex<Connection>>,
     path: Arc<PathBuf>,
+    mode: DataStoreConnectionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataStoreConnectionMode {
+    ReadWriteFile,
+    ReadOnlyFile,
+    InMemory,
+}
+
+pub struct DataStoreTransaction<'conn> {
+    transaction: Transaction<'conn>,
+}
+
+impl<'conn> DataStoreTransaction<'conn> {
+    fn new(transaction: Transaction<'conn>) -> Self {
+        Self { transaction }
+    }
+
+    fn connection(&self) -> &Connection {
+        &self.transaction
+    }
+
+    fn commit(self) -> Result<()> {
+        self.transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn list_cadence_objects_by_kind(
+        &self,
+        cadence_kind: &str,
+    ) -> Result<Vec<StoredCadenceObject>> {
+        let mut stmt = self.connection().prepare(
+            r#"
+            SELECT
+                id,
+                cadence_kind,
+                title,
+                summary,
+                payload_json,
+                scope_type,
+                scope_ref,
+                source_type,
+                source_ref,
+                admission_policy,
+                projection_policy,
+                status,
+                is_current,
+                created_at,
+                updated_at
+            FROM cadence_objects
+            WHERE cadence_kind = ?1
+            ORDER BY is_current DESC, id DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([cadence_kind], map_cadence_object_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_cadence_links(&self) -> Result<Vec<StoredCadenceLink>> {
+        let mut stmt = self.connection().prepare(
+            r#"
+            SELECT
+                id,
+                src_cadence_object_id,
+                dst_cadence_object_id,
+                relation_type,
+                status,
+                created_at
+            FROM cadence_links
+            ORDER BY id ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], map_cadence_link_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_cadence_object(
+        &self,
+        record: NewCadenceObject<'_>,
+    ) -> Result<StoredCadenceObject> {
+        let now = Utc::now().to_rfc3339();
+
+        if record.is_current {
+            self.connection().execute(
+                r#"
+                UPDATE cadence_objects
+                SET is_current = 0,
+                    status = CASE
+                        WHEN status = 'active' THEN 'superseded'
+                        ELSE status
+                    END,
+                    updated_at = ?2
+                WHERE cadence_kind = ?1
+                  AND is_current != 0
+                "#,
+                params![record.cadence_kind, now],
+            )?;
+        }
+
+        self.connection().execute(
+            r#"
+            INSERT INTO cadence_objects (
+                cadence_kind,
+                title,
+                summary,
+                payload_json,
+                scope_type,
+                scope_ref,
+                source_type,
+                source_ref,
+                admission_policy,
+                projection_policy,
+                status,
+                is_current,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+            "#,
+            params![
+                record.cadence_kind,
+                record.title,
+                record.summary,
+                record.payload_json,
+                record.scope_type,
+                record.scope_ref,
+                record.source_type,
+                record.source_ref,
+                record.admission_policy,
+                record.projection_policy,
+                record.status,
+                if record.is_current { 1 } else { 0 },
+                now,
+            ],
+        )?;
+        let row_id = self.connection().last_insert_rowid();
+        fetch_cadence_object_by_id(self.connection(), row_id)?
+            .ok_or_else(|| anyhow!("cadence object disappeared after insert"))
+    }
+
+    pub fn insert_cadence_link(&self, record: NewCadenceLink<'_>) -> Result<StoredCadenceLink> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO cadence_links (
+                src_cadence_object_id,
+                dst_cadence_object_id,
+                relation_type,
+                status,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(src_cadence_object_id, dst_cadence_object_id, relation_type) DO UPDATE SET
+                status = excluded.status,
+                created_at = excluded.created_at
+            "#,
+            params![
+                record.src_cadence_object_id,
+                record.dst_cadence_object_id,
+                record.relation_type,
+                record.status,
+                now,
+            ],
+        )?;
+
+        fetch_cadence_link(
+            self.connection(),
+            record.src_cadence_object_id,
+            record.dst_cadence_object_id,
+            record.relation_type,
+        )?
+        .ok_or_else(|| anyhow!("cadence link disappeared after upsert"))
+    }
+
+    pub fn insert_nota_runtime_transaction(
+        &self,
+        record: NewNotaRuntimeTransaction<'_>,
+    ) -> Result<StoredNotaRuntimeTransaction> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO nota_runtime_transactions (
+                actor_role,
+                surface_action,
+                transaction_kind,
+                title,
+                payload_json,
+                status,
+                forge_task_id,
+                cadence_checkpoint_id,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+            "#,
+            params![
+                record.actor_role,
+                record.surface_action,
+                record.transaction_kind,
+                record.title,
+                record.payload_json,
+                record.status,
+                record.forge_task_id,
+                record.cadence_checkpoint_id,
+                now,
+            ],
+        )?;
+
+        fetch_nota_runtime_transaction(self.connection(), self.connection().last_insert_rowid())?
+            .ok_or_else(|| anyhow!("nota runtime transaction disappeared after insert"))
+    }
+
+    pub fn update_nota_runtime_transaction(
+        &self,
+        id: i64,
+        update: NotaRuntimeTransactionUpdate<'_>,
+    ) -> Result<StoredNotaRuntimeTransaction> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            UPDATE nota_runtime_transactions
+            SET status = ?2,
+                forge_task_id = COALESCE(?3, forge_task_id),
+                cadence_checkpoint_id = COALESCE(?4, cadence_checkpoint_id),
+                updated_at = ?5
+            WHERE id = ?1
+            "#,
+            params![
+                id,
+                update.status,
+                update.forge_task_id,
+                update.cadence_checkpoint_id,
+                now,
+            ],
+        )?;
+
+        fetch_nota_runtime_transaction(self.connection(), id)?
+            .ok_or_else(|| anyhow!("nota runtime transaction `{id}` does not exist"))
+    }
+
+    pub fn get_nota_runtime_transaction(
+        &self,
+        id: i64,
+    ) -> Result<Option<StoredNotaRuntimeTransaction>> {
+        fetch_nota_runtime_transaction(self.connection(), id)
+    }
+
+    pub fn list_nota_runtime_receipts(
+        &self,
+        transaction_id: Option<i64>,
+    ) -> Result<Vec<StoredNotaRuntimeReceipt>> {
+        let mut stmt = if transaction_id.is_some() {
+            self.connection().prepare(
+                r#"
+                SELECT
+                    id,
+                    transaction_id,
+                    receipt_kind,
+                    payload_json,
+                    status,
+                    created_at
+                FROM nota_runtime_receipts
+                WHERE transaction_id = ?1
+                ORDER BY id ASC
+                "#,
+            )?
+        } else {
+            self.connection().prepare(
+                r#"
+                SELECT
+                    id,
+                    transaction_id,
+                    receipt_kind,
+                    payload_json,
+                    status,
+                    created_at
+                FROM nota_runtime_receipts
+                ORDER BY id ASC
+                "#,
+            )?
+        };
+
+        let rows = if let Some(transaction_id) = transaction_id {
+            stmt.query_map([transaction_id], map_nota_runtime_receipt_row)?
+        } else {
+            stmt.query_map([], map_nota_runtime_receipt_row)?
+        };
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn append_nota_runtime_receipt(
+        &self,
+        record: NewNotaRuntimeReceipt<'_>,
+    ) -> Result<StoredNotaRuntimeReceipt> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO nota_runtime_receipts (
+                transaction_id,
+                receipt_kind,
+                payload_json,
+                status,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                record.transaction_id,
+                record.receipt_kind,
+                record.payload_json,
+                record.status,
+                now,
+            ],
+        )?;
+
+        fetch_nota_runtime_receipt(self.connection(), self.connection().last_insert_rowid())?
+            .ok_or_else(|| anyhow!("nota runtime receipt disappeared after insert"))
+    }
+
+    pub fn list_nota_runtime_allocations(&self) -> Result<Vec<StoredNotaRuntimeAllocation>> {
+        let mut stmt = self.connection().prepare(
+            r#"
+            SELECT
+                id,
+                allocator_role,
+                allocator_surface,
+                allocation_kind,
+                source_transaction_id,
+                lineage_ref,
+                child_execution_kind,
+                child_execution_ref,
+                return_target_kind,
+                return_target_ref,
+                escalation_target_kind,
+                escalation_target_ref,
+                status,
+                payload_json,
+                created_at,
+                updated_at
+            FROM nota_runtime_allocations
+            ORDER BY id DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([], map_nota_runtime_allocation_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_nota_runtime_allocation(
+        &self,
+        record: NewNotaRuntimeAllocation<'_>,
+    ) -> Result<StoredNotaRuntimeAllocation> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO nota_runtime_allocations (
+                allocator_role,
+                allocator_surface,
+                allocation_kind,
+                source_transaction_id,
+                lineage_ref,
+                child_execution_kind,
+                child_execution_ref,
+                return_target_kind,
+                return_target_ref,
+                escalation_target_kind,
+                escalation_target_ref,
+                status,
+                payload_json,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
+            "#,
+            params![
+                record.allocator_role,
+                record.allocator_surface,
+                record.allocation_kind,
+                record.source_transaction_id,
+                record.lineage_ref,
+                record.child_execution_kind,
+                record.child_execution_ref,
+                record.return_target_kind,
+                record.return_target_ref,
+                record.escalation_target_kind,
+                record.escalation_target_ref,
+                record.status,
+                record.payload_json,
+                now,
+            ],
+        )?;
+
+        fetch_nota_runtime_allocation(self.connection(), self.connection().last_insert_rowid())?
+            .ok_or_else(|| anyhow!("nota runtime allocation disappeared after insert"))
+    }
+
+    pub fn update_nota_runtime_allocation(
+        &self,
+        id: i64,
+        update: NotaRuntimeAllocationUpdate<'_>,
+    ) -> Result<StoredNotaRuntimeAllocation> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            UPDATE nota_runtime_allocations
+            SET status = ?2,
+                payload_json = COALESCE(?3, payload_json),
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+            params![id, update.status, update.payload_json, now],
+        )?;
+
+        fetch_nota_runtime_allocation(self.connection(), id)?
+            .ok_or_else(|| anyhow!("nota runtime allocation `{id}` does not exist"))
+    }
+
+    pub fn insert_anti_zeno_event(
+        &self,
+        record: NewAntiZenoEvent<'_>,
+    ) -> Result<StoredAntiZenoEvent> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO anti_zeno_events (
+                checkpoint_id,
+                acceptance_bundle_id,
+                event_kind,
+                boundary_ref,
+                budget_axis,
+                event_weight,
+                summary,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            params![
+                record.checkpoint_id,
+                record.acceptance_bundle_id,
+                record.event_kind,
+                record.boundary_ref,
+                record.budget_axis,
+                record.event_weight,
+                record.summary,
+                now,
+            ],
+        )?;
+        let row_id = self.connection().last_insert_rowid();
+        fetch_anti_zeno_event_by_id(self.connection(), row_id)?
+            .ok_or_else(|| anyhow!("anti-Zeno event disappeared after insert"))
+    }
+}
+
+fn configure_connection(connection: &Connection, mode: DataStoreConnectionMode) -> Result<()> {
+    connection.busy_timeout(Duration::from_secs(5))?;
+    connection.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+        PRAGMA synchronous = FULL;
+        "#,
+    )?;
+    if mode == DataStoreConnectionMode::ReadWriteFile {
+        connection.execute_batch("PRAGMA journal_mode = WAL;")?;
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for DataStore {
@@ -843,10 +1564,12 @@ impl DataStore {
         }
 
         let connection = Connection::open(&path)?;
+        configure_connection(&connection, DataStoreConnectionMode::ReadWriteFile)?;
 
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(path),
+            mode: DataStoreConnectionMode::ReadWriteFile,
         };
         store.migrate(migration_plan)?;
         Ok(store)
@@ -859,10 +1582,12 @@ impl DataStore {
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        configure_connection(&connection, DataStoreConnectionMode::ReadOnlyFile)?;
 
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(path),
+            mode: DataStoreConnectionMode::ReadOnlyFile,
         };
         store.migrate(migration_plan)?;
         Ok(store)
@@ -872,9 +1597,11 @@ impl DataStore {
     #[allow(dead_code)]
     pub fn in_memory(migration_plan: MigrationPlan<'_>) -> Result<Self> {
         let connection = Connection::open_in_memory()?;
+        configure_connection(&connection, DataStoreConnectionMode::InMemory)?;
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(PathBuf::from(":memory:")),
+            mode: DataStoreConnectionMode::InMemory,
         };
         store.migrate(migration_plan)?;
         Ok(store)
@@ -882,6 +1609,18 @@ impl DataStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn with_immediate_transaction<T, F>(&self, callback: F) -> Result<T>
+    where
+        F: FnOnce(&DataStoreTransaction<'_>) -> Result<T>,
+    {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let transaction = DataStoreTransaction::new(transaction);
+        let result = callback(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
     }
 
     pub fn launcher_app_count(&self) -> Result<i64> {
@@ -2734,6 +3473,674 @@ impl DataStore {
         })
     }
 
+    pub fn upsert_projection_target(
+        &self,
+        record: UpsertProjectionTarget<'_>,
+    ) -> Result<StoredProjectionTarget> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO projection_targets (
+                    projection_class,
+                    target_key,
+                    title,
+                    target_path,
+                    source_scope,
+                    repair_action,
+                    projection_policy,
+                    is_required,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                ON CONFLICT(projection_class, target_key) DO UPDATE SET
+                    title = excluded.title,
+                    target_path = excluded.target_path,
+                    source_scope = excluded.source_scope,
+                    repair_action = excluded.repair_action,
+                    projection_policy = excluded.projection_policy,
+                    is_required = excluded.is_required,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.projection_class,
+                    record.target_key,
+                    record.title,
+                    record.target_path,
+                    record.source_scope,
+                    record.repair_action,
+                    record.projection_policy,
+                    if record.is_required { 1 } else { 0 },
+                    now,
+                ],
+            )?;
+
+            fetch_projection_target_by_key(conn, record.projection_class, record.target_key)?
+                .ok_or_else(|| anyhow!("projection target disappeared after upsert"))
+        })
+    }
+
+    pub fn insert_projection_run(
+        &self,
+        record: NewProjectionRun<'_>,
+    ) -> Result<StoredProjectionRun> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO projection_runs (
+                    target_id,
+                    truth_checkpoint_id,
+                    truth_human_round_id,
+                    truth_acceptance_bundle_id,
+                    run_state,
+                    freshness_state,
+                    trigger_kind,
+                    summary,
+                    error_message,
+                    repair_hint,
+                    started_at,
+                    completed_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                "#,
+                params![
+                    record.target_id,
+                    record.truth_checkpoint_id,
+                    record.truth_human_round_id,
+                    record.truth_acceptance_bundle_id,
+                    record.run_state,
+                    record.freshness_state,
+                    record.trigger_kind,
+                    record.summary,
+                    record.error_message,
+                    record.repair_hint,
+                    record.started_at,
+                    record.completed_at,
+                ],
+            )?;
+            let row_id = conn.last_insert_rowid();
+            fetch_projection_run_by_id(conn, row_id)?
+                .ok_or_else(|| anyhow!("projection run disappeared after insert"))
+        })
+    }
+
+    pub fn list_projection_targets(&self) -> Result<Vec<StoredProjectionTarget>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    projection_class,
+                    target_key,
+                    title,
+                    target_path,
+                    source_scope,
+                    repair_action,
+                    projection_policy,
+                    is_required,
+                    created_at,
+                    updated_at
+                FROM projection_targets
+                ORDER BY is_required DESC, projection_class ASC, target_key ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_projection_target_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn list_projection_runs(&self) -> Result<Vec<StoredProjectionRun>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    target_id,
+                    truth_checkpoint_id,
+                    truth_human_round_id,
+                    truth_acceptance_bundle_id,
+                    run_state,
+                    freshness_state,
+                    trigger_kind,
+                    summary,
+                    error_message,
+                    repair_hint,
+                    started_at,
+                    completed_at
+                FROM projection_runs
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_projection_run_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn upsert_runtime_host(&self, record: UpsertRuntimeHost<'_>) -> Result<StoredRuntimeHost> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO runtime_hosts (
+                    host_key,
+                    os_family,
+                    host_label,
+                    kernel_label,
+                    user_home,
+                    owner_root,
+                    config_path,
+                    runtime_db_path,
+                    exports_path,
+                    worktrees_root,
+                    wsl_distro_name,
+                    path_style,
+                    status,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
+                ON CONFLICT(host_key) DO UPDATE SET
+                    os_family = excluded.os_family,
+                    host_label = excluded.host_label,
+                    kernel_label = excluded.kernel_label,
+                    user_home = excluded.user_home,
+                    owner_root = excluded.owner_root,
+                    config_path = excluded.config_path,
+                    runtime_db_path = excluded.runtime_db_path,
+                    exports_path = excluded.exports_path,
+                    worktrees_root = excluded.worktrees_root,
+                    wsl_distro_name = excluded.wsl_distro_name,
+                    path_style = excluded.path_style,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.host_key,
+                    record.os_family,
+                    record.host_label,
+                    record.kernel_label,
+                    record.user_home,
+                    record.owner_root,
+                    record.config_path,
+                    record.runtime_db_path,
+                    record.exports_path,
+                    record.worktrees_root,
+                    record.wsl_distro_name,
+                    record.path_style,
+                    record.status,
+                    now,
+                ],
+            )?;
+            fetch_runtime_host_by_key(conn, record.host_key)?
+                .ok_or_else(|| anyhow!("runtime host disappeared after upsert"))
+        })
+    }
+
+    pub fn list_runtime_hosts(&self) -> Result<Vec<StoredRuntimeHost>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    host_key,
+                    os_family,
+                    host_label,
+                    kernel_label,
+                    user_home,
+                    owner_root,
+                    config_path,
+                    runtime_db_path,
+                    exports_path,
+                    worktrees_root,
+                    wsl_distro_name,
+                    path_style,
+                    status,
+                    created_at,
+                    updated_at
+                FROM runtime_hosts
+                ORDER BY updated_at DESC, id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_runtime_host_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn upsert_owned_worktree(
+        &self,
+        record: UpsertOwnedWorktree<'_>,
+    ) -> Result<StoredOwnedWorktree> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO owned_worktrees (
+                    host_key,
+                    project_name,
+                    issue_id,
+                    branch_name,
+                    worktree_kind,
+                    worktree_path,
+                    repo_root,
+                    slot_name,
+                    status,
+                    created_at,
+                    last_seen_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+                ON CONFLICT(worktree_path) DO UPDATE SET
+                    host_key = excluded.host_key,
+                    project_name = excluded.project_name,
+                    issue_id = excluded.issue_id,
+                    branch_name = excluded.branch_name,
+                    worktree_kind = excluded.worktree_kind,
+                    repo_root = excluded.repo_root,
+                    slot_name = excluded.slot_name,
+                    status = excluded.status,
+                    last_seen_at = excluded.last_seen_at
+                "#,
+                params![
+                    record.host_key,
+                    record.project_name,
+                    record.issue_id,
+                    record.branch_name,
+                    record.worktree_kind,
+                    record.worktree_path,
+                    record.repo_root,
+                    record.slot_name,
+                    record.status,
+                    now,
+                ],
+            )?;
+            fetch_owned_worktree_by_path(conn, record.worktree_path)?
+                .ok_or_else(|| anyhow!("owned worktree disappeared after upsert"))
+        })
+    }
+
+    pub fn mark_owned_worktrees_missing(
+        &self,
+        host_key: &str,
+        observed_worktree_paths: &[String],
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            if observed_worktree_paths.is_empty() {
+                conn.execute(
+                    r#"
+                    UPDATE owned_worktrees
+                    SET status = 'missing',
+                        last_seen_at = ?2
+                    WHERE host_key = ?1
+                    "#,
+                    params![host_key, now],
+                )?;
+                return Ok(());
+            }
+
+            let placeholders = std::iter::repeat_n("?", observed_worktree_paths.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut parameters: Vec<&dyn rusqlite::ToSql> =
+                Vec::with_capacity(2 + observed_worktree_paths.len());
+            parameters.push(&host_key);
+            parameters.push(&now);
+            for path in observed_worktree_paths {
+                parameters.push(path);
+            }
+            let sql = format!(
+                r#"
+                UPDATE owned_worktrees
+                SET status = 'missing',
+                    last_seen_at = ?2
+                WHERE host_key = ?1
+                  AND worktree_path NOT IN ({placeholders})
+                "#
+            );
+            conn.execute(&sql, rusqlite::params_from_iter(parameters))?;
+            Ok(())
+        })
+    }
+
+    pub fn list_owned_worktrees(&self) -> Result<Vec<StoredOwnedWorktree>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    host_key,
+                    project_name,
+                    issue_id,
+                    branch_name,
+                    worktree_kind,
+                    worktree_path,
+                    repo_root,
+                    slot_name,
+                    status,
+                    created_at,
+                    last_seen_at
+                FROM owned_worktrees
+                ORDER BY project_name ASC, worktree_kind ASC, worktree_path ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_owned_worktree_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn insert_anti_zeno_event(
+        &self,
+        record: NewAntiZenoEvent<'_>,
+    ) -> Result<StoredAntiZenoEvent> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO anti_zeno_events (
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    event_kind,
+                    boundary_ref,
+                    budget_axis,
+                    event_weight,
+                    summary,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#,
+                params![
+                    record.checkpoint_id,
+                    record.acceptance_bundle_id,
+                    record.event_kind,
+                    record.boundary_ref,
+                    record.budget_axis,
+                    record.event_weight,
+                    record.summary,
+                    now,
+                ],
+            )?;
+            let row_id = conn.last_insert_rowid();
+            fetch_anti_zeno_event_by_id(conn, row_id)?
+                .ok_or_else(|| anyhow!("anti-Zeno event disappeared after insert"))
+        })
+    }
+
+    pub fn list_anti_zeno_events(&self) -> Result<Vec<StoredAntiZenoEvent>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    event_kind,
+                    boundary_ref,
+                    budget_axis,
+                    event_weight,
+                    summary,
+                    created_at
+                FROM anti_zeno_events
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_anti_zeno_event_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn upsert_runtime_invariant(
+        &self,
+        record: UpsertRuntimeInvariant<'_>,
+    ) -> Result<StoredRuntimeInvariant> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO runtime_invariants (
+                    invariant_key,
+                    title,
+                    status,
+                    severity,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    human_round_id,
+                    summary,
+                    evidence_json,
+                    repair_action,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+                ON CONFLICT(invariant_key) DO UPDATE SET
+                    title = excluded.title,
+                    status = excluded.status,
+                    severity = excluded.severity,
+                    checkpoint_id = excluded.checkpoint_id,
+                    acceptance_bundle_id = excluded.acceptance_bundle_id,
+                    human_round_id = excluded.human_round_id,
+                    summary = excluded.summary,
+                    evidence_json = excluded.evidence_json,
+                    repair_action = excluded.repair_action,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.invariant_key,
+                    record.title,
+                    record.status,
+                    record.severity,
+                    record.checkpoint_id,
+                    record.acceptance_bundle_id,
+                    record.human_round_id,
+                    record.summary,
+                    record.evidence_json,
+                    record.repair_action,
+                    now,
+                ],
+            )?;
+            fetch_runtime_invariant_by_key(conn, record.invariant_key)?
+                .ok_or_else(|| anyhow!("runtime invariant disappeared after upsert"))
+        })
+    }
+
+    pub fn list_runtime_invariants(&self) -> Result<Vec<StoredRuntimeInvariant>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    invariant_key,
+                    title,
+                    status,
+                    severity,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    human_round_id,
+                    summary,
+                    evidence_json,
+                    repair_action,
+                    created_at,
+                    updated_at
+                FROM runtime_invariants
+                ORDER BY
+                    CASE status
+                        WHEN 'failed_blocked' THEN 0
+                        WHEN 'failed_repairable' THEN 1
+                        WHEN 'passed' THEN 2
+                        ELSE 3
+                    END,
+                    invariant_key ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_runtime_invariant_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn upsert_repair_lane_item(
+        &self,
+        record: UpsertRepairLaneItem<'_>,
+    ) -> Result<StoredRepairLaneItem> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO repair_lane_items (
+                    repair_key,
+                    source_invariant_key,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    item_kind,
+                    urgency,
+                    status,
+                    summary,
+                    repair_action,
+                    evidence_json,
+                    created_at,
+                    updated_at,
+                    resolved_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL)
+                ON CONFLICT(repair_key) DO UPDATE SET
+                    source_invariant_key = excluded.source_invariant_key,
+                    checkpoint_id = excluded.checkpoint_id,
+                    acceptance_bundle_id = excluded.acceptance_bundle_id,
+                    item_kind = excluded.item_kind,
+                    urgency = excluded.urgency,
+                    status = excluded.status,
+                    summary = excluded.summary,
+                    repair_action = excluded.repair_action,
+                    evidence_json = excluded.evidence_json,
+                    updated_at = excluded.updated_at,
+                    resolved_at = CASE
+                        WHEN excluded.status = 'open' THEN NULL
+                        ELSE repair_lane_items.resolved_at
+                    END
+                "#,
+                params![
+                    record.repair_key,
+                    record.source_invariant_key,
+                    record.checkpoint_id,
+                    record.acceptance_bundle_id,
+                    record.item_kind,
+                    record.urgency,
+                    record.status,
+                    record.summary,
+                    record.repair_action,
+                    record.evidence_json,
+                    now,
+                ],
+            )?;
+            fetch_repair_lane_item_by_key(conn, record.repair_key)?
+                .ok_or_else(|| anyhow!("repair lane item disappeared after upsert"))
+        })
+    }
+
+    pub fn mark_repair_lane_items_resolved(&self, active_repair_keys: &[String]) -> Result<usize> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            let active = active_repair_keys.iter().cloned().collect::<HashSet<_>>();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT repair_key
+                FROM repair_lane_items
+                WHERE status = 'open'
+                "#,
+            )?;
+            let open_keys = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            let mut resolved_count = 0;
+            for repair_key in open_keys {
+                if active.contains(&repair_key) {
+                    continue;
+                }
+                resolved_count += conn.execute(
+                    r#"
+                    UPDATE repair_lane_items
+                    SET status = 'resolved',
+                        updated_at = ?1,
+                        resolved_at = COALESCE(resolved_at, ?1)
+                    WHERE repair_key = ?2
+                    "#,
+                    params![now, repair_key],
+                )?;
+            }
+            Ok(resolved_count)
+        })
+    }
+
+    pub fn list_repair_lane_items(&self) -> Result<Vec<StoredRepairLaneItem>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    repair_key,
+                    source_invariant_key,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    item_kind,
+                    urgency,
+                    status,
+                    summary,
+                    repair_action,
+                    evidence_json,
+                    created_at,
+                    updated_at,
+                    resolved_at
+                FROM repair_lane_items
+                ORDER BY
+                    CASE status
+                        WHEN 'open' THEN 0
+                        ELSE 1
+                    END,
+                    CASE urgency
+                        WHEN 'blocked' THEN 0
+                        ELSE 1
+                    END,
+                    repair_key ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_repair_lane_item_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn upsert_document_record_by_slug(
+        &self,
+        record: UpsertDocumentRecordBySlug<'_>,
+    ) -> Result<StoredDocumentRecord> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO documents (
+                    slug,
+                    title,
+                    content,
+                    category,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                ON CONFLICT(slug, category) DO UPDATE SET
+                    title = excluded.title,
+                    content = excluded.content,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.slug,
+                    record.title,
+                    record.content,
+                    record.category,
+                    now,
+                ],
+            )?;
+            fetch_document_by_slug_and_category(conn, record.slug, record.category)?
+                .ok_or_else(|| anyhow!("document disappeared after upsert"))
+        })
+    }
+
     pub fn upsert_document_record(&self, record: UpsertDocumentRecord<'_>) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute(
@@ -2760,6 +4167,54 @@ impl DataStore {
                 ],
             )?;
             Ok(())
+        })
+    }
+
+    pub fn list_document_records(&self) -> Result<Vec<StoredDocumentRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    slug,
+                    title,
+                    content,
+                    category,
+                    created_at,
+                    updated_at
+                FROM documents
+                ORDER BY category ASC, slug ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_document_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn list_document_records_by_category(
+        &self,
+        category: &str,
+    ) -> Result<Vec<StoredDocumentRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    slug,
+                    title,
+                    content,
+                    category,
+                    created_at,
+                    updated_at
+                FROM documents
+                WHERE category = ?1
+                ORDER BY slug ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([category], map_document_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
         })
     }
 
@@ -3374,6 +4829,7 @@ impl DataStore {
     }
 
     fn migrate(&self, migration_plan: MigrationPlan<'_>) -> Result<()> {
+        let mode = self.mode;
         self.with_connection(|connection| {
             for migration in migration_plan
                 .core
@@ -3384,7 +4840,7 @@ impl DataStore {
                 connection.execute_batch(migration.sql)?;
             }
             ensure_forge_task_columns(connection)?;
-            ensure_curated_memory_tables(connection)?;
+            ensure_curated_memory_tables(connection, mode)?;
             Ok(())
         })
     }
@@ -3755,6 +5211,18 @@ fn map_chat_capture_record_row(
     })
 }
 
+fn map_document_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDocumentRecord> {
+    Ok(StoredDocumentRecord {
+        id: row.get(0)?,
+        slug: row.get(1)?,
+        title: row.get(2)?,
+        content: row.get(3)?,
+        category: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
 fn map_todo_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTodoRecord> {
     Ok(StoredTodoRecord {
         id: row.get(0)?,
@@ -3826,6 +5294,129 @@ fn map_memory_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemory
     })
 }
 
+fn map_projection_target_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProjectionTarget> {
+    Ok(StoredProjectionTarget {
+        id: row.get(0)?,
+        projection_class: row.get(1)?,
+        target_key: row.get(2)?,
+        title: row.get(3)?,
+        target_path: row.get(4)?,
+        source_scope: row.get(5)?,
+        repair_action: row.get(6)?,
+        projection_policy: row.get(7)?,
+        is_required: row.get::<_, i64>(8)? != 0,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn map_projection_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProjectionRun> {
+    Ok(StoredProjectionRun {
+        id: row.get(0)?,
+        target_id: row.get(1)?,
+        truth_checkpoint_id: row.get(2)?,
+        truth_human_round_id: row.get(3)?,
+        truth_acceptance_bundle_id: row.get(4)?,
+        run_state: row.get(5)?,
+        freshness_state: row.get(6)?,
+        trigger_kind: row.get(7)?,
+        summary: row.get(8)?,
+        error_message: row.get(9)?,
+        repair_hint: row.get(10)?,
+        started_at: row.get(11)?,
+        completed_at: row.get(12)?,
+    })
+}
+
+fn map_runtime_host_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRuntimeHost> {
+    Ok(StoredRuntimeHost {
+        id: row.get(0)?,
+        host_key: row.get(1)?,
+        os_family: row.get(2)?,
+        host_label: row.get(3)?,
+        kernel_label: row.get(4)?,
+        user_home: row.get(5)?,
+        owner_root: row.get(6)?,
+        config_path: row.get(7)?,
+        runtime_db_path: row.get(8)?,
+        exports_path: row.get(9)?,
+        worktrees_root: row.get(10)?,
+        wsl_distro_name: row.get(11)?,
+        path_style: row.get(12)?,
+        status: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
+}
+
+fn map_owned_worktree_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredOwnedWorktree> {
+    Ok(StoredOwnedWorktree {
+        id: row.get(0)?,
+        host_key: row.get(1)?,
+        project_name: row.get(2)?,
+        issue_id: row.get(3)?,
+        branch_name: row.get(4)?,
+        worktree_kind: row.get(5)?,
+        worktree_path: row.get(6)?,
+        repo_root: row.get(7)?,
+        slot_name: row.get(8)?,
+        status: row.get(9)?,
+        created_at: row.get(10)?,
+        last_seen_at: row.get(11)?,
+    })
+}
+
+fn map_anti_zeno_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAntiZenoEvent> {
+    Ok(StoredAntiZenoEvent {
+        id: row.get(0)?,
+        checkpoint_id: row.get(1)?,
+        acceptance_bundle_id: row.get(2)?,
+        event_kind: row.get(3)?,
+        boundary_ref: row.get(4)?,
+        budget_axis: row.get(5)?,
+        event_weight: row.get(6)?,
+        summary: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+fn map_runtime_invariant_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRuntimeInvariant> {
+    Ok(StoredRuntimeInvariant {
+        id: row.get(0)?,
+        invariant_key: row.get(1)?,
+        title: row.get(2)?,
+        status: row.get(3)?,
+        severity: row.get(4)?,
+        checkpoint_id: row.get(5)?,
+        acceptance_bundle_id: row.get(6)?,
+        human_round_id: row.get(7)?,
+        summary: row.get(8)?,
+        evidence_json: row.get(9)?,
+        repair_action: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+fn map_repair_lane_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRepairLaneItem> {
+    Ok(StoredRepairLaneItem {
+        id: row.get(0)?,
+        repair_key: row.get(1)?,
+        source_invariant_key: row.get(2)?,
+        checkpoint_id: row.get(3)?,
+        acceptance_bundle_id: row.get(4)?,
+        item_kind: row.get(5)?,
+        urgency: row.get(6)?,
+        status: row.get(7)?,
+        summary: row.get(8)?,
+        repair_action: row.get(9)?,
+        evidence_json: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        resolved_at: row.get(13)?,
+    })
+}
+
 fn fetch_vault_mcp_config(
     connection: &Connection,
     id: i64,
@@ -3839,6 +5430,35 @@ fn fetch_vault_mcp_config(
             "#,
             [id],
             map_vault_mcp_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_document_by_slug_and_category(
+    connection: &Connection,
+    slug: &str,
+    category: &str,
+) -> Result<Option<StoredDocumentRecord>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                slug,
+                title,
+                content,
+                category,
+                created_at,
+                updated_at
+            FROM documents
+            WHERE slug = ?1
+              AND category = ?2
+            ORDER BY id ASC
+            LIMIT 1
+            "#,
+            params![slug, category],
+            map_document_record_row,
         )
         .optional()
         .map_err(Into::into)
@@ -4159,6 +5779,222 @@ fn fetch_cadence_link(
         .map_err(Into::into)
 }
 
+fn fetch_projection_target_by_key(
+    connection: &Connection,
+    projection_class: &str,
+    target_key: &str,
+) -> Result<Option<StoredProjectionTarget>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                projection_class,
+                target_key,
+                title,
+                target_path,
+                source_scope,
+                repair_action,
+                projection_policy,
+                is_required,
+                created_at,
+                updated_at
+            FROM projection_targets
+            WHERE projection_class = ?1
+              AND target_key = ?2
+            "#,
+            params![projection_class, target_key],
+            map_projection_target_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_projection_run_by_id(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredProjectionRun>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                target_id,
+                truth_checkpoint_id,
+                truth_human_round_id,
+                truth_acceptance_bundle_id,
+                run_state,
+                freshness_state,
+                trigger_kind,
+                summary,
+                error_message,
+                repair_hint,
+                started_at,
+                completed_at
+            FROM projection_runs
+            WHERE id = ?1
+            "#,
+            [id],
+            map_projection_run_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_runtime_host_by_key(
+    connection: &Connection,
+    host_key: &str,
+) -> Result<Option<StoredRuntimeHost>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                host_key,
+                os_family,
+                host_label,
+                kernel_label,
+                user_home,
+                owner_root,
+                config_path,
+                runtime_db_path,
+                exports_path,
+                worktrees_root,
+                wsl_distro_name,
+                path_style,
+                status,
+                created_at,
+                updated_at
+            FROM runtime_hosts
+            WHERE host_key = ?1
+            "#,
+            [host_key],
+            map_runtime_host_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_owned_worktree_by_path(
+    connection: &Connection,
+    worktree_path: &str,
+) -> Result<Option<StoredOwnedWorktree>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                host_key,
+                project_name,
+                issue_id,
+                branch_name,
+                worktree_kind,
+                worktree_path,
+                repo_root,
+                slot_name,
+                status,
+                created_at,
+                last_seen_at
+            FROM owned_worktrees
+            WHERE worktree_path = ?1
+            "#,
+            [worktree_path],
+            map_owned_worktree_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_anti_zeno_event_by_id(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredAntiZenoEvent>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                checkpoint_id,
+                acceptance_bundle_id,
+                event_kind,
+                boundary_ref,
+                budget_axis,
+                event_weight,
+                summary,
+                created_at
+            FROM anti_zeno_events
+            WHERE id = ?1
+            "#,
+            [id],
+            map_anti_zeno_event_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_runtime_invariant_by_key(
+    connection: &Connection,
+    invariant_key: &str,
+) -> Result<Option<StoredRuntimeInvariant>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                invariant_key,
+                title,
+                status,
+                severity,
+                checkpoint_id,
+                acceptance_bundle_id,
+                human_round_id,
+                summary,
+                evidence_json,
+                repair_action,
+                created_at,
+                updated_at
+            FROM runtime_invariants
+            WHERE invariant_key = ?1
+            "#,
+            [invariant_key],
+            map_runtime_invariant_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_repair_lane_item_by_key(
+    connection: &Connection,
+    repair_key: &str,
+) -> Result<Option<StoredRepairLaneItem>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                repair_key,
+                source_invariant_key,
+                checkpoint_id,
+                acceptance_bundle_id,
+                item_kind,
+                urgency,
+                status,
+                summary,
+                repair_action,
+                evidence_json,
+                created_at,
+                updated_at,
+                resolved_at
+            FROM repair_lane_items
+            WHERE repair_key = ?1
+            "#,
+            [repair_key],
+            map_repair_lane_item_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
 fn fetch_nota_runtime_transaction(
     connection: &Connection,
     id: i64,
@@ -4413,7 +6249,10 @@ fn ensure_forge_task_columns(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn ensure_curated_memory_tables(connection: &Connection) -> Result<()> {
+fn ensure_curated_memory_tables(
+    connection: &Connection,
+    mode: DataStoreConnectionMode,
+) -> Result<()> {
     connection.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS documents (
@@ -4536,6 +6375,9 @@ fn ensure_curated_memory_tables(connection: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    if mode != DataStoreConnectionMode::ReadOnlyFile {
+        harden_document_truth_constraints(connection)?;
+    }
 
     ensure_table_column(
         connection,
@@ -4598,6 +6440,32 @@ fn ensure_curated_memory_tables(connection: &Connection) -> Result<()> {
         "coffee_chats",
         "temperature",
         "ALTER TABLE coffee_chats ADD COLUMN temperature TEXT NOT NULL DEFAULT 'warm'",
+    )?;
+
+    Ok(())
+}
+
+fn harden_document_truth_constraints(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        DELETE FROM documents
+        WHERE id IN (
+            SELECT id
+            FROM (
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY slug, category
+                        ORDER BY updated_at DESC, id DESC
+                    ) AS duplicate_rank
+                FROM documents
+            ) ranked_documents
+            WHERE duplicate_rank > 1
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_slug_category
+            ON documents(slug, category);
+        "#,
     )?;
 
     Ok(())

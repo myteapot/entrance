@@ -141,14 +141,30 @@ Also:
 - anti-Zeno is a first-class derived projection
 - anti-Zeno is not a second truth plane
 - anti-Zeno must be visible in status, overview, and exported hot-root views
+- invariant checking and repair lane truth must remain visible in status and overview
+- `entrance nota invariants` and `entrance nota repair` are the canonical inspection surfaces for those boundaries
 
 `fully settled round` is stricter than acceptance. It means:
 
 - acceptance exists
 - no next step remains
 - checkpoint carry-forward has landed
+- required retained projections are fresh for the current truth revision
 
-## 8. Migration Behavior
+## 8. Recovery Is Import-Only
+
+Recovery now has a permanently lowered role:
+
+- `entrance recovery import-seed ...` may absorb historical seed data into the runtime storage plane
+- `entrance recovery status` exists to make that import-only boundary explicit
+- recovery seed data may be inspected through `recovery runs` and `recovery rows`
+- recovery seed data may not self-promote back into canonical truth authority
+
+Canonical runtime continuity and projection rebuild must continue from:
+
+- `~/.entrance/data/entrance.db`
+
+## 9. Migration Behavior
 
 When Entrance boots against an older owner root layout that still contains:
 
@@ -160,20 +176,23 @@ and the new canonical DB path does not yet exist, Entrance migrates the DB to:
 
 This lets old local state survive the path-layout unification cut.
 
-## 9. Operational Guidance
+## 10. Operational Guidance
 
 Recommended habits:
 
 - read runtime state from `entrance nota status` and `entrance nota overview`
+- inspect repair pressure through `entrance nota invariants` and `entrance nota repair`
 - keep runtime truth in DB first
 - use `entrance nota export-hot-root` when you want a refreshed file projection
+- use `entrance nota rebuild-projections [--project-dir <path>]` when you want retained projections rebuilt from DB truth
+- use `entrance recovery status` to confirm recovery remains import-only
 - treat exported files as views for navigation, review, and preservation
 - never use Markdown edits as a substitute for runtime truth writes
 
-## 10. Phase Rule
+## 11. Phase Rule
 
 This document reflects the `V0` post-consolidation phase:
 
 - do not reopen broad feature expansion
-- keep sharpening owner root, cadence objects, anti-Zeno visibility, and projection boundary
+- keep holding owner root, cadence objects, anti-Zeno visibility, invariant truth, repair lane truth, and projection boundary in one DB-first runtime law
 - keep all surfaces converging toward one DB-first runtime law

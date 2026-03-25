@@ -113,8 +113,16 @@ fn nota_checkpoint_cli_persists_cadence_checkpoint_without_memory_fragment_fallb
     let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
-    assert_eq!(count_rows(&connection, "cadence_objects")?, 2);
-    assert_eq!(count_rows(&connection, "cadence_links")?, 1);
+    assert_eq!(count_rows(&connection, "cadence_objects")?, 4);
+    assert_eq!(count_rows(&connection, "cadence_links")?, 4);
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_CHECKPOINT")?,
+        2
+    );
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_HUMAN_ROUND")?,
+        2
+    );
     assert_eq!(count_rows(&connection, "memory_fragments")?, 0);
 
     Ok(())
@@ -319,7 +327,15 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
     assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
     assert_eq!(count_rows(&connection, "nota_runtime_allocations")?, 1);
-    assert_eq!(count_rows(&connection, "cadence_objects")?, 1);
+    assert_eq!(count_rows(&connection, "cadence_objects")?, 2);
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_CHECKPOINT")?,
+        1
+    );
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_HUMAN_ROUND")?,
+        1
+    );
     assert_eq!(count_rows(&connection, "plugin_forge_tasks")?, 1);
     let allocation_boundary = connection.query_row(
         r#"
@@ -684,7 +700,15 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
     assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
     assert_eq!(count_rows(&connection, "nota_runtime_allocations")?, 1);
-    assert_eq!(count_rows(&connection, "cadence_objects")?, 1);
+    assert_eq!(count_rows(&connection, "cadence_objects")?, 2);
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_CHECKPOINT")?,
+        1
+    );
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_HUMAN_ROUND")?,
+        1
+    );
     assert_eq!(count_rows(&connection, "plugin_forge_tasks")?, 1);
 
     let blocked_message = "dev task blocked awaiting token";
@@ -2232,6 +2256,463 @@ fn nota_checkpoint_auto_exports_hot_root_projection() -> Result<()> {
 }
 
 #[test]
+fn nota_projection_status_surfaces_required_projection_freshness() -> Result<()> {
+    let temp_dir = TempDir::new("projection-status")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Projection checkpoint",
+            "--stable-level",
+            "projection truth is runtime-owned",
+            "--landed",
+            "required hot-root projection recorded in DB truth",
+            "--remaining",
+            "none",
+            "--human-continuity-bus",
+            "reduced for projection freshness",
+        ],
+    )?;
+
+    let projections_output = run_nota_cli(&app_data_dir, &["nota", "projections"])?;
+    let projections: Value = serde_json::from_str(&projections_output)
+        .context("nota projections output should be valid JSON")?;
+    assert_eq!(projections["required_target_count"], 2);
+    assert_eq!(projections["fresh_required_target_count"], 2);
+    assert_eq!(projections["dirty_required_target_count"], 0);
+    assert_eq!(projections["failed_required_target_count"], 0);
+    assert_eq!(projections["required_targets_fresh"], true);
+    assert_eq!(
+        projections["current_truth_revision"]["checkpoint_id"].as_i64(),
+        Some(1)
+    );
+
+    let hot_root_target = projections["targets"]
+        .as_array()
+        .context("projection targets should be an array")?
+        .iter()
+        .find(|target| target["target"]["target_key"] == "exports/hot-root")
+        .context("hot-root projection target should exist")?;
+    assert_eq!(hot_root_target["state"], "fresh");
+    assert_eq!(hot_root_target["required"], true);
+
+    let oracle_target = projections["targets"]
+        .as_array()
+        .context("projection targets should be an array")?
+        .iter()
+        .find(|target| target["target"]["target_key"] == "exports/hot-root/README.md")
+        .context("oracle projection target should exist")?;
+    assert_eq!(oracle_target["state"], "fresh");
+    assert_eq!(oracle_target["required"], true);
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["projections"]["required_targets_fresh"], true);
+
+    let overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let overview: Value = serde_json::from_str(&overview_output)
+        .context("nota overview output should be valid JSON")?;
+    assert_eq!(overview["projections"]["fresh_required_target_count"], 2);
+
+    let db_path = app_data_dir.join("data").join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "projection_targets")?, 2);
+    assert_eq!(count_rows(&connection, "projection_runs")?, 2);
+
+    Ok(())
+}
+
+#[test]
+fn nota_anti_zeno_budget_surfaces_checkpoint_pressure_from_runtime_truth() -> Result<()> {
+    let temp_dir = TempDir::new("anti-zeno-budget")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Anti-Zeno checkpoint",
+            "--stable-level",
+            "anti-Zeno budget is runtime-owned",
+            "--landed",
+            "checkpoint writes anti-Zeno semantic pressure",
+            "--remaining",
+            "acceptance still pending",
+            "--human-continuity-bus",
+            "reduced for anti-Zeno enforcement",
+        ],
+    )?;
+
+    let anti_zeno_output = run_nota_cli(&app_data_dir, &["nota", "anti-zeno"])?;
+    let anti_zeno: Value = serde_json::from_str(&anti_zeno_output)
+        .context("nota anti-zeno output should be valid JSON")?;
+    assert_eq!(anti_zeno["state"], "checkpointed");
+    assert_eq!(anti_zeno["semantic_event_count"], 1);
+    assert_eq!(anti_zeno["repair_event_count"], 0);
+    assert_eq!(anti_zeno["projection_debt_count"], 0);
+    assert_eq!(anti_zeno["budget_exhausted"], false);
+    assert_eq!(
+        anti_zeno["recent_events"][0]["event_kind"],
+        "checkpoint_written"
+    );
+    assert_eq!(anti_zeno["recent_events"][0]["checkpoint_id"], 1);
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["anti_zeno_budget"]["state"], "checkpointed");
+    assert_eq!(status["anti_zeno_budget"]["semantic_event_count"], 1);
+
+    let db_path = app_data_dir.join("data").join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "anti_zeno_events")?, 1);
+
+    Ok(())
+}
+
+#[test]
+fn nota_invariants_and_repair_surfaces_reflect_required_projection_debt() -> Result<()> {
+    let temp_dir = TempDir::new("invariants-repair")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Invariant checkpoint",
+            "--stable-level",
+            "invariant-backed repair lane",
+            "--landed",
+            "required projections are tracked as runtime truth",
+            "--remaining",
+            "repair lane remains open until projections are refreshed",
+            "--human-continuity-bus",
+            "reduced for invariant-backed repair",
+        ],
+    )?;
+
+    let db_path = app_data_dir.join("data").join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute(
+        r#"
+        UPDATE projection_runs
+        SET run_state = 'failed',
+            freshness_state = 'failed',
+            summary = 'Forced projection failure for invariant test.',
+            error_message = 'forced by nota_cli invariant test',
+            repair_hint = 'rerun export'
+        WHERE truth_checkpoint_id = 1
+        "#,
+        [],
+    )?;
+
+    let invariants_output = run_nota_cli(&app_data_dir, &["nota", "invariants"])?;
+    let invariants: Value = serde_json::from_str(&invariants_output)
+        .context("nota invariants output should be valid JSON")?;
+    assert_eq!(invariants["failed_count"], 1);
+    assert_eq!(invariants["repairable_count"], 1);
+    assert_eq!(
+        invariants["invariants"]
+            .as_array()
+            .context("invariants should be an array")?
+            .iter()
+            .find(|invariant| invariant["invariant_key"] == "required_projection_freshness")
+            .context("required projection freshness invariant should exist")?["status"],
+        "failed_repairable"
+    );
+
+    let repair_output = run_nota_cli(&app_data_dir, &["nota", "repair"])?;
+    let repair: Value =
+        serde_json::from_str(&repair_output).context("nota repair output should be valid JSON")?;
+    assert_eq!(repair["open_count"], 1);
+    assert_eq!(repair["repairable_count"], 1);
+    assert_eq!(
+        repair["items"][0]["source_invariant_key"],
+        "required_projection_freshness"
+    );
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["invariants"]["failed_count"], 1);
+    assert_eq!(status["repair_lane"]["open_count"], 1);
+
+    assert_eq!(count_rows(&connection, "runtime_invariants")?, 8);
+    assert_eq!(count_rows(&connection, "repair_lane_items")?, 0);
+
+    Ok(())
+}
+
+#[test]
+fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result<()> {
+    let temp_dir = TempDir::new("cold-docs")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Cold doc checkpoint",
+            "--stable-level",
+            "cold docs are DB-first",
+            "--landed",
+            "cold-doc canonicalization boundary",
+            "--remaining",
+            "periodic repo projection",
+            "--human-continuity-bus",
+            "reduced for cold-doc DB truth",
+        ],
+    )?;
+
+    let project_dir = temp_dir.path().join("Entrance");
+    let cold_doc_path = project_dir
+        .join("specs")
+        .join("cold")
+        .join("1.1-os-core")
+        .join("projection_boundary.md");
+    if let Some(parent) = cold_doc_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &cold_doc_path,
+        "# Projection Boundary\n\nCold docs are canonicalized in DB and projected to files.\r\n",
+    )?;
+
+    let canonicalize_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "canonicalize-cold-docs",
+            "--project-dir",
+            project_dir
+                .to_str()
+                .context("project dir should be valid UTF-8")?,
+        ],
+    )?;
+    let canonicalize: Value = serde_json::from_str(&canonicalize_output)
+        .context("canonicalize-cold-docs output should be valid JSON")?;
+    assert_eq!(canonicalize["imported_count"], 1);
+    assert_eq!(
+        canonicalize["docs"][0]["slug"],
+        "specs/cold/1.1-os-core/projection_boundary.md"
+    );
+
+    fs::remove_file(&cold_doc_path)?;
+
+    let export_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "export-cold-docs",
+            "--project-dir",
+            project_dir
+                .to_str()
+                .context("project dir should be valid UTF-8")?,
+        ],
+    )?;
+    let export: Value = serde_json::from_str(&export_output)
+        .context("export-cold-docs output should be valid JSON")?;
+    assert_eq!(export["exported_count"], 1);
+    assert!(cold_doc_path.exists());
+
+    let listed_output = run_nota_cli(&app_data_dir, &["nota", "cold-docs"])?;
+    let listed: Value =
+        serde_json::from_str(&listed_output).context("cold-docs output should be valid JSON")?;
+    assert_eq!(listed["cold_doc_count"], 1);
+    assert_eq!(listed["fresh_projection_count"], 1);
+    assert_eq!(
+        listed["docs"][0]["slug"],
+        "specs/cold/1.1-os-core/projection_boundary.md"
+    );
+    assert_eq!(listed["docs"][0]["projection_state"], "fresh");
+
+    let projections_output = run_nota_cli(&app_data_dir, &["nota", "projections"])?;
+    let projections: Value = serde_json::from_str(&projections_output)
+        .context("nota projections output should be valid JSON")?;
+    let cold_doc_target = projections["targets"]
+        .as_array()
+        .context("projection targets should be an array")?
+        .iter()
+        .find(|target| {
+            target["target"]["projection_class"] == "cold_doc_projection"
+                && target["target"]["target_key"]
+                    == "cold_doc:specs/cold/1.1-os-core/projection_boundary.md"
+        })
+        .context("cold-doc projection target should exist")?;
+    assert_eq!(cold_doc_target["state"], "fresh");
+    assert_eq!(cold_doc_target["required"], false);
+
+    let db_path = app_data_dir.join("data").join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "documents")?, 1);
+    assert_eq!(count_rows(&connection, "projection_targets")?, 3);
+
+    Ok(())
+}
+
+#[test]
+fn nota_rebuild_projections_rehydrates_retained_exports_from_db_truth() -> Result<()> {
+    let temp_dir = TempDir::new("rebuild-projections")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Projection rebuild checkpoint",
+            "--stable-level",
+            "retained projections rebuild from DB",
+            "--landed",
+            "checkpointed rebuildable truth",
+            "--remaining",
+            "none",
+            "--human-continuity-bus",
+            "reduced for projection rebuild",
+        ],
+    )?;
+
+    let project_dir = temp_dir.path().join("Entrance");
+    let cold_doc_path = project_dir
+        .join("specs")
+        .join("cold")
+        .join("1.1-os-core")
+        .join("projection_boundary.md");
+    if let Some(parent) = cold_doc_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &cold_doc_path,
+        "# Projection Boundary\n\nRebuild retained projections from DB truth.\r\n",
+    )?;
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "canonicalize-cold-docs",
+            "--project-dir",
+            project_dir
+                .to_str()
+                .context("project dir should be valid UTF-8")?,
+        ],
+    )?;
+
+    let hot_root_dir = app_data_dir.join("exports").join("hot-root");
+    fs::remove_dir_all(&hot_root_dir)?;
+    fs::remove_file(&cold_doc_path)?;
+
+    let rebuild_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "rebuild-projections",
+            "--project-dir",
+            project_dir
+                .to_str()
+                .context("project dir should be valid UTF-8")?,
+        ],
+    )?;
+    let rebuild: Value = serde_json::from_str(&rebuild_output)
+        .context("rebuild-projections output should be valid JSON")?;
+    assert_eq!(rebuild["status"], "rebuilt");
+    assert_eq!(rebuild["required_targets_fresh"], true);
+    assert_eq!(
+        rebuild["hot_root"]["files_written"]
+            .as_array()
+            .map(Vec::len),
+        Some(6)
+    );
+    assert_eq!(rebuild["cold_docs"]["exported_count"], 1);
+
+    let rebuilt_readme = fs::read_to_string(hot_root_dir.join("README.md"))
+        .context("rebuilt hot-root README should be readable")?;
+    assert!(rebuilt_readme.contains("retained projections rebuild from DB"));
+
+    let rebuilt_cold_doc =
+        fs::read_to_string(&cold_doc_path).context("rebuilt cold doc should be readable")?;
+    assert!(rebuilt_cold_doc.contains("Rebuild retained projections from DB truth."));
+
+    Ok(())
+}
+
+#[test]
+fn nota_host_and_worktree_surfaces_reflect_owner_root_runtime_truth() -> Result<()> {
+    let temp_dir = TempDir::new("host-worktrees")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let host_output = run_nota_cli(&app_data_dir, &["nota", "host"])?;
+    let host: Value =
+        serde_json::from_str(&host_output).context("nota host output should be valid JSON")?;
+    assert_eq!(
+        host["owner_root"],
+        app_data_dir.to_string_lossy().replace('\\', "/")
+    );
+    assert_eq!(
+        host["worktrees_root"],
+        app_data_dir
+            .join("worktrees")
+            .to_string_lossy()
+            .replace('\\', "/")
+    );
+
+    let worktrees_output = run_nota_cli(&app_data_dir, &["nota", "worktrees"])?;
+    let worktrees: Value = serde_json::from_str(&worktrees_output)
+        .context("nota worktrees output should be valid JSON")?;
+    assert_eq!(worktrees["worktree_count"], 1);
+    assert_eq!(worktrees["observed_count"], 1);
+    assert_eq!(worktrees["missing_count"], 0);
+    assert_eq!(worktrees["worktrees"][0]["project_name"], "Entrance");
+    assert_eq!(
+        worktrees["worktrees"][0]["worktree_kind"],
+        "managed_worktree"
+    );
+    assert_eq!(
+        worktrees["worktrees"][0]["worktree_path"],
+        managed_worktree.to_string_lossy().replace('\\', "/")
+    );
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["worktree_count"], 1);
+    assert_eq!(
+        status["host"]["owner_root"],
+        app_data_dir.to_string_lossy().replace('\\', "/")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn nota_cli_reads_canonical_vision_and_todo_surfaces() -> Result<()> {
     let temp_dir = TempDir::new("vision-todo-surfaces")?;
     let app_data_dir = temp_dir.path().join("appdata");
@@ -2553,4 +3034,12 @@ fn write_delayed_success_agent(temp_root: &Path, completion_marker: &Path) -> Re
 fn count_rows(connection: &Connection, table: &str) -> Result<i64> {
     let query = format!("SELECT COUNT(*) FROM {table}");
     Ok(connection.query_row(&query, [], |row| row.get(0))?)
+}
+
+fn count_cadence_objects_by_kind(connection: &Connection, cadence_kind: &str) -> Result<i64> {
+    Ok(connection.query_row(
+        "SELECT COUNT(*) FROM cadence_objects WHERE cadence_kind = ?1",
+        rusqlite::params![cadence_kind],
+        |row| row.get(0),
+    )?)
 }
