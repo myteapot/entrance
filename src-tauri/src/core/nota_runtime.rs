@@ -103,7 +103,9 @@ pub struct NotaCheckpointListReport {
 pub struct CadenceHumanRoundPayload {
     pub checkpoint_id: i64,
     pub round_state: String,
+    pub accepted: bool,
     pub acceptance_present: bool,
+    pub carry_forward_checkpointed: bool,
     pub fully_settled: bool,
     pub next_step_open: bool,
     pub stable_level: String,
@@ -131,6 +133,24 @@ pub struct NotaHumanRoundListReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_human_round_id: Option<i64>,
     pub human_rounds: Vec<NotaHumanRoundRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaRoundStateProjection {
+    pub posture: String,
+    pub state: String,
+    pub summary: String,
+    pub accepted: bool,
+    pub acceptance_present: bool,
+    pub next_step_open: bool,
+    pub carry_forward_checkpointed: bool,
+    pub fully_settled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_bundle_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3989,38 +4009,92 @@ fn build_checkpoint_summary(stable_level: &str, landed: &[String]) -> String {
     }
 }
 
-fn human_round_state_for_boundary(
+pub fn derive_runtime_round_state_projection(
+    current_checkpoint: Option<&NotaCheckpointRecord>,
     acceptance_bundle: Option<&NotaAcceptanceBundleRecord>,
-    next_step_open: bool,
-) -> &'static str {
-    match acceptance_bundle {
-        Some(bundle) if bundle.payload.fully_settled => "fully_settled",
-        Some(_) if next_step_open => "settling",
-        Some(_) => "accepted",
-        None => "checkpointed",
+    next_step: Option<&NotaRuntimeNextStep>,
+) -> NotaRoundStateProjection {
+    let checkpoint_id = current_checkpoint.map(|checkpoint| checkpoint.cadence_object.id);
+    let acceptance_bundle_id = acceptance_bundle.map(|bundle| bundle.cadence_object.id);
+    let acceptance_present = acceptance_bundle.is_some();
+    let accepted = acceptance_present;
+    let next_step_open = next_step.is_some();
+    let carry_forward_checkpointed = match (current_checkpoint, acceptance_bundle) {
+        (Some(checkpoint), Some(bundle)) if bundle.payload.fully_settled => {
+            bundle.payload.checkpoint_id == checkpoint.cadence_object.id
+        }
+        _ => false,
+    };
+    let fully_settled = acceptance_bundle
+        .map(|bundle| bundle.payload.fully_settled)
+        .unwrap_or(false)
+        && !next_step_open
+        && carry_forward_checkpointed;
+    let next_step_label = next_step.map(|step| step.step.clone());
+
+    let (posture, state, summary) = match (current_checkpoint, acceptance_bundle, next_step) {
+        (None, _, _) => (
+            "Uncheckpointed round".to_string(),
+            "uncheckpointed".to_string(),
+            "No checkpoint has anchored the current human round yet.".to_string(),
+        ),
+        (Some(checkpoint), None, _) => (
+            "Checkpointed round without formal acceptance".to_string(),
+            "checkpointed_pending_acceptance".to_string(),
+            format!(
+                "Checkpoint {} has anchored the current human round, but acceptance is not formalized yet.",
+                checkpoint.cadence_object.id
+            ),
+        ),
+        (Some(checkpoint), Some(bundle), Some(step)) => (
+            "Accepted round with bounded follow-up".to_string(),
+            "accepted_followup_open".to_string(),
+            format!(
+                "Checkpoint {} carries accepted boundary {} with next step `{}` still open.",
+                checkpoint.cadence_object.id, bundle.cadence_object.id, step.step
+            ),
+        ),
+        (Some(checkpoint), Some(bundle), None) if fully_settled => (
+            "Fully settled round".to_string(),
+            "fully_settled".to_string(),
+            format!(
+                "Checkpoint {} carries accepted boundary {} with no open next-step or carry-forward debt.",
+                checkpoint.cadence_object.id, bundle.cadence_object.id
+            ),
+        ),
+        (Some(checkpoint), Some(bundle), None) => (
+            "Accepted round awaiting carry-forward".to_string(),
+            "accepted_waiting_carry_forward".to_string(),
+            format!(
+                "Checkpoint {} carries accepted boundary {}, but a fresh carry-forward closure is still required.",
+                checkpoint.cadence_object.id, bundle.cadence_object.id
+            ),
+        ),
+    };
+
+    NotaRoundStateProjection {
+        posture,
+        state,
+        summary,
+        accepted,
+        acceptance_present,
+        next_step_open,
+        carry_forward_checkpointed,
+        fully_settled,
+        checkpoint_id,
+        acceptance_bundle_id,
+        next_step: next_step_label,
     }
 }
 
 fn build_human_round_summary(
     checkpoint: &NotaCheckpointRecord,
-    acceptance_bundle: Option<&NotaAcceptanceBundleRecord>,
-    next_step: Option<&str>,
+    round_state: &NotaRoundStateProjection,
 ) -> String {
-    let round_state = human_round_state_for_boundary(acceptance_bundle, next_step.is_some());
-    match (acceptance_bundle, next_step) {
-        (Some(bundle), Some(step)) => format!(
-            "Human round is {round_state} on checkpoint {} with acceptance {} and next step `{}`.",
-            checkpoint.cadence_object.id, bundle.cadence_object.id, step
-        ),
-        (Some(bundle), None) => format!(
-            "Human round is {round_state} on checkpoint {} with acceptance {}.",
-            checkpoint.cadence_object.id, bundle.cadence_object.id
-        ),
-        (None, _) => format!(
-            "Human round is {round_state} on checkpoint {}.",
-            checkpoint.cadence_object.id
-        ),
-    }
+    format!(
+        "{} Stable level: {}.",
+        round_state.summary, checkpoint.payload.stable_level
+    )
 }
 
 fn materialize_current_runtime_human_round(
@@ -4045,33 +4119,28 @@ fn materialize_current_runtime_human_round(
     )?;
     let acceptance_bundle =
         derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?;
-    let round_state =
-        human_round_state_for_boundary(acceptance_bundle.as_ref(), next_step.is_some());
-    let next_step_label = next_step.as_ref().map(|step| step.step.clone());
-    let summary = build_human_round_summary(
-        &current_checkpoint,
+    let round_state = derive_runtime_round_state_projection(
+        Some(&current_checkpoint),
         acceptance_bundle.as_ref(),
-        next_step_label.as_deref(),
+        next_step.as_ref(),
     );
+    let summary = build_human_round_summary(&current_checkpoint, &round_state);
     let payload = CadenceHumanRoundPayload {
         checkpoint_id: current_checkpoint.cadence_object.id,
-        round_state: round_state.to_string(),
-        acceptance_present: acceptance_bundle.is_some(),
-        fully_settled: acceptance_bundle
-            .as_ref()
-            .map(|bundle| bundle.payload.fully_settled)
-            .unwrap_or(false),
-        next_step_open: next_step.is_some(),
+        round_state: round_state.state.clone(),
+        accepted: round_state.accepted,
+        acceptance_present: round_state.acceptance_present,
+        carry_forward_checkpointed: round_state.carry_forward_checkpointed,
+        fully_settled: round_state.fully_settled,
+        next_step_open: round_state.next_step_open,
         stable_level: current_checkpoint.payload.stable_level.clone(),
         human_continuity_bus: current_checkpoint.payload.human_continuity_bus.clone(),
         selected_trunk: current_checkpoint.payload.selected_trunk.clone(),
-        acceptance_bundle_id: acceptance_bundle
-            .as_ref()
-            .map(|bundle| bundle.cadence_object.id),
+        acceptance_bundle_id: round_state.acceptance_bundle_id,
         acceptance_kind: acceptance_bundle
             .as_ref()
             .map(|bundle| bundle.payload.acceptance_kind.clone()),
-        next_step: next_step_label,
+        next_step: round_state.next_step.clone(),
     };
 
     let existing_current = data_store
@@ -4112,7 +4181,7 @@ fn materialize_current_runtime_human_round(
         source_ref: "nota_runtime:human_round",
         admission_policy: admission_policy_for_kind(CADENCE_HUMAN_ROUND_KIND),
         projection_policy: projection_policy_for_kind(CADENCE_HUMAN_ROUND_KIND),
-        status: round_state,
+        status: &round_state.state,
         is_current: true,
     })?;
     if let Some(previous) = existing_current.as_ref() {
@@ -4150,13 +4219,13 @@ pub fn derive_anti_zeno_projection(
     next_step: Option<&NotaRuntimeNextStep>,
     recommended_checkpoint: Option<&NotaCheckpointRequest>,
 ) -> NotaAntiZenoProjection {
-    let checkpoint_id = current_checkpoint.map(|checkpoint| checkpoint.cadence_object.id);
-    let acceptance_bundle_id = acceptance_bundle.map(|bundle| bundle.cadence_object.id);
-    let acceptance_present = acceptance_bundle.is_some();
-    let fully_settled = acceptance_bundle
-        .map(|bundle| bundle.payload.fully_settled)
-        .unwrap_or(false);
-    let next_step_open = next_step.is_some();
+    let round_state =
+        derive_runtime_round_state_projection(current_checkpoint, acceptance_bundle, next_step);
+    let checkpoint_id = round_state.checkpoint_id;
+    let acceptance_bundle_id = round_state.acceptance_bundle_id;
+    let acceptance_present = round_state.acceptance_present;
+    let fully_settled = round_state.fully_settled;
+    let next_step_open = round_state.next_step_open;
 
     let (posture, state, value, summary) = if current_checkpoint.is_none() {
         (
@@ -4166,7 +4235,7 @@ pub fn derive_anti_zeno_projection(
             "No checkpoint has anchored the current human round yet, so the system can still fall back into replay.".to_string(),
         )
     } else if let Some(bundle) = acceptance_bundle {
-        if bundle.payload.fully_settled {
+        if round_state.fully_settled {
             (
                 "Settled accepted round".to_string(),
                 "fully_settled".to_string(),
@@ -4340,6 +4409,7 @@ mod tests {
     use super::{
         active_checkpoint_scope_ids, default_nota_dispatch_execution_host,
         derive_anti_zeno_projection, derive_current_runtime_acceptance_bundle,
+        derive_runtime_round_state_projection,
         derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
         derive_nota_runtime_review, list_nota_runtime_allocations, list_nota_runtime_receipts,
         list_runtime_acceptance_bundles, list_runtime_checkpoints, list_runtime_human_rounds,
@@ -4470,8 +4540,13 @@ mod tests {
             .find(|round| round.cadence_object.is_current)
             .context("human round should be materialized")?;
         assert_eq!(current_round.payload.checkpoint_id, checkpoint.checkpoint.cadence_object.id);
-        assert_eq!(current_round.payload.round_state, "checkpointed");
+        assert_eq!(
+            current_round.payload.round_state,
+            "checkpointed_pending_acceptance"
+        );
+        assert!(!current_round.payload.accepted);
         assert!(!current_round.payload.acceptance_present);
+        assert!(!current_round.payload.carry_forward_checkpointed);
         assert!(!current_round.payload.fully_settled);
         assert!(!current_round.payload.next_step_open);
         assert_eq!(current_round.payload.selected_trunk.as_deref(), Some("round seed"));
@@ -4910,9 +4985,14 @@ mod tests {
             initial_human_round.payload.checkpoint_id,
             checkpoint_report.checkpoint.cadence_object.id
         );
-        assert_eq!(initial_human_round.payload.round_state, "settling");
+        assert_eq!(
+            initial_human_round.payload.round_state,
+            "accepted_followup_open"
+        );
+        assert!(initial_human_round.payload.accepted);
         assert!(initial_human_round.payload.acceptance_present);
         assert!(!initial_human_round.payload.fully_settled);
+        assert!(!initial_human_round.payload.carry_forward_checkpointed);
         assert!(initial_human_round.payload.next_step_open);
         assert_eq!(
             initial_human_round.payload.acceptance_bundle_id,
@@ -5251,6 +5331,31 @@ mod tests {
             current_acceptance.payload.finalize_state.as_deref(),
             Some(DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE)
         );
+
+        let closure_round_state = derive_runtime_round_state_projection(
+            Some(closure_checkpoint_record),
+            Some(&current_acceptance),
+            None,
+        );
+        assert_eq!(closure_round_state.state, "fully_settled");
+        assert!(closure_round_state.accepted);
+        assert!(closure_round_state.acceptance_present);
+        assert!(closure_round_state.carry_forward_checkpointed);
+        assert!(closure_round_state.fully_settled);
+        assert!(!closure_round_state.next_step_open);
+
+        let closure_human_rounds = list_runtime_human_rounds(&store)?;
+        let closure_human_round = closure_human_rounds
+            .human_rounds
+            .iter()
+            .find(|round| round.cadence_object.is_current)
+            .context("closure human round should be current")?;
+        assert_eq!(closure_human_round.payload.round_state, "fully_settled");
+        assert!(closure_human_round.payload.accepted);
+        assert!(closure_human_round.payload.acceptance_present);
+        assert!(closure_human_round.payload.carry_forward_checkpointed);
+        assert!(closure_human_round.payload.fully_settled);
+        assert!(!closure_human_round.payload.next_step_open);
 
         let anti_zeno = derive_anti_zeno_projection(
             Some(closure_checkpoint_record),
