@@ -26,6 +26,10 @@ use core::{
         ChatArchivePolicyReport, ChatArchivePolicyRequest, ChatCaptureListReport,
         ChatCaptureRequest,
     },
+    cold_docs_runtime::{
+        canonicalize_cold_docs_from_repo, export_cold_docs_to_repo, list_cold_documents,
+        NotaColdDocListReport,
+    },
     data_store::{
         StoredDecisionRecord, StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
         StoredSourceIngestRun, StoredTodoRecord, StoredVisionRecord,
@@ -135,6 +139,7 @@ pub(crate) struct NotaRuntimeOverview {
     allocations: NotaRuntimeAllocationsReport,
     visions: NotaVisionListReport,
     todos: NotaTodoListReport,
+    cold_docs: NotaColdDocListReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -181,6 +186,8 @@ pub(crate) struct NotaRuntimeStatus {
     chat_capture_count: usize,
     vision_count: usize,
     todo_count: usize,
+    cold_doc_count: usize,
+    cold_docs: NotaColdDocListReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -651,6 +658,9 @@ const NOTA_CLI_HELP: &str = r#"Usage:
   entrance nota rounds
   entrance nota acceptance-bundles
   entrance nota projections
+  entrance nota cold-docs
+  entrance nota canonicalize-cold-docs --project-dir <path>
+  entrance nota export-cold-docs --project-dir <path>
   entrance nota export-hot-root [--project-dir <path>]
   entrance nota decisions
   entrance nota visions
@@ -949,6 +959,19 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "projections" => {
             print_json(&build_nota_runtime_status(&startup.data_store())?.projections)
         }
+        [command] if command == "cold-docs" => {
+            let status = build_nota_runtime_status(&startup.data_store())?;
+            print_json(&status.cold_docs)
+        }
+        [command, flag, value] if command == "canonicalize-cold-docs" && flag == "--project-dir" => {
+            let report = canonicalize_cold_docs_from_repo(&startup.data_store(), value)?;
+            print_json(&report)
+        }
+        [command, flag, value] if command == "export-cold-docs" && flag == "--project-dir" => {
+            let status = build_nota_runtime_status(&startup.data_store())?;
+            let report = export_cold_docs_to_repo(&startup.data_store(), value, &status.projections.current_truth_revision)?;
+            print_json(&report)
+        }
         [command] if command == "export-hot-root" => {
             print_json(&write_hot_root_projection(&startup, None)?)
         }
@@ -1084,7 +1107,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&report)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota cold-docs`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -2091,7 +2114,8 @@ pub(crate) fn build_nota_runtime_overview(
             .as_ref()
             .map(|bundle| bundle.cadence_object.id),
     );
-    let projections = build_projection_status_report(data_store, projection_truth_revision)?;
+    let projections = build_projection_status_report(data_store, projection_truth_revision.clone())?;
+    let cold_docs = list_cold_documents(data_store, projection_truth_revision)?;
     let round_state = derive_runtime_round_state_projection(
         current_checkpoint,
         current_acceptance_bundle.as_ref(),
@@ -2128,6 +2152,7 @@ pub(crate) fn build_nota_runtime_overview(
         allocations,
         visions,
         todos,
+        cold_docs,
         recommended_checkpoint,
         review,
         integrate,
@@ -2201,7 +2226,8 @@ pub(crate) fn build_nota_runtime_status(
             .as_ref()
             .map(|bundle| bundle.cadence_object.id),
     );
-    let projections = build_projection_status_report(data_store, projection_truth_revision)?;
+    let projections = build_projection_status_report(data_store, projection_truth_revision.clone())?;
+    let cold_docs = list_cold_documents(data_store, projection_truth_revision)?;
     let round_state = derive_runtime_round_state_projection(
         current_checkpoint.as_ref(),
         current_acceptance_bundle.as_ref(),
@@ -2247,6 +2273,8 @@ pub(crate) fn build_nota_runtime_status(
         chat_capture_count: chat_captures.capture_count,
         vision_count: visions.vision_count,
         todo_count: todos.todo_count,
+        cold_doc_count: cold_docs.cold_doc_count,
+        cold_docs,
         recommended_checkpoint,
         review,
         integrate,
@@ -2339,13 +2367,13 @@ fn write_hot_root_projection(
             record_projection_failure(
                 &startup.data_store(),
                 ProjectionTargetSpec {
-                    projection_class: HOT_ROOT_PROJECTION_CLASS,
-                    target_key: &mirror_target_key,
-                    title: "Mirrored repo hot root",
-                    target_path: &repo_top_dir_display,
-                    source_scope: "runtime:Entrance",
-                    repair_action: "entrance nota export-hot-root --project-dir <path>",
-                    projection_policy: OPTIONAL_PROJECTION_POLICY,
+                    projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+                    target_key: mirror_target_key.as_str().into(),
+                    title: "Mirrored repo hot root".into(),
+                    target_path: repo_top_dir_display.as_str().into(),
+                    source_scope: "runtime:Entrance".into(),
+                    repair_action: "entrance nota export-hot-root --project-dir <path>".into(),
+                    projection_policy: OPTIONAL_PROJECTION_POLICY.into(),
                     is_required: false,
                 },
                 &truth_revision,
@@ -2366,13 +2394,14 @@ fn write_hot_root_projection(
                 record_projection_failure(
                     &startup.data_store(),
                     ProjectionTargetSpec {
-                        projection_class: HOT_ROOT_PROJECTION_CLASS,
-                        target_key: &mirror_target_key,
-                        title: "Mirrored repo hot root",
-                        target_path: &repo_top_dir_display,
-                        source_scope: "runtime:Entrance",
-                        repair_action: "entrance nota export-hot-root --project-dir <path>",
-                        projection_policy: OPTIONAL_PROJECTION_POLICY,
+                        projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+                        target_key: mirror_target_key.as_str().into(),
+                        title: "Mirrored repo hot root".into(),
+                        target_path: repo_top_dir_display.as_str().into(),
+                        source_scope: "runtime:Entrance".into(),
+                        repair_action:
+                            "entrance nota export-hot-root --project-dir <path>".into(),
+                        projection_policy: OPTIONAL_PROJECTION_POLICY.into(),
                         is_required: false,
                     },
                     &truth_revision,
@@ -2386,13 +2415,13 @@ fn write_hot_root_projection(
         record_projection_success(
             &startup.data_store(),
             ProjectionTargetSpec {
-                projection_class: HOT_ROOT_PROJECTION_CLASS,
-                target_key: &mirror_target_key,
-                title: "Mirrored repo hot root",
-                target_path: &repo_top_dir_display,
-                source_scope: "runtime:Entrance",
-                repair_action: "entrance nota export-hot-root --project-dir <path>",
-                projection_policy: OPTIONAL_PROJECTION_POLICY,
+                projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+                target_key: mirror_target_key.as_str().into(),
+                title: "Mirrored repo hot root".into(),
+                target_path: repo_top_dir_display.as_str().into(),
+                source_scope: "runtime:Entrance".into(),
+                repair_action: "entrance nota export-hot-root --project-dir <path>".into(),
+                projection_policy: OPTIONAL_PROJECTION_POLICY.into(),
                 is_required: false,
             },
             &truth_revision,
@@ -2420,13 +2449,13 @@ fn record_hot_root_projection_success(
     record_projection_success(
         &startup.data_store(),
         ProjectionTargetSpec {
-            projection_class: HOT_ROOT_PROJECTION_CLASS,
-            target_key: "exports/hot-root",
-            title: "Hot-root export",
-            target_path: hot_root_dir,
-            source_scope: "runtime:Entrance",
-            repair_action: "entrance nota export-hot-root",
-            projection_policy: REQUIRED_PROJECTION_POLICY,
+            projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+            target_key: "exports/hot-root".into(),
+            title: "Hot-root export".into(),
+            target_path: hot_root_dir.into(),
+            source_scope: "runtime:Entrance".into(),
+            repair_action: "entrance nota export-hot-root".into(),
+            projection_policy: REQUIRED_PROJECTION_POLICY.into(),
             is_required: true,
         },
         truth_revision,
@@ -2436,13 +2465,13 @@ fn record_hot_root_projection_success(
     record_projection_success(
         &startup.data_store(),
         ProjectionTargetSpec {
-            projection_class: ORACLE_PROJECTION_CLASS,
-            target_key: "exports/hot-root/README.md",
-            title: "Oracle README export",
-            target_path: oracle_readme_path,
-            source_scope: "runtime:Entrance",
-            repair_action: "entrance nota export-hot-root",
-            projection_policy: REQUIRED_PROJECTION_POLICY,
+            projection_class: ORACLE_PROJECTION_CLASS.into(),
+            target_key: "exports/hot-root/README.md".into(),
+            title: "Oracle README export".into(),
+            target_path: oracle_readme_path.into(),
+            source_scope: "runtime:Entrance".into(),
+            repair_action: "entrance nota export-hot-root".into(),
+            projection_policy: REQUIRED_PROJECTION_POLICY.into(),
             is_required: true,
         },
         truth_revision,
@@ -2462,13 +2491,13 @@ fn record_hot_root_projection_failure(
     record_projection_failure(
         &startup.data_store(),
         ProjectionTargetSpec {
-            projection_class: HOT_ROOT_PROJECTION_CLASS,
-            target_key: "exports/hot-root",
-            title: "Hot-root export",
-            target_path: hot_root_dir,
-            source_scope: "runtime:Entrance",
-            repair_action: "entrance nota export-hot-root",
-            projection_policy: REQUIRED_PROJECTION_POLICY,
+            projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+            target_key: "exports/hot-root".into(),
+            title: "Hot-root export".into(),
+            target_path: hot_root_dir.into(),
+            source_scope: "runtime:Entrance".into(),
+            repair_action: "entrance nota export-hot-root".into(),
+            projection_policy: REQUIRED_PROJECTION_POLICY.into(),
             is_required: true,
         },
         truth_revision,
@@ -2479,13 +2508,13 @@ fn record_hot_root_projection_failure(
     record_projection_failure(
         &startup.data_store(),
         ProjectionTargetSpec {
-            projection_class: ORACLE_PROJECTION_CLASS,
-            target_key: "exports/hot-root/README.md",
-            title: "Oracle README export",
-            target_path: oracle_readme_path,
-            source_scope: "runtime:Entrance",
-            repair_action: "entrance nota export-hot-root",
-            projection_policy: REQUIRED_PROJECTION_POLICY,
+            projection_class: ORACLE_PROJECTION_CLASS.into(),
+            target_key: "exports/hot-root/README.md".into(),
+            title: "Oracle README export".into(),
+            target_path: oracle_readme_path.into(),
+            source_scope: "runtime:Entrance".into(),
+            repair_action: "entrance nota export-hot-root".into(),
+            projection_policy: REQUIRED_PROJECTION_POLICY.into(),
             is_required: true,
         },
         truth_revision,

@@ -431,6 +431,17 @@ pub struct StoredTodoRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StoredDocumentRecord {
+    pub id: i64,
+    pub slug: String,
+    pub title: String,
+    pub content: String,
+    pub category: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredVisionRecord {
     pub id: i64,
     pub title: String,
@@ -521,6 +532,14 @@ pub struct UpsertDocumentRecord<'a> {
     pub category: &'a str,
     pub created_at: &'a str,
     pub updated_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertDocumentRecordBySlug<'a> {
+    pub slug: &'a str,
+    pub title: &'a str,
+    pub content: &'a str,
+    pub category: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -2944,6 +2963,54 @@ impl DataStore {
         })
     }
 
+    pub fn upsert_document_record_by_slug(
+        &self,
+        record: UpsertDocumentRecordBySlug<'_>,
+    ) -> Result<StoredDocumentRecord> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            if let Some(existing) =
+                fetch_document_by_slug_and_category(conn, record.slug, record.category)?
+            {
+                conn.execute(
+                    r#"
+                    UPDATE documents
+                    SET title = ?2,
+                        content = ?3,
+                        updated_at = ?4
+                    WHERE id = ?1
+                    "#,
+                    params![existing.id, record.title, record.content, now],
+                )?;
+                fetch_document_by_id(conn, existing.id)?
+                    .ok_or_else(|| anyhow!("document disappeared after update"))
+            } else {
+                conn.execute(
+                    r#"
+                    INSERT INTO documents (
+                        slug,
+                        title,
+                        content,
+                        category,
+                        created_at,
+                        updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                    "#,
+                    params![
+                        record.slug,
+                        record.title,
+                        record.content,
+                        record.category,
+                        now,
+                    ],
+                )?;
+                let row_id = conn.last_insert_rowid();
+                fetch_document_by_id(conn, row_id)?
+                    .ok_or_else(|| anyhow!("document disappeared after insert"))
+            }
+        })
+    }
+
     pub fn upsert_document_record(&self, record: UpsertDocumentRecord<'_>) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute(
@@ -2970,6 +3037,54 @@ impl DataStore {
                 ],
             )?;
             Ok(())
+        })
+    }
+
+    pub fn list_document_records(&self) -> Result<Vec<StoredDocumentRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    slug,
+                    title,
+                    content,
+                    category,
+                    created_at,
+                    updated_at
+                FROM documents
+                ORDER BY category ASC, slug ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_document_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn list_document_records_by_category(
+        &self,
+        category: &str,
+    ) -> Result<Vec<StoredDocumentRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    slug,
+                    title,
+                    content,
+                    category,
+                    created_at,
+                    updated_at
+                FROM documents
+                WHERE category = ?1
+                ORDER BY slug ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([category], map_document_record_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
         })
     }
 
@@ -3965,6 +4080,18 @@ fn map_chat_capture_record_row(
     })
 }
 
+fn map_document_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDocumentRecord> {
+    Ok(StoredDocumentRecord {
+        id: row.get(0)?,
+        slug: row.get(1)?,
+        title: row.get(2)?,
+        content: row.get(3)?,
+        category: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
 fn map_todo_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTodoRecord> {
     Ok(StoredTodoRecord {
         id: row.get(0)?,
@@ -4083,6 +4210,57 @@ fn fetch_vault_mcp_config(
             "#,
             [id],
             map_vault_mcp_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_document_by_id(connection: &Connection, id: i64) -> Result<Option<StoredDocumentRecord>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                slug,
+                title,
+                content,
+                category,
+                created_at,
+                updated_at
+            FROM documents
+            WHERE id = ?1
+            "#,
+            [id],
+            map_document_record_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_document_by_slug_and_category(
+    connection: &Connection,
+    slug: &str,
+    category: &str,
+) -> Result<Option<StoredDocumentRecord>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                slug,
+                title,
+                content,
+                category,
+                created_at,
+                updated_at
+            FROM documents
+            WHERE slug = ?1
+              AND category = ?2
+            ORDER BY id ASC
+            LIMIT 1
+            "#,
+            params![slug, category],
+            map_document_record_row,
         )
         .optional()
         .map_err(Into::into)

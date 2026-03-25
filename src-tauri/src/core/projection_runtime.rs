@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use anyhow::Result;
@@ -51,13 +52,13 @@ impl ProjectionTruthRevision {
 
 #[derive(Debug, Clone)]
 pub struct ProjectionTargetSpec<'a> {
-    pub projection_class: &'a str,
-    pub target_key: &'a str,
-    pub title: &'a str,
-    pub target_path: &'a str,
-    pub source_scope: &'a str,
-    pub repair_action: &'a str,
-    pub projection_policy: &'a str,
+    pub projection_class: Cow<'a, str>,
+    pub target_key: Cow<'a, str>,
+    pub title: Cow<'a, str>,
+    pub target_path: Cow<'a, str>,
+    pub source_scope: Cow<'a, str>,
+    pub repair_action: Cow<'a, str>,
+    pub projection_policy: Cow<'a, str>,
     pub is_required: bool,
 }
 
@@ -115,7 +116,7 @@ pub fn record_projection_failure(
     summary: &str,
     error_message: &str,
 ) -> Result<StoredProjectionRun> {
-    let repair_action = spec.repair_action;
+    let repair_action = spec.repair_action.clone();
     record_projection_run(
         data_store,
         spec,
@@ -125,7 +126,7 @@ pub fn record_projection_failure(
         FRESHNESS_FAILED,
         summary,
         Some(error_message),
-        Some(repair_action),
+        Some(repair_action.as_ref()),
     )
 }
 
@@ -136,7 +137,7 @@ pub fn record_projection_skipped(
     trigger_kind: &str,
     summary: &str,
 ) -> Result<StoredProjectionRun> {
-    let repair_action = spec.repair_action;
+    let repair_action = spec.repair_action.clone();
     record_projection_run(
         data_store,
         spec,
@@ -146,7 +147,7 @@ pub fn record_projection_skipped(
         FRESHNESS_SKIPPED,
         summary,
         None,
-        Some(repair_action),
+        Some(repair_action.as_ref()),
     )
 }
 
@@ -264,13 +265,13 @@ fn record_projection_run(
     repair_hint: Option<&str>,
 ) -> Result<StoredProjectionRun> {
     let target = data_store.upsert_projection_target(UpsertProjectionTarget {
-        projection_class: spec.projection_class,
-        target_key: spec.target_key,
-        title: spec.title,
-        target_path: spec.target_path,
-        source_scope: spec.source_scope,
-        repair_action: spec.repair_action,
-        projection_policy: spec.projection_policy,
+        projection_class: spec.projection_class.as_ref(),
+        target_key: spec.target_key.as_ref(),
+        title: spec.title.as_ref(),
+        target_path: spec.target_path.as_ref(),
+        source_scope: spec.source_scope.as_ref(),
+        repair_action: spec.repair_action.as_ref(),
+        projection_policy: spec.projection_policy.as_ref(),
         is_required: spec.is_required,
     })?;
     let now = Utc::now().to_rfc3339();
@@ -360,13 +361,13 @@ mod tests {
         record_projection_success(
             &store,
             ProjectionTargetSpec {
-                projection_class: HOT_ROOT_PROJECTION_CLASS,
-                target_key: "exports/hot-root",
-                title: "Hot root export",
-                target_path: "/tmp/hot-root",
-                source_scope: "runtime:Entrance",
-                repair_action: "entrance nota export-hot-root",
-                projection_policy: REQUIRED_PROJECTION_POLICY,
+                projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+                target_key: "exports/hot-root".into(),
+                title: "Hot root export".into(),
+                target_path: "/tmp/hot-root".into(),
+                source_scope: "runtime:Entrance".into(),
+                repair_action: "entrance nota export-hot-root".into(),
+                projection_policy: REQUIRED_PROJECTION_POLICY.into(),
                 is_required: true,
             },
             &fresh_revision,
@@ -376,13 +377,13 @@ mod tests {
         record_projection_failure(
             &store,
             ProjectionTargetSpec {
-                projection_class: ORACLE_PROJECTION_CLASS,
-                target_key: "exports/hot-root/README.md",
-                title: "Oracle README export",
-                target_path: "/tmp/hot-root/README.md",
-                source_scope: "runtime:Entrance",
-                repair_action: "entrance nota export-hot-root",
-                projection_policy: REQUIRED_PROJECTION_POLICY,
+                projection_class: ORACLE_PROJECTION_CLASS.into(),
+                target_key: "exports/hot-root/README.md".into(),
+                title: "Oracle README export".into(),
+                target_path: "/tmp/hot-root/README.md".into(),
+                source_scope: "runtime:Entrance".into(),
+                repair_action: "entrance nota export-hot-root".into(),
+                projection_policy: REQUIRED_PROJECTION_POLICY.into(),
                 is_required: true,
             },
             &fresh_revision,
@@ -393,13 +394,13 @@ mod tests {
         record_projection_success(
             &store,
             ProjectionTargetSpec {
-                projection_class: HOT_ROOT_PROJECTION_CLASS,
-                target_key: "mirror/specs/top",
-                title: "Mirrored repo hot root",
-                target_path: "/tmp/specs/top",
-                source_scope: "runtime:Entrance",
-                repair_action: "entrance nota export-hot-root --project-dir <path>",
-                projection_policy: OPTIONAL_PROJECTION_POLICY,
+                projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
+                target_key: "mirror/specs/top".into(),
+                title: "Mirrored repo hot root".into(),
+                target_path: "/tmp/specs/top".into(),
+                source_scope: "runtime:Entrance".into(),
+                repair_action: "entrance nota export-hot-root --project-dir <path>".into(),
+                projection_policy: OPTIONAL_PROJECTION_POLICY.into(),
                 is_required: false,
             },
             &fresh_revision,

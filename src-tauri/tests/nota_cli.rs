@@ -2306,6 +2306,117 @@ fn nota_projection_status_surfaces_required_projection_freshness() -> Result<()>
 }
 
 #[test]
+fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result<()> {
+    let temp_dir = TempDir::new("cold-docs")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Cold doc checkpoint",
+            "--stable-level",
+            "cold docs are DB-first",
+            "--landed",
+            "cold-doc canonicalization boundary",
+            "--remaining",
+            "periodic repo projection",
+            "--human-continuity-bus",
+            "reduced for cold-doc DB truth",
+        ],
+    )?;
+
+    let project_dir = temp_dir.path().join("Entrance");
+    let cold_doc_path = project_dir
+        .join("specs")
+        .join("cold")
+        .join("1.1-os-core")
+        .join("projection_boundary.md");
+    if let Some(parent) = cold_doc_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &cold_doc_path,
+        "# Projection Boundary\n\nCold docs are canonicalized in DB and projected to files.\r\n",
+    )?;
+
+    let canonicalize_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "canonicalize-cold-docs",
+            "--project-dir",
+            project_dir
+                .to_str()
+                .context("project dir should be valid UTF-8")?,
+        ],
+    )?;
+    let canonicalize: Value = serde_json::from_str(&canonicalize_output)
+        .context("canonicalize-cold-docs output should be valid JSON")?;
+    assert_eq!(canonicalize["imported_count"], 1);
+    assert_eq!(
+        canonicalize["docs"][0]["slug"],
+        "specs/cold/1.1-os-core/projection_boundary.md"
+    );
+
+    fs::remove_file(&cold_doc_path)?;
+
+    let export_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "export-cold-docs",
+            "--project-dir",
+            project_dir
+                .to_str()
+                .context("project dir should be valid UTF-8")?,
+        ],
+    )?;
+    let export: Value = serde_json::from_str(&export_output)
+        .context("export-cold-docs output should be valid JSON")?;
+    assert_eq!(export["exported_count"], 1);
+    assert!(cold_doc_path.exists());
+
+    let listed_output = run_nota_cli(&app_data_dir, &["nota", "cold-docs"])?;
+    let listed: Value = serde_json::from_str(&listed_output)
+        .context("cold-docs output should be valid JSON")?;
+    assert_eq!(listed["cold_doc_count"], 1);
+    assert_eq!(listed["fresh_projection_count"], 1);
+    assert_eq!(
+        listed["docs"][0]["slug"],
+        "specs/cold/1.1-os-core/projection_boundary.md"
+    );
+    assert_eq!(listed["docs"][0]["projection_state"], "fresh");
+
+    let projections_output = run_nota_cli(&app_data_dir, &["nota", "projections"])?;
+    let projections: Value = serde_json::from_str(&projections_output)
+        .context("nota projections output should be valid JSON")?;
+    let cold_doc_target = projections["targets"]
+        .as_array()
+        .context("projection targets should be an array")?
+        .iter()
+        .find(|target| {
+            target["target"]["projection_class"] == "cold_doc_projection"
+                && target["target"]["target_key"]
+                    == "cold_doc:specs/cold/1.1-os-core/projection_boundary.md"
+        })
+        .context("cold-doc projection target should exist")?;
+    assert_eq!(cold_doc_target["state"], "fresh");
+    assert_eq!(cold_doc_target["required"], false);
+
+    let db_path = app_data_dir.join("data").join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "documents")?, 1);
+    assert_eq!(count_rows(&connection, "projection_targets")?, 3);
+
+    Ok(())
+}
+
+#[test]
 fn nota_cli_reads_canonical_vision_and_todo_surfaces() -> Result<()> {
     let temp_dir = TempDir::new("vision-todo-surfaces")?;
     let app_data_dir = temp_dir.path().join("appdata");
