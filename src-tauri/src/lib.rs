@@ -175,6 +175,8 @@ pub(crate) struct NotaRuntimeOverview {
     repair_lane: RepairLaneReport,
     decisions: DesignDecisionListReport,
     chat_captures: ChatCaptureListReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_supervision: Option<core::supervision::RuntimeSupervisionProjection>,
 }
 
 #[derive(Clone, Serialize)]
@@ -196,6 +198,8 @@ pub(crate) struct NotaRuntimeStatus {
     allocation_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_allocation: Option<NotaRuntimeAllocationReadRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_supervision: Option<core::supervision::RuntimeSupervisionProjection>,
     receipt_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_receipt: Option<StoredNotaRuntimeReceipt>,
@@ -2240,6 +2244,11 @@ pub(crate) fn build_nota_runtime_overview(
         finalize.as_ref(),
         next_step.as_ref(),
     );
+    let current_supervision = allocations
+        .allocations
+        .first()
+        .map(|allocation| allocation.supervision.clone());
+
     Ok(NotaRuntimeOverview {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
         checkpoints,
@@ -2269,6 +2278,7 @@ pub(crate) fn build_nota_runtime_overview(
         repair_lane,
         decisions,
         chat_captures: list_chat_captures(data_store)?,
+        current_supervision,
     })
 }
 
@@ -2380,6 +2390,11 @@ pub(crate) fn build_nota_runtime_status(
         finalize.as_ref(),
         next_step.as_ref(),
     );
+    let current_supervision = allocations
+        .allocations
+        .first()
+        .map(|allocation| allocation.supervision.clone());
+
     Ok(NotaRuntimeStatus {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
         human_round_count: human_rounds.human_round_count,
@@ -2393,6 +2408,7 @@ pub(crate) fn build_nota_runtime_status(
         latest_transaction: transactions.transactions.first().cloned(),
         allocation_count: allocations.allocation_count,
         latest_allocation: allocations.allocations.first().cloned(),
+        current_supervision,
         receipt_count: receipts.receipt_count,
         latest_receipt: receipts.receipts.last().cloned(),
         decision_count: decisions.decision_count,
@@ -2772,6 +2788,16 @@ fn render_hot_root_files(
         status.repair_lane.open_count, status.repair_lane.resolved_count
     );
     let recovery_line = format!("{} ({})", status.recovery.mode, status.recovery.summary);
+    let supervision_line = status
+        .current_supervision
+        .as_ref()
+        .map(|projection| {
+            format!(
+                "{:?} via {:?}",
+                projection.current_supervision_state, projection.last_supervisor_action
+            )
+        })
+        .unwrap_or_else(|| "No supervised allocation is currently active.".to_string());
     let owner_root = startup.paths().app_data_dir().display().to_string();
     let config_path = startup.paths().config_path().display().to_string();
     let db_path = startup.paths().db_path().display().to_string();
@@ -2782,7 +2808,7 @@ fn render_hot_root_files(
         .unwrap_or_else(|| "No host snapshot has been recorded yet.".to_string());
 
     let readme = format!(
-        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- host: {host_line}\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n- observed worktrees: {}\n\nCurrent round:\n\n- human round: {human_round_line}\n- round state: {round_state_line}\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} / {} ({})\n- anti-Zeno budget: {} ({})\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n- recovery: {recovery_line}\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- canonical state and detail state are both derived from DB truth rather than hand-authored status prose.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
+        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- host: {host_line}\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n- observed worktrees: {}\n\nCurrent round:\n\n- human round: {human_round_line}\n- round state: {round_state_line}\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} / {} ({})\n- anti-Zeno budget: {} ({})\n- supervision: {supervision_line}\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n- recovery: {recovery_line}\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- canonical state and detail state are both derived from DB truth rather than hand-authored status prose.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
         startup.paths().exports_dir().join("hot-root").display(),
         status.worktree_count,
         status.anti_zeno.state,
@@ -2793,7 +2819,7 @@ fn render_hot_root_files(
     );
 
     let machine = format!(
-        "# Machine\n\n> Status: hot root projection\n\n## Current Runtime Cut\n\n- current human round: {human_round_line}\n- round state: {round_state_line}\n- current checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance bundle count: {}\n- current acceptance: {acceptance_line}\n- anti-Zeno state: {} / {} ({})\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n\n## State Law\n\n- runtime continuity is resumed from checkpoint, human-round, allocation, receipt, and cadence-object truth\n- `passed human round` is formalized as `CADENCE_ACCEPTANCE_BUNDLE`\n- canonical round ladder is `opened -> checkpointed -> accepted -> settling -> fully_settled`\n- detail state remains a finer runtime projection over that ladder rather than replacing it\n- `fully settled round` is stricter than acceptance and only holds after follow-on closure has been carried forward\n- phase is projection, not a peer truth plane\n",
+        "# Machine\n\n> Status: hot root projection\n\n## Current Runtime Cut\n\n- current human round: {human_round_line}\n- round state: {round_state_line}\n- current checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance bundle count: {}\n- current acceptance: {acceptance_line}\n- anti-Zeno state: {} / {} ({})\n- supervision: {supervision_line}\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n\n## State Law\n\n- runtime continuity is resumed from checkpoint, human-round, allocation, receipt, and cadence-object truth\n- `passed human round` is formalized as `CADENCE_ACCEPTANCE_BUNDLE`\n- canonical round ladder is `opened -> checkpointed -> accepted -> settling -> fully_settled`\n- detail state remains a finer runtime projection over that ladder rather than replacing it\n- `fully settled round` is stricter than acceptance and only holds after follow-on closure has been carried forward\n- phase is projection, not a peer truth plane\n",
         status.acceptance_bundle_count,
         status.anti_zeno.state,
         status.anti_zeno.detail_state,
@@ -2814,7 +2840,7 @@ fn render_hot_root_files(
     );
 
     let phase_todo = format!(
-        "# Phase Todo\n\n> Status: hot root projection\n\n## Current Focus\n\n- current checkpoint: {checkpoint_label}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} / {} ({})\n- anti-Zeno budget: {} ({})\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\n## Ordered Work\n\n- keep runtime truth sharper than file projections\n- keep acceptance formalized as a cadence object rather than chat implication\n- keep anti-Zeno visible in status, overview, and exported hot root\n- keep canonical state and detail state both reconstructable from DB truth\n- keep invariant failure and repair lane truth explicit in DB\n- keep hot-root export synchronized from DB truth after human-round writes\n",
+        "# Phase Todo\n\n> Status: hot root projection\n\n## Current Focus\n\n- current checkpoint: {checkpoint_label}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} / {} ({})\n- anti-Zeno budget: {} ({})\n- supervision: {supervision_line}\n- invariants: {invariant_line}\n- repair lane: {repair_lane_line}\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\n## Ordered Work\n\n- keep runtime truth sharper than file projections\n- keep acceptance formalized as a cadence object rather than chat implication\n- keep anti-Zeno visible in status, overview, and exported hot root\n- keep canonical state and detail state both reconstructable from DB truth\n- keep supervision projection derived from runtime facts instead of task-label folklore\n- keep invariant failure and repair lane truth explicit in DB\n- keep hot-root export synchronized from DB truth after human-round writes\n",
         status.anti_zeno.state,
         status.anti_zeno.detail_state,
         status.anti_zeno.summary,

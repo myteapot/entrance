@@ -15,11 +15,12 @@ use crate::core::{
     },
     nota_runtime::{
         active_checkpoint_scope_ids, derive_current_runtime_acceptance_bundle,
-        derive_current_runtime_human_round, derive_nota_runtime_next_step,
+        derive_current_runtime_handout, derive_current_runtime_human_round,
+        derive_current_runtime_wake_request, derive_nota_runtime_next_step,
         derive_runtime_round_state_projection, list_nota_runtime_allocations,
         list_nota_runtime_receipts, list_nota_runtime_transactions, list_runtime_checkpoints,
-        NotaAcceptanceBundleRecord, NotaCheckpointRecord, NotaHumanRoundRecord,
-        NotaRoundStateProjection,
+        NotaAcceptanceBundleRecord, NotaCheckpointRecord, NotaHandoutRecord, NotaHumanRoundRecord,
+        NotaRoundStateProjection, NotaWakeRequestRecord,
     },
     projection_runtime::{
         build_projection_status_report, ProjectionStatusReport, ProjectionTruthRevision,
@@ -191,6 +192,8 @@ struct InvariantContext {
     current_checkpoint: Option<NotaCheckpointRecord>,
     current_human_round: Option<NotaHumanRoundRecord>,
     current_acceptance_bundle: Option<NotaAcceptanceBundleRecord>,
+    current_handout: Option<NotaHandoutRecord>,
+    current_wake_request: Option<NotaWakeRequestRecord>,
     round_state: NotaRoundStateProjection,
     projections: ProjectionStatusReport,
     anti_zeno_budget: AntiZenoBudgetReport,
@@ -219,6 +222,8 @@ fn gather_invariant_context(data_store: &DataStore) -> Result<InvariantContext> 
     let current_human_round = derive_current_runtime_human_round(data_store)?;
     let current_acceptance_bundle =
         derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?;
+    let current_handout = derive_current_runtime_handout(data_store)?;
+    let current_wake_request = derive_current_runtime_wake_request(data_store)?;
     let round_state = derive_runtime_round_state_projection(
         current_checkpoint.as_ref(),
         current_acceptance_bundle.as_ref(),
@@ -253,6 +258,8 @@ fn gather_invariant_context(data_store: &DataStore) -> Result<InvariantContext> 
         current_checkpoint,
         current_human_round,
         current_acceptance_bundle,
+        current_handout,
+        current_wake_request,
         round_state,
         projections,
         anti_zeno_budget,
@@ -303,6 +310,42 @@ fn evaluate_runtime_invariants(context: &InvariantContext) -> Result<Vec<Invaria
         .collect::<Vec<_>>();
 
     let mut invariants = Vec::new();
+    invariants.push(InvariantEvaluation {
+        invariant_key: "round_state_detail_alignment",
+        title: "Round state detail alignment",
+        status: if round_state_detail_matches(context.round_state.state.as_str(), context.round_state.detail_state.as_str()) {
+            INVARIANT_PASSED
+        } else {
+            INVARIANT_FAILED_BLOCKED
+        },
+        severity: if round_state_detail_matches(context.round_state.state.as_str(), context.round_state.detail_state.as_str()) {
+            "info"
+        } else {
+            "critical"
+        },
+        checkpoint_id,
+        acceptance_bundle_id,
+        human_round_id,
+        summary: if round_state_detail_matches(context.round_state.state.as_str(), context.round_state.detail_state.as_str()) {
+            format!(
+                "Canonical state `{}` and detail state `{}` are aligned.",
+                context.round_state.state, context.round_state.detail_state
+            )
+        } else {
+            format!(
+                "Canonical state `{}` does not accept detail state `{}`.",
+                context.round_state.state, context.round_state.detail_state
+            )
+        },
+        repair_action:
+            "Recompute the round-state projection before trusting handout, wake, or settlement surfaces."
+                .to_string(),
+        evidence_json: serde_json::to_string(&json!({
+            "round_state": context.round_state.state,
+            "detail_state": context.round_state.detail_state,
+        }))?,
+    });
+
     invariants.push(InvariantEvaluation {
         invariant_key: "checkpoint_presence_for_active_boundary",
         title: "Checkpoint presence for active boundary",
@@ -653,6 +696,83 @@ fn evaluate_runtime_invariants(context: &InvariantContext) -> Result<Vec<Invaria
     });
 
     invariants.push(InvariantEvaluation {
+        invariant_key: "bridge_projection_alignment",
+        title: "Bridge projection alignment",
+        status: match (
+            checkpoint_id,
+            context.current_handout.as_ref(),
+            context.current_wake_request.as_ref(),
+        ) {
+            (None, _, _) => INVARIANT_NOT_APPLICABLE,
+            (Some(_), Some(handout), Some(wake_request))
+                if bridge_payload_matches_round_state(
+                    &context.round_state,
+                    handout.payload.round_state.as_str(),
+                    handout.payload.detail_round_state.as_deref(),
+                ) && bridge_payload_matches_round_state(
+                    &context.round_state,
+                    wake_request.payload.round_state.as_str(),
+                    wake_request.payload.detail_round_state.as_deref(),
+                ) =>
+            {
+                INVARIANT_PASSED
+            }
+            _ => INVARIANT_FAILED_REPAIRABLE,
+        },
+        severity: match (
+            checkpoint_id,
+            context.current_handout.as_ref(),
+            context.current_wake_request.as_ref(),
+        ) {
+            (None, _, _) => "info",
+            (Some(_), Some(handout), Some(wake_request))
+                if bridge_payload_matches_round_state(
+                    &context.round_state,
+                    handout.payload.round_state.as_str(),
+                    handout.payload.detail_round_state.as_deref(),
+                ) && bridge_payload_matches_round_state(
+                    &context.round_state,
+                    wake_request.payload.round_state.as_str(),
+                    wake_request.payload.detail_round_state.as_deref(),
+                ) =>
+            {
+                "info"
+            }
+            _ => "warning",
+        },
+        checkpoint_id,
+        acceptance_bundle_id,
+        human_round_id,
+        summary: match (
+            checkpoint_id,
+            context.current_handout.as_ref(),
+            context.current_wake_request.as_ref(),
+        ) {
+            (None, _, _) => "No current checkpoint exists, so bridge alignment is not applicable."
+                .to_string(),
+            (Some(_), Some(_), Some(_)) => format!(
+                "Current handout and wake request mirror round state `{}` / `{}`.",
+                context.round_state.state, context.round_state.detail_state
+            ),
+            _ => "Handout or wake-request bridge objects are missing or stale for the current round state."
+                .to_string(),
+        },
+        repair_action:
+            "Re-materialize runtime bridge objects before relying on handout or wake continuity."
+                .to_string(),
+        evidence_json: serde_json::to_string(&json!({
+            "round_state": context.round_state.state,
+            "detail_state": context.round_state.detail_state,
+            "handout_present": context.current_handout.is_some(),
+            "handout_round_state": context.current_handout.as_ref().map(|handout| handout.payload.round_state.as_str()),
+            "handout_detail_state": context.current_handout.as_ref().and_then(|handout| handout.payload.detail_round_state.as_deref()),
+            "wake_request_present": context.current_wake_request.is_some(),
+            "wake_request_round_state": context.current_wake_request.as_ref().map(|wake_request| wake_request.payload.round_state.as_str()),
+            "wake_request_detail_state": context.current_wake_request.as_ref().and_then(|wake_request| wake_request.payload.detail_round_state.as_deref()),
+        }))?,
+    });
+
+    invariants.push(InvariantEvaluation {
         invariant_key: "fully_settled_projection_boundary",
         title: "Fully settled projection boundary",
         status: if !context.round_state.fully_settled {
@@ -712,6 +832,28 @@ fn repair_lane_item_from_invariant(
         repair_action: invariant.repair_action.clone(),
         evidence_json: invariant.evidence_json.clone(),
     })
+}
+
+fn round_state_detail_matches(state: &str, detail_state: &str) -> bool {
+    matches!(
+        (state, detail_state),
+        ("opened", "uncheckpointed")
+            | ("checkpointed", "checkpointed_pending_acceptance")
+            | ("accepted", "accepted_waiting_carry_forward")
+            | ("settling", "accepted_followup_open")
+            | ("fully_settled", "fully_settled")
+    )
+}
+
+fn bridge_payload_matches_round_state(
+    round_state: &NotaRoundStateProjection,
+    bridge_state: &str,
+    bridge_detail_state: Option<&str>,
+) -> bool {
+    bridge_state == round_state.state
+        && bridge_detail_state
+            .map(|detail_state| detail_state == round_state.detail_state)
+            .unwrap_or(false)
 }
 
 fn build_runtime_invariant_report(

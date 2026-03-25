@@ -16,6 +16,9 @@ use crate::core::data_store::{
     StoredNotaRuntimeAllocation, StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
 };
 use crate::core::invariant_runtime::refresh_runtime_invariants;
+use crate::core::supervision::{
+    derive_runtime_supervision_projection, RuntimeSupervisionProjection,
+};
 use crate::plugins::forge::{
     build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
     prepare_dev_dispatch_blocking, CreateTaskRequest, ForgePlugin, PreparedAgentDispatch,
@@ -684,6 +687,7 @@ pub struct NotaRuntimeAllocationReadRecord {
     pub child_dispatch_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_dispatch_tool_name: Option<String>,
+    pub supervision: RuntimeSupervisionProjection,
 }
 
 impl Deref for NotaRuntimeAllocationReadRecord {
@@ -1589,8 +1593,8 @@ pub fn list_nota_runtime_allocations(
     let allocations = projected_allocations
         .iter()
         .cloned()
-        .map(project_nota_runtime_allocation_read_record)
-        .collect();
+        .map(|allocation| project_nota_runtime_allocation_read_record(data_store, allocation))
+        .collect::<Result<Vec<_>>>()?;
     Ok(NotaRuntimeAllocationsReport {
         allocation_count: projected_allocations.len(),
         allocations,
@@ -1599,20 +1603,30 @@ pub fn list_nota_runtime_allocations(
 }
 
 fn project_nota_runtime_allocation_read_record(
+    data_store: &DataStore,
     allocation: StoredNotaRuntimeAllocation,
-) -> NotaRuntimeAllocationReadRecord {
+) -> Result<NotaRuntimeAllocationReadRecord> {
     let dispatch_truth =
         serde_json::from_str::<NotaDoAllocationPayload>(&allocation.payload_json).ok();
+    let task = allocation
+        .child_execution_ref
+        .parse::<i64>()
+        .ok()
+        .filter(|_| allocation.child_execution_kind == "forge_task")
+        .map(|task_id| data_store.get_forge_task(task_id))
+        .transpose()?
+        .flatten();
 
-    NotaRuntimeAllocationReadRecord {
+    Ok(NotaRuntimeAllocationReadRecord {
         child_dispatch_role: dispatch_truth
             .as_ref()
             .map(|payload| payload.child_dispatch_role.clone()),
         child_dispatch_tool_name: dispatch_truth
             .as_ref()
             .map(|payload| payload.child_dispatch_tool_name.clone()),
+        supervision: derive_runtime_supervision_projection(&allocation, task.as_ref()),
         allocation,
-    }
+    })
 }
 
 pub fn list_nota_runtime_receipts(
