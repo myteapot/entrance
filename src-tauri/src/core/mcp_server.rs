@@ -28,7 +28,7 @@ use crate::core::{
         NotaDevDispatchRequest, NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest,
         NotaDevReturnReviewRequest, NotaDispatchExecutionHost, NotaDoAgentDispatchRequest,
     },
-    permission::{permission_for_mcp_tool, McpToolPermission},
+    permission::{permission_for_mcp_tool, McpToolPermissionView},
     recovery::{list_recovery_seed_rows, list_recovery_seed_runs, RecoverySeedRowsQuery},
     resolve_app_data_dir,
     supervision::SupervisionStrategy,
@@ -77,7 +77,7 @@ pub struct McpToolDescriptor {
     pub description: &'static str,
     pub input_schema: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission: Option<McpToolPermission>,
+    pub permission: Option<McpToolPermissionView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dispatch_role: Option<ActorRole>,
 }
@@ -322,11 +322,11 @@ impl McpServer {
             return Ok(());
         };
 
-        if permission.actor_role != actor_role {
+        if permission.permission.actor_role != actor_role {
             return Err(McpToolSurfaceRoleError {
                 tool_name: name.to_string(),
                 current_actor_role: actor_role,
-                required_actor_role: permission.actor_role,
+                required_actor_role: permission.permission.actor_role,
             }
             .into());
         }
@@ -1688,7 +1688,8 @@ fn tool_is_visible_to_actor(tool: &McpToolDescriptor, actor_role: Option<ActorRo
     };
 
     tool.permission
-        .map(|permission| permission.actor_role == actor_role)
+        .as_ref()
+        .map(|permission| permission.permission.actor_role == actor_role)
         .unwrap_or(true)
 }
 
@@ -1704,7 +1705,7 @@ fn actor_role_slug(role: ActorRole) -> &'static str {
 fn tool_call_result(
     result: Result<Value>,
     surface_info: McpSurfaceInfo,
-    permission: Option<McpToolPermission>,
+    permission: Option<McpToolPermissionView>,
     dispatch_role: Option<ActorRole>,
     canonical_tool_name: Option<&'static str>,
 ) -> Value {
@@ -1736,7 +1737,7 @@ fn tool_call_result(
 fn tool_call_error_result(
     error: anyhow::Error,
     surface_info: McpSurfaceInfo,
-    permission: Option<McpToolPermission>,
+    permission: Option<McpToolPermissionView>,
     dispatch_role: Option<ActorRole>,
     canonical_tool_name: Option<&'static str>,
 ) -> Value {
@@ -1781,8 +1782,8 @@ fn tool_name_from_params(params: Option<&Value>) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-fn permission_for_registered_tool(name: &str) -> Option<McpToolPermission> {
-    permission_for_mcp_tool(name)
+fn permission_for_registered_tool(name: &str) -> Option<McpToolPermissionView> {
+    permission_for_mcp_tool(name)?.view().ok()
 }
 
 fn tool_dispatch_role_from_name(name: &str) -> Option<ActorRole> {
