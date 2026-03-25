@@ -3,6 +3,14 @@ theme = "dark"
 log_level = "info"
 mcp_enabled = true
 
+[paths]
+runtime_db = "data/entrance.db"
+logs = "logs"
+cache = "cache"
+exports = "exports"
+snapshots = "snapshots"
+worktrees = "worktrees"
+
 [plugins.launcher]
 enabled = true
 hotkey = "Alt+Space"

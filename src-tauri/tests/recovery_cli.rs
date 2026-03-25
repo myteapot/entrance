@@ -41,7 +41,7 @@ fn recovery_import_seed_cli_absorbs_seed_rows_into_existing_runtime_db() -> Resu
     let temp_dir = TempDir::new("absorb-seed-runtime-db")?;
     let app_data_dir = temp_dir.path().join("appdata");
     seed_app_state(&app_data_dir)?;
-    seed_preexisting_runtime_db(&app_data_dir.join("entrance.db"))?;
+    seed_preexisting_runtime_db(&app_data_dir.join("data").join("entrance.db"))?;
 
     let recovery_seed_path = write_test_recovery_seed(temp_dir.path())?;
     let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
@@ -76,7 +76,7 @@ fn recovery_import_seed_cli_absorbs_seed_rows_into_existing_runtime_db() -> Resu
     assert_eq!(report["table_row_counts"]["documents"], 1);
     assert_eq!(report["table_row_counts"]["memory_fragments"], 2);
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
 
@@ -124,7 +124,7 @@ fn recovery_cli_lists_absorbed_seed_runs_and_rows() -> Result<()> {
     let temp_dir = TempDir::new("list-seed-runtime-db")?;
     let app_data_dir = temp_dir.path().join("appdata");
     seed_app_state(&app_data_dir)?;
-    seed_preexisting_runtime_db(&app_data_dir.join("entrance.db"))?;
+    seed_preexisting_runtime_db(&app_data_dir.join("data").join("entrance.db"))?;
 
     let recovery_seed_path = write_test_recovery_seed(temp_dir.path())?;
     run_recovery_cli(
@@ -179,7 +179,7 @@ fn recovery_promote_safe_v0_cli_promotes_stable_memory_families_idempotently() -
     let temp_dir = TempDir::new("promote-safe-v0-runtime-db")?;
     let app_data_dir = temp_dir.path().join("appdata");
     seed_app_state(&app_data_dir)?;
-    seed_preexisting_runtime_db(&app_data_dir.join("entrance.db"))?;
+    seed_preexisting_runtime_db(&app_data_dir.join("data").join("entrance.db"))?;
 
     let recovery_seed_path = write_promotable_recovery_seed(temp_dir.path())?;
     run_recovery_cli(
@@ -205,7 +205,7 @@ fn recovery_promote_safe_v0_cli_promotes_stable_memory_families_idempotently() -
     assert_eq!(report["rows_by_table"]["instincts"], 1);
     assert_eq!(report["rows_by_table"]["coffee_chats"], 1);
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(count_rows(&connection, "documents")?, 1);
@@ -242,7 +242,7 @@ fn recovery_promote_remaining_v0_cli_promotes_remaining_memory_families_idempote
     let temp_dir = TempDir::new("promote-remaining-v0-runtime-db")?;
     let app_data_dir = temp_dir.path().join("appdata");
     seed_app_state(&app_data_dir)?;
-    seed_preexisting_runtime_db(&app_data_dir.join("entrance.db"))?;
+    seed_preexisting_runtime_db(&app_data_dir.join("data").join("entrance.db"))?;
 
     let recovery_seed_path = write_remaining_promotable_recovery_seed(temp_dir.path())?;
     run_recovery_cli(
@@ -268,7 +268,7 @@ fn recovery_promote_remaining_v0_cli_promotes_remaining_memory_families_idempote
     assert_eq!(report["rows_by_table"]["memory_fragments"], 1);
     assert_eq!(report["rows_by_table"]["memory_links"], 1);
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(count_rows(&connection, "decisions")?, 1);
@@ -330,6 +330,9 @@ fn run_recovery_cli(app_data_dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn seed_preexisting_runtime_db(db_path: &Path) -> Result<()> {
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute_batch(include_str!("../migrations/0000_create_core_tables.sql"))?;

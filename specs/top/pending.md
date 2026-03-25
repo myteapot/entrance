@@ -5,24 +5,19 @@
 ## Purpose
 
 - hold unresolved but non-oracle items without polluting the semantic hot root
-- remain the explicit overflow surface for future ambiguity, deferred cuts, or human-held questions
+- remain the explicit overflow surface for deferred cuts or human-held questions
 
 ## Current State
 
-- No root-level architecture rewrite is pending; the current missing work is runtime completion.
-- `L3` remains unpassed because `Dev` runtime, permission wiring, and a real `DEV / AGENT` allocator are still absent.
-- `v0` continuation policy is still hardcoded; configurable semantic cycle budget remains future work.
-- Any attempt to let `Arch / Dev / Agent` run as peer continuation controllers would be drift, not progress.
-- A native `NOTA` surface remains future work and must reuse the same scheduler and runtime truth rather than creating a shadow control plane.
-- The runtime storage boundary remains `%LOCALAPPDATA%/Entrance/entrance.db`; repo-local DB residue is historical proof or cleanup material, not an active owner.
+- No root-level architecture rewrite is pending; the work now is consolidation and sharpening.
+- `v0` continuation policy is still partly hardcoded; a fuller human-configurable cadence policy remains future work.
+- Multi-role allocator expansion remains deferred until the post-consolidation cut is truly settled.
+- Cold-doc full DB canonicalization plus periodic projection sync still needs more implementation depth.
+- A native `NOTA` product shell must continue to reuse the same runtime truth plane rather than creating a shadow control plane.
 
 ## Rule
 
 - only non-oracle unresolved items belong here
-- pending items should stay short, mounted, and reconstructable from cold docs or DB records
-- once a pending item becomes oracle, move it into `Machine / Control / Truth`
-- once a pending item is abandoned or absorbed into harness/runtime, remove it from the hot root
-
-## TODO(fill)
-
-- repopulate only when a new unresolved architecture question or live operational blocker actually appears
+- once a pending item becomes truth, land it in DB-first runtime truth and project it back out
+- do not let file-local TODOs outrank checkpoints, acceptance bundles, or receipts
+- once a pending item is abandoned or absorbed into runtime, remove it from the hot root

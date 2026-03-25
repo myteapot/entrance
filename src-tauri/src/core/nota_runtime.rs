@@ -22,6 +22,7 @@ use crate::plugins::forge::{
 };
 
 const CADENCE_CHECKPOINT_KIND: &str = "CADENCE_CHECKPOINT";
+const CADENCE_ACCEPTANCE_BUNDLE_KIND: &str = "CADENCE_ACCEPTANCE_BUNDLE";
 const CADENCE_HANDOUT_KIND: &str = "CADENCE_HANDOUT";
 const CADENCE_WAKE_REQUEST_KIND: &str = "CADENCE_WAKE_REQUEST";
 const CADENCE_POLICY_NOTE_KIND: &str = "CADENCE_POLICY_NOTE";
@@ -95,6 +96,57 @@ pub struct NotaCheckpointListReport {
     pub checkpoint_count: usize,
     pub current_checkpoint_id: Option<i64>,
     pub checkpoints: Vec<NotaCheckpointRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CadenceAcceptanceBundlePayload {
+    pub checkpoint_id: i64,
+    pub transaction_id: i64,
+    pub allocation_id: i64,
+    pub lineage_ref: String,
+    pub acceptance_kind: String,
+    pub round_state: String,
+    pub fully_settled: bool,
+    pub child_dispatch_role: String,
+    pub execution_host: String,
+    pub target_kind: String,
+    pub target_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_verdict: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrate_outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finalize_state: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaAcceptanceBundleRecord {
+    #[serde(flatten)]
+    pub cadence_object: StoredCadenceObject,
+    pub payload: CadenceAcceptanceBundlePayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaAcceptanceBundleListReport {
+    pub acceptance_bundle_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_acceptance_bundle_id: Option<i64>,
+    pub acceptance_bundles: Vec<NotaAcceptanceBundleRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaAntiZenoProjection {
+    pub posture: String,
+    pub state: String,
+    pub value: u8,
+    pub summary: String,
+    pub acceptance_present: bool,
+    pub fully_settled: bool,
+    pub next_step_open: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_bundle_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -737,6 +789,45 @@ pub fn list_runtime_checkpoints(data_store: &DataStore) -> Result<NotaCheckpoint
         current_checkpoint_id,
         checkpoints,
     })
+}
+
+pub fn list_runtime_acceptance_bundles(
+    data_store: &DataStore,
+) -> Result<NotaAcceptanceBundleListReport> {
+    materialize_terminal_receipt_backflow(data_store, None)?;
+    materialize_runtime_closure_acceptance_receipt_backflow(data_store, None)?;
+    let acceptance_bundles = data_store
+        .list_cadence_objects_by_kind(CADENCE_ACCEPTANCE_BUNDLE_KIND)?
+        .into_iter()
+        .map(parse_acceptance_bundle_record)
+        .collect::<Result<Vec<_>>>()?;
+    let current_acceptance_bundle_id = acceptance_bundles
+        .iter()
+        .find(|bundle| bundle.cadence_object.is_current)
+        .map(|bundle| bundle.cadence_object.id);
+
+    Ok(NotaAcceptanceBundleListReport {
+        acceptance_bundle_count: acceptance_bundles.len(),
+        current_acceptance_bundle_id,
+        acceptance_bundles,
+    })
+}
+
+pub fn derive_current_runtime_acceptance_bundle(
+    data_store: &DataStore,
+    checkpoint_scope_ids: &[i64],
+) -> Result<Option<NotaAcceptanceBundleRecord>> {
+    if checkpoint_scope_ids.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(list_runtime_acceptance_bundles(data_store)?
+        .acceptance_bundles
+        .into_iter()
+        .filter(|bundle| {
+            checkpoint_scope_contains(checkpoint_scope_ids, bundle.payload.checkpoint_id)
+        })
+        .max_by_key(|bundle| (bundle.cadence_object.is_current, bundle.cadence_object.id)))
 }
 
 pub(crate) fn active_checkpoint_scope_ids(
@@ -1457,6 +1548,7 @@ fn build_terminal_allocation_outcome<'a>(
 pub fn admission_policy_for_kind(cadence_kind: &str) -> &'static str {
     match cadence_kind {
         CADENCE_CHECKPOINT_KIND
+        | CADENCE_ACCEPTANCE_BUNDLE_KIND
         | CADENCE_HANDOUT_KIND
         | CADENCE_WAKE_REQUEST_KIND
         | CADENCE_POLICY_NOTE_KIND => "AP_STORAGE_AND_COLD_ALWAYS",
@@ -1466,7 +1558,9 @@ pub fn admission_policy_for_kind(cadence_kind: &str) -> &'static str {
 
 pub fn projection_policy_for_kind(cadence_kind: &str) -> &'static str {
     match cadence_kind {
-        CADENCE_CHECKPOINT_KIND | CADENCE_HANDOUT_KIND => "PP_HOT_ACTIVE_ONLY",
+        CADENCE_CHECKPOINT_KIND | CADENCE_ACCEPTANCE_BUNDLE_KIND | CADENCE_HANDOUT_KIND => {
+            "PP_HOT_ACTIVE_ONLY"
+        }
         CADENCE_WAKE_REQUEST_KIND => "PP_HOT_ON_ATTENTION_OR_REJECT",
         CADENCE_POLICY_NOTE_KIND => "PP_HOT_NEVER",
         _ => "PP_HOT_ACTIVE_ONLY",
@@ -1763,7 +1857,8 @@ fn sync_runtime_closure_checkpoint_to_transaction(
     }
 
     ensure_checkpoint_written_receipt(data_store, transaction.id, checkpoint)?;
-    ensure_runtime_closure_acceptance_receipt(data_store, candidate, checkpoint)
+    ensure_runtime_closure_acceptance_receipt(data_store, candidate, checkpoint)?;
+    ensure_runtime_acceptance_bundle(data_store, candidate, checkpoint)
 }
 
 fn ensure_checkpoint_written_receipt(
@@ -1818,6 +1913,171 @@ fn ensure_runtime_closure_acceptance_receipt(
             ensure_dev_return_review_ready_receipt(data_store, candidate, checkpoint)
         }
         RecommendedCheckpointCandidateKind::DevReturnClosure => Ok(()),
+    }
+}
+
+fn ensure_runtime_acceptance_bundle(
+    data_store: &DataStore,
+    candidate: &RecommendedCheckpointCandidate,
+    checkpoint: &NotaCheckpointRecord,
+) -> Result<()> {
+    let Some(bundle) = build_runtime_acceptance_bundle(candidate, checkpoint, data_store)? else {
+        return Ok(());
+    };
+
+    let existing_current = data_store
+        .list_cadence_objects_by_kind(CADENCE_ACCEPTANCE_BUNDLE_KIND)?
+        .into_iter()
+        .find(|object| object.is_current)
+        .map(parse_acceptance_bundle_record)
+        .transpose()?;
+    if existing_current
+        .as_ref()
+        .map(|existing| existing.payload == bundle)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    let title = build_acceptance_bundle_title(&bundle);
+    let summary = build_acceptance_bundle_summary(&bundle);
+    let payload_json =
+        serde_json::to_string(&bundle).context("failed to serialize acceptance bundle payload")?;
+    let cadence_object = data_store.insert_cadence_object(NewCadenceObject {
+        cadence_kind: CADENCE_ACCEPTANCE_BUNDLE_KIND,
+        title: &title,
+        summary: &summary,
+        payload_json: &payload_json,
+        scope_type: NOTA_RUNTIME_SCOPE_TYPE,
+        scope_ref: NOTA_RUNTIME_SCOPE_REF,
+        source_type: NOTA_RUNTIME_SOURCE_TYPE,
+        source_ref: acceptance_bundle_source_ref(candidate.kind),
+        admission_policy: admission_policy_for_kind(CADENCE_ACCEPTANCE_BUNDLE_KIND),
+        projection_policy: projection_policy_for_kind(CADENCE_ACCEPTANCE_BUNDLE_KIND),
+        status: if bundle.fully_settled {
+            "fully_settled"
+        } else {
+            "accepted"
+        },
+        is_current: true,
+    })?;
+    data_store.insert_cadence_link(NewCadenceLink {
+        src_cadence_object_id: checkpoint.cadence_object.id,
+        dst_cadence_object_id: cadence_object.id,
+        relation_type: "acceptance_bundle",
+        status: "active",
+    })?;
+
+    Ok(())
+}
+
+fn build_runtime_acceptance_bundle(
+    candidate: &RecommendedCheckpointCandidate,
+    checkpoint: &NotaCheckpointRecord,
+    data_store: &DataStore,
+) -> Result<Option<CadenceAcceptanceBundlePayload>> {
+    let Some(allocation) = data_store
+        .list_nota_runtime_allocations()?
+        .into_iter()
+        .find(|allocation| allocation.id == candidate.allocation_id)
+    else {
+        return Ok(None);
+    };
+    let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse acceptance bundle payload for allocation {}",
+                allocation.id
+            )
+        })?;
+    let Some(outcome) = payload.terminal_outcome.as_ref() else {
+        return Ok(None);
+    };
+    if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
+        return Ok(None);
+    }
+
+    let receipts = data_store.list_nota_runtime_receipts(Some(candidate.source_transaction_id))?;
+    let latest_review = latest_dev_return_review_recorded_for_boundary(&receipts, &allocation)?;
+    let latest_integrate =
+        latest_dev_return_integrate_recorded_for_boundary(&receipts, &allocation)?;
+    let latest_finalize = latest_dev_return_finalize_recorded_for_boundary(&receipts, &allocation)?;
+    let (acceptance_kind, round_state, fully_settled) = match candidate.kind {
+        RecommendedCheckpointCandidateKind::AgentReturnAcceptance => {
+            ("agent_return_acceptance", "accepted", false)
+        }
+        RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
+            ("dev_return_acceptance", "accepted", false)
+        }
+        RecommendedCheckpointCandidateKind::DevReturnClosure => {
+            ("dev_return_acceptance", "fully_settled", true)
+        }
+        RecommendedCheckpointCandidateKind::AgentEscalationContinuity => return Ok(None),
+    };
+    let (review_verdict, integrate_outcome, finalize_state) = if fully_settled {
+        (
+            latest_review.and_then(|review| review.verdict),
+            latest_integrate.and_then(|integrate| integrate.outcome),
+            latest_finalize.map(|finalize| finalize.state),
+        )
+    } else {
+        (None, None, None)
+    };
+
+    Ok(Some(CadenceAcceptanceBundlePayload {
+        checkpoint_id: checkpoint.cadence_object.id,
+        transaction_id: candidate.source_transaction_id,
+        allocation_id: allocation.id,
+        lineage_ref: allocation.lineage_ref,
+        acceptance_kind: acceptance_kind.to_string(),
+        round_state: round_state.to_string(),
+        fully_settled,
+        child_dispatch_role: payload.child_dispatch_role,
+        execution_host: payload.execution_host,
+        target_kind: outcome.target_kind.clone(),
+        target_ref: outcome.target_ref.clone(),
+        review_verdict,
+        integrate_outcome,
+        finalize_state,
+    }))
+}
+
+fn acceptance_bundle_source_ref(kind: RecommendedCheckpointCandidateKind) -> &'static str {
+    match kind {
+        RecommendedCheckpointCandidateKind::AgentReturnAcceptance => {
+            "nota_runtime:agent_return_acceptance_bundle"
+        }
+        RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
+            "nota_runtime:dev_return_acceptance_bundle"
+        }
+        RecommendedCheckpointCandidateKind::DevReturnClosure => {
+            "nota_runtime:dev_return_closure_bundle"
+        }
+        RecommendedCheckpointCandidateKind::AgentEscalationContinuity => {
+            "nota_runtime:acceptance_bundle"
+        }
+    }
+}
+
+fn build_acceptance_bundle_title(bundle: &CadenceAcceptanceBundlePayload) -> String {
+    format!(
+        "Acceptance bundle: {} {}",
+        bundle.acceptance_kind.replace('_', " "),
+        bundle.target_ref
+    )
+}
+
+fn build_acceptance_bundle_summary(bundle: &CadenceAcceptanceBundlePayload) -> String {
+    if bundle.fully_settled {
+        format!(
+            "Acceptance is fully settled for allocation {} on lineage {}.",
+            bundle.allocation_id, bundle.lineage_ref
+        )
+    } else {
+        format!(
+            "Acceptance is recorded for allocation {} on lineage {}.",
+            bundle.allocation_id, bundle.lineage_ref
+        )
     }
 }
 
@@ -3623,10 +3883,119 @@ fn parse_checkpoint_record(object: StoredCadenceObject) -> Result<NotaCheckpoint
     })
 }
 
+fn parse_acceptance_bundle_record(
+    object: StoredCadenceObject,
+) -> Result<NotaAcceptanceBundleRecord> {
+    let payload: CadenceAcceptanceBundlePayload = serde_json::from_str(&object.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse cadence acceptance bundle payload for row {}",
+                object.id
+            )
+        })?;
+
+    Ok(NotaAcceptanceBundleRecord {
+        cadence_object: object,
+        payload,
+    })
+}
+
 fn build_checkpoint_summary(stable_level: &str, landed: &[String]) -> String {
     match landed.first() {
         Some(first_landed) => format!("{stable_level}. Landed: {first_landed}"),
         None => stable_level.to_string(),
+    }
+}
+
+pub fn derive_anti_zeno_projection(
+    current_checkpoint: Option<&NotaCheckpointRecord>,
+    acceptance_bundle: Option<&NotaAcceptanceBundleRecord>,
+    next_step: Option<&NotaRuntimeNextStep>,
+    recommended_checkpoint: Option<&NotaCheckpointRequest>,
+) -> NotaAntiZenoProjection {
+    let checkpoint_id = current_checkpoint.map(|checkpoint| checkpoint.cadence_object.id);
+    let acceptance_bundle_id = acceptance_bundle.map(|bundle| bundle.cadence_object.id);
+    let acceptance_present = acceptance_bundle.is_some();
+    let fully_settled = acceptance_bundle
+        .map(|bundle| bundle.payload.fully_settled)
+        .unwrap_or(false);
+    let next_step_open = next_step.is_some();
+
+    let (posture, state, value, summary) = if current_checkpoint.is_none() {
+        (
+            "Uncheckpointed round".to_string(),
+            "uncheckpointed".to_string(),
+            18,
+            "No checkpoint has anchored the current human round yet, so the system can still fall back into replay.".to_string(),
+        )
+    } else if let Some(bundle) = acceptance_bundle {
+        if bundle.payload.fully_settled {
+            (
+                "Settled accepted round".to_string(),
+                "fully_settled".to_string(),
+                100,
+                format!(
+                    "Acceptance for allocation {} is fully settled and can resume from checkpointed closure truth.",
+                    bundle.payload.allocation_id
+                ),
+            )
+        } else if let Some(step) = next_step {
+            (
+                "Accepted round with a bounded next cut".to_string(),
+                "accepted_followup_open".to_string(),
+                78,
+                format!(
+                    "Acceptance is landed for allocation {}, and the next semantic boundary is `{}` instead of open-ended recursion.",
+                    bundle.payload.allocation_id, step.step
+                ),
+            )
+        } else {
+            (
+                "Accepted round awaiting carry-forward".to_string(),
+                "accepted_waiting_carry_forward".to_string(),
+                88,
+                format!(
+                    "Acceptance is landed for allocation {}, but a fresh closure checkpoint still needs to carry the round into a fully settled state.",
+                    bundle.payload.allocation_id
+                ),
+            )
+        }
+    } else if let Some(recommendation) = recommended_checkpoint {
+        (
+            "Checkpointed round without formal acceptance".to_string(),
+            "checkpointed_pending_acceptance".to_string(),
+            52,
+            recommendation
+                .selected_trunk
+                .clone()
+                .map(|trunk| {
+                    format!(
+                        "The round is checkpointed, but acceptance has not been formalized yet; current trunk is `{trunk}`."
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "The round is checkpointed, but acceptance has not been formalized yet.".to_string()
+                }),
+        )
+    } else {
+        (
+            "Checkpointed round".to_string(),
+            "checkpointed".to_string(),
+            44,
+            "A checkpoint exists, but there is still no formal acceptance bundle to prove the human round passed.".to_string(),
+        )
+    };
+
+    NotaAntiZenoProjection {
+        posture,
+        state,
+        value,
+        summary,
+        acceptance_present,
+        fully_settled,
+        next_step_open,
+        checkpoint_id,
+        acceptance_bundle_id,
     }
 }
 
@@ -3663,15 +4032,17 @@ fn normalize_optional(value: Option<&str>) -> Option<String> {
 
 fn capture_repo_context(project_dir: &str) -> Result<RepoContext> {
     let project_path = Path::new(project_dir);
+    let normalized_project_dir = project_path.to_string_lossy().replace('\\', "/");
     if !project_path.exists() {
-        return Err(anyhow!(
-            "nota checkpoint project directory `{}` does not exist",
-            project_path.display()
-        ));
+        return Ok(RepoContext {
+            project_dir: normalized_project_dir,
+            git_branch: None,
+            git_head: None,
+        });
     }
 
     Ok(RepoContext {
-        project_dir: project_path.to_string_lossy().replace('\\', "/"),
+        project_dir: normalized_project_dir,
         git_branch: run_git_command(project_path, &["rev-parse", "--abbrev-ref", "HEAD"]).ok(),
         git_head: run_git_command(project_path, &["rev-parse", "HEAD"]).ok(),
     })
@@ -3731,20 +4102,22 @@ mod tests {
 
     use super::{
         active_checkpoint_scope_ids, default_nota_dispatch_execution_host,
+        derive_anti_zeno_projection, derive_current_runtime_acceptance_bundle,
         derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
         derive_nota_runtime_review, list_nota_runtime_allocations, list_nota_runtime_receipts,
-        list_runtime_checkpoints, materialize_runtime_closure_checkpoint,
-        recommend_runtime_closure_checkpoint, record_dev_return_finalize,
-        record_dev_return_integration, record_dev_return_review, write_runtime_checkpoint,
-        AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
+        list_runtime_acceptance_bundles, list_runtime_checkpoints,
+        materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
+        record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
+        write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
         NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest,
         NotaDispatchExecutionHost, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
         AGENT_RETURN_ACCEPTED_RECEIPT_KIND, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
-        CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND, DEV_RETURN_ACCEPTED_RECEIPT_KIND,
-        DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE, DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND,
-        DEV_RETURN_INTEGRATE_INTEGRATED_STATE, DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND,
-        DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE, DEV_RETURN_REVIEW_APPROVED_VERDICT,
-        DEV_RETURN_REVIEW_READY_RECEIPT_KIND, DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
+        CADENCE_ACCEPTANCE_BUNDLE_KIND, CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
+        DEV_RETURN_ACCEPTED_RECEIPT_KIND, DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE,
+        DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND, DEV_RETURN_INTEGRATE_INTEGRATED_STATE,
+        DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND, DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE,
+        DEV_RETURN_REVIEW_APPROVED_VERDICT, DEV_RETURN_REVIEW_READY_RECEIPT_KIND,
+        DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
     };
 
     struct TempDbPath {
@@ -3760,7 +4133,10 @@ mod tests {
                 std::process::id()
             ));
             fs::create_dir_all(&root)?;
-            let db_path = root.join("entrance.db");
+            let db_path = root.join("data").join("entrance.db");
+            if let Some(parent) = db_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
             Ok(Self { root, db_path })
         }
 
@@ -4107,8 +4483,7 @@ mod tests {
             issue_status_source: "fallback".to_string(),
             issue_title: None,
             project_root: "A:/Agent/Entrance".to_string(),
-            worktree_path: "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-1048"
-                .to_string(),
+            worktree_path: "C:/Users/test/.entrance/worktrees/Entrance/feat-MYT-1048".to_string(),
             prompt_source: "Entrance-owned harness/bootstrap dev prompt".to_string(),
             model: "codex".to_string(),
             agent_command: None,
@@ -4238,6 +4613,20 @@ mod tests {
             review_ready_payload["target_ref"],
             transaction.id.to_string()
         );
+
+        let initial_acceptance_bundles = list_runtime_acceptance_bundles(&store)?;
+        assert_eq!(initial_acceptance_bundles.acceptance_bundle_count, 1);
+        let initial_acceptance = initial_acceptance_bundles
+            .acceptance_bundles
+            .iter()
+            .find(|bundle| bundle.cadence_object.is_current)
+            .context("dev return acceptance bundle should exist")?;
+        assert_eq!(
+            initial_acceptance.payload.acceptance_kind,
+            "dev_return_acceptance"
+        );
+        assert_eq!(initial_acceptance.payload.round_state, "accepted");
+        assert!(!initial_acceptance.payload.fully_settled);
 
         let checkpoints = list_runtime_checkpoints(&store)?;
         let current_checkpoint = checkpoints
@@ -4556,6 +4945,31 @@ mod tests {
             CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND
         );
 
+        let closure_acceptance_bundles = list_runtime_acceptance_bundles(&store)?;
+        assert_eq!(closure_acceptance_bundles.acceptance_bundle_count, 2);
+        let current_acceptance =
+            derive_current_runtime_acceptance_bundle(&store, &closure_scope_ids)?
+                .context("current acceptance bundle should follow the closure checkpoint")?;
+        assert_eq!(
+            current_acceptance.payload.acceptance_kind,
+            "dev_return_acceptance"
+        );
+        assert_eq!(current_acceptance.payload.round_state, "fully_settled");
+        assert!(current_acceptance.payload.fully_settled);
+        assert_eq!(
+            current_acceptance.payload.finalize_state.as_deref(),
+            Some(DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE)
+        );
+
+        let anti_zeno = derive_anti_zeno_projection(
+            Some(closure_checkpoint_record),
+            Some(&current_acceptance),
+            None,
+            closure_checkpoint.source_recommendation.as_ref(),
+        );
+        assert_eq!(anti_zeno.state, "fully_settled");
+        assert_eq!(anti_zeno.value, 100);
+
         let carried_review = derive_nota_runtime_review(
             &closure_scope_ids,
             allocations.stored_allocations(),
@@ -4753,6 +5167,25 @@ mod tests {
 
         let second_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
         assert_eq!(second_report.receipt_count, 3);
+
+        let acceptance_bundles = list_runtime_acceptance_bundles(&store)?;
+        assert_eq!(acceptance_bundles.acceptance_bundle_count, 1);
+        let current_bundle = acceptance_bundles
+            .acceptance_bundles
+            .iter()
+            .find(|bundle| bundle.cadence_object.is_current)
+            .context("agent return acceptance bundle should be current")?;
+        assert_eq!(
+            current_bundle.cadence_object.cadence_kind,
+            CADENCE_ACCEPTANCE_BUNDLE_KIND
+        );
+        assert_eq!(current_bundle.payload.transaction_id, transaction.id);
+        assert_eq!(current_bundle.payload.allocation_id, allocation.id);
+        assert_eq!(
+            current_bundle.payload.acceptance_kind,
+            "agent_return_acceptance"
+        );
+        assert!(!current_bundle.payload.fully_settled);
 
         Ok(())
     }

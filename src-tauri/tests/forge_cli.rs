@@ -106,7 +106,7 @@ fn forge_verify_dispatch_cli_runs_without_agents_runtime() -> Result<()> {
         .context("task_id should be a numeric ID")?;
     assert!(task_id > 0);
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
@@ -201,7 +201,7 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
         .context("task_id should be a numeric ID")?;
     assert!(task_id > 0);
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
@@ -433,7 +433,7 @@ fn forge_bootstrap_mcp_cycle_cli_runs_single_agent_bootstrap_without_human_data_
     );
     assert_eq!(child_receipts[0]["child_slot"], "agent-1");
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
@@ -589,7 +589,7 @@ fn forge_bootstrap_mcp_cycle_cli_can_fan_out_multiple_agent_children() -> Result
     assert_eq!(child_receipts[0]["child_slot"], "agent-1");
     assert_eq!(child_receipts[1]["child_slot"], "agent-2");
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
