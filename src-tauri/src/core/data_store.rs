@@ -57,7 +57,12 @@ const CORE_RUNTIME_ENVIRONMENT_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0013_create_core_runtime_environment_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 9] = [
+const CORE_ANTI_ZENO_MIGRATION: MigrationStep = MigrationStep {
+    name: "0014_create_core_anti_zeno_tables",
+    sql: include_str!("../../migrations/0014_create_core_anti_zeno_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 10] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -67,6 +72,7 @@ const CORE_MIGRATIONS: [MigrationStep; 9] = [
     CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION,
     CORE_PROJECTION_RUNTIME_MIGRATION,
     CORE_RUNTIME_ENVIRONMENT_MIGRATION,
+    CORE_ANTI_ZENO_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -565,6 +571,19 @@ pub struct StoredOwnedWorktree {
     pub last_seen_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredAntiZenoEvent {
+    pub id: i64,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub event_kind: String,
+    pub boundary_ref: String,
+    pub budget_axis: String,
+    pub event_weight: i64,
+    pub summary: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertDocumentRecord<'a> {
     pub id: i64,
@@ -801,6 +820,17 @@ pub struct UpsertOwnedWorktree<'a> {
     pub repo_root: Option<&'a str>,
     pub slot_name: Option<&'a str>,
     pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewAntiZenoEvent<'a> {
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub event_kind: &'a str,
+    pub boundary_ref: &'a str,
+    pub budget_axis: &'a str,
+    pub event_weight: i64,
+    pub summary: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -3246,6 +3276,66 @@ impl DataStore {
         })
     }
 
+    pub fn insert_anti_zeno_event(
+        &self,
+        record: NewAntiZenoEvent<'_>,
+    ) -> Result<StoredAntiZenoEvent> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO anti_zeno_events (
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    event_kind,
+                    boundary_ref,
+                    budget_axis,
+                    event_weight,
+                    summary,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#,
+                params![
+                    record.checkpoint_id,
+                    record.acceptance_bundle_id,
+                    record.event_kind,
+                    record.boundary_ref,
+                    record.budget_axis,
+                    record.event_weight,
+                    record.summary,
+                    now,
+                ],
+            )?;
+            let row_id = conn.last_insert_rowid();
+            fetch_anti_zeno_event_by_id(conn, row_id)?
+                .ok_or_else(|| anyhow!("anti-Zeno event disappeared after insert"))
+        })
+    }
+
+    pub fn list_anti_zeno_events(&self) -> Result<Vec<StoredAntiZenoEvent>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    event_kind,
+                    boundary_ref,
+                    budget_axis,
+                    event_weight,
+                    summary,
+                    created_at
+                FROM anti_zeno_events
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_anti_zeno_event_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_document_record_by_slug(
         &self,
         record: UpsertDocumentRecordBySlug<'_>,
@@ -4518,6 +4608,20 @@ fn map_owned_worktree_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredOwn
     })
 }
 
+fn map_anti_zeno_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAntiZenoEvent> {
+    Ok(StoredAntiZenoEvent {
+        id: row.get(0)?,
+        checkpoint_id: row.get(1)?,
+        acceptance_bundle_id: row.get(2)?,
+        event_kind: row.get(3)?,
+        boundary_ref: row.get(4)?,
+        budget_axis: row.get(5)?,
+        event_weight: row.get(6)?,
+        summary: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
 fn fetch_vault_mcp_config(
     connection: &Connection,
     id: i64,
@@ -5023,6 +5127,33 @@ fn fetch_owned_worktree_by_path(
             "#,
             [worktree_path],
             map_owned_worktree_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_anti_zeno_event_by_id(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredAntiZenoEvent>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                checkpoint_id,
+                acceptance_bundle_id,
+                event_kind,
+                boundary_ref,
+                budget_axis,
+                event_weight,
+                summary,
+                created_at
+            FROM anti_zeno_events
+            WHERE id = ?1
+            "#,
+            [id],
+            map_anti_zeno_event_row,
         )
         .optional()
         .map_err(Into::into)

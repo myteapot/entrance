@@ -9,6 +9,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::core::anti_zeno_runtime::{
+    record_acceptance_recorded_event, record_checkpoint_written_event,
+    record_repair_requested_event,
+};
 use crate::core::data_store::{
     DataStore, NewCadenceLink, NewCadenceObject, NewNotaRuntimeAllocation, NewNotaRuntimeReceipt,
     NewNotaRuntimeTransaction, NotaRuntimeAllocationUpdate, NotaRuntimeTransactionUpdate,
@@ -817,6 +821,8 @@ pub fn write_runtime_checkpoint(
     } else {
         None
     };
+
+    record_checkpoint_written_event(data_store, cadence_object.id, &summary)?;
 
     Ok(NotaCheckpointWriteReport {
         checkpoint: NotaCheckpointRecord {
@@ -2054,6 +2060,13 @@ fn ensure_runtime_acceptance_bundle(
         relation_type: "acceptance_bundle",
         status: "active",
     })?;
+    record_acceptance_recorded_event(
+        data_store,
+        checkpoint.cadence_object.id,
+        cadence_object.id,
+        &bundle.lineage_ref,
+        &summary,
+    )?;
 
     Ok(())
 }
@@ -2541,6 +2554,22 @@ pub fn record_dev_return_review(
         })
         .context("dev review recorded receipt should be readable after append")?;
 
+    if verdict == DEV_RETURN_REVIEW_CHANGES_REQUESTED_VERDICT {
+        let repair_summary = summary.clone().unwrap_or_else(|| {
+            format!(
+                "Review requested repair for returned dev boundary {} on checkpoint {}.",
+                allocation.lineage_ref, current_checkpoint.cadence_object.id
+            )
+        });
+        record_repair_requested_event(
+            data_store,
+            Some(current_checkpoint.cadence_object.id),
+            None,
+            &allocation.lineage_ref,
+            &repair_summary,
+        )?;
+    }
+
     Ok(NotaDevReturnReviewReport {
         status: "recorded".to_string(),
         review,
@@ -2738,6 +2767,22 @@ pub fn record_dev_return_integration(
                 .unwrap_or(false)
         })
         .context("dev integrate recorded receipt should be readable after append")?;
+
+    if state == DEV_RETURN_INTEGRATE_REPAIR_REQUESTED_STATE {
+        let repair_summary = summary.clone().unwrap_or_else(|| {
+            format!(
+                "Integration requested repair for returned dev boundary {} on checkpoint {}.",
+                allocation.lineage_ref, current_checkpoint.cadence_object.id
+            )
+        });
+        record_repair_requested_event(
+            data_store,
+            Some(current_checkpoint.cadence_object.id),
+            None,
+            &allocation.lineage_ref,
+            &repair_summary,
+        )?;
+    }
 
     Ok(NotaDevReturnIntegrateReport {
         status: "recorded".to_string(),

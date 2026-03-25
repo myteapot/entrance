@@ -10,6 +10,7 @@ use self::{
 };
 
 pub mod action;
+pub mod anti_zeno_runtime;
 pub mod bootstrap_mcp_cycle;
 pub mod chat_archive;
 pub mod cold_docs_runtime;

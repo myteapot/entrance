@@ -2306,6 +2306,55 @@ fn nota_projection_status_surfaces_required_projection_freshness() -> Result<()>
 }
 
 #[test]
+fn nota_anti_zeno_budget_surfaces_checkpoint_pressure_from_runtime_truth() -> Result<()> {
+    let temp_dir = TempDir::new("anti-zeno-budget")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Anti-Zeno checkpoint",
+            "--stable-level",
+            "anti-Zeno budget is runtime-owned",
+            "--landed",
+            "checkpoint writes anti-Zeno semantic pressure",
+            "--remaining",
+            "acceptance still pending",
+            "--human-continuity-bus",
+            "reduced for anti-Zeno enforcement",
+        ],
+    )?;
+
+    let anti_zeno_output = run_nota_cli(&app_data_dir, &["nota", "anti-zeno"])?;
+    let anti_zeno: Value = serde_json::from_str(&anti_zeno_output)
+        .context("nota anti-zeno output should be valid JSON")?;
+    assert_eq!(anti_zeno["state"], "checkpointed");
+    assert_eq!(anti_zeno["semantic_event_count"], 1);
+    assert_eq!(anti_zeno["repair_event_count"], 0);
+    assert_eq!(anti_zeno["projection_debt_count"], 0);
+    assert_eq!(anti_zeno["budget_exhausted"], false);
+    assert_eq!(anti_zeno["recent_events"][0]["event_kind"], "checkpoint_written");
+    assert_eq!(anti_zeno["recent_events"][0]["checkpoint_id"], 1);
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["anti_zeno_budget"]["state"], "checkpointed");
+    assert_eq!(status["anti_zeno_budget"]["semantic_event_count"], 1);
+
+    let db_path = app_data_dir.join("data").join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "anti_zeno_events")?, 1);
+
+    Ok(())
+}
+
+#[test]
 fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result<()> {
     let temp_dir = TempDir::new("cold-docs")?;
     let app_data_dir = temp_dir.path().join("appdata");

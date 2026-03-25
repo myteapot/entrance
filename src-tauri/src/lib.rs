@@ -16,6 +16,7 @@ use tauri::{Emitter, Manager};
 
 use core::{
     action::ActorRole,
+    anti_zeno_runtime::{build_anti_zeno_budget_report, AntiZenoBudgetReport},
     bootstrap_for_paths,
     bootstrap_mcp_cycle::{
         run_forge_bootstrap_dev_task, run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions,
@@ -158,6 +159,7 @@ pub(crate) struct NotaRuntimeOverview {
     next_step: Option<NotaRuntimeNextStep>,
     round_state: NotaRoundStateProjection,
     anti_zeno: NotaAntiZenoProjection,
+    anti_zeno_budget: AntiZenoBudgetReport,
     front_door: NotaFrontDoorProjection,
     projections: ProjectionStatusReport,
     decisions: DesignDecisionListReport,
@@ -210,6 +212,7 @@ pub(crate) struct NotaRuntimeStatus {
     next_step: Option<NotaRuntimeNextStep>,
     round_state: NotaRoundStateProjection,
     anti_zeno: NotaAntiZenoProjection,
+    anti_zeno_budget: AntiZenoBudgetReport,
     front_door: NotaFrontDoorProjection,
     projections: ProjectionStatusReport,
 }
@@ -668,6 +671,7 @@ const NOTA_CLI_HELP: &str = r#"Usage:
   entrance nota rounds
   entrance nota acceptance-bundles
   entrance nota projections
+  entrance nota anti-zeno
   entrance nota cold-docs
   entrance nota host
   entrance nota worktrees
@@ -971,6 +975,9 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "projections" => {
             print_json(&build_nota_runtime_status(&startup.data_store())?.projections)
         }
+        [command] if command == "anti-zeno" => {
+            print_json(&build_nota_runtime_status(&startup.data_store())?.anti_zeno_budget)
+        }
         [command] if command == "cold-docs" => {
             let status = build_nota_runtime_status(&startup.data_store())?;
             print_json(&status.cold_docs)
@@ -1129,7 +1136,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&report)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota cold-docs`, `entrance nota host`, `entrance nota worktrees`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota anti-zeno`, `entrance nota cold-docs`, `entrance nota host`, `entrance nota worktrees`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -2151,6 +2158,15 @@ pub(crate) fn build_nota_runtime_overview(
         next_step.as_ref(),
         recommended_checkpoint.as_ref(),
     );
+    let anti_zeno_budget = build_anti_zeno_budget_report(
+        data_store,
+        round_state.checkpoint_id,
+        round_state.acceptance_bundle_id,
+        round_state.acceptance_present,
+        round_state.fully_settled,
+        round_state.next_step_open,
+        projections.dirty_required_target_count,
+    )?;
     let transactions = list_nota_runtime_transactions(data_store)?;
     let decisions = list_design_decisions(data_store)?;
     let front_door = build_nota_front_door_projection(
@@ -2186,6 +2202,7 @@ pub(crate) fn build_nota_runtime_overview(
         next_step,
         round_state,
         anti_zeno,
+        anti_zeno_budget,
         front_door,
         projections,
         decisions,
@@ -2267,6 +2284,15 @@ pub(crate) fn build_nota_runtime_status(
         next_step.as_ref(),
         recommended_checkpoint.as_ref(),
     );
+    let anti_zeno_budget = build_anti_zeno_budget_report(
+        data_store,
+        round_state.checkpoint_id,
+        round_state.acceptance_bundle_id,
+        round_state.acceptance_present,
+        round_state.fully_settled,
+        round_state.next_step_open,
+        projections.dirty_required_target_count,
+    )?;
     let front_door = build_nota_front_door_projection(
         current_checkpoint.as_ref(),
         decisions.decision_count,
@@ -2313,6 +2339,7 @@ pub(crate) fn build_nota_runtime_status(
         next_step,
         round_state,
         anti_zeno,
+        anti_zeno_budget,
         front_door,
         projections,
     })
@@ -2617,11 +2644,13 @@ fn render_hot_root_files(
         .unwrap_or_else(|| "No host snapshot has been recorded yet.".to_string());
 
     let readme = format!(
-        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- host: {host_line}\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n- observed worktrees: {}\n\nCurrent round:\n\n- human round: {human_round_line}\n- round state: {round_state_line}\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
+        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- host: {host_line}\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n- observed worktrees: {}\n\nCurrent round:\n\n- human round: {human_round_line}\n- round state: {round_state_line}\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- anti-Zeno budget: {} ({})\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
         startup.paths().exports_dir().join("hot-root").display(),
         status.worktree_count,
         status.anti_zeno.summary,
-        status.anti_zeno.state
+        status.anti_zeno.state,
+        status.anti_zeno_budget.summary,
+        status.anti_zeno_budget.state
     );
 
     let machine = format!(
@@ -2643,8 +2672,11 @@ fn render_hot_root_files(
     );
 
     let phase_todo = format!(
-        "# Phase Todo\n\n> Status: hot root projection\n\n## Current Focus\n\n- current checkpoint: {checkpoint_label}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\n## Ordered Work\n\n- keep runtime truth sharper than file projections\n- keep acceptance formalized as a cadence object rather than chat implication\n- keep anti-Zeno visible in status, overview, and exported hot root\n- keep hot-root export synchronized from DB truth after human-round writes\n",
-        status.anti_zeno.state, status.anti_zeno.summary
+        "# Phase Todo\n\n> Status: hot root projection\n\n## Current Focus\n\n- current checkpoint: {checkpoint_label}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- anti-Zeno budget: {} ({})\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\n## Ordered Work\n\n- keep runtime truth sharper than file projections\n- keep acceptance formalized as a cadence object rather than chat implication\n- keep anti-Zeno visible in status, overview, and exported hot root\n- keep hot-root export synchronized from DB truth after human-round writes\n",
+        status.anti_zeno.state,
+        status.anti_zeno.summary,
+        status.anti_zeno_budget.state,
+        status.anti_zeno_budget.summary
     );
 
     let pending = format!(
