@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Entrance",
+  "version": "0.3.1-headless-alpha.1",
+  "identifier": "com.entrance.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Entrance",
+        "width": 1120,
+        "height": 720,
+        "minWidth": 960,
+        "minHeight": 640
+      },
+      {
+        "label": "launcher",
+        "title": "Entrance Launcher",
+        "url": "launcher.html",
+        "width": 720,
+        "height": 520,
+        "minWidth": 640,
+        "minHeight": 420,
+        "resizable": false,
+        "visible": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "center": true,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGMEZBQzMxRTdERDJGRDQKUldUVUw5M25NYXdQN3l2cU1QNVh2b28wTXM4cERVRTdYTEdXWVN1Rk5UekEwbU4wKy9aeTVZT1kK",
+      "endpoints": []
+    }
+  }
+}

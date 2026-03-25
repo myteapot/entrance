@@ -1,0 +1,610 @@
+import { A } from "@solidjs/router";
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import "./Dashboard.css";
+import { listenToForgeTaskStatus } from "../features/forge/taskFeed";
+import {
+  fetchNotaRuntimeOverview,
+  fetchNotaRuntimeStatus,
+  type NotaCheckpointRecord,
+  type NotaFrontDoorProgressTrack,
+  type NotaRuntimeOverview,
+  type NotaRuntimeStatus,
+  type StoredDecisionRecord,
+  type StoredNotaRuntimeTransaction,
+} from "../features/nota/overview";
+
+const DASHBOARD_REFRESH_MS = 15_000;
+
+type MissionNodeTone = "steady" | "active" | "warming" | "caution" | "neutral";
+
+type MissionNode = {
+  id: string;
+  label: string;
+  state: string;
+  detail: string;
+  tone: MissionNodeTone;
+  meta: string[];
+};
+
+const formatTimestamp = (value: string) =>
+  new Date(value).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+const formatRelativeTimestamp = (value: string) => {
+  const diffMs = Date.now() - new Date(value).getTime();
+  const diffMinutes = Math.round(Math.abs(diffMs) / 60_000);
+
+  if (diffMinutes < 1) {
+    return "just now";
+  }
+
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  }
+
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  }
+
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays}d ago`;
+};
+
+const humanizeState = (value?: string | null) => {
+  if (!value) {
+    return "Not recorded";
+  }
+
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+};
+
+const parseTransactionPayload = (payloadJson: string) => {
+  try {
+    const parsed = JSON.parse(payloadJson) as {
+      issue_id?: string;
+      issue_title?: string | null;
+      worktree_path?: string;
+      prompt_source?: string;
+    };
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch (error) {
+    console.error("Failed to parse NOTA transaction payload", error);
+  }
+
+  return {};
+};
+
+const renderCheckpointTitle = (checkpoint: NotaCheckpointRecord | null) => {
+  if (!checkpoint) {
+    return "No active checkpoint yet";
+  }
+
+  return `Checkpoint ${checkpoint.cadence_object.id}: ${checkpoint.cadence_object.title}`;
+};
+
+const Dashboard = () => {
+  const [overview, setOverview] = createSignal<NotaRuntimeOverview | null>(null);
+  const [status, setStatus] = createSignal<NotaRuntimeStatus | null>(null);
+  const [isLoading, setIsLoading] = createSignal(true);
+  const [error, setError] = createSignal<string | null>(null);
+  const [lastRefreshedAt, setLastRefreshedAt] = createSignal<string | null>(null);
+
+  const loadDashboard = async () => {
+    try {
+      setError(null);
+      const [nextOverview, nextStatus] = await Promise.all([
+        fetchNotaRuntimeOverview(),
+        fetchNotaRuntimeStatus(),
+      ]);
+      setOverview(nextOverview);
+      setStatus(nextStatus);
+      setLastRefreshedAt(new Date().toISOString());
+    } catch (loadError) {
+      console.error("Failed to fetch NOTA runtime dashboard truth", loadError);
+      setError(loadError instanceof Error ? loadError.message : String(loadError));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  onMount(() => {
+    void loadDashboard();
+
+    const timer = window.setInterval(() => {
+      void loadDashboard();
+    }, DASHBOARD_REFRESH_MS);
+
+    onCleanup(() => window.clearInterval(timer));
+
+    void (async () => {
+      const unlistenStatus = await listenToForgeTaskStatus(() => {
+        void loadDashboard();
+      });
+
+      onCleanup(() => {
+        unlistenStatus();
+      });
+    })();
+  });
+
+  const currentCheckpoint = createMemo(
+    () =>
+      status()?.current_checkpoint ??
+      overview()?.checkpoints.checkpoints.find((checkpoint) => checkpoint.cadence_object.is_current) ??
+      null,
+  );
+  const frontDoor = createMemo(() => status()?.front_door ?? overview()?.front_door ?? null);
+  const review = createMemo(() => status()?.review ?? overview()?.review ?? null);
+  const integrate = createMemo(() => status()?.integrate ?? overview()?.integrate ?? null);
+  const finalize = createMemo(() => status()?.finalize ?? overview()?.finalize ?? null);
+  const nextStep = createMemo(() => status()?.next_step ?? overview()?.next_step ?? null);
+  const latestTransactions = createMemo(
+    () => overview()?.transactions.transactions.slice(0, 4) ?? [],
+  );
+  const latestDecisions = createMemo(() => overview()?.decisions.decisions.slice(0, 2) ?? []);
+  const refreshLine = createMemo(() => {
+    const value = lastRefreshedAt();
+    if (!value) {
+      return "Syncing runtime truth...";
+    }
+
+    return `Refreshed ${formatRelativeTimestamp(value)}`;
+  });
+
+  const relaySummary = createMemo(
+    () =>
+      currentCheckpoint()?.payload.human_continuity_bus ??
+      status()?.recommended_checkpoint?.human_continuity_bus ??
+      frontDoor()?.progress_tracks.find((track) => track.id === "relay-relief")?.summary ??
+      "Human relay guidance will appear once the runtime writes the next checkpoint.",
+  );
+
+  const checkpointClosureTrack = createMemo<NotaFrontDoorProgressTrack | null>(() => {
+    const checkpoint = currentCheckpoint();
+    if (!checkpoint) {
+      return null;
+    }
+
+    const landedCount = checkpoint.payload.landed.length;
+    const remainingCount = checkpoint.payload.remaining.length;
+    const totalCount = landedCount + remainingCount;
+    const value = totalCount === 0 ? 100 : Math.round((landedCount / totalCount) * 100);
+
+    return {
+      id: "checkpoint-closure",
+      label: "Checkpoint closure",
+      value,
+      tone: remainingCount === 0 ? "steady" : "active",
+      summary: `${landedCount} landed and ${remainingCount} remaining item${
+        remainingCount === 1 ? "" : "s"
+      } are recorded on the active checkpoint.`,
+    };
+  });
+
+  const progressTracks = createMemo(() => {
+    const tracks = frontDoor()?.progress_tracks ?? [];
+    const closureTrack = checkpointClosureTrack();
+
+    return closureTrack ? [...tracks, closureTrack] : tracks;
+  });
+
+  const missionNodes = createMemo<MissionNode[]>(() => {
+    const checkpoint = currentCheckpoint();
+    const reviewState = review();
+    const integrateState = integrate();
+    const finalizeState = finalize();
+    const handoff = nextStep();
+
+    return [
+      {
+        id: "checkpoint",
+        label: "Checkpoint",
+        state: checkpoint ? `#${checkpoint.cadence_object.id}` : "Missing",
+        detail: checkpoint
+          ? checkpoint.payload.selected_trunk ?? checkpoint.cadence_object.summary
+          : "The board needs an active checkpoint before continuity can feel stable.",
+        tone: checkpoint ? "steady" : "caution",
+        meta: [
+          checkpoint?.cadence_object.title,
+          checkpoint?.payload.repo_context?.git_branch
+            ? `Branch ${checkpoint.payload.repo_context.git_branch}`
+            : null,
+        ].filter((value): value is string => Boolean(value)),
+      },
+      {
+        id: "review",
+        label: "Review",
+        state: reviewState
+          ? humanizeState(reviewState.verdict ?? reviewState.state)
+          : "Pending",
+        detail:
+          reviewState?.summary ??
+          "Review truth has not been recorded on the active dev-return boundary yet.",
+        tone:
+          reviewState?.verdict === "approved"
+            ? "steady"
+            : reviewState?.verdict === "changes_requested"
+              ? "caution"
+              : reviewState
+                ? "active"
+                : "neutral",
+        meta: reviewState
+          ? [
+              `Allocation ${reviewState.allocation_id}`,
+              reviewState.lineage_ref,
+              reviewState.execution_host,
+            ]
+          : [],
+      },
+      {
+        id: "integrate",
+        label: "Integrate",
+        state: integrateState
+          ? humanizeState(integrateState.outcome ?? integrateState.state)
+          : "Waiting",
+        detail:
+          integrateState?.summary ??
+          "Integration will appear once the runtime records an integrate-side state.",
+        tone:
+          integrateState?.outcome === "integrated"
+            ? "steady"
+            : integrateState?.outcome === "repair_requested"
+              ? "caution"
+              : integrateState
+                ? "active"
+                : "neutral",
+        meta: integrateState
+          ? [
+              `Allocation ${integrateState.allocation_id}`,
+              integrateState.child_dispatch_role,
+              integrateState.target_ref,
+            ]
+          : [],
+      },
+      {
+        id: "finalize",
+        label: "Finalize",
+        state: finalizeState ? humanizeState(finalizeState.state) : "Open",
+        detail:
+          finalizeState?.summary ??
+          "Finalize truth will close the active boundary once the runtime records it.",
+        tone: finalizeState?.state === "closed" ? "steady" : finalizeState ? "active" : "neutral",
+        meta: finalizeState
+          ? [
+              `Allocation ${finalizeState.allocation_id}`,
+              finalizeState.lineage_ref,
+              finalizeState.execution_host,
+            ]
+          : [],
+      },
+      {
+        id: "next",
+        label: "Next",
+        state: handoff
+          ? humanizeState(handoff.step)
+          : finalizeState?.state === "closed"
+            ? "Boundary closed"
+            : "Awaiting handoff",
+        detail: handoff
+          ? `${handoff.child_dispatch_role} on ${handoff.execution_host} will move ${handoff.target_kind} ${handoff.target_ref}.`
+          : finalizeState?.state === "closed"
+            ? "No further runtime step is exposed because the active boundary is already closed."
+            : "The next runtime move will appear here once the boundary advances.",
+        tone: handoff ? "active" : finalizeState?.state === "closed" ? "steady" : "warming",
+        meta: handoff
+          ? [handoff.lineage_ref, handoff.target_ref, handoff.execution_host]
+          : [],
+      },
+    ];
+  });
+
+  return (
+    <section class="page page--dashboard page--mission-board">
+      <header class="page__hero page__hero--dashboard page__hero--board">
+        <p class="page__eyebrow">Mission Dashboard</p>
+        <h2>Layered progress for the active continuity boundary.</h2>
+        <p class="page__summary">
+          The board reads the same NOTA runtime truth as Chat: checkpoint continuity, boundary
+          state, human relay pressure, and layered progress, without inventing a second scheduler.
+        </p>
+        <div class="dashboard-hero__meta" aria-label="Dashboard runtime summary">
+          <span class="dashboard-pill">Checkpoint {status()?.current_checkpoint_id ?? "none"}</span>
+          <span class="dashboard-pill">{frontDoor()?.posture ?? "Loading board"}</span>
+          <span class="dashboard-pill">{frontDoor()?.next_action_label ?? "Current slice"}</span>
+          <span class="dashboard-pill">Receipts {status()?.receipt_count ?? 0}</span>
+          <span class="dashboard-pill">{refreshLine()}</span>
+        </div>
+      </header>
+
+      <Show when={error()}>
+        {(message) => <div class="board-callout board-callout--error">{message()}</div>}
+      </Show>
+
+      <section class="board-layout" aria-label="Mission dashboard">
+        <article class="dashboard-card dashboard-card--wide board-map">
+          <div class="dashboard-card__topline">
+            <p class="dashboard-card__caption">Runtime map</p>
+            <span class="dashboard-live-indicator">
+              <span class="dashboard-live-indicator__dot" aria-hidden="true" />
+              Live
+            </span>
+          </div>
+
+          <div class="dashboard-card__headline">
+            <div>
+              <h3>{renderCheckpointTitle(currentCheckpoint())}</h3>
+              <p>
+                {frontDoor()?.dashboard_hook ??
+                  "Dashboard now stays on the same runtime truth plane as Chat and the CLI."}
+              </p>
+            </div>
+            <div class="dashboard-card__badges">
+              <span class="dashboard-card__badge">{frontDoor()?.next_action_label ?? "Current slice"}</span>
+              <span class="dashboard-card__badge dashboard-card__badge--running">
+                {nextStep() ? humanizeState(nextStep()?.step) : humanizeState(finalize()?.state)}
+              </span>
+            </div>
+          </div>
+
+          <div class="board-map__grid" aria-label="Active continuity graph">
+            <For each={missionNodes()}>
+              {(node) => (
+                <article class={`board-node board-node--${node.tone}`}>
+                  <span class="board-node__label">{node.label}</span>
+                  <strong class="board-node__state">{node.state}</strong>
+                  <p class="board-node__detail">{node.detail}</p>
+                  <Show when={node.meta.length > 0}>
+                    <div class="board-node__meta">
+                      <For each={node.meta}>{(meta) => <span>{meta}</span>}</For>
+                    </div>
+                  </Show>
+                </article>
+              )}
+            </For>
+          </div>
+
+          <div class="board-map__footer">
+            <p>{frontDoor()?.next_action_detail ?? "Waiting for runtime guidance..."}</p>
+            <div class="board-meta-list">
+              <Show when={currentCheckpoint()?.cadence_object.updated_at}>
+                {(updatedAt) => <span>Updated {formatTimestamp(updatedAt())}</span>}
+              </Show>
+              <span>Transactions {status()?.transaction_count ?? 0}</span>
+              <span>Allocations {status()?.allocation_count ?? 0}</span>
+            </div>
+          </div>
+        </article>
+
+        <aside class="board-rail" aria-label="Current state rail">
+          <article class="dashboard-card board-state-card">
+            <div class="dashboard-card__topline">
+              <p class="dashboard-card__caption">Current state</p>
+              <span class="dashboard-live-indicator">
+                <span class="dashboard-live-indicator__dot" aria-hidden="true" />
+                Runtime
+              </span>
+            </div>
+            <h3>{frontDoor()?.posture ?? "Loading current state"}</h3>
+            <p>{frontDoor()?.summary ?? "Waiting for runtime truth..."}</p>
+            <dl class="dashboard-stat-list">
+              <div class="dashboard-stat">
+                <dt>Next honest move</dt>
+                <dd>{nextStep() ? humanizeState(nextStep()?.step) : "No next step exposed"}</dd>
+              </div>
+              <div class="dashboard-stat">
+                <dt>Review</dt>
+                <dd>{review() ? humanizeState(review()?.verdict ?? review()?.state) : "Pending"}</dd>
+              </div>
+              <div class="dashboard-stat">
+                <dt>Integrate</dt>
+                <dd>{integrate() ? humanizeState(integrate()?.outcome ?? integrate()?.state) : "Waiting"}</dd>
+              </div>
+              <div class="dashboard-stat">
+                <dt>Finalize</dt>
+                <dd>{finalize() ? humanizeState(finalize()?.state) : "Open"}</dd>
+              </div>
+            </dl>
+            <div class="board-action-row">
+              <A class="board-action" href="/">
+                Open Chat
+              </A>
+              <A class="board-action" href="/do">
+                Open Do
+              </A>
+            </div>
+          </article>
+
+          <article class="dashboard-card board-relay-card">
+            <div class="dashboard-card__topline">
+              <p class="dashboard-card__caption">Human relay</p>
+              <span class="dashboard-card__badge">Body-feel</span>
+            </div>
+            <h3>Relay pressure is visible instead of implied.</h3>
+            <p class="board-relay-copy">{relaySummary()}</p>
+            <Show
+              when={(currentCheckpoint()?.payload.next_start_hints ?? []).length > 0}
+              fallback={
+                <p class="board-card-note">
+                  {isLoading()
+                    ? "Loading next-start hints..."
+                    : "No next-start hints are recorded on the active checkpoint."}
+                </p>
+              }
+            >
+              <div class="board-hint-strip">
+                <For each={currentCheckpoint()?.payload.next_start_hints ?? []}>
+                  {(hint) => <span class="board-hint-chip">{hint}</span>}
+                </For>
+              </div>
+            </Show>
+          </article>
+        </aside>
+      </section>
+
+      <section class="dashboard-grid board-grid" aria-label="Dashboard detail cards">
+        <article class="dashboard-card dashboard-card--wide board-progress-card">
+          <div class="dashboard-card__topline">
+            <p class="dashboard-card__caption">Layered progress</p>
+            <span class="dashboard-card__badge">{progressTracks().length} tracks</span>
+          </div>
+          <h3>Progress is explicit, not hidden inside monitor prose.</h3>
+          <p>
+            These bars come from the runtime front door, plus a derived checkpoint-closure bar
+            computed directly from landed and remaining checkpoint truth.
+          </p>
+          <div class="board-progress-list" aria-label="Mission progress tracks">
+            <For each={progressTracks()}>
+              {(track) => (
+                <section class="board-progress-track">
+                  <div class="board-progress-track__meta">
+                    <strong>{track.label}</strong>
+                    <span>{track.value}%</span>
+                  </div>
+                  <div class="board-progress-bar" aria-hidden="true">
+                    <span class={`is-${track.tone}`} style={{ width: `${track.value}%` }} />
+                  </div>
+                  <p>{track.summary}</p>
+                </section>
+              )}
+            </For>
+          </div>
+        </article>
+
+        <article class="dashboard-card board-checkpoint-card">
+          <div class="dashboard-card__topline">
+            <p class="dashboard-card__caption">Checkpoint detail</p>
+            <span class="dashboard-card__badge">
+              {currentCheckpoint()?.payload.selected_trunk ?? "No trunk"}
+            </span>
+          </div>
+          <h3>What is already landed versus what still remains.</h3>
+          <Show
+            when={currentCheckpoint()}
+            fallback={
+              <p class="board-card-note">
+                {isLoading()
+                  ? "Loading checkpoint detail..."
+                  : "The dashboard will expand here once an active checkpoint exists."}
+              </p>
+            }
+          >
+            {(checkpoint) => (
+              <div class="board-checkpoint-detail">
+                <section class="board-detail-panel">
+                  <span class="board-detail-panel__label">Landed</span>
+                  <Show
+                    when={checkpoint().payload.landed.length > 0}
+                    fallback={<p class="board-card-note">No landed items recorded yet.</p>}
+                  >
+                    <ul class="board-bullet-list">
+                      <For each={checkpoint().payload.landed}>{(item) => <li>{item}</li>}</For>
+                    </ul>
+                  </Show>
+                </section>
+                <section class="board-detail-panel">
+                  <span class="board-detail-panel__label">Remaining</span>
+                  <Show
+                    when={checkpoint().payload.remaining.length > 0}
+                    fallback={<p class="board-card-note">No remaining items recorded.</p>}
+                  >
+                    <ul class="board-bullet-list">
+                      <For each={checkpoint().payload.remaining}>{(item) => <li>{item}</li>}</For>
+                    </ul>
+                  </Show>
+                </section>
+              </div>
+            )}
+          </Show>
+        </article>
+
+        <article class="dashboard-card board-activity-card">
+          <div class="dashboard-card__topline">
+            <p class="dashboard-card__caption">Recent runtime movement</p>
+            <span class="dashboard-card__badge">
+              {overview()?.transactions.transaction_count ?? 0} transactions
+            </span>
+          </div>
+          <h3>The board stays close to live transaction evidence.</h3>
+          <Show
+            when={latestTransactions().length > 0}
+            fallback={<p class="board-card-note">No NOTA transactions recorded yet.</p>}
+          >
+            <ul class="board-activity-list">
+              <For each={latestTransactions()}>
+                {(transaction: StoredNotaRuntimeTransaction) => {
+                  const payload = parseTransactionPayload(transaction.payload_json);
+
+                  return (
+                    <li class="board-activity-item">
+                      <div class="board-activity-item__topline">
+                        <strong>{transaction.title}</strong>
+                        <span class={`dashboard-status dashboard-status--${transaction.status.toLowerCase()}`}>
+                          {transaction.status}
+                        </span>
+                      </div>
+                      <p>
+                        {payload.issue_id ?? transaction.transaction_kind}
+                        {payload.issue_title ? ` - ${payload.issue_title}` : ""}
+                      </p>
+                      <div class="board-meta-list">
+                        <span>{formatTimestamp(transaction.updated_at)}</span>
+                        <span>Forge task {transaction.forge_task_id ?? "pending"}</span>
+                        <Show when={payload.worktree_path}>
+                          <span>{payload.worktree_path}</span>
+                        </Show>
+                      </div>
+                    </li>
+                  );
+                }}
+              </For>
+            </ul>
+          </Show>
+        </article>
+
+        <article class="dashboard-card board-decision-card">
+          <div class="dashboard-card__topline">
+            <p class="dashboard-card__caption">Decision anchors</p>
+            <span class="dashboard-card__badge">{overview()?.decisions.link_count ?? 0} links</span>
+          </div>
+          <h3>Canonical decisions still bound what this dashboard is allowed to become.</h3>
+          <Show
+            when={latestDecisions().length > 0}
+            fallback={<p class="board-card-note">No canonical decisions recorded yet.</p>}
+          >
+            <ul class="board-activity-list">
+              <For each={latestDecisions()}>
+                {(decision: StoredDecisionRecord) => (
+                  <li class="board-activity-item">
+                    <div class="board-activity-item__topline">
+                      <strong>{decision.title}</strong>
+                      <span>{decision.decision_status}</span>
+                    </div>
+                    <p>{decision.statement}</p>
+                    <div class="board-meta-list">
+                      <span>{decision.decision_type || "decision"}</span>
+                      <span>{decision.enforcement_level}</span>
+                      <span>{formatRelativeTimestamp(decision.updated_at)}</span>
+                    </div>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </Show>
+        </article>
+      </section>
+    </section>
+  );
+};
+
+export default Dashboard;

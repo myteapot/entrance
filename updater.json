@@ -1,0 +1,6 @@
+{
+  "version": "v0.3.1-headless-alpha.1",
+  "notes": "Public updater is intentionally disabled for the V0 HEADLESS ALPHA release. Install updates manually from the published release assets.",
+  "pub_date": "2026-03-24T00:00:00Z",
+  "platforms": {}
+}
