@@ -290,10 +290,10 @@ const Chat = () => {
 
             <li class="front-door-bubble front-door-bubble--surface">
               <span class="front-door-bubble__label">Front door</span>
-              <strong>Import stays explicit here, dashboard stays bounded.</strong>
+              <strong>Import stays explicit here, dashboard stays runtime-grounded.</strong>
               <p>
-                Use the import entry when you want new external context in Entrance. The dashboard
-                remains a separate future surface, so this round only leaves the hook.
+                {frontDoor()?.dashboard_hook ??
+                  "Use the import entry when you want new external context in Entrance, while the dashboard stays on the same runtime truth plane."}
               </p>
             </li>
           </ul>
@@ -311,7 +311,7 @@ const Chat = () => {
               Open Do
             </A>
             <A class="front-door-action" href="/board">
-              Dashboard hook
+              Open dashboard
             </A>
           </div>
 

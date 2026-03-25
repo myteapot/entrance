@@ -1,5 +1,6 @@
 import type { Component } from "solid-js";
 import Chat from "./pages/Chat";
+import Dashboard from "./pages/Dashboard";
 import RoutePlaceholder from "./pages/RoutePlaceholder";
 import Vault from "./pages/Vault";
 import Forge from "./pages/Forge";
@@ -41,6 +42,14 @@ export const primaryRoutes: AppRoute[] = [
     hotkey: "Ctrl+2",
     component: Forge,
   },
+  {
+    path: "/board",
+    label: "Board",
+    glyph: "BD",
+    description: "Mission dashboard and layered progress",
+    hotkey: "Ctrl+3",
+    component: Dashboard,
+  },
 ];
 
 export const settingsRoute: AppRoute = {
@@ -75,17 +84,6 @@ const hiddenRoutes: AppRoute[] = [
       "Launcher",
       "Launcher stays as a routed placeholder in this slice. The floating interaction model will land in a later issue.",
       "/launcher",
-    ),
-  },
-  {
-    path: "/board",
-    label: "Board",
-    glyph: "BD",
-    description: "Planning board placeholder",
-    component: createPlaceholderPage(
-      "Board",
-      "Board currently exists as a routed shell. Future work can focus purely on task content and interaction design.",
-      "/board",
     ),
   },
   {

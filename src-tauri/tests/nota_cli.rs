@@ -2153,7 +2153,7 @@ fn nota_status_and_overview_surface_runtime_owned_front_door_projection() -> Res
         serde_json::from_str(&overview_output).context("overview output should be valid JSON")?;
     assert_eq!(
         overview["front_door"]["dashboard_hook"],
-        "Dashboard stays a separate future surface; this round only leaves a bounded runway."
+        "Dashboard now reads the same runtime truth plane as Chat, with layered progress and bounded continuity detail."
     );
     assert_eq!(
         overview["front_door"]["progress_tracks"][2]["label"],

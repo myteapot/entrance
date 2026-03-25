@@ -7,6 +7,7 @@ This tree holds handouts, todos, migration notes, and operational drafts that sh
 Active execution-staging docs:
 
 - [entrance_v0_headless_system_roadmap.md](./entrance_v0_headless_system_roadmap.md)
+- [repo_governance_three_repo_workflow.md](./repo_governance_three_repo_workflow.md)
 
 Historical handouts:
 

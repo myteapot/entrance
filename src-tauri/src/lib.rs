@@ -323,7 +323,7 @@ fn build_nota_front_door_projection(
         next_action_label,
         next_action_detail,
         dashboard_hook:
-            "Dashboard stays a separate future surface; this round only leaves a bounded runway."
+            "Dashboard now reads the same runtime truth plane as Chat, with layered progress and bounded continuity detail."
                 .to_string(),
         progress_tracks: vec![
             NotaFrontDoorProgressTrack {

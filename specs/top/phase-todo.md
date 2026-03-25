@@ -11,6 +11,7 @@
 
 - keep the single-lane `NOTA -> agent` allocator slice honest, queryable, and explicitly incomplete
 - keep one persistent `NOTA` monitor/planner window as the only global continuation authority
+- keep product semantics and runtime converging toward one unique `NOTA` as the heartbeat-bearing Entrance System Manager rather than drifting into multiple `NOTA` narratives
 - keep long-term direction and current `v0` policy separated across `decisions` and `checkpoints`
 - keep the next implementation frontier ordered as `agent surface hardening -> dev lane -> permission wiring -> multi-role allocator`
 - keep human relay burden shrinking by resuming from DB-backed truth before replaying chat

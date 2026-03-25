@@ -11,6 +11,8 @@
 
 - `NOTA` is the Human-facing boundary host and normal semantic ingress/egress.
 - `NOTA` is also the only global continuation authority at `v0`.
+- `NOTA` remains unique in both product semantics and runtime; `MONITOR` is a capability lane of `NOTA`, not a second `NOTA`.
+- The final runtime target is one heartbeat-bearing, single-threaded `NOTA` Entrance System Manager. Additional Entrance instances may exist, but they do not create parallel `NOTA` authorities.
 - `Policy` is the highest internal strategy slot, not a global mutable superuser.
 - Human has no direct canonical write path; break-glass is runtime control rather than semantic authoring.
 - Cross-slot semantic effect must travel through routed objects and runtime-owned delivery surfaces.
@@ -30,6 +32,7 @@
 
 - The persistent `NOTA` window acts as monitor/planner: it refreshes shared truth, audits level claims, chooses the active milestone, and records checkpoint or decision changes.
 - Worker windows own one bounded trunk or lane at a time and must return evidence, receipts, commits, or blockers back to `NOTA`.
+- Multiple windows are an execution convenience, not multiple `NOTA`s. They remain subordinate lanes under one `NOTA` continuity thread.
 - Worker windows do not claim global level advancement, rewrite the top strategy, or spawn a second continuation authority.
 - This split exists to avoid the previously observed double-controller loop and Zeno-style endless micro-step recursion.
 

@@ -2,6 +2,14 @@ import { A } from "@solidjs/router";
 import { primaryRoutes, settingsRoute } from "../router";
 
 const Sidebar = () => {
+  const availableHotkeys = primaryRoutes
+    .map((route) => route.hotkey)
+    .filter((hotkey): hotkey is string => Boolean(hotkey));
+  const hotkeyHint =
+    availableHotkeys.length > 1
+      ? `Quick switch with ${availableHotkeys[0]} to ${availableHotkeys[availableHotkeys.length - 1]}.`
+      : "Quick switch from the keyboard.";
+
   return (
     <aside class="sidebar">
       <div class="sidebar__brand">
@@ -10,8 +18,8 @@ const Sidebar = () => {
           <p class="sidebar__eyebrow">Entrance</p>
           <h1 class="sidebar__title">Native NOTA front door</h1>
           <p class="sidebar__summary">
-            Chat opens on live runtime truth, while Do remains the bounded action lane for
-            automatic transactions.
+            Chat opens on live runtime truth, Board visualizes the active mission boundary, and
+            Do remains the bounded action lane for automatic transactions.
           </p>
         </div>
       </div>
@@ -41,7 +49,7 @@ const Sidebar = () => {
             <span class="sidebar__detail">{settingsRoute.description}</span>
           </span>
         </A>
-        <p class="sidebar__hint">Quick switch with Ctrl+1 and Ctrl+2.</p>
+        <p class="sidebar__hint">{hotkeyHint}</p>
       </div>
     </aside>
   );
