@@ -17,6 +17,19 @@
 - `superseded`
   a later round now carries continuation
 
+## Detail states
+
+- `uncheckpointed`
+  detail projection of canonical `opened`
+- `checkpointed_pending_acceptance`
+  detail projection of canonical `checkpointed`
+- `accepted_waiting_carry_forward`
+  detail projection of canonical `accepted`
+- `accepted_followup_open`
+  detail projection of canonical `settling`
+- `fully_settled`
+  detail projection of canonical `fully_settled`
+
 ## Canonical transitions
 
 - `opened -> checkpointed`
@@ -40,3 +53,4 @@
 - a fully settled round should have no current `next_step`
 - a fully settled round should not leave dirty required projections behind
 - repair may reopen settling work, but it should not erase prior acceptance truth
+- handout and wake-request bridge objects should mirror both canonical and detail state for the current round

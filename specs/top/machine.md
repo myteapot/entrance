@@ -19,6 +19,7 @@
 - `human round` is now the primary continuity object for interaction, checkpoint, acceptance, projection, and repair.
 - `passed human round` is modeled as acceptance, while `fully settled round` is a stricter machine condition layered above acceptance.
 - anti-Zeno is enforced as boundary progress across accepted rounds rather than endless smallest-step recursion.
+- canonical round state and detail round state are distinct surfaces; the ladder stays small while runtime may still expose finer closure detail.
 - phase remains projection over the canonical graph rather than a peer truth family.
 
 ## Canonical Round Ladder
@@ -28,6 +29,14 @@
 - `accepted` means acceptance is formalized for the round boundary.
 - `settling` means follow-on next-step, projection refresh, or repair closure is still open.
 - `fully_settled` means the accepted boundary has no remaining next-step debt and its retained projections are in sync.
+
+## Detail State Projection
+
+- `uncheckpointed` is the detail state under canonical `opened`
+- `checkpointed_pending_acceptance` is the detail state under canonical `checkpointed`
+- `accepted_waiting_carry_forward` is the detail state under canonical `accepted`
+- `accepted_followup_open` is the detail state under canonical `settling`
+- `fully_settled` remains both a canonical and detail state
 
 ## Mounted Detail Docs
 
