@@ -38,6 +38,7 @@ const DEV_RETURN_REVIEW_READY_RECEIPT_KIND: &str = "DEV_RETURN_REVIEW_READY";
 const DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND: &str = "DEV_RETURN_REVIEW_RECORDED";
 const DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND: &str = "DEV_RETURN_INTEGRATE_RECORDED";
 const DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND: &str = "DEV_RETURN_FINALIZE_RECORDED";
+const DEV_REPAIR_FOLLOWUP_RECORDED_RECEIPT_KIND: &str = "DEV_REPAIR_FOLLOWUP_RECORDED";
 const ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND: &str =
     "ALLOCATION_TERMINAL_OUTCOME_RECORDED";
 const DEV_RETURN_REVIEW_APPROVED_VERDICT: &str = "approved";
@@ -136,6 +137,50 @@ pub struct NotaHumanRoundListReport {
     pub human_rounds: Vec<NotaHumanRoundRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CadenceHandoutPayload {
+    pub checkpoint_id: i64,
+    pub round_state: String,
+    pub stable_level: String,
+    pub human_continuity_bus: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_trunk: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub human_round_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_bundle_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<String>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaHandoutRecord {
+    #[serde(flatten)]
+    pub cadence_object: StoredCadenceObject,
+    pub payload: CadenceHandoutPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CadenceWakeRequestPayload {
+    pub checkpoint_id: i64,
+    pub round_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub human_round_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_bundle_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_step: Option<String>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaWakeRequestRecord {
+    #[serde(flatten)]
+    pub cadence_object: StoredCadenceObject,
+    pub payload: CadenceWakeRequestPayload,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct NotaRoundStateProjection {
     pub posture: String,
@@ -220,6 +265,7 @@ pub struct NotaDoAgentDispatchRequest {
     pub model: String,
     pub agent_command: Option<String>,
     pub title: Option<String>,
+    pub repair_of_allocation_id: Option<i64>,
     pub execution_host: NotaDispatchExecutionHost,
 }
 
@@ -256,6 +302,12 @@ pub struct NotaDoDispatchPayload {
     pub prompt_source: String,
     pub model: String,
     pub agent_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_of_allocation_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_of_transaction_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_of_lineage_ref: Option<String>,
     #[serde(default = "default_nota_dispatch_execution_host")]
     pub execution_host: String,
 }
@@ -271,6 +323,12 @@ pub struct NotaDoAllocationPayload {
     pub prompt_source: String,
     pub model: String,
     pub agent_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_of_allocation_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_of_transaction_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_of_lineage_ref: Option<String>,
     #[serde(default = "default_nota_dispatch_execution_host")]
     pub execution_host: String,
     pub child_dispatch_role: String,
@@ -747,6 +805,14 @@ struct RecommendedCheckpointCandidate {
     request: NotaCheckpointRequest,
 }
 
+#[derive(Debug, Clone)]
+struct DevRepairOrigin {
+    allocation_id: i64,
+    transaction_id: i64,
+    lineage_ref: String,
+    project_dir: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecommendedCheckpointCandidateKind {
     AgentEscalationContinuity,
@@ -931,6 +997,27 @@ pub fn derive_current_runtime_human_round(
         .find(|round| round.cadence_object.is_current))
 }
 
+pub fn derive_current_runtime_handout(data_store: &DataStore) -> Result<Option<NotaHandoutRecord>> {
+    data_store
+        .list_cadence_objects_by_kind(CADENCE_HANDOUT_KIND)?
+        .into_iter()
+        .find(|object| object.is_current)
+        .map(parse_handout_record)
+        .transpose()
+}
+
+pub fn derive_current_runtime_wake_request(
+    data_store: &DataStore,
+) -> Result<Option<NotaWakeRequestRecord>> {
+    Ok(data_store
+        .list_cadence_objects_by_kind(CADENCE_WAKE_REQUEST_KIND)?
+        .into_iter()
+        .find(|object| object.is_current)
+        .map(parse_wake_request_record)
+        .transpose()?
+        .filter(|record| record.cadence_object.status != "resolved"))
+}
+
 pub fn derive_current_runtime_acceptance_bundle(
     data_store: &DataStore,
     checkpoint_scope_ids: &[i64],
@@ -977,6 +1064,74 @@ pub(crate) fn active_checkpoint_scope_ids(
     Ok(scope_ids)
 }
 
+fn resolve_dev_repair_origin(
+    data_store: &DataStore,
+    allocation_id: i64,
+) -> Result<DevRepairOrigin> {
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    let current_checkpoint = checkpoints
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+        .cloned()
+        .context("dev repair follow-up requires a current runtime checkpoint")?;
+    let checkpoint_scope_ids = active_checkpoint_scope_ids(data_store, Some(&current_checkpoint))?;
+    let transactions = list_nota_runtime_transactions(data_store)?;
+    let allocations = list_nota_runtime_allocations(data_store)?;
+    let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let next_step = derive_nota_runtime_next_step(
+        &checkpoint_scope_ids,
+        &transactions.transactions,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?
+    .context("dev repair follow-up requires an active repair next step")?;
+
+    if next_step.step != "repair" || next_step.allocation_id != allocation_id {
+        bail!(
+            "runtime allocation `{allocation_id}` is not the active repair boundary on the current checkpoint"
+        );
+    }
+
+    let allocation = allocations
+        .stored_allocations()
+        .iter()
+        .find(|allocation| allocation.id == allocation_id)
+        .cloned()
+        .with_context(|| format!("runtime allocation `{allocation_id}` was not found"))?;
+    if allocation.allocation_kind != "forge_dev_dispatch" {
+        bail!("runtime allocation `{allocation_id}` is not a dev dispatch boundary");
+    }
+    if allocation.status != "return_ready" {
+        bail!(
+            "runtime allocation `{allocation_id}` cannot seed a repair follow-up because status is `{}`",
+            allocation.status
+        );
+    }
+
+    let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse dev repair origin payload for allocation {}",
+                allocation.id
+            )
+        })?;
+    let outcome = payload
+        .terminal_outcome
+        .as_ref()
+        .context("dev repair follow-up requires a terminal outcome on the source allocation")?;
+    if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
+        bail!("runtime allocation `{allocation_id}` is not a returned Done dev boundary");
+    }
+
+    Ok(DevRepairOrigin {
+        allocation_id: allocation.id,
+        transaction_id: allocation.source_transaction_id,
+        lineage_ref: allocation.lineage_ref,
+        project_dir: payload.project_root,
+    })
+}
+
 pub fn run_nota_do_agent_dispatch(
     data_store: &DataStore,
     forge: &ForgePlugin,
@@ -1004,7 +1159,21 @@ fn run_nota_dispatch(
         return Err(anyhow!("`model` must not be empty"));
     }
 
-    let dispatch = lane.prepare_dispatch(data_store, request.project_dir.clone())?;
+    let repair_origin = match (lane, request.repair_of_allocation_id) {
+        (NotaDispatchLane::Agent, Some(_)) => {
+            bail!("repair follow-up is only supported on `entrance nota dev`")
+        }
+        (NotaDispatchLane::Dev, Some(allocation_id)) => {
+            Some(resolve_dev_repair_origin(data_store, allocation_id)?)
+        }
+        (_, None) => None,
+    };
+    let dispatch_project_dir = request.project_dir.clone().or_else(|| {
+        repair_origin
+            .as_ref()
+            .map(|origin| origin.project_dir.clone())
+    });
+    let dispatch = lane.prepare_dispatch(data_store, dispatch_project_dir.clone())?;
     let payload = NotaDoDispatchPayload {
         issue_id: dispatch.issue_id.clone(),
         issue_status: dispatch.issue_status.clone(),
@@ -1015,6 +1184,11 @@ fn run_nota_dispatch(
         prompt_source: dispatch.prompt_source.clone(),
         model: model.clone(),
         agent_command: request.agent_command.clone(),
+        repair_of_allocation_id: repair_origin.as_ref().map(|origin| origin.allocation_id),
+        repair_of_transaction_id: repair_origin.as_ref().map(|origin| origin.transaction_id),
+        repair_of_lineage_ref: repair_origin
+            .as_ref()
+            .map(|origin| origin.lineage_ref.clone()),
         execution_host: request.execution_host.as_str().to_string(),
     };
     let payload_json =
@@ -1026,7 +1200,13 @@ fn run_nota_dispatch(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| lane.default_title(&dispatch.issue_id));
+        .unwrap_or_else(|| {
+            if repair_origin.is_some() && lane == NotaDispatchLane::Dev {
+                format!("Repair dispatch {}", dispatch.issue_id)
+            } else {
+                lane.default_title(&dispatch.issue_id)
+            }
+        });
 
     let mut receipts = Vec::new();
     let transaction = data_store.with_immediate_transaction(|tx| {
@@ -1067,6 +1247,11 @@ fn run_nota_dispatch(
         prompt_source: dispatch.prompt_source.clone(),
         model: model.clone(),
         agent_command: request.agent_command.clone(),
+        repair_of_allocation_id: repair_origin.as_ref().map(|origin| origin.allocation_id),
+        repair_of_transaction_id: repair_origin.as_ref().map(|origin| origin.transaction_id),
+        repair_of_lineage_ref: repair_origin
+            .as_ref()
+            .map(|origin| origin.lineage_ref.clone()),
         execution_host: request.execution_host.as_str().to_string(),
         child_dispatch_role: actor_role_slug(dispatch.dispatch_role).to_string(),
         child_dispatch_tool_name: dispatch.dispatch_tool_name.clone(),
@@ -1173,6 +1358,22 @@ fn run_nota_dispatch(
                     status: "recorded",
                 })?,
             );
+            if let Some(repair_origin) = repair_origin.as_ref() {
+                staged_receipts.push(
+                    tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+                        transaction_id: transaction.id,
+                        receipt_kind: DEV_REPAIR_FOLLOWUP_RECORDED_RECEIPT_KIND,
+                        payload_json: &serde_json::to_string(&json!({
+                            "repair_of_allocation_id": repair_origin.allocation_id,
+                            "repair_of_transaction_id": repair_origin.transaction_id,
+                            "repair_of_lineage_ref": repair_origin.lineage_ref,
+                            "new_transaction_id": transaction.id,
+                        }))
+                        .context("failed to serialize dev repair follow-up receipt payload")?,
+                        status: "recorded",
+                    })?,
+                );
+            }
 
             transaction = tx.update_nota_runtime_transaction(
                 transaction.id,
@@ -1621,6 +1822,7 @@ fn sync_runtime_truth(data_store: &DataStore, transaction_id: Option<i64>) -> Re
     reconcile_terminal_allocation_outcomes(data_store, transaction_id)?;
     sync_runtime_closure_truth(data_store, transaction_id)?;
     materialize_current_runtime_human_round(data_store)?;
+    materialize_current_runtime_bridge_objects(data_store)?;
     refresh_runtime_invariants(data_store).map(|_| ())
 }
 
@@ -4305,6 +4507,36 @@ fn parse_human_round_record(object: StoredCadenceObject) -> Result<NotaHumanRoun
     })
 }
 
+fn parse_handout_record(object: StoredCadenceObject) -> Result<NotaHandoutRecord> {
+    let payload: CadenceHandoutPayload =
+        serde_json::from_str(&object.payload_json).with_context(|| {
+            format!(
+                "failed to parse cadence handout payload for row {}",
+                object.id
+            )
+        })?;
+
+    Ok(NotaHandoutRecord {
+        cadence_object: object,
+        payload,
+    })
+}
+
+fn parse_wake_request_record(object: StoredCadenceObject) -> Result<NotaWakeRequestRecord> {
+    let payload: CadenceWakeRequestPayload = serde_json::from_str(&object.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse cadence wake-request payload for row {}",
+                object.id
+            )
+        })?;
+
+    Ok(NotaWakeRequestRecord {
+        cadence_object: object,
+        payload,
+    })
+}
+
 fn build_checkpoint_summary(stable_level: &str, landed: &[String]) -> String {
     match landed.first() {
         Some(first_landed) => format!("{stable_level}. Landed: {first_landed}"),
@@ -4517,6 +4749,243 @@ fn materialize_current_runtime_human_round(
     }))
 }
 
+fn build_runtime_handout_summary(
+    checkpoint: &NotaCheckpointRecord,
+    round_state: &NotaRoundStateProjection,
+) -> String {
+    match round_state.next_step.as_deref() {
+        Some(step) => format!(
+            "Checkpoint {} carries round state `{}` with next step `{step}` still open.",
+            checkpoint.cadence_object.id, round_state.state
+        ),
+        None if round_state.fully_settled => format!(
+            "Checkpoint {} is fully settled and can resume from closure truth.",
+            checkpoint.cadence_object.id
+        ),
+        None if round_state.acceptance_present => format!(
+            "Checkpoint {} is accepted and awaiting carry-forward closure.",
+            checkpoint.cadence_object.id
+        ),
+        None => format!(
+            "Checkpoint {} is checkpointed, but acceptance is not formalized yet.",
+            checkpoint.cadence_object.id
+        ),
+    }
+}
+
+fn build_runtime_wake_request_summary(
+    checkpoint: &NotaCheckpointRecord,
+    round_state: &NotaRoundStateProjection,
+) -> (String, String, Option<String>) {
+    if let Some(step) = round_state.next_step.as_deref() {
+        (
+            format!("Wake request: {step}"),
+            "requested".to_string(),
+            Some(step.to_string()),
+        )
+    } else if !round_state.acceptance_present {
+        (
+            format!("Wake request: checkpoint {}", checkpoint.cadence_object.id),
+            "requested".to_string(),
+            None,
+        )
+    } else if !round_state.fully_settled {
+        (
+            format!(
+                "Wake request: carry forward checkpoint {}",
+                checkpoint.cadence_object.id
+            ),
+            "requested".to_string(),
+            None,
+        )
+    } else {
+        (
+            format!(
+                "Wake request resolved: checkpoint {}",
+                checkpoint.cadence_object.id
+            ),
+            "resolved".to_string(),
+            None,
+        )
+    }
+}
+
+fn materialize_current_runtime_bridge_objects(data_store: &DataStore) -> Result<()> {
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    let Some(current_checkpoint) = checkpoints
+        .checkpoints
+        .into_iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+    else {
+        return Ok(());
+    };
+    let checkpoint_scope_ids = active_checkpoint_scope_ids(data_store, Some(&current_checkpoint))?;
+    let transactions = list_nota_runtime_transactions(data_store)?;
+    let allocations = list_nota_runtime_allocations(data_store)?;
+    let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let current_human_round = derive_current_runtime_human_round(data_store)?;
+    let current_acceptance_bundle =
+        derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?;
+    let next_step = derive_nota_runtime_next_step(
+        &checkpoint_scope_ids,
+        &transactions.transactions,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let round_state = derive_runtime_round_state_projection(
+        Some(&current_checkpoint),
+        current_acceptance_bundle.as_ref(),
+        next_step.as_ref(),
+    );
+
+    let handout_payload = CadenceHandoutPayload {
+        checkpoint_id: current_checkpoint.cadence_object.id,
+        round_state: round_state.state.clone(),
+        stable_level: current_checkpoint.payload.stable_level.clone(),
+        human_continuity_bus: current_checkpoint.payload.human_continuity_bus.clone(),
+        selected_trunk: current_checkpoint.payload.selected_trunk.clone(),
+        human_round_id: current_human_round
+            .as_ref()
+            .map(|round| round.cadence_object.id),
+        acceptance_bundle_id: current_acceptance_bundle
+            .as_ref()
+            .map(|bundle| bundle.cadence_object.id),
+        next_step: round_state.next_step.clone(),
+        summary: build_runtime_handout_summary(&current_checkpoint, &round_state),
+    };
+    let wake_summary = match round_state.next_step.as_deref() {
+        Some(step) => format!(
+            "Wake on checkpoint {} and complete `{step}` before treating the round as settled.",
+            current_checkpoint.cadence_object.id
+        ),
+        None if !round_state.acceptance_present => format!(
+            "Wake on checkpoint {} and formalize acceptance before closing the round.",
+            current_checkpoint.cadence_object.id
+        ),
+        None if !round_state.fully_settled => format!(
+            "Wake on checkpoint {} and carry the accepted boundary forward into closure truth.",
+            current_checkpoint.cadence_object.id
+        ),
+        None => format!(
+            "No active wake request remains for checkpoint {}; the round is fully settled.",
+            current_checkpoint.cadence_object.id
+        ),
+    };
+    let (wake_title, wake_status, requested_step) =
+        build_runtime_wake_request_summary(&current_checkpoint, &round_state);
+    let wake_payload = CadenceWakeRequestPayload {
+        checkpoint_id: current_checkpoint.cadence_object.id,
+        round_state: round_state.state.clone(),
+        human_round_id: current_human_round
+            .as_ref()
+            .map(|round| round.cadence_object.id),
+        acceptance_bundle_id: current_acceptance_bundle
+            .as_ref()
+            .map(|bundle| bundle.cadence_object.id),
+        requested_step,
+        summary: wake_summary,
+    };
+
+    let existing_handout = data_store
+        .list_cadence_objects_by_kind(CADENCE_HANDOUT_KIND)?
+        .into_iter()
+        .find(|object| object.is_current)
+        .map(parse_handout_record)
+        .transpose()?;
+    if !existing_handout
+        .as_ref()
+        .map(|record| record.payload == handout_payload)
+        .unwrap_or(false)
+    {
+        let title = current_checkpoint
+            .payload
+            .selected_trunk
+            .clone()
+            .map(|trunk| format!("Handout: {trunk}"))
+            .unwrap_or_else(|| {
+                format!(
+                    "Handout: checkpoint {}",
+                    current_checkpoint.cadence_object.id
+                )
+            });
+        let payload_json = serde_json::to_string(&handout_payload)
+            .context("failed to serialize cadence handout payload")?;
+        let cadence_object = data_store.insert_cadence_object(NewCadenceObject {
+            cadence_kind: CADENCE_HANDOUT_KIND,
+            title: &title,
+            summary: &handout_payload.summary,
+            payload_json: &payload_json,
+            scope_type: NOTA_RUNTIME_SCOPE_TYPE,
+            scope_ref: NOTA_RUNTIME_SCOPE_REF,
+            source_type: NOTA_RUNTIME_SOURCE_TYPE,
+            source_ref: "nota_runtime:handout",
+            admission_policy: admission_policy_for_kind(CADENCE_HANDOUT_KIND),
+            projection_policy: projection_policy_for_kind(CADENCE_HANDOUT_KIND),
+            status: "active",
+            is_current: true,
+        })?;
+        if let Some(previous) = existing_handout.as_ref() {
+            data_store.insert_cadence_link(NewCadenceLink {
+                src_cadence_object_id: previous.cadence_object.id,
+                dst_cadence_object_id: cadence_object.id,
+                relation_type: "superseded_by",
+                status: "active",
+            })?;
+        }
+        data_store.insert_cadence_link(NewCadenceLink {
+            src_cadence_object_id: current_checkpoint.cadence_object.id,
+            dst_cadence_object_id: cadence_object.id,
+            relation_type: "handout",
+            status: "active",
+        })?;
+    }
+
+    let existing_wake_request = data_store
+        .list_cadence_objects_by_kind(CADENCE_WAKE_REQUEST_KIND)?
+        .into_iter()
+        .find(|object| object.is_current)
+        .map(parse_wake_request_record)
+        .transpose()?;
+    if !existing_wake_request
+        .as_ref()
+        .map(|record| record.payload == wake_payload && record.cadence_object.status == wake_status)
+        .unwrap_or(false)
+    {
+        let payload_json = serde_json::to_string(&wake_payload)
+            .context("failed to serialize cadence wake-request payload")?;
+        let cadence_object = data_store.insert_cadence_object(NewCadenceObject {
+            cadence_kind: CADENCE_WAKE_REQUEST_KIND,
+            title: &wake_title,
+            summary: &wake_payload.summary,
+            payload_json: &payload_json,
+            scope_type: NOTA_RUNTIME_SCOPE_TYPE,
+            scope_ref: NOTA_RUNTIME_SCOPE_REF,
+            source_type: NOTA_RUNTIME_SOURCE_TYPE,
+            source_ref: "nota_runtime:wake_request",
+            admission_policy: admission_policy_for_kind(CADENCE_WAKE_REQUEST_KIND),
+            projection_policy: projection_policy_for_kind(CADENCE_WAKE_REQUEST_KIND),
+            status: &wake_status,
+            is_current: true,
+        })?;
+        if let Some(previous) = existing_wake_request.as_ref() {
+            data_store.insert_cadence_link(NewCadenceLink {
+                src_cadence_object_id: previous.cadence_object.id,
+                dst_cadence_object_id: cadence_object.id,
+                relation_type: "superseded_by",
+                status: "active",
+            })?;
+        }
+        data_store.insert_cadence_link(NewCadenceLink {
+            src_cadence_object_id: current_checkpoint.cadence_object.id,
+            dst_cadence_object_id: cadence_object.id,
+            relation_type: "wake_request",
+            status: "active",
+        })?;
+    }
+
+    Ok(())
+}
+
 pub fn derive_anti_zeno_projection(
     current_checkpoint: Option<&NotaCheckpointRecord>,
     acceptance_bundle: Option<&NotaAcceptanceBundleRecord>,
@@ -4713,22 +5182,24 @@ mod tests {
     use super::{
         active_checkpoint_scope_ids, default_nota_dispatch_execution_host,
         derive_anti_zeno_projection, derive_current_runtime_acceptance_bundle,
+        derive_current_runtime_handout, derive_current_runtime_wake_request,
         derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
         derive_nota_runtime_review, derive_runtime_round_state_projection,
         list_nota_runtime_allocations, list_nota_runtime_receipts, list_runtime_acceptance_bundles,
         list_runtime_checkpoints, list_runtime_human_rounds,
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
-        sync_runtime_truth, write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload,
-        NotaCheckpointRequest, NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest,
-        NotaDevReturnReviewRequest, NotaDispatchExecutionHost, NotaDoAllocationPayload,
-        NotaDoAllocationTerminalOutcome, AGENT_RETURN_ACCEPTED_RECEIPT_KIND,
-        ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND, CADENCE_ACCEPTANCE_BUNDLE_KIND,
-        CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND, DEV_RETURN_ACCEPTED_RECEIPT_KIND,
-        DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE, DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND,
-        DEV_RETURN_INTEGRATE_INTEGRATED_STATE, DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND,
-        DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE, DEV_RETURN_REVIEW_APPROVED_VERDICT,
-        DEV_RETURN_REVIEW_READY_RECEIPT_KIND, DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
+        resolve_dev_repair_origin, sync_runtime_truth, write_runtime_checkpoint,
+        AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
+        NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest,
+        NotaDispatchExecutionHost, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
+        AGENT_RETURN_ACCEPTED_RECEIPT_KIND, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
+        CADENCE_ACCEPTANCE_BUNDLE_KIND, CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
+        DEV_RETURN_ACCEPTED_RECEIPT_KIND, DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE,
+        DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND, DEV_RETURN_INTEGRATE_INTEGRATED_STATE,
+        DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND, DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE,
+        DEV_RETURN_REVIEW_APPROVED_VERDICT, DEV_RETURN_REVIEW_READY_RECEIPT_KIND,
+        DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
     };
 
     struct TempDbPath {
@@ -4865,6 +5336,164 @@ mod tests {
     }
 
     #[test]
+    fn runtime_truth_materializes_handout_and_wake_request() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        let checkpoint = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: Some("Bridge seed".to_string()),
+                stable_level: "single-ingress, checkpointed, DB-first NOTA host".to_string(),
+                landed: vec!["opened handout and wake bridge".to_string()],
+                remaining: vec!["formal acceptance still pending".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("bridge seed".to_string()),
+                next_start_hints: vec!["read nota status".to_string()],
+                project_dir: None,
+            },
+        )?;
+
+        let handout =
+            derive_current_runtime_handout(&store)?.context("runtime handout should exist")?;
+        assert_eq!(
+            handout.payload.checkpoint_id,
+            checkpoint.checkpoint.cadence_object.id
+        );
+        assert_eq!(
+            handout.payload.round_state,
+            "checkpointed_pending_acceptance"
+        );
+        assert_eq!(
+            handout.payload.selected_trunk.as_deref(),
+            Some("bridge seed")
+        );
+        assert!(handout.payload.summary.contains("acceptance"));
+
+        let wake_request = derive_current_runtime_wake_request(&store)?
+            .context("runtime wake request should exist before acceptance")?;
+        assert_eq!(
+            wake_request.payload.checkpoint_id,
+            checkpoint.checkpoint.cadence_object.id
+        );
+        assert_eq!(
+            wake_request.payload.round_state,
+            "checkpointed_pending_acceptance"
+        );
+        assert!(wake_request
+            .payload
+            .summary
+            .contains("formalize acceptance"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn dev_repair_origin_requires_active_repair_boundary() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+
+        let checkpoint = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: Some("Repair gate".to_string()),
+                stable_level: "repair gate".to_string(),
+                landed: vec!["repair boundary opened".to_string()],
+                remaining: vec!["repair follow-up still pending".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("repair gate".to_string()),
+                next_start_hints: vec!["read repair gate".to_string()],
+                project_dir: None,
+            },
+        )?;
+        let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "dev",
+            transaction_kind: "forge_dev_dispatch",
+            title: "Repair source transaction",
+            payload_json: "{}",
+            status: "checkpointed",
+            forge_task_id: None,
+            cadence_checkpoint_id: Some(checkpoint.checkpoint.cadence_object.id),
+        })?;
+        let allocation_payload = NotaDoAllocationPayload {
+            issue_id: "MYT-REPAIR".to_string(),
+            issue_status: "Todo".to_string(),
+            issue_status_source: "test".to_string(),
+            issue_title: Some("Repair source boundary".to_string()),
+            project_root: "A:/Agent/Entrance".to_string(),
+            worktree_path: "A:/Agent/Entrance/worktrees/feat-MYT-REPAIR".to_string(),
+            prompt_source: "test".to_string(),
+            model: "codex".to_string(),
+            agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
+            execution_host: default_nota_dispatch_execution_host(),
+            child_dispatch_role: "dev".to_string(),
+            child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
+            terminal_outcome: Some(NotaDoAllocationTerminalOutcome {
+                boundary_kind: "return".to_string(),
+                child_execution_status: "Done".to_string(),
+                child_execution_status_message: None,
+                target_kind: "nota_runtime_transaction".to_string(),
+                target_ref: transaction.id.to_string(),
+            }),
+        };
+        let allocation = store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_dev",
+            allocation_kind: "forge_dev_dispatch",
+            source_transaction_id: transaction.id,
+            lineage_ref: "nota/dev/transaction/77/forge-task/7",
+            child_execution_kind: "forge_task",
+            child_execution_ref: "7",
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: &transaction.id.to_string(),
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: &transaction.id.to_string(),
+            status: "return_ready",
+            payload_json: &serde_json::to_string(&allocation_payload)?,
+        })?;
+        store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: transaction.id,
+            receipt_kind: DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
+            payload_json: &serde_json::to_string(&serde_json::json!({
+                "checkpoint_id": checkpoint.checkpoint.cadence_object.id,
+                "review": {
+                    "state": "review_recorded",
+                    "transaction_id": transaction.id,
+                    "allocation_id": allocation.id,
+                    "lineage_ref": allocation.lineage_ref,
+                    "child_dispatch_role": "dev",
+                    "execution_host": "in_process",
+                    "target_kind": "nota_runtime_transaction",
+                    "target_ref": transaction.id.to_string(),
+                    "verdict": "changes_requested",
+                    "summary": "Repair is required"
+                },
+                "next_step": {
+                    "step": "repair",
+                    "transaction_id": transaction.id,
+                    "allocation_id": allocation.id,
+                    "lineage_ref": allocation.lineage_ref,
+                    "child_dispatch_role": "dev",
+                    "execution_host": "in_process",
+                    "target_kind": "nota_runtime_transaction",
+                    "target_ref": transaction.id.to_string()
+                }
+            }))?,
+            status: "recorded",
+        })?;
+
+        let repair_origin = resolve_dev_repair_origin(&store, allocation.id)?;
+        assert_eq!(repair_origin.allocation_id, allocation.id);
+        assert_eq!(repair_origin.transaction_id, transaction.id);
+        assert_eq!(repair_origin.lineage_ref, allocation.lineage_ref);
+        assert_eq!(repair_origin.project_dir, "A:/Agent/Entrance");
+
+        Ok(())
+    }
+
+    #[test]
     fn runtime_allocation_persists_separately_from_transactions_and_receipts() -> Result<()> {
         let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
 
@@ -4953,6 +5582,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "agent".to_string(),
             child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
@@ -5046,6 +5678,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "dev".to_string(),
             child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
@@ -5129,6 +5764,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "dev".to_string(),
             child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
@@ -5225,6 +5863,9 @@ mod tests {
             prompt_source: "Entrance-owned harness/bootstrap dev prompt".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor
                 .as_str()
                 .to_string(),
@@ -5857,6 +6498,9 @@ mod tests {
             prompt_source: "Entrance-owned harness/bootstrap agent prompt".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "agent".to_string(),
             child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
@@ -6056,6 +6700,15 @@ mod tests {
         assert!(closure_round_state.carry_forward_checkpointed);
         assert!(!closure_round_state.next_step_open);
 
+        let settled_handout =
+            derive_current_runtime_handout(&store)?.context("settled handout should exist")?;
+        assert_eq!(
+            settled_handout.payload.checkpoint_id,
+            closure_checkpoint_record.cadence_object.id
+        );
+        assert_eq!(settled_handout.payload.round_state, "fully_settled");
+        assert!(derive_current_runtime_wake_request(&store)?.is_none());
+
         Ok(())
     }
 
@@ -6102,6 +6755,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "agent".to_string(),
             child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
@@ -6191,6 +6847,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "agent".to_string(),
             child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
@@ -6253,6 +6912,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor
                 .as_str()
                 .to_string(),
@@ -6394,6 +7056,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "dev".to_string(),
             child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
@@ -6461,6 +7126,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "dev".to_string(),
             child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
@@ -6610,6 +7278,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "dev".to_string(),
             child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
@@ -6662,6 +7333,9 @@ mod tests {
             prompt_source: "test".to_string(),
             model: "codex".to_string(),
             agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
             execution_host: default_nota_dispatch_execution_host(),
             child_dispatch_role: "dev".to_string(),
             child_dispatch_tool_name: "forge_dispatch_dev".to_string(),

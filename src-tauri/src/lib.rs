@@ -58,7 +58,8 @@ use core::{
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
         active_checkpoint_scope_ids, derive_anti_zeno_projection,
-        derive_current_runtime_acceptance_bundle, derive_current_runtime_human_round,
+        derive_current_runtime_acceptance_bundle, derive_current_runtime_handout,
+        derive_current_runtime_human_round, derive_current_runtime_wake_request,
         derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
         derive_nota_runtime_review, derive_runtime_round_state_projection,
         list_nota_runtime_allocations, list_nota_runtime_receipts, list_nota_runtime_transactions,
@@ -69,10 +70,10 @@ use core::{
         NotaAcceptanceBundleListReport, NotaAntiZenoProjection, NotaCheckpointListReport,
         NotaCheckpointRequest, NotaDevDispatchRequest, NotaDevReturnFinalizeRequest,
         NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest, NotaDispatchExecutionHost,
-        NotaDoAgentDispatchRequest, NotaHumanRoundListReport, NotaRoundStateProjection,
-        NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport, NotaRuntimeFinalize,
-        NotaRuntimeIntegrate, NotaRuntimeNextStep, NotaRuntimeReview,
-        NotaRuntimeTransactionsReport,
+        NotaDoAgentDispatchRequest, NotaHandoutRecord, NotaHumanRoundListReport,
+        NotaRoundStateProjection, NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport,
+        NotaRuntimeFinalize, NotaRuntimeIntegrate, NotaRuntimeNextStep, NotaRuntimeReview,
+        NotaRuntimeTransactionsReport, NotaWakeRequestRecord,
     },
     plugin_manager::PluginManager,
     projection_runtime::{
@@ -154,6 +155,10 @@ pub(crate) struct NotaRuntimeOverview {
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    handout: Option<NotaHandoutRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wake_request: Option<NotaWakeRequestRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     review: Option<NotaRuntimeReview>,
     #[serde(skip_serializing_if = "Option::is_none")]
     integrate: Option<NotaRuntimeIntegrate>,
@@ -209,6 +214,10 @@ pub(crate) struct NotaRuntimeStatus {
     recovery: RecoveryImportOnlyStatusReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handout: Option<NotaHandoutRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wake_request: Option<NotaWakeRequestRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     review: Option<NotaRuntimeReview>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -708,7 +717,7 @@ const NOTA_CLI_HELP: &str = r#"Usage:
   entrance nota receipts [--transaction-id <id>]
   entrance nota transactions
   entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]
-  entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]
+  entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>] [--repair-of-allocation-id <id>]
   entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]
   entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]
   entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]
@@ -1080,6 +1089,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                     model: request.model,
                     agent_command,
                     title: request.title,
+                    repair_of_allocation_id: request.repair_of_allocation_id,
                     execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor,
                 },
             )?;
@@ -1108,6 +1118,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                     model: request.model,
                     agent_command,
                     title: request.title,
+                    repair_of_allocation_id: request.repair_of_allocation_id,
                     execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor,
                 },
             )?;
@@ -1150,7 +1161,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&report)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota anti-zeno`, `entrance nota invariants`, `entrance nota repair`, `entrance nota cold-docs`, `entrance nota host`, `entrance nota worktrees`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota rebuild-projections [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>] [--repair-of-allocation-id <id>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota anti-zeno`, `entrance nota invariants`, `entrance nota repair`, `entrance nota cold-docs`, `entrance nota host`, `entrance nota worktrees`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota rebuild-projections [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -1687,6 +1698,7 @@ fn parse_nota_dispatch_args(
         model: "codex".to_string(),
         agent_command: None,
         title: None,
+        repair_of_allocation_id: None,
         execution_host: NotaDispatchExecutionHost::InProcess,
     };
     let mut index = 0;
@@ -1719,6 +1731,26 @@ fn parse_nota_dispatch_args(
                     format!("`entrance nota {command_name} --title` requires a value")
                 })?;
                 request.title = Some(value.to_string());
+                index += 2;
+            }
+            "--repair-of-allocation-id" => {
+                if command_name != "dev" {
+                    bail!(
+                        "`entrance nota {command_name}` does not support `--repair-of-allocation-id`"
+                    );
+                }
+                let value = args.get(index + 1).with_context(|| {
+                    format!(
+                        "`entrance nota {command_name} --repair-of-allocation-id` requires a value"
+                    )
+                })?;
+                let parsed = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid runtime allocation id `{value}`"))?;
+                if parsed <= 0 {
+                    bail!("`entrance nota {command_name} --repair-of-allocation-id` must be >= 1");
+                }
+                request.repair_of_allocation_id = Some(parsed);
                 index += 2;
             }
             other => bail!("unsupported nota {command_name} argument `{other}`"),
@@ -2127,6 +2159,8 @@ pub(crate) fn build_nota_runtime_overview(
         allocations.stored_allocations(),
         current_checkpoint,
     )?;
+    let handout = derive_current_runtime_handout(data_store)?;
+    let wake_request = derive_current_runtime_wake_request(data_store)?;
     let review = derive_nota_runtime_review(
         &checkpoint_scope_ids,
         &transactions.transactions,
@@ -2221,6 +2255,8 @@ pub(crate) fn build_nota_runtime_overview(
         worktrees,
         recovery,
         recommended_checkpoint,
+        handout,
+        wake_request,
         review,
         integrate,
         finalize,
@@ -2262,6 +2298,8 @@ pub(crate) fn build_nota_runtime_status(
         allocations.stored_allocations(),
         current_checkpoint.as_ref(),
     )?;
+    let handout = derive_current_runtime_handout(data_store)?;
+    let wake_request = derive_current_runtime_wake_request(data_store)?;
     let review = derive_nota_runtime_review(
         &checkpoint_scope_ids,
         &transactions.transactions,
@@ -2371,6 +2409,8 @@ pub(crate) fn build_nota_runtime_status(
         worktrees,
         recovery,
         recommended_checkpoint,
+        handout,
+        wake_request,
         review,
         integrate,
         finalize,
