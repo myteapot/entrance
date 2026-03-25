@@ -22,6 +22,7 @@ use crate::plugins::forge::{
 };
 
 const CADENCE_CHECKPOINT_KIND: &str = "CADENCE_CHECKPOINT";
+const CADENCE_HUMAN_ROUND_KIND: &str = "CADENCE_HUMAN_ROUND";
 const CADENCE_ACCEPTANCE_BUNDLE_KIND: &str = "CADENCE_ACCEPTANCE_BUNDLE";
 const CADENCE_HANDOUT_KIND: &str = "CADENCE_HANDOUT";
 const CADENCE_WAKE_REQUEST_KIND: &str = "CADENCE_WAKE_REQUEST";
@@ -96,6 +97,40 @@ pub struct NotaCheckpointListReport {
     pub checkpoint_count: usize,
     pub current_checkpoint_id: Option<i64>,
     pub checkpoints: Vec<NotaCheckpointRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CadenceHumanRoundPayload {
+    pub checkpoint_id: i64,
+    pub round_state: String,
+    pub acceptance_present: bool,
+    pub fully_settled: bool,
+    pub next_step_open: bool,
+    pub stable_level: String,
+    pub human_continuity_bus: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_trunk: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_bundle_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaHumanRoundRecord {
+    #[serde(flatten)]
+    pub cadence_object: StoredCadenceObject,
+    pub payload: CadenceHumanRoundPayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaHumanRoundListReport {
+    pub human_round_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_human_round_id: Option<i64>,
+    pub human_rounds: Vec<NotaHumanRoundRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -811,6 +846,34 @@ pub fn list_runtime_acceptance_bundles(
         current_acceptance_bundle_id,
         acceptance_bundles,
     })
+}
+
+pub fn list_runtime_human_rounds(data_store: &DataStore) -> Result<NotaHumanRoundListReport> {
+    materialize_current_runtime_human_round(data_store)?;
+    let human_rounds = data_store
+        .list_cadence_objects_by_kind(CADENCE_HUMAN_ROUND_KIND)?
+        .into_iter()
+        .map(parse_human_round_record)
+        .collect::<Result<Vec<_>>>()?;
+    let current_human_round_id = human_rounds
+        .iter()
+        .find(|round| round.cadence_object.is_current)
+        .map(|round| round.cadence_object.id);
+
+    Ok(NotaHumanRoundListReport {
+        human_round_count: human_rounds.len(),
+        current_human_round_id,
+        human_rounds,
+    })
+}
+
+pub fn derive_current_runtime_human_round(
+    data_store: &DataStore,
+) -> Result<Option<NotaHumanRoundRecord>> {
+    Ok(list_runtime_human_rounds(data_store)?
+        .human_rounds
+        .into_iter()
+        .find(|round| round.cadence_object.is_current))
 }
 
 pub fn derive_current_runtime_acceptance_bundle(
@@ -1548,6 +1611,7 @@ fn build_terminal_allocation_outcome<'a>(
 pub fn admission_policy_for_kind(cadence_kind: &str) -> &'static str {
     match cadence_kind {
         CADENCE_CHECKPOINT_KIND
+        | CADENCE_HUMAN_ROUND_KIND
         | CADENCE_ACCEPTANCE_BUNDLE_KIND
         | CADENCE_HANDOUT_KIND
         | CADENCE_WAKE_REQUEST_KIND
@@ -1558,7 +1622,10 @@ pub fn admission_policy_for_kind(cadence_kind: &str) -> &'static str {
 
 pub fn projection_policy_for_kind(cadence_kind: &str) -> &'static str {
     match cadence_kind {
-        CADENCE_CHECKPOINT_KIND | CADENCE_ACCEPTANCE_BUNDLE_KIND | CADENCE_HANDOUT_KIND => {
+        CADENCE_CHECKPOINT_KIND
+        | CADENCE_HUMAN_ROUND_KIND
+        | CADENCE_ACCEPTANCE_BUNDLE_KIND
+        | CADENCE_HANDOUT_KIND => {
             "PP_HOT_ACTIVE_ONLY"
         }
         CADENCE_WAKE_REQUEST_KIND => "PP_HOT_ON_ATTENTION_OR_REJECT",
@@ -3900,11 +3967,181 @@ fn parse_acceptance_bundle_record(
     })
 }
 
+fn parse_human_round_record(object: StoredCadenceObject) -> Result<NotaHumanRoundRecord> {
+    let payload: CadenceHumanRoundPayload = serde_json::from_str(&object.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse cadence human-round payload for row {}",
+                object.id
+            )
+        })?;
+
+    Ok(NotaHumanRoundRecord {
+        cadence_object: object,
+        payload,
+    })
+}
+
 fn build_checkpoint_summary(stable_level: &str, landed: &[String]) -> String {
     match landed.first() {
         Some(first_landed) => format!("{stable_level}. Landed: {first_landed}"),
         None => stable_level.to_string(),
     }
+}
+
+fn human_round_state_for_boundary(
+    acceptance_bundle: Option<&NotaAcceptanceBundleRecord>,
+    next_step_open: bool,
+) -> &'static str {
+    match acceptance_bundle {
+        Some(bundle) if bundle.payload.fully_settled => "fully_settled",
+        Some(_) if next_step_open => "settling",
+        Some(_) => "accepted",
+        None => "checkpointed",
+    }
+}
+
+fn build_human_round_summary(
+    checkpoint: &NotaCheckpointRecord,
+    acceptance_bundle: Option<&NotaAcceptanceBundleRecord>,
+    next_step: Option<&str>,
+) -> String {
+    let round_state = human_round_state_for_boundary(acceptance_bundle, next_step.is_some());
+    match (acceptance_bundle, next_step) {
+        (Some(bundle), Some(step)) => format!(
+            "Human round is {round_state} on checkpoint {} with acceptance {} and next step `{}`.",
+            checkpoint.cadence_object.id, bundle.cadence_object.id, step
+        ),
+        (Some(bundle), None) => format!(
+            "Human round is {round_state} on checkpoint {} with acceptance {}.",
+            checkpoint.cadence_object.id, bundle.cadence_object.id
+        ),
+        (None, _) => format!(
+            "Human round is {round_state} on checkpoint {}.",
+            checkpoint.cadence_object.id
+        ),
+    }
+}
+
+fn materialize_current_runtime_human_round(
+    data_store: &DataStore,
+) -> Result<Option<NotaHumanRoundRecord>> {
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    let Some(current_checkpoint) = checkpoints
+        .checkpoints
+        .into_iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+    else {
+        return Ok(None);
+    };
+    let checkpoint_scope_ids =
+        active_checkpoint_scope_ids(data_store, Some(&current_checkpoint))?;
+    let allocations = list_nota_runtime_allocations(data_store)?;
+    let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let next_step = derive_nota_runtime_next_step(
+        &checkpoint_scope_ids,
+        allocations.stored_allocations(),
+        &receipts.receipts,
+    )?;
+    let acceptance_bundle =
+        derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?;
+    let round_state =
+        human_round_state_for_boundary(acceptance_bundle.as_ref(), next_step.is_some());
+    let next_step_label = next_step.as_ref().map(|step| step.step.clone());
+    let summary = build_human_round_summary(
+        &current_checkpoint,
+        acceptance_bundle.as_ref(),
+        next_step_label.as_deref(),
+    );
+    let payload = CadenceHumanRoundPayload {
+        checkpoint_id: current_checkpoint.cadence_object.id,
+        round_state: round_state.to_string(),
+        acceptance_present: acceptance_bundle.is_some(),
+        fully_settled: acceptance_bundle
+            .as_ref()
+            .map(|bundle| bundle.payload.fully_settled)
+            .unwrap_or(false),
+        next_step_open: next_step.is_some(),
+        stable_level: current_checkpoint.payload.stable_level.clone(),
+        human_continuity_bus: current_checkpoint.payload.human_continuity_bus.clone(),
+        selected_trunk: current_checkpoint.payload.selected_trunk.clone(),
+        acceptance_bundle_id: acceptance_bundle
+            .as_ref()
+            .map(|bundle| bundle.cadence_object.id),
+        acceptance_kind: acceptance_bundle
+            .as_ref()
+            .map(|bundle| bundle.payload.acceptance_kind.clone()),
+        next_step: next_step_label,
+    };
+
+    let existing_current = data_store
+        .list_cadence_objects_by_kind(CADENCE_HUMAN_ROUND_KIND)?
+        .into_iter()
+        .find(|object| object.is_current)
+        .map(parse_human_round_record)
+        .transpose()?;
+    if existing_current
+        .as_ref()
+        .map(|existing| existing.payload == payload)
+        .unwrap_or(false)
+    {
+        return Ok(existing_current);
+    }
+
+    let title = current_checkpoint
+        .payload
+        .selected_trunk
+        .clone()
+        .map(|trunk| format!("Human round: {trunk}"))
+        .unwrap_or_else(|| {
+            format!(
+                "Human round: checkpoint {}",
+                current_checkpoint.cadence_object.id
+            )
+        });
+    let payload_json =
+        serde_json::to_string(&payload).context("failed to serialize human round payload")?;
+    let cadence_object = data_store.insert_cadence_object(NewCadenceObject {
+        cadence_kind: CADENCE_HUMAN_ROUND_KIND,
+        title: &title,
+        summary: &summary,
+        payload_json: &payload_json,
+        scope_type: NOTA_RUNTIME_SCOPE_TYPE,
+        scope_ref: NOTA_RUNTIME_SCOPE_REF,
+        source_type: NOTA_RUNTIME_SOURCE_TYPE,
+        source_ref: "nota_runtime:human_round",
+        admission_policy: admission_policy_for_kind(CADENCE_HUMAN_ROUND_KIND),
+        projection_policy: projection_policy_for_kind(CADENCE_HUMAN_ROUND_KIND),
+        status: round_state,
+        is_current: true,
+    })?;
+    if let Some(previous) = existing_current.as_ref() {
+        data_store.insert_cadence_link(NewCadenceLink {
+            src_cadence_object_id: previous.cadence_object.id,
+            dst_cadence_object_id: cadence_object.id,
+            relation_type: "superseded_by",
+            status: "active",
+        })?;
+    }
+    data_store.insert_cadence_link(NewCadenceLink {
+        src_cadence_object_id: current_checkpoint.cadence_object.id,
+        dst_cadence_object_id: cadence_object.id,
+        relation_type: "human_round",
+        status: "active",
+    })?;
+    if let Some(bundle) = acceptance_bundle.as_ref() {
+        data_store.insert_cadence_link(NewCadenceLink {
+            src_cadence_object_id: cadence_object.id,
+            dst_cadence_object_id: bundle.cadence_object.id,
+            relation_type: "acceptance",
+            status: "active",
+        })?;
+    }
+
+    Ok(Some(NotaHumanRoundRecord {
+        cadence_object,
+        payload,
+    }))
 }
 
 pub fn derive_anti_zeno_projection(
@@ -4105,7 +4342,7 @@ mod tests {
         derive_anti_zeno_projection, derive_current_runtime_acceptance_bundle,
         derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
         derive_nota_runtime_review, list_nota_runtime_allocations, list_nota_runtime_receipts,
-        list_runtime_acceptance_bundles, list_runtime_checkpoints,
+        list_runtime_acceptance_bundles, list_runtime_checkpoints, list_runtime_human_rounds,
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
         write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
@@ -4203,6 +4440,41 @@ mod tests {
         );
         assert!(!report.checkpoints[1].cadence_object.is_current);
         assert_eq!(store.list_memory_fragment_records()?.len(), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_checkpoint_materializes_current_human_round() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        let checkpoint = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: Some("Round seed".to_string()),
+                stable_level: "single-ingress, checkpointed, DB-first NOTA host".to_string(),
+                landed: vec!["opened current round".to_string()],
+                remaining: vec!["formal acceptance still pending".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("round seed".to_string()),
+                next_start_hints: vec!["read nota status".to_string()],
+                project_dir: None,
+            },
+        )?;
+
+        let rounds = list_runtime_human_rounds(&store)?;
+        assert_eq!(rounds.human_round_count, 1);
+        let current_round = rounds
+            .human_rounds
+            .iter()
+            .find(|round| round.cadence_object.is_current)
+            .context("human round should be materialized")?;
+        assert_eq!(current_round.payload.checkpoint_id, checkpoint.checkpoint.cadence_object.id);
+        assert_eq!(current_round.payload.round_state, "checkpointed");
+        assert!(!current_round.payload.acceptance_present);
+        assert!(!current_round.payload.fully_settled);
+        assert!(!current_round.payload.next_step_open);
+        assert_eq!(current_round.payload.selected_trunk.as_deref(), Some("round seed"));
 
         Ok(())
     }
@@ -4627,6 +4899,25 @@ mod tests {
         );
         assert_eq!(initial_acceptance.payload.round_state, "accepted");
         assert!(!initial_acceptance.payload.fully_settled);
+
+        let initial_human_rounds = list_runtime_human_rounds(&store)?;
+        let initial_human_round = initial_human_rounds
+            .human_rounds
+            .iter()
+            .find(|round| round.cadence_object.is_current)
+            .context("human round should exist after acceptance backflow")?;
+        assert_eq!(
+            initial_human_round.payload.checkpoint_id,
+            checkpoint_report.checkpoint.cadence_object.id
+        );
+        assert_eq!(initial_human_round.payload.round_state, "settling");
+        assert!(initial_human_round.payload.acceptance_present);
+        assert!(!initial_human_round.payload.fully_settled);
+        assert!(initial_human_round.payload.next_step_open);
+        assert_eq!(
+            initial_human_round.payload.acceptance_bundle_id,
+            Some(initial_acceptance.cadence_object.id)
+        );
 
         let checkpoints = list_runtime_checkpoints(&store)?;
         let current_checkpoint = checkpoints

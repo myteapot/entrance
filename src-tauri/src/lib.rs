@@ -46,19 +46,20 @@ use core::{
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
         active_checkpoint_scope_ids, derive_anti_zeno_projection,
+        derive_current_runtime_human_round,
         derive_current_runtime_acceptance_bundle, derive_nota_runtime_finalize,
         derive_nota_runtime_integrate, derive_nota_runtime_next_step, derive_nota_runtime_review,
         list_nota_runtime_allocations, list_nota_runtime_receipts, list_nota_runtime_transactions,
-        list_runtime_acceptance_bundles, list_runtime_checkpoints,
+        list_runtime_acceptance_bundles, list_runtime_checkpoints, list_runtime_human_rounds,
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
         run_nota_dev_dispatch, run_nota_do_agent_dispatch, write_runtime_checkpoint,
         NotaAcceptanceBundleListReport, NotaAntiZenoProjection, NotaCheckpointListReport,
         NotaCheckpointRequest, NotaDevDispatchRequest, NotaDevReturnFinalizeRequest,
         NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest, NotaDispatchExecutionHost,
-        NotaDoAgentDispatchRequest, NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport,
-        NotaRuntimeFinalize, NotaRuntimeIntegrate, NotaRuntimeNextStep, NotaRuntimeReview,
-        NotaRuntimeTransactionsReport,
+        NotaDoAgentDispatchRequest, NotaHumanRoundListReport, NotaRuntimeAllocationReadRecord,
+        NotaRuntimeAllocationsReport, NotaRuntimeFinalize, NotaRuntimeIntegrate,
+        NotaRuntimeNextStep, NotaRuntimeReview, NotaRuntimeTransactionsReport,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -121,6 +122,7 @@ struct DashboardSummary {
 pub(crate) struct NotaRuntimeOverview {
     chat_policy: ChatArchivePolicyReport,
     checkpoints: NotaCheckpointListReport,
+    human_rounds: NotaHumanRoundListReport,
     acceptance_bundles: NotaAcceptanceBundleListReport,
     transactions: NotaRuntimeTransactionsReport,
     allocations: NotaRuntimeAllocationsReport,
@@ -145,6 +147,9 @@ pub(crate) struct NotaRuntimeOverview {
 #[derive(Clone, Serialize)]
 pub(crate) struct NotaRuntimeStatus {
     chat_policy: ChatArchivePolicyReport,
+    human_round_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_human_round: Option<core::nota_runtime::NotaHumanRoundRecord>,
     checkpoint_count: usize,
     current_checkpoint_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -619,6 +624,7 @@ const NOTA_CLI_HELP: &str = r#"Usage:
   entrance nota chat-policy [--policy <off|summary|full>]
   entrance nota chat-captures
   entrance nota checkpoints
+  entrance nota rounds
   entrance nota acceptance-bundles
   entrance nota export-hot-root [--project-dir <path>]
   entrance nota decisions
@@ -909,6 +915,9 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "checkpoints" => {
             print_json(&list_runtime_checkpoints(&startup.data_store())?)
         }
+        [command] if command == "rounds" => {
+            print_json(&list_runtime_human_rounds(&startup.data_store())?)
+        }
         [command] if command == "acceptance-bundles" => {
             print_json(&list_runtime_acceptance_bundles(&startup.data_store())?)
         }
@@ -1047,7 +1056,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&report)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota acceptance-bundles`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -2013,6 +2022,7 @@ pub(crate) fn build_nota_runtime_overview(
     let checkpoint_scope_ids = active_checkpoint_scope_ids(data_store, current_checkpoint)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let human_rounds = list_runtime_human_rounds(data_store)?;
     let acceptance_bundles = list_runtime_acceptance_bundles(data_store)?;
     let visions = list_nota_visions(data_store)?;
     let todos = list_nota_todos(data_store)?;
@@ -2068,6 +2078,7 @@ pub(crate) fn build_nota_runtime_overview(
     Ok(NotaRuntimeOverview {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
         checkpoints,
+        human_rounds,
         acceptance_bundles,
         transactions,
         allocations,
@@ -2099,6 +2110,7 @@ pub(crate) fn build_nota_runtime_status(
     let transactions = list_nota_runtime_transactions(data_store)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let human_rounds = list_runtime_human_rounds(data_store)?;
     let acceptance_bundles = list_runtime_acceptance_bundles(data_store)?;
     let decisions = list_design_decisions(data_store)?;
     let chat_captures = list_chat_captures(data_store)?;
@@ -2129,6 +2141,7 @@ pub(crate) fn build_nota_runtime_status(
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
+    let current_human_round = derive_current_runtime_human_round(data_store)?;
     let current_acceptance_bundle =
         derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?;
     let anti_zeno = derive_anti_zeno_projection(
@@ -2153,6 +2166,8 @@ pub(crate) fn build_nota_runtime_status(
 
     Ok(NotaRuntimeStatus {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
+        human_round_count: human_rounds.human_round_count,
+        current_human_round,
         checkpoint_count: checkpoints.checkpoint_count,
         current_checkpoint_id: checkpoints.current_checkpoint_id,
         current_checkpoint,
@@ -2249,6 +2264,16 @@ fn render_hot_root_files(
         .unwrap_or_else(|| {
             "Checkpoint the current human round before relying on exported views.".to_string()
         });
+    let human_round_line = status
+        .current_human_round
+        .as_ref()
+        .map(|round| {
+            format!(
+                "{} on checkpoint {}",
+                round.payload.round_state, round.payload.checkpoint_id
+            )
+        })
+        .unwrap_or_else(|| "No current human round is materialized yet.".to_string());
     let acceptance_line = status
         .current_acceptance_bundle
         .as_ref()
@@ -2271,14 +2296,14 @@ fn render_hot_root_files(
     let db_path = startup.paths().db_path().display().to_string();
 
     let readme = format!(
-        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n\nCurrent round:\n\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
+        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n\nCurrent round:\n\n- human round: {human_round_line}\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
         startup.paths().exports_dir().join("hot-root").display(),
         status.anti_zeno.summary,
         status.anti_zeno.state
     );
 
     let machine = format!(
-        "# Machine\n\n> Status: hot root projection\n\n## Current Runtime Cut\n\n- current checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance bundle count: {}\n- current acceptance: {acceptance_line}\n- anti-Zeno state: {} ({})\n\n## State Law\n\n- runtime continuity is resumed from checkpoint, allocation, receipt, and cadence-object truth\n- `passed human round` is formalized as `CADENCE_ACCEPTANCE_BUNDLE`\n- `fully settled round` is stricter than acceptance and only holds after follow-on closure has been carried forward\n- phase is projection, not a peer truth plane\n",
+        "# Machine\n\n> Status: hot root projection\n\n## Current Runtime Cut\n\n- current human round: {human_round_line}\n- current checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance bundle count: {}\n- current acceptance: {acceptance_line}\n- anti-Zeno state: {} ({})\n\n## State Law\n\n- runtime continuity is resumed from checkpoint, human-round, allocation, receipt, and cadence-object truth\n- `passed human round` is formalized as `CADENCE_ACCEPTANCE_BUNDLE`\n- `fully settled round` is stricter than acceptance and only holds after follow-on closure has been carried forward\n- phase is projection, not a peer truth plane\n",
         status.acceptance_bundle_count, status.anti_zeno.state, status.anti_zeno.summary
     );
 
