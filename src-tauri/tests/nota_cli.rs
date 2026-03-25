@@ -2543,6 +2543,88 @@ fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result
 }
 
 #[test]
+fn nota_rebuild_projections_rehydrates_retained_exports_from_db_truth() -> Result<()> {
+    let temp_dir = TempDir::new("rebuild-projections")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Projection rebuild checkpoint",
+            "--stable-level",
+            "retained projections rebuild from DB",
+            "--landed",
+            "checkpointed rebuildable truth",
+            "--remaining",
+            "none",
+            "--human-continuity-bus",
+            "reduced for projection rebuild",
+        ],
+    )?;
+
+    let project_dir = temp_dir.path().join("Entrance");
+    let cold_doc_path = project_dir
+        .join("specs")
+        .join("cold")
+        .join("1.1-os-core")
+        .join("projection_boundary.md");
+    if let Some(parent) = cold_doc_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &cold_doc_path,
+        "# Projection Boundary\n\nRebuild retained projections from DB truth.\r\n",
+    )?;
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "canonicalize-cold-docs",
+            "--project-dir",
+            project_dir
+                .to_str()
+                .context("project dir should be valid UTF-8")?,
+        ],
+    )?;
+
+    let hot_root_dir = app_data_dir.join("exports").join("hot-root");
+    fs::remove_dir_all(&hot_root_dir)?;
+    fs::remove_file(&cold_doc_path)?;
+
+    let rebuild_output = run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "rebuild-projections",
+            "--project-dir",
+            project_dir
+                .to_str()
+                .context("project dir should be valid UTF-8")?,
+        ],
+    )?;
+    let rebuild: Value = serde_json::from_str(&rebuild_output)
+        .context("rebuild-projections output should be valid JSON")?;
+    assert_eq!(rebuild["status"], "rebuilt");
+    assert_eq!(rebuild["required_targets_fresh"], true);
+    assert_eq!(rebuild["hot_root"]["files_written"].as_array().map(Vec::len), Some(6));
+    assert_eq!(rebuild["cold_docs"]["exported_count"], 1);
+
+    let rebuilt_readme = fs::read_to_string(hot_root_dir.join("README.md"))
+        .context("rebuilt hot-root README should be readable")?;
+    assert!(rebuilt_readme.contains("retained projections rebuild from DB"));
+
+    let rebuilt_cold_doc =
+        fs::read_to_string(&cold_doc_path).context("rebuilt cold doc should be readable")?;
+    assert!(rebuilt_cold_doc.contains("Rebuild retained projections from DB truth."));
+
+    Ok(())
+}
+
+#[test]
 fn nota_host_and_worktree_surfaces_reflect_owner_root_runtime_truth() -> Result<()> {
     let temp_dir = TempDir::new("host-worktrees")?;
     let app_data_dir = temp_dir.path().join("appdata");

@@ -97,6 +97,19 @@ pub struct RecoverySeedPromotionReport {
     pub rows_by_table: BTreeMap<String, i64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoveryImportOnlyStatusReport {
+    pub mode: String,
+    pub import_allowed: bool,
+    pub promotion_allowed: bool,
+    pub run_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_ingest_run_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_artifact_path: Option<String>,
+    pub summary: String,
+}
+
 #[derive(Debug)]
 struct RecoverySeedImportProgress {
     imported_row_count: i64,
@@ -455,6 +468,29 @@ pub fn list_recovery_seed_runs(data_store: &DataStore) -> Result<Vec<RecoverySee
     }
 
     Ok(summaries)
+}
+
+pub fn build_recovery_status_report(data_store: &DataStore) -> Result<RecoveryImportOnlyStatusReport> {
+    let runs = list_recovery_seed_runs(data_store)?;
+    let latest = runs.first();
+
+    Ok(RecoveryImportOnlyStatusReport {
+        mode: "import_only".to_string(),
+        import_allowed: true,
+        promotion_allowed: false,
+        run_count: runs.len(),
+        latest_ingest_run_id: latest.map(|run| run.run.id),
+        latest_artifact_path: latest.and_then(|run| run.run.artifact_path.clone()),
+        summary: if let Some(run) = latest {
+            format!(
+                "Recovery remains import-only; latest absorbed seed run is {} and cannot self-promote back into canonical truth.",
+                run.run.id
+            )
+        } else {
+            "Recovery remains import-only; absorbed seed data may be inspected, but canonical truth must continue from the runtime DB."
+                .to_string()
+        },
+    })
 }
 
 pub fn list_recovery_seed_rows(

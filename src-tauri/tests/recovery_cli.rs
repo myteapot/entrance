@@ -175,8 +175,8 @@ fn recovery_cli_lists_absorbed_seed_runs_and_rows() -> Result<()> {
 }
 
 #[test]
-fn recovery_promote_safe_v0_cli_promotes_stable_memory_families_idempotently() -> Result<()> {
-    let temp_dir = TempDir::new("promote-safe-v0-runtime-db")?;
+fn recovery_status_cli_declares_import_only_recovery_mode() -> Result<()> {
+    let temp_dir = TempDir::new("recovery-status-runtime-db")?;
     let app_data_dir = temp_dir.path().join("appdata");
     seed_app_state(&app_data_dir)?;
     seed_preexisting_runtime_db(&app_data_dir.join("data").join("entrance.db"))?;
@@ -194,51 +194,47 @@ fn recovery_promote_safe_v0_cli_promotes_stable_memory_families_idempotently() -
         ],
     )?;
 
-    let promote_output = run_recovery_cli(&app_data_dir, &["recovery", "promote-safe-v0"])?;
-    let report: Value = serde_json::from_str(&promote_output)
-        .context("recovery promote-safe-v0 output should be valid JSON")?;
-    assert_eq!(report["total_candidate_rows"], 4);
-    assert_eq!(report["upserted_row_count"], 4);
-    assert_eq!(report["new_promotion_record_count"], 4);
-    assert_eq!(report["rows_by_table"]["documents"], 1);
-    assert_eq!(report["rows_by_table"]["todos"], 1);
-    assert_eq!(report["rows_by_table"]["instincts"], 1);
-    assert_eq!(report["rows_by_table"]["coffee_chats"], 1);
-
-    let db_path = app_data_dir.join("data").join("entrance.db");
-    let connection = Connection::open(&db_path)
-        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
-    assert_eq!(count_rows(&connection, "documents")?, 1);
-    assert_eq!(count_rows(&connection, "todos")?, 1);
-    assert_eq!(count_rows(&connection, "instincts")?, 1);
-    assert_eq!(count_rows(&connection, "coffee_chats")?, 1);
-
-    assert!(table_has_column(&connection, "todos", "due_on")?);
-    assert!(table_has_column(&connection, "todos", "reminder_status")?);
-    assert!(table_has_column(
-        &connection,
-        "instincts",
-        "lifecycle_status"
-    )?);
-    assert!(table_has_column(&connection, "instincts", "temperature")?);
-    assert!(table_has_column(
-        &connection,
-        "coffee_chats",
-        "temperature"
-    )?);
-
-    let rerun_output = run_recovery_cli(&app_data_dir, &["recovery", "promote-safe-v0"])?;
-    let rerun: Value = serde_json::from_str(&rerun_output)
-        .context("recovery promote-safe-v0 rerun output should be valid JSON")?;
-    assert_eq!(rerun["upserted_row_count"], 4);
-    assert_eq!(rerun["new_promotion_record_count"], 0);
+    let status_output = run_recovery_cli(&app_data_dir, &["recovery", "status"])?;
+    let status: Value = serde_json::from_str(&status_output)
+        .context("recovery status output should be valid JSON")?;
+    assert_eq!(status["mode"], "import_only");
+    assert_eq!(status["import_allowed"], true);
+    assert_eq!(status["promotion_allowed"], false);
+    assert_eq!(status["run_count"], 1);
+    assert_eq!(status["latest_ingest_run_id"], 1);
 
     Ok(())
 }
 
 #[test]
-fn recovery_promote_remaining_v0_cli_promotes_remaining_memory_families_idempotently() -> Result<()>
-{
+fn recovery_promote_safe_v0_cli_is_disabled_after_import_only_lowering() -> Result<()> {
+    let temp_dir = TempDir::new("promote-safe-v0-disabled-runtime-db")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+    seed_preexisting_runtime_db(&app_data_dir.join("data").join("entrance.db"))?;
+
+    let recovery_seed_path = write_promotable_recovery_seed(temp_dir.path())?;
+    run_recovery_cli(
+        &app_data_dir,
+        &[
+            "recovery",
+            "import-seed",
+            "--file",
+            recovery_seed_path
+                .to_str()
+                .context("recovery seed path should be valid UTF-8")?,
+        ],
+    )?;
+
+    let error = run_recovery_cli_expect_error(&app_data_dir, &["recovery", "promote-safe-v0"])?;
+    assert!(error.contains("permanently disabled"));
+    assert!(error.contains("import-only"));
+
+    Ok(())
+}
+
+#[test]
+fn recovery_promote_remaining_v0_cli_is_disabled_after_import_only_lowering() -> Result<()> {
     let temp_dir = TempDir::new("promote-remaining-v0-runtime-db")?;
     let app_data_dir = temp_dir.path().join("appdata");
     seed_app_state(&app_data_dir)?;
@@ -257,30 +253,10 @@ fn recovery_promote_remaining_v0_cli_promotes_remaining_memory_families_idempote
         ],
     )?;
 
-    let promote_output = run_recovery_cli(&app_data_dir, &["recovery", "promote-remaining-v0"])?;
-    let report: Value = serde_json::from_str(&promote_output)
-        .context("recovery promote-remaining-v0 output should be valid JSON")?;
-    assert_eq!(report["total_candidate_rows"], 4);
-    assert_eq!(report["upserted_row_count"], 4);
-    assert_eq!(report["new_promotion_record_count"], 4);
-    assert_eq!(report["rows_by_table"]["decisions"], 1);
-    assert_eq!(report["rows_by_table"]["visions"], 1);
-    assert_eq!(report["rows_by_table"]["memory_fragments"], 1);
-    assert_eq!(report["rows_by_table"]["memory_links"], 1);
-
-    let db_path = app_data_dir.join("data").join("entrance.db");
-    let connection = Connection::open(&db_path)
-        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
-    assert_eq!(count_rows(&connection, "decisions")?, 1);
-    assert_eq!(count_rows(&connection, "visions")?, 1);
-    assert_eq!(count_rows(&connection, "memory_fragments")?, 1);
-    assert_eq!(count_rows(&connection, "memory_links")?, 1);
-
-    let rerun_output = run_recovery_cli(&app_data_dir, &["recovery", "promote-remaining-v0"])?;
-    let rerun: Value = serde_json::from_str(&rerun_output)
-        .context("recovery promote-remaining-v0 rerun output should be valid JSON")?;
-    assert_eq!(rerun["upserted_row_count"], 4);
-    assert_eq!(rerun["new_promotion_record_count"], 0);
+    let error =
+        run_recovery_cli_expect_error(&app_data_dir, &["recovery", "promote-remaining-v0"])?;
+    assert!(error.contains("permanently disabled"));
+    assert!(error.contains("import-only"));
 
     Ok(())
 }
@@ -327,6 +303,20 @@ fn run_recovery_cli(app_data_dir: &Path, args: &[&str]) -> Result<String> {
     }
 
     String::from_utf8(output.stdout).context("CLI stdout should be valid UTF-8")
+}
+
+fn run_recovery_cli_expect_error(app_data_dir: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
+        .args(args)
+        .env("ENTRANCE_APP_DATA_DIR", app_data_dir)
+        .output()
+        .with_context(|| format!("failed to spawn `entrance {}`", args.join(" ")))?;
+
+    if output.status.success() {
+        anyhow::bail!("`entrance {}` unexpectedly succeeded", args.join(" "));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
 }
 
 fn seed_preexisting_runtime_db(db_path: &Path) -> Result<()> {
@@ -964,12 +954,4 @@ fn write_remaining_promotable_recovery_seed(root: &Path) -> Result<PathBuf> {
 fn count_rows(connection: &Connection, table: &str) -> Result<i64> {
     let query = format!("SELECT COUNT(*) FROM {table}");
     Ok(connection.query_row(&query, [], |row| row.get(0))?)
-}
-
-fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
-    let query = format!("PRAGMA table_info({table})");
-    let mut statement = connection.prepare(&query)?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
-    let columns = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(columns.iter().any(|name| name == column))
 }
