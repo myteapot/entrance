@@ -46,7 +46,8 @@ use core::{
     hotkey,
     hygiene::{list_spec_hygiene_v0, run_spec_hygiene_v0, SpecHygieneReport},
     invariant_runtime::{
-        refresh_runtime_invariants, RepairLaneReport, RuntimeInvariantReport,
+        project_runtime_invariants, refresh_runtime_invariants, RepairLaneReport,
+        RuntimeInvariantReport,
     },
     landing::{
         import_linear_entrance_snapshot, list_landing_ingest_runs, list_landing_mirror_items,
@@ -999,11 +1000,13 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         }
         [command, flag, value] if command == "canonicalize-cold-docs" && flag == "--project-dir" => {
             let report = canonicalize_cold_docs_from_repo(&startup.data_store(), value)?;
+            refresh_runtime_invariant_truth(&startup.data_store())?;
             print_json(&report)
         }
         [command, flag, value] if command == "export-cold-docs" && flag == "--project-dir" => {
             let status = build_nota_runtime_status(&startup.data_store())?;
             let report = export_cold_docs_to_repo(&startup.data_store(), value, &status.projections.current_truth_revision)?;
+            refresh_runtime_invariant_truth(&startup.data_store())?;
             print_json(&report)
         }
         [command] if command == "export-hot-root" => {
@@ -2154,10 +2157,14 @@ pub(crate) fn build_nota_runtime_overview(
             .as_ref()
             .map(|bundle| bundle.cadence_object.id),
     );
-    let projections = build_projection_status_report(data_store, projection_truth_revision.clone())?;
+    let projections =
+        build_projection_status_report(data_store, projection_truth_revision.clone())?;
     let cold_docs = list_cold_documents(data_store, projection_truth_revision)?;
     let host = current_runtime_host(data_store)?;
-    let worktrees = list_owned_worktrees(data_store, host.as_ref().map(|value| value.host_key.as_str()))?;
+    let worktrees = list_owned_worktrees(
+        data_store,
+        host.as_ref().map(|value| value.host_key.as_str()),
+    )?;
     let recovery = build_recovery_status_report(data_store)?;
     let round_state = derive_runtime_round_state_projection(
         current_checkpoint,
@@ -2179,7 +2186,7 @@ pub(crate) fn build_nota_runtime_overview(
         round_state.next_step_open,
         projections.dirty_required_target_count,
     )?;
-    let (invariants, repair_lane) = refresh_runtime_invariants(data_store)?;
+    let (invariants, repair_lane) = project_runtime_invariants(data_store)?;
     let transactions = list_nota_runtime_transactions(data_store)?;
     let decisions = list_design_decisions(data_store)?;
     let front_door = build_nota_front_door_projection(
@@ -2285,10 +2292,14 @@ pub(crate) fn build_nota_runtime_status(
             .as_ref()
             .map(|bundle| bundle.cadence_object.id),
     );
-    let projections = build_projection_status_report(data_store, projection_truth_revision.clone())?;
+    let projections =
+        build_projection_status_report(data_store, projection_truth_revision.clone())?;
     let cold_docs = list_cold_documents(data_store, projection_truth_revision)?;
     let host = current_runtime_host(data_store)?;
-    let worktrees = list_owned_worktrees(data_store, host.as_ref().map(|value| value.host_key.as_str()))?;
+    let worktrees = list_owned_worktrees(
+        data_store,
+        host.as_ref().map(|value| value.host_key.as_str()),
+    )?;
     let recovery = build_recovery_status_report(data_store)?;
     let round_state = derive_runtime_round_state_projection(
         current_checkpoint.as_ref(),
@@ -2310,7 +2321,7 @@ pub(crate) fn build_nota_runtime_status(
         round_state.next_step_open,
         projections.dirty_required_target_count,
     )?;
-    let (invariants, repair_lane) = refresh_runtime_invariants(data_store)?;
+    let (invariants, repair_lane) = project_runtime_invariants(data_store)?;
     let front_door = build_nota_front_door_projection(
         current_checkpoint.as_ref(),
         decisions.decision_count,
@@ -2401,6 +2412,7 @@ fn write_hot_root_projection(
             &oracle_readme_path,
             &error.to_string(),
         )?;
+        refresh_runtime_invariant_truth(&startup.data_store())?;
         return Err(error);
     }
 
@@ -2418,6 +2430,7 @@ fn write_hot_root_projection(
                 &oracle_readme_path,
                 &error.to_string(),
             )?;
+            refresh_runtime_invariant_truth(&startup.data_store())?;
             return Err(error);
         }
         files_written.push(path.display().to_string());
@@ -2460,6 +2473,7 @@ fn write_hot_root_projection(
                 "failed to create mirrored repo top directory",
                 &error.to_string(),
             )?;
+            refresh_runtime_invariant_truth(&startup.data_store())?;
             return Err(error);
         }
         for (name, content) in &files {
@@ -2478,8 +2492,7 @@ fn write_hot_root_projection(
                         title: "Mirrored repo hot root".into(),
                         target_path: repo_top_dir_display.as_str().into(),
                         source_scope: "runtime:Entrance".into(),
-                        repair_action:
-                            "entrance nota export-hot-root --project-dir <path>".into(),
+                        repair_action: "entrance nota export-hot-root --project-dir <path>".into(),
                         projection_policy: OPTIONAL_PROJECTION_POLICY.into(),
                         is_required: false,
                     },
@@ -2488,6 +2501,7 @@ fn write_hot_root_projection(
                     "failed to write mirrored repo hot root",
                     &error.to_string(),
                 )?;
+                refresh_runtime_invariant_truth(&startup.data_store())?;
                 return Err(error);
             }
         }
@@ -2508,6 +2522,8 @@ fn write_hot_root_projection(
             "Mirrored repo hot root is current with runtime truth.",
         )?;
     }
+
+    refresh_runtime_invariant_truth(&startup.data_store())?;
 
     Ok(HotRootProjectionWriteReport {
         export_root: hot_root_dir.display().to_string(),
@@ -2535,6 +2551,7 @@ fn rebuild_nota_projections(
     } else {
         None
     };
+    refresh_runtime_invariant_truth(&startup.data_store())?;
     let after = build_nota_runtime_status(&startup.data_store())?;
 
     Ok(ProjectionRebuildReport {
@@ -2550,6 +2567,10 @@ fn rebuild_nota_projections(
         dirty_required_target_count: after.projections.dirty_required_target_count,
         repair_lane_open_count: after.repair_lane.open_count,
     })
+}
+
+fn refresh_runtime_invariant_truth(data_store: &core::data_store::DataStore) -> Result<()> {
+    refresh_runtime_invariants(data_store).map(|_| ())
 }
 
 fn record_hot_root_projection_success(
@@ -2690,7 +2711,9 @@ fn render_hot_root_files(
     );
     let invariant_line = format!(
         "{} passed, {} repairable, {} blocked",
-        status.invariants.passed_count, status.invariants.repairable_count, status.invariants.blocked_count
+        status.invariants.passed_count,
+        status.invariants.repairable_count,
+        status.invariants.blocked_count
     );
     let repair_lane_line = format!(
         "{} open, {} resolved",
@@ -2916,10 +2939,11 @@ mod tests {
     use anyhow::Result;
 
     use crate::core::config_store::{render_config, EntranceConfig};
+    use crate::core::data_store::{DataStore, MigrationPlan};
 
     use super::{
-        cli_help_for_args, prepare_forge_dispatch_cli, verify_forge_dispatch_cli, FORGE_CLI_HELP,
-        MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
+        build_nota_runtime_status, cli_help_for_args, prepare_forge_dispatch_cli,
+        verify_forge_dispatch_cli, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
     };
 
     static CLI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -3005,6 +3029,33 @@ mod tests {
 
         let forge = vec!["forge".to_string(), "--help".to_string()];
         assert_eq!(cli_help_for_args(&forge), Some(FORGE_CLI_HELP));
+    }
+
+    #[test]
+    fn nota_status_can_project_runtime_invariants_on_readonly_store() -> Result<()> {
+        let temp_dir = TestDir::new("nota-status-readonly");
+        let db_path = temp_dir.path().join("data").join("entrance.db");
+        if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+        let writable_store = DataStore::open(&db_path, migration_plan)?;
+        drop(writable_store);
+
+        let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+        let readonly_store = DataStore::open_read_only(&db_path, migration_plan)?;
+        let status = build_nota_runtime_status(&readonly_store)?;
+
+        assert_eq!(status.invariants.failed_count, 1);
+        assert_eq!(status.repair_lane.open_count, 1);
+        assert!(status
+            .invariants
+            .invariants
+            .iter()
+            .any(|invariant| invariant.invariant_key == "runtime_host_snapshot"));
+
+        Ok(())
     }
 
     fn init_git_repo(path: &Path) {

@@ -34,9 +34,11 @@ pub fn build_anti_zeno_budget_report(
         .list_anti_zeno_events()?
         .into_iter()
         .filter(|event| {
-            current_checkpoint_id.is_none()
-                || event.checkpoint_id == current_checkpoint_id
-                || event.acceptance_bundle_id == current_acceptance_bundle_id
+            anti_zeno_event_matches_current_round(
+                event,
+                current_checkpoint_id,
+                current_acceptance_bundle_id,
+            )
         })
         .collect::<Vec<_>>();
 
@@ -117,6 +119,31 @@ pub fn build_anti_zeno_budget_report(
         forced_action,
         recent_events: scoped_events.into_iter().take(10).collect(),
     })
+}
+
+fn anti_zeno_event_matches_current_round(
+    event: &StoredAntiZenoEvent,
+    current_checkpoint_id: Option<i64>,
+    current_acceptance_bundle_id: Option<i64>,
+) -> bool {
+    match current_checkpoint_id {
+        Some(checkpoint_id) => {
+            event.checkpoint_id == Some(checkpoint_id)
+                || current_acceptance_bundle_id
+                    .map(|acceptance_bundle_id| {
+                        event.acceptance_bundle_id == Some(acceptance_bundle_id)
+                    })
+                    .unwrap_or(false)
+        }
+        None => {
+            event.checkpoint_id.is_none()
+                && current_acceptance_bundle_id
+                    .map(|acceptance_bundle_id| {
+                        event.acceptance_bundle_id == Some(acceptance_bundle_id)
+                    })
+                    .unwrap_or(true)
+        }
+    }
 }
 
 pub fn record_checkpoint_written_event(
@@ -237,6 +264,43 @@ mod tests {
         assert_eq!(report.repair_event_count, 3);
         assert_eq!(report.projection_debt_count, 1);
         assert!(report.forced_action.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn anti_zeno_budget_scopes_checkpointed_round_without_acceptance_to_current_checkpoint(
+    ) -> Result<()> {
+        let temp_db = TempDbPath::new("checkpoint-scope")?;
+        let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+        let store = DataStore::open(temp_db.path(), migration_plan)?;
+
+        record_checkpoint_written_event(&store, 3, "old checkpoint")?;
+        record_repair_requested_event(&store, Some(3), None, "repair-old", "old repair")?;
+        record_checkpoint_written_event(&store, 7, "current checkpoint")?;
+
+        let report = build_anti_zeno_budget_report(&store, Some(7), None, false, false, false, 0)?;
+        assert_eq!(report.semantic_event_count, 1);
+        assert_eq!(report.repair_event_count, 0);
+        assert_eq!(report.state, "checkpointed");
+
+        Ok(())
+    }
+
+    #[test]
+    fn anti_zeno_budget_without_checkpoint_ignores_checkpointed_history() -> Result<()> {
+        let temp_db = TempDbPath::new("uncheckpointed-scope")?;
+        let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+        let store = DataStore::open(temp_db.path(), migration_plan)?;
+
+        record_checkpoint_written_event(&store, 3, "old checkpoint")?;
+        record_repair_requested_event(&store, Some(3), None, "repair-old", "old repair")?;
+        record_repair_requested_event(&store, None, None, "repair-current", "current repair")?;
+
+        let report = build_anti_zeno_budget_report(&store, None, None, false, false, false, 0)?;
+        assert_eq!(report.semantic_event_count, 0);
+        assert_eq!(report.repair_event_count, 1);
+        assert_eq!(report.state, "repair_required");
 
         Ok(())
     }

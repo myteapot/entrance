@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::json;
@@ -8,7 +10,9 @@ use crate::core::{
         DataStore, StoredRepairLaneItem, StoredRuntimeInvariant, UpsertRepairLaneItem,
         UpsertRuntimeInvariant,
     },
-    environment_runtime::{current_runtime_host, list_owned_worktrees, OwnedWorktreeRegistryReport},
+    environment_runtime::{
+        current_runtime_host, list_owned_worktrees, OwnedWorktreeRegistryReport,
+    },
     nota_runtime::{
         active_checkpoint_scope_ids, derive_current_runtime_acceptance_bundle,
         derive_current_runtime_human_round, derive_nota_runtime_next_step,
@@ -16,7 +20,9 @@ use crate::core::{
         list_nota_runtime_receipts, list_runtime_checkpoints, NotaAcceptanceBundleRecord,
         NotaCheckpointRecord, NotaHumanRoundRecord, NotaRoundStateProjection,
     },
-    projection_runtime::{build_projection_status_report, ProjectionStatusReport, ProjectionTruthRevision},
+    projection_runtime::{
+        build_projection_status_report, ProjectionStatusReport, ProjectionTruthRevision,
+    },
 };
 
 const INVARIANT_PASSED: &str = "passed";
@@ -78,8 +84,7 @@ struct RepairLaneEvaluation {
 pub fn refresh_runtime_invariants(
     data_store: &DataStore,
 ) -> Result<(RuntimeInvariantReport, RepairLaneReport)> {
-    let context = gather_invariant_context(data_store)?;
-    let invariants = evaluate_runtime_invariants(&context)?;
+    let (invariants, repair_items) = evaluate_runtime_invariant_state(data_store)?;
 
     for invariant in &invariants {
         data_store.upsert_runtime_invariant(UpsertRuntimeInvariant {
@@ -96,10 +101,6 @@ pub fn refresh_runtime_invariants(
         })?;
     }
 
-    let repair_items = invariants
-        .iter()
-        .filter_map(repair_lane_item_from_invariant)
-        .collect::<Vec<_>>();
     let active_repair_keys = repair_items
         .iter()
         .map(|item| item.repair_key.clone())
@@ -125,59 +126,64 @@ pub fn refresh_runtime_invariants(
     Ok((invariant_report, repair_lane_report))
 }
 
-pub fn list_runtime_invariant_report(data_store: &DataStore) -> Result<RuntimeInvariantReport> {
-    let invariants = data_store.list_runtime_invariants()?;
-    let passed_count = invariants
-        .iter()
-        .filter(|invariant| invariant.status == INVARIANT_PASSED)
-        .count();
-    let repairable_count = invariants
-        .iter()
-        .filter(|invariant| invariant.status == INVARIANT_FAILED_REPAIRABLE)
-        .count();
-    let blocked_count = invariants
-        .iter()
-        .filter(|invariant| invariant.status == INVARIANT_FAILED_BLOCKED)
-        .count();
-    let not_applicable_count = invariants
-        .iter()
-        .filter(|invariant| invariant.status == INVARIANT_NOT_APPLICABLE)
-        .count();
+pub fn project_runtime_invariants(
+    data_store: &DataStore,
+) -> Result<(RuntimeInvariantReport, RepairLaneReport)> {
+    let (invariants, repair_items) = evaluate_runtime_invariant_state(data_store)?;
+    let stored_invariants = data_store
+        .list_runtime_invariants()?
+        .into_iter()
+        .map(|invariant| (invariant.invariant_key.clone(), invariant))
+        .collect::<HashMap<_, _>>();
+    let mut projected_invariants = invariants
+        .into_iter()
+        .map(|invariant| {
+            let invariant_key = invariant.invariant_key;
+            project_runtime_invariant(invariant, stored_invariants.get(invariant_key))
+        })
+        .collect::<Vec<_>>();
+    sort_runtime_invariants(&mut projected_invariants);
 
-    Ok(RuntimeInvariantReport {
-        invariant_count: invariants.len(),
-        passed_count,
-        failed_count: repairable_count + blocked_count,
-        repairable_count,
-        blocked_count,
-        not_applicable_count,
-        current_checkpoint_id: invariants.iter().find_map(|invariant| invariant.checkpoint_id),
-        invariants,
-    })
+    let stored_repair_items = data_store
+        .list_repair_lane_items()?
+        .into_iter()
+        .map(|item| (item.repair_key.clone(), item))
+        .collect::<HashMap<_, _>>();
+    let active_repair_keys = repair_items
+        .iter()
+        .map(|item| item.repair_key.clone())
+        .collect::<HashSet<_>>();
+    let mut projected_repair_items = repair_items
+        .into_iter()
+        .map(|repair_item| {
+            let repair_key = repair_item.repair_key.clone();
+            project_open_repair_lane_item(repair_item, stored_repair_items.get(&repair_key))
+        })
+        .collect::<Vec<_>>();
+    projected_repair_items.extend(
+        stored_repair_items
+            .into_values()
+            .filter(|item| !active_repair_keys.contains(&item.repair_key))
+            .map(project_resolved_repair_lane_item),
+    );
+    sort_repair_lane_items(&mut projected_repair_items);
+
+    Ok((
+        build_runtime_invariant_report(projected_invariants),
+        build_repair_lane_report(projected_repair_items),
+    ))
+}
+
+pub fn list_runtime_invariant_report(data_store: &DataStore) -> Result<RuntimeInvariantReport> {
+    Ok(build_runtime_invariant_report(
+        data_store.list_runtime_invariants()?,
+    ))
 }
 
 pub fn list_repair_lane_report(data_store: &DataStore) -> Result<RepairLaneReport> {
-    let items = data_store.list_repair_lane_items()?;
-    let open_count = items.iter().filter(|item| item.status == "open").count();
-    let blocked_count = items
-        .iter()
-        .filter(|item| item.status == "open" && item.urgency == "blocked")
-        .count();
-    let repairable_count = items
-        .iter()
-        .filter(|item| item.status == "open" && item.urgency == "repairable")
-        .count();
-    let resolved_count = items.iter().filter(|item| item.status == "resolved").count();
-
-    Ok(RepairLaneReport {
-        item_count: items.len(),
-        open_count,
-        blocked_count,
-        repairable_count,
-        resolved_count,
-        current_checkpoint_id: items.iter().find_map(|item| item.checkpoint_id),
-        items,
-    })
+    Ok(build_repair_lane_report(
+        data_store.list_repair_lane_items()?,
+    ))
 }
 
 struct InvariantContext {
@@ -198,7 +204,8 @@ fn gather_invariant_context(data_store: &DataStore) -> Result<InvariantContext> 
         .checkpoints
         .into_iter()
         .find(|checkpoint| checkpoint.cadence_object.is_current);
-    let checkpoint_scope_ids = active_checkpoint_scope_ids(data_store, current_checkpoint.as_ref())?;
+    let checkpoint_scope_ids =
+        active_checkpoint_scope_ids(data_store, current_checkpoint.as_ref())?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
     let next_step = derive_nota_runtime_next_step(
@@ -234,8 +241,10 @@ fn gather_invariant_context(data_store: &DataStore) -> Result<InvariantContext> 
         projections.dirty_required_target_count,
     )?;
     let host = current_runtime_host(data_store)?;
-    let worktrees =
-        list_owned_worktrees(data_store, host.as_ref().map(|value| value.host_key.as_str()))?;
+    let worktrees = list_owned_worktrees(
+        data_store,
+        host.as_ref().map(|value| value.host_key.as_str()),
+    )?;
 
     Ok(InvariantContext {
         current_checkpoint,
@@ -248,6 +257,18 @@ fn gather_invariant_context(data_store: &DataStore) -> Result<InvariantContext> 
         worktrees,
         next_step,
     })
+}
+
+fn evaluate_runtime_invariant_state(
+    data_store: &DataStore,
+) -> Result<(Vec<InvariantEvaluation>, Vec<RepairLaneEvaluation>)> {
+    let context = gather_invariant_context(data_store)?;
+    let invariants = evaluate_runtime_invariants(&context)?;
+    let repair_items = invariants
+        .iter()
+        .filter_map(repair_lane_item_from_invariant)
+        .collect::<Vec<_>>();
+    Ok((invariants, repair_items))
 }
 
 fn evaluate_runtime_invariants(context: &InvariantContext) -> Result<Vec<InvariantEvaluation>> {
@@ -337,7 +358,11 @@ fn evaluate_runtime_invariants(context: &InvariantContext) -> Result<Vec<Invaria
         } else {
             INVARIANT_FAILED_REPAIRABLE
         },
-        severity: if context.host.is_some() { "info" } else { "error" },
+        severity: if context.host.is_some() {
+            "info"
+        } else {
+            "error"
+        },
         checkpoint_id,
         acceptance_bundle_id,
         human_round_id,
@@ -355,7 +380,8 @@ fn evaluate_runtime_invariants(context: &InvariantContext) -> Result<Vec<Invaria
                     .to_string()
             }),
         repair_action:
-            "Restart Entrance or refresh a NOTA surface to bootstrap host ownership truth.".to_string(),
+            "Restart Entrance or refresh a NOTA surface to bootstrap host ownership truth."
+                .to_string(),
         evidence_json: serde_json::to_string(&json!({
             "host_present": context.host.is_some(),
             "owner_root": context.host.as_ref().map(|host| host.owner_root.as_str()),
@@ -683,6 +709,168 @@ fn repair_lane_item_from_invariant(
         repair_action: invariant.repair_action.clone(),
         evidence_json: invariant.evidence_json.clone(),
     })
+}
+
+fn build_runtime_invariant_report(
+    invariants: Vec<StoredRuntimeInvariant>,
+) -> RuntimeInvariantReport {
+    let passed_count = invariants
+        .iter()
+        .filter(|invariant| invariant.status == INVARIANT_PASSED)
+        .count();
+    let repairable_count = invariants
+        .iter()
+        .filter(|invariant| invariant.status == INVARIANT_FAILED_REPAIRABLE)
+        .count();
+    let blocked_count = invariants
+        .iter()
+        .filter(|invariant| invariant.status == INVARIANT_FAILED_BLOCKED)
+        .count();
+    let not_applicable_count = invariants
+        .iter()
+        .filter(|invariant| invariant.status == INVARIANT_NOT_APPLICABLE)
+        .count();
+
+    RuntimeInvariantReport {
+        invariant_count: invariants.len(),
+        passed_count,
+        failed_count: repairable_count + blocked_count,
+        repairable_count,
+        blocked_count,
+        not_applicable_count,
+        current_checkpoint_id: invariants
+            .iter()
+            .find_map(|invariant| invariant.checkpoint_id),
+        invariants,
+    }
+}
+
+fn build_repair_lane_report(items: Vec<StoredRepairLaneItem>) -> RepairLaneReport {
+    let open_count = items.iter().filter(|item| item.status == "open").count();
+    let blocked_count = items
+        .iter()
+        .filter(|item| item.status == "open" && item.urgency == "blocked")
+        .count();
+    let repairable_count = items
+        .iter()
+        .filter(|item| item.status == "open" && item.urgency == "repairable")
+        .count();
+    let resolved_count = items
+        .iter()
+        .filter(|item| item.status == "resolved")
+        .count();
+
+    RepairLaneReport {
+        item_count: items.len(),
+        open_count,
+        blocked_count,
+        repairable_count,
+        resolved_count,
+        current_checkpoint_id: items.iter().find_map(|item| item.checkpoint_id),
+        items,
+    }
+}
+
+fn project_runtime_invariant(
+    invariant: InvariantEvaluation,
+    stored: Option<&StoredRuntimeInvariant>,
+) -> StoredRuntimeInvariant {
+    StoredRuntimeInvariant {
+        id: stored.map(|record| record.id).unwrap_or(0),
+        invariant_key: invariant.invariant_key.to_string(),
+        title: invariant.title.to_string(),
+        status: invariant.status.to_string(),
+        severity: invariant.severity.to_string(),
+        checkpoint_id: invariant.checkpoint_id,
+        acceptance_bundle_id: invariant.acceptance_bundle_id,
+        human_round_id: invariant.human_round_id,
+        summary: invariant.summary,
+        evidence_json: invariant.evidence_json,
+        repair_action: invariant.repair_action,
+        created_at: stored
+            .map(|record| record.created_at.clone())
+            .unwrap_or_default(),
+        updated_at: stored
+            .map(|record| record.updated_at.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn project_open_repair_lane_item(
+    item: RepairLaneEvaluation,
+    stored: Option<&StoredRepairLaneItem>,
+) -> StoredRepairLaneItem {
+    StoredRepairLaneItem {
+        id: stored.map(|record| record.id).unwrap_or(0),
+        repair_key: item.repair_key,
+        source_invariant_key: Some(item.source_invariant_key.to_string()),
+        checkpoint_id: item.checkpoint_id,
+        acceptance_bundle_id: item.acceptance_bundle_id,
+        item_kind: "runtime_invariant".to_string(),
+        urgency: item.urgency.to_string(),
+        status: "open".to_string(),
+        summary: item.summary,
+        repair_action: item.repair_action,
+        evidence_json: item.evidence_json,
+        created_at: stored
+            .map(|record| record.created_at.clone())
+            .unwrap_or_default(),
+        updated_at: stored
+            .map(|record| record.updated_at.clone())
+            .unwrap_or_default(),
+        resolved_at: None,
+    }
+}
+
+fn project_resolved_repair_lane_item(mut item: StoredRepairLaneItem) -> StoredRepairLaneItem {
+    item.status = "resolved".to_string();
+    if item.resolved_at.is_none() && !item.updated_at.is_empty() {
+        item.resolved_at = Some(item.updated_at.clone());
+    }
+    item
+}
+
+fn sort_runtime_invariants(invariants: &mut [StoredRuntimeInvariant]) {
+    invariants.sort_by(|left, right| {
+        invariant_status_sort_rank(&left.status)
+            .cmp(&invariant_status_sort_rank(&right.status))
+            .then_with(|| left.invariant_key.cmp(&right.invariant_key))
+    });
+}
+
+fn sort_repair_lane_items(items: &mut [StoredRepairLaneItem]) {
+    items.sort_by(|left, right| {
+        repair_lane_status_sort_rank(&left.status)
+            .cmp(&repair_lane_status_sort_rank(&right.status))
+            .then_with(|| {
+                repair_lane_urgency_sort_rank(&left.urgency)
+                    .cmp(&repair_lane_urgency_sort_rank(&right.urgency))
+            })
+            .then_with(|| left.repair_key.cmp(&right.repair_key))
+    });
+}
+
+fn invariant_status_sort_rank(status: &str) -> usize {
+    match status {
+        INVARIANT_FAILED_BLOCKED => 0,
+        INVARIANT_FAILED_REPAIRABLE => 1,
+        INVARIANT_PASSED => 2,
+        _ => 3,
+    }
+}
+
+fn repair_lane_status_sort_rank(status: &str) -> usize {
+    match status {
+        "open" => 0,
+        _ => 1,
+    }
+}
+
+fn repair_lane_urgency_sort_rank(urgency: &str) -> usize {
+    match urgency {
+        "blocked" => 0,
+        _ => 1,
+    }
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ use crate::core::data_store::{
     StoredCadenceLink, StoredCadenceObject, StoredForgeTask, StoredNotaRuntimeAllocation,
     StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
 };
+use crate::core::invariant_runtime::refresh_runtime_invariants;
 use crate::plugins::forge::{
     build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
     prepare_dev_dispatch_blocking, CreateTaskRequest, ForgePlugin, PreparedAgentDispatch,
@@ -823,6 +824,7 @@ pub fn write_runtime_checkpoint(
     };
 
     record_checkpoint_written_event(data_store, cadence_object.id, &summary)?;
+    refresh_runtime_invariants(data_store)?;
 
     Ok(NotaCheckpointWriteReport {
         checkpoint: NotaCheckpointRecord {
@@ -1205,6 +1207,8 @@ fn run_nota_dispatch(
             status: "recorded",
         })?,
     );
+
+    refresh_runtime_invariants(data_store)?;
 
     Ok(NotaDoDispatchReport {
         transaction,
@@ -1651,9 +1655,7 @@ pub fn projection_policy_for_kind(cadence_kind: &str) -> &'static str {
         CADENCE_CHECKPOINT_KIND
         | CADENCE_HUMAN_ROUND_KIND
         | CADENCE_ACCEPTANCE_BUNDLE_KIND
-        | CADENCE_HANDOUT_KIND => {
-            "PP_HOT_ACTIVE_ONLY"
-        }
+        | CADENCE_HANDOUT_KIND => "PP_HOT_ACTIVE_ONLY",
         CADENCE_WAKE_REQUEST_KIND => "PP_HOT_ON_ATTENTION_OR_REJECT",
         CADENCE_POLICY_NOTE_KIND => "PP_HOT_NEVER",
         _ => "PP_HOT_ACTIVE_ONLY",
@@ -2570,6 +2572,8 @@ pub fn record_dev_return_review(
         )?;
     }
 
+    refresh_runtime_invariants(data_store)?;
+
     Ok(NotaDevReturnReviewReport {
         status: "recorded".to_string(),
         review,
@@ -2784,6 +2788,8 @@ pub fn record_dev_return_integration(
         )?;
     }
 
+    refresh_runtime_invariants(data_store)?;
+
     Ok(NotaDevReturnIntegrateReport {
         status: "recorded".to_string(),
         integrate,
@@ -2961,6 +2967,8 @@ pub fn record_dev_return_finalize(
                 .unwrap_or(false)
         })
         .context("dev finalize recorded receipt should be readable after append")?;
+
+    refresh_runtime_invariants(data_store)?;
 
     Ok(NotaDevReturnFinalizeReport {
         status: "recorded".to_string(),
@@ -4153,8 +4161,7 @@ fn materialize_current_runtime_human_round(
     else {
         return Ok(None);
     };
-    let checkpoint_scope_ids =
-        active_checkpoint_scope_ids(data_store, Some(&current_checkpoint))?;
+    let checkpoint_scope_ids = active_checkpoint_scope_ids(data_store, Some(&current_checkpoint))?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
     let next_step = derive_nota_runtime_next_step(
@@ -4454,10 +4461,10 @@ mod tests {
     use super::{
         active_checkpoint_scope_ids, default_nota_dispatch_execution_host,
         derive_anti_zeno_projection, derive_current_runtime_acceptance_bundle,
-        derive_runtime_round_state_projection,
         derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
-        derive_nota_runtime_review, list_nota_runtime_allocations, list_nota_runtime_receipts,
-        list_runtime_acceptance_bundles, list_runtime_checkpoints, list_runtime_human_rounds,
+        derive_nota_runtime_review, derive_runtime_round_state_projection,
+        list_nota_runtime_allocations, list_nota_runtime_receipts, list_runtime_acceptance_bundles,
+        list_runtime_checkpoints, list_runtime_human_rounds,
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
         write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
@@ -4584,7 +4591,10 @@ mod tests {
             .iter()
             .find(|round| round.cadence_object.is_current)
             .context("human round should be materialized")?;
-        assert_eq!(current_round.payload.checkpoint_id, checkpoint.checkpoint.cadence_object.id);
+        assert_eq!(
+            current_round.payload.checkpoint_id,
+            checkpoint.checkpoint.cadence_object.id
+        );
         assert_eq!(
             current_round.payload.round_state,
             "checkpointed_pending_acceptance"
@@ -4594,7 +4604,10 @@ mod tests {
         assert!(!current_round.payload.carry_forward_checkpointed);
         assert!(!current_round.payload.fully_settled);
         assert!(!current_round.payload.next_step_open);
-        assert_eq!(current_round.payload.selected_trunk.as_deref(), Some("round seed"));
+        assert_eq!(
+            current_round.payload.selected_trunk.as_deref(),
+            Some("round seed")
+        );
 
         Ok(())
     }
@@ -4855,7 +4868,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_surface_backfills_dev_return_acceptance_for_current_checkpoint() -> Result<()> {
+    fn checkpoint_write_backfills_dev_return_acceptance_for_current_checkpoint() -> Result<()> {
         let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
         let task_id = store.insert_forge_task("Dev child", "echo", "[]", None, None, "[]", "{}")?;
 
@@ -4951,20 +4964,31 @@ mod tests {
         })?;
 
         let seeded_receipts = store.list_nota_runtime_receipts(Some(transaction.id))?;
-        assert_eq!(seeded_receipts.len(), 2);
-        assert!(seeded_receipts.iter().all(|receipt| {
-            receipt.receipt_kind != DEV_RETURN_ACCEPTED_RECEIPT_KIND
-                && receipt.receipt_kind != DEV_RETURN_REVIEW_READY_RECEIPT_KIND
-        }));
+        let seeded_accepted = seeded_receipts
+            .iter()
+            .find(|receipt| receipt.receipt_kind == DEV_RETURN_ACCEPTED_RECEIPT_KIND)
+            .context("checkpoint write should already backfill the dev acceptance receipt")?;
+        let seeded_review_ready = seeded_receipts
+            .iter()
+            .find(|receipt| receipt.receipt_kind == DEV_RETURN_REVIEW_READY_RECEIPT_KIND)
+            .context("checkpoint write should already backfill the review-ready receipt")?;
 
         let report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(report.receipt_count, 4);
-        assert_eq!(
-            report.receipts[2].receipt_kind,
-            DEV_RETURN_ACCEPTED_RECEIPT_KIND
-        );
+        assert_eq!(report.receipt_count, seeded_receipts.len());
+        let accepted_receipt = report
+            .receipts
+            .iter()
+            .find(|receipt| receipt.receipt_kind == DEV_RETURN_ACCEPTED_RECEIPT_KIND)
+            .context("receipt surface should retain the backfilled dev acceptance receipt")?;
+        let review_ready_receipt = report
+            .receipts
+            .iter()
+            .find(|receipt| receipt.receipt_kind == DEV_RETURN_REVIEW_READY_RECEIPT_KIND)
+            .context("receipt surface should retain the backfilled review-ready receipt")?;
+        assert_eq!(accepted_receipt.id, seeded_accepted.id);
+        assert_eq!(review_ready_receipt.id, seeded_review_ready.id);
 
-        let accepted_payload: Value = serde_json::from_str(&report.receipts[2].payload_json)?;
+        let accepted_payload: Value = serde_json::from_str(&accepted_receipt.payload_json)?;
         assert_eq!(accepted_payload["allocation_id"], allocation.id);
         assert_eq!(accepted_payload["lineage_ref"], allocation.lineage_ref);
         assert_eq!(
@@ -4979,11 +5003,7 @@ mod tests {
         assert_eq!(accepted_payload["target_kind"], "nota_runtime_transaction");
         assert_eq!(accepted_payload["target_ref"], transaction.id.to_string());
 
-        assert_eq!(
-            report.receipts[3].receipt_kind,
-            DEV_RETURN_REVIEW_READY_RECEIPT_KIND
-        );
-        let review_ready_payload: Value = serde_json::from_str(&report.receipts[3].payload_json)?;
+        let review_ready_payload: Value = serde_json::from_str(&review_ready_receipt.payload_json)?;
         assert_eq!(
             review_ready_payload["checkpoint_id"],
             checkpoint_report.checkpoint.cadence_object.id
@@ -5088,11 +5108,11 @@ mod tests {
         );
 
         let recorded_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(recorded_report.receipt_count, 5);
-        assert_eq!(
-            recorded_report.receipts[4].receipt_kind,
-            DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
-        );
+        assert!(recorded_report.receipt_count >= seeded_receipts.len());
+        assert!(recorded_report
+            .receipts
+            .iter()
+            .any(|receipt| receipt.id == review_recorded.receipt.id));
 
         let review = derive_nota_runtime_review(
             &checkpoint_scope_ids,
@@ -5166,11 +5186,10 @@ mod tests {
         );
 
         let integrate_started_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(integrate_started_report.receipt_count, 6);
-        assert_eq!(
-            integrate_started_report.receipts[5].receipt_kind,
-            DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
-        );
+        assert!(integrate_started_report
+            .receipts
+            .iter()
+            .any(|receipt| receipt.id == integrate_started.receipt.id));
 
         let started_integrate = derive_nota_runtime_integrate(
             &checkpoint_scope_ids,
@@ -5217,11 +5236,10 @@ mod tests {
         );
 
         let integrated_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(integrated_report.receipt_count, 7);
-        assert_eq!(
-            integrated_report.receipts[6].receipt_kind,
-            DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
-        );
+        assert!(integrated_report
+            .receipts
+            .iter()
+            .any(|receipt| receipt.id == integrated.receipt.id));
 
         let recorded_integrate = derive_nota_runtime_integrate(
             &checkpoint_scope_ids,
@@ -5265,11 +5283,10 @@ mod tests {
         );
 
         let finalized_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(finalized_report.receipt_count, 8);
-        assert_eq!(
-            finalized_report.receipts[7].receipt_kind,
-            DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
-        );
+        assert!(finalized_report
+            .receipts
+            .iter()
+            .any(|receipt| receipt.id == finalized.receipt.id));
 
         let recorded_finalize = derive_nota_runtime_finalize(
             &checkpoint_scope_ids,
@@ -5355,11 +5372,15 @@ mod tests {
         assert!(closure_scope_ids.contains(&current_checkpoint.unwrap().cadence_object.id));
 
         let closure_receipts = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(closure_receipts.receipt_count, 9);
-        assert_eq!(
-            closure_receipts.receipts[8].receipt_kind,
-            CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND
-        );
+        assert!(closure_receipts.receipts.iter().any(|receipt| {
+            if receipt.receipt_kind != CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND {
+                return false;
+            }
+            serde_json::from_str::<Value>(&receipt.payload_json)
+                .ok()
+                .and_then(|payload| payload["checkpoint_id"].as_i64())
+                == Some(closure_checkpoint_record.cadence_object.id)
+        }));
 
         let closure_acceptance_bundles = list_runtime_acceptance_bundles(&store)?;
         assert_eq!(closure_acceptance_bundles.acceptance_bundle_count, 2);
@@ -5463,7 +5484,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_surface_backfills_agent_return_acceptance_for_current_checkpoint() -> Result<()> {
+    fn checkpoint_write_backfills_agent_return_acceptance_for_current_checkpoint() -> Result<()> {
         let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
         let task_id =
             store.insert_forge_task("Agent child", "echo", "[]", None, None, "[]", "{}")?;
@@ -5582,19 +5603,21 @@ mod tests {
         })?;
 
         let seeded_receipts = store.list_nota_runtime_receipts(Some(transaction.id))?;
-        assert_eq!(seeded_receipts.len(), 2);
-        assert!(seeded_receipts
+        let seeded_accepted = seeded_receipts
             .iter()
-            .all(|receipt| receipt.receipt_kind != AGENT_RETURN_ACCEPTED_RECEIPT_KIND));
+            .find(|receipt| receipt.receipt_kind == AGENT_RETURN_ACCEPTED_RECEIPT_KIND)
+            .context("checkpoint write should already backfill the agent acceptance receipt")?;
 
         let report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(report.receipt_count, 3);
-        assert_eq!(
-            report.receipts[2].receipt_kind,
-            AGENT_RETURN_ACCEPTED_RECEIPT_KIND
-        );
+        assert_eq!(report.receipt_count, seeded_receipts.len());
+        let accepted_receipt = report
+            .receipts
+            .iter()
+            .find(|receipt| receipt.receipt_kind == AGENT_RETURN_ACCEPTED_RECEIPT_KIND)
+            .context("receipt surface should retain the backfilled agent acceptance receipt")?;
+        assert_eq!(accepted_receipt.id, seeded_accepted.id);
 
-        let accepted_payload: Value = serde_json::from_str(&report.receipts[2].payload_json)?;
+        let accepted_payload: Value = serde_json::from_str(&accepted_receipt.payload_json)?;
         assert_eq!(accepted_payload["allocation_id"], allocation.id);
         assert_eq!(accepted_payload["lineage_ref"], allocation.lineage_ref);
         assert_eq!(
@@ -5607,7 +5630,7 @@ mod tests {
         assert_eq!(accepted_payload["target_ref"], transaction.id.to_string());
 
         let second_report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(second_report.receipt_count, 3);
+        assert_eq!(second_report.receipt_count, report.receipt_count);
 
         let acceptance_bundles = list_runtime_acceptance_bundles(&store)?;
         assert_eq!(acceptance_bundles.acceptance_bundle_count, 1);

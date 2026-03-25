@@ -2361,7 +2361,10 @@ fn nota_anti_zeno_budget_surfaces_checkpoint_pressure_from_runtime_truth() -> Re
     assert_eq!(anti_zeno["repair_event_count"], 0);
     assert_eq!(anti_zeno["projection_debt_count"], 0);
     assert_eq!(anti_zeno["budget_exhausted"], false);
-    assert_eq!(anti_zeno["recent_events"][0]["event_kind"], "checkpoint_written");
+    assert_eq!(
+        anti_zeno["recent_events"][0]["event_kind"],
+        "checkpoint_written"
+    );
     assert_eq!(anti_zeno["recent_events"][0]["checkpoint_id"], 1);
 
     let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
@@ -2434,8 +2437,8 @@ fn nota_invariants_and_repair_surfaces_reflect_required_projection_debt() -> Res
     );
 
     let repair_output = run_nota_cli(&app_data_dir, &["nota", "repair"])?;
-    let repair: Value = serde_json::from_str(&repair_output)
-        .context("nota repair output should be valid JSON")?;
+    let repair: Value =
+        serde_json::from_str(&repair_output).context("nota repair output should be valid JSON")?;
     assert_eq!(repair["open_count"], 1);
     assert_eq!(repair["repairable_count"], 1);
     assert_eq!(
@@ -2450,7 +2453,7 @@ fn nota_invariants_and_repair_surfaces_reflect_required_projection_debt() -> Res
     assert_eq!(status["repair_lane"]["open_count"], 1);
 
     assert_eq!(count_rows(&connection, "runtime_invariants")?, 8);
-    assert_eq!(count_rows(&connection, "repair_lane_items")?, 1);
+    assert_eq!(count_rows(&connection, "repair_lane_items")?, 0);
 
     Ok(())
 }
@@ -2531,8 +2534,8 @@ fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result
     assert!(cold_doc_path.exists());
 
     let listed_output = run_nota_cli(&app_data_dir, &["nota", "cold-docs"])?;
-    let listed: Value = serde_json::from_str(&listed_output)
-        .context("cold-docs output should be valid JSON")?;
+    let listed: Value =
+        serde_json::from_str(&listed_output).context("cold-docs output should be valid JSON")?;
     assert_eq!(listed["cold_doc_count"], 1);
     assert_eq!(listed["fresh_projection_count"], 1);
     assert_eq!(
@@ -2634,7 +2637,12 @@ fn nota_rebuild_projections_rehydrates_retained_exports_from_db_truth() -> Resul
         .context("rebuild-projections output should be valid JSON")?;
     assert_eq!(rebuild["status"], "rebuilt");
     assert_eq!(rebuild["required_targets_fresh"], true);
-    assert_eq!(rebuild["hot_root"]["files_written"].as_array().map(Vec::len), Some(6));
+    assert_eq!(
+        rebuild["hot_root"]["files_written"]
+            .as_array()
+            .map(Vec::len),
+        Some(6)
+    );
     assert_eq!(rebuild["cold_docs"]["exported_count"], 1);
 
     let rebuilt_readme = fs::read_to_string(hot_root_dir.join("README.md"))
@@ -2683,7 +2691,10 @@ fn nota_host_and_worktree_surfaces_reflect_owner_root_runtime_truth() -> Result<
     assert_eq!(worktrees["observed_count"], 1);
     assert_eq!(worktrees["missing_count"], 0);
     assert_eq!(worktrees["worktrees"][0]["project_name"], "Entrance");
-    assert_eq!(worktrees["worktrees"][0]["worktree_kind"], "managed_worktree");
+    assert_eq!(
+        worktrees["worktrees"][0]["worktree_kind"],
+        "managed_worktree"
+    );
     assert_eq!(
         worktrees["worktrees"][0]["worktree_path"],
         managed_worktree.to_string_lossy().replace('\\', "/")
