@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -62,7 +63,12 @@ const CORE_ANTI_ZENO_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0014_create_core_anti_zeno_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 10] = [
+const CORE_RUNTIME_INVARIANT_MIGRATION: MigrationStep = MigrationStep {
+    name: "0015_create_core_runtime_invariant_tables",
+    sql: include_str!("../../migrations/0015_create_core_runtime_invariant_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 11] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -73,6 +79,7 @@ const CORE_MIGRATIONS: [MigrationStep; 10] = [
     CORE_PROJECTION_RUNTIME_MIGRATION,
     CORE_RUNTIME_ENVIRONMENT_MIGRATION,
     CORE_ANTI_ZENO_MIGRATION,
+    CORE_RUNTIME_INVARIANT_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -584,6 +591,41 @@ pub struct StoredAntiZenoEvent {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredRuntimeInvariant {
+    pub id: i64,
+    pub invariant_key: String,
+    pub title: String,
+    pub status: String,
+    pub severity: String,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub human_round_id: Option<i64>,
+    pub summary: String,
+    pub evidence_json: String,
+    pub repair_action: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredRepairLaneItem {
+    pub id: i64,
+    pub repair_key: String,
+    pub source_invariant_key: Option<String>,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub item_kind: String,
+    pub urgency: String,
+    pub status: String,
+    pub summary: String,
+    pub repair_action: String,
+    pub evidence_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub resolved_at: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertDocumentRecord<'a> {
     pub id: i64,
@@ -831,6 +873,34 @@ pub struct NewAntiZenoEvent<'a> {
     pub budget_axis: &'a str,
     pub event_weight: i64,
     pub summary: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertRuntimeInvariant<'a> {
+    pub invariant_key: &'a str,
+    pub title: &'a str,
+    pub status: &'a str,
+    pub severity: &'a str,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub human_round_id: Option<i64>,
+    pub summary: &'a str,
+    pub evidence_json: &'a str,
+    pub repair_action: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertRepairLaneItem<'a> {
+    pub repair_key: &'a str,
+    pub source_invariant_key: Option<&'a str>,
+    pub checkpoint_id: Option<i64>,
+    pub acceptance_bundle_id: Option<i64>,
+    pub item_kind: &'a str,
+    pub urgency: &'a str,
+    pub status: &'a str,
+    pub summary: &'a str,
+    pub repair_action: &'a str,
+    pub evidence_json: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -3336,6 +3406,225 @@ impl DataStore {
         })
     }
 
+    pub fn upsert_runtime_invariant(
+        &self,
+        record: UpsertRuntimeInvariant<'_>,
+    ) -> Result<StoredRuntimeInvariant> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO runtime_invariants (
+                    invariant_key,
+                    title,
+                    status,
+                    severity,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    human_round_id,
+                    summary,
+                    evidence_json,
+                    repair_action,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+                ON CONFLICT(invariant_key) DO UPDATE SET
+                    title = excluded.title,
+                    status = excluded.status,
+                    severity = excluded.severity,
+                    checkpoint_id = excluded.checkpoint_id,
+                    acceptance_bundle_id = excluded.acceptance_bundle_id,
+                    human_round_id = excluded.human_round_id,
+                    summary = excluded.summary,
+                    evidence_json = excluded.evidence_json,
+                    repair_action = excluded.repair_action,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.invariant_key,
+                    record.title,
+                    record.status,
+                    record.severity,
+                    record.checkpoint_id,
+                    record.acceptance_bundle_id,
+                    record.human_round_id,
+                    record.summary,
+                    record.evidence_json,
+                    record.repair_action,
+                    now,
+                ],
+            )?;
+            fetch_runtime_invariant_by_key(conn, record.invariant_key)?
+                .ok_or_else(|| anyhow!("runtime invariant disappeared after upsert"))
+        })
+    }
+
+    pub fn list_runtime_invariants(&self) -> Result<Vec<StoredRuntimeInvariant>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    invariant_key,
+                    title,
+                    status,
+                    severity,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    human_round_id,
+                    summary,
+                    evidence_json,
+                    repair_action,
+                    created_at,
+                    updated_at
+                FROM runtime_invariants
+                ORDER BY
+                    CASE status
+                        WHEN 'failed_blocked' THEN 0
+                        WHEN 'failed_repairable' THEN 1
+                        WHEN 'passed' THEN 2
+                        ELSE 3
+                    END,
+                    invariant_key ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_runtime_invariant_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn upsert_repair_lane_item(
+        &self,
+        record: UpsertRepairLaneItem<'_>,
+    ) -> Result<StoredRepairLaneItem> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO repair_lane_items (
+                    repair_key,
+                    source_invariant_key,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    item_kind,
+                    urgency,
+                    status,
+                    summary,
+                    repair_action,
+                    evidence_json,
+                    created_at,
+                    updated_at,
+                    resolved_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL)
+                ON CONFLICT(repair_key) DO UPDATE SET
+                    source_invariant_key = excluded.source_invariant_key,
+                    checkpoint_id = excluded.checkpoint_id,
+                    acceptance_bundle_id = excluded.acceptance_bundle_id,
+                    item_kind = excluded.item_kind,
+                    urgency = excluded.urgency,
+                    status = excluded.status,
+                    summary = excluded.summary,
+                    repair_action = excluded.repair_action,
+                    evidence_json = excluded.evidence_json,
+                    updated_at = excluded.updated_at,
+                    resolved_at = CASE
+                        WHEN excluded.status = 'open' THEN NULL
+                        ELSE repair_lane_items.resolved_at
+                    END
+                "#,
+                params![
+                    record.repair_key,
+                    record.source_invariant_key,
+                    record.checkpoint_id,
+                    record.acceptance_bundle_id,
+                    record.item_kind,
+                    record.urgency,
+                    record.status,
+                    record.summary,
+                    record.repair_action,
+                    record.evidence_json,
+                    now,
+                ],
+            )?;
+            fetch_repair_lane_item_by_key(conn, record.repair_key)?
+                .ok_or_else(|| anyhow!("repair lane item disappeared after upsert"))
+        })
+    }
+
+    pub fn mark_repair_lane_items_resolved(&self, active_repair_keys: &[String]) -> Result<usize> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            let active = active_repair_keys.iter().cloned().collect::<HashSet<_>>();
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT repair_key
+                FROM repair_lane_items
+                WHERE status = 'open'
+                "#,
+            )?;
+            let open_keys = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            let mut resolved_count = 0;
+            for repair_key in open_keys {
+                if active.contains(&repair_key) {
+                    continue;
+                }
+                resolved_count += conn.execute(
+                    r#"
+                    UPDATE repair_lane_items
+                    SET status = 'resolved',
+                        updated_at = ?1,
+                        resolved_at = COALESCE(resolved_at, ?1)
+                    WHERE repair_key = ?2
+                    "#,
+                    params![now, repair_key],
+                )?;
+            }
+            Ok(resolved_count)
+        })
+    }
+
+    pub fn list_repair_lane_items(&self) -> Result<Vec<StoredRepairLaneItem>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    repair_key,
+                    source_invariant_key,
+                    checkpoint_id,
+                    acceptance_bundle_id,
+                    item_kind,
+                    urgency,
+                    status,
+                    summary,
+                    repair_action,
+                    evidence_json,
+                    created_at,
+                    updated_at,
+                    resolved_at
+                FROM repair_lane_items
+                ORDER BY
+                    CASE status
+                        WHEN 'open' THEN 0
+                        ELSE 1
+                    END,
+                    CASE urgency
+                        WHEN 'blocked' THEN 0
+                        ELSE 1
+                    END,
+                    repair_key ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_repair_lane_item_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_document_record_by_slug(
         &self,
         record: UpsertDocumentRecordBySlug<'_>,
@@ -4622,6 +4911,43 @@ fn map_anti_zeno_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAn
     })
 }
 
+fn map_runtime_invariant_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRuntimeInvariant> {
+    Ok(StoredRuntimeInvariant {
+        id: row.get(0)?,
+        invariant_key: row.get(1)?,
+        title: row.get(2)?,
+        status: row.get(3)?,
+        severity: row.get(4)?,
+        checkpoint_id: row.get(5)?,
+        acceptance_bundle_id: row.get(6)?,
+        human_round_id: row.get(7)?,
+        summary: row.get(8)?,
+        evidence_json: row.get(9)?,
+        repair_action: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+fn map_repair_lane_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRepairLaneItem> {
+    Ok(StoredRepairLaneItem {
+        id: row.get(0)?,
+        repair_key: row.get(1)?,
+        source_invariant_key: row.get(2)?,
+        checkpoint_id: row.get(3)?,
+        acceptance_bundle_id: row.get(4)?,
+        item_kind: row.get(5)?,
+        urgency: row.get(6)?,
+        status: row.get(7)?,
+        summary: row.get(8)?,
+        repair_action: row.get(9)?,
+        evidence_json: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        resolved_at: row.get(13)?,
+    })
+}
+
 fn fetch_vault_mcp_config(
     connection: &Connection,
     id: i64,
@@ -5154,6 +5480,69 @@ fn fetch_anti_zeno_event_by_id(
             "#,
             [id],
             map_anti_zeno_event_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_runtime_invariant_by_key(
+    connection: &Connection,
+    invariant_key: &str,
+) -> Result<Option<StoredRuntimeInvariant>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                invariant_key,
+                title,
+                status,
+                severity,
+                checkpoint_id,
+                acceptance_bundle_id,
+                human_round_id,
+                summary,
+                evidence_json,
+                repair_action,
+                created_at,
+                updated_at
+            FROM runtime_invariants
+            WHERE invariant_key = ?1
+            "#,
+            [invariant_key],
+            map_runtime_invariant_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_repair_lane_item_by_key(
+    connection: &Connection,
+    repair_key: &str,
+) -> Result<Option<StoredRepairLaneItem>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                repair_key,
+                source_invariant_key,
+                checkpoint_id,
+                acceptance_bundle_id,
+                item_kind,
+                urgency,
+                status,
+                summary,
+                repair_action,
+                evidence_json,
+                created_at,
+                updated_at,
+                resolved_at
+            FROM repair_lane_items
+            WHERE repair_key = ?1
+            "#,
+            [repair_key],
+            map_repair_lane_item_row,
         )
         .optional()
         .map_err(Into::into)

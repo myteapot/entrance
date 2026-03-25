@@ -2355,6 +2355,83 @@ fn nota_anti_zeno_budget_surfaces_checkpoint_pressure_from_runtime_truth() -> Re
 }
 
 #[test]
+fn nota_invariants_and_repair_surfaces_reflect_required_projection_debt() -> Result<()> {
+    let temp_dir = TempDir::new("invariants-repair")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Invariant checkpoint",
+            "--stable-level",
+            "invariant-backed repair lane",
+            "--landed",
+            "required projections are tracked as runtime truth",
+            "--remaining",
+            "repair lane remains open until projections are refreshed",
+            "--human-continuity-bus",
+            "reduced for invariant-backed repair",
+        ],
+    )?;
+
+    let db_path = app_data_dir.join("data").join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    connection.execute(
+        r#"
+        UPDATE projection_runs
+        SET run_state = 'failed',
+            freshness_state = 'failed',
+            summary = 'Forced projection failure for invariant test.',
+            error_message = 'forced by nota_cli invariant test',
+            repair_hint = 'rerun export'
+        WHERE truth_checkpoint_id = 1
+        "#,
+        [],
+    )?;
+
+    let invariants_output = run_nota_cli(&app_data_dir, &["nota", "invariants"])?;
+    let invariants: Value = serde_json::from_str(&invariants_output)
+        .context("nota invariants output should be valid JSON")?;
+    assert_eq!(invariants["failed_count"], 1);
+    assert_eq!(invariants["repairable_count"], 1);
+    assert_eq!(
+        invariants["invariants"]
+            .as_array()
+            .context("invariants should be an array")?
+            .iter()
+            .find(|invariant| invariant["invariant_key"] == "required_projection_freshness")
+            .context("required projection freshness invariant should exist")?["status"],
+        "failed_repairable"
+    );
+
+    let repair_output = run_nota_cli(&app_data_dir, &["nota", "repair"])?;
+    let repair: Value = serde_json::from_str(&repair_output)
+        .context("nota repair output should be valid JSON")?;
+    assert_eq!(repair["open_count"], 1);
+    assert_eq!(repair["repairable_count"], 1);
+    assert_eq!(
+        repair["items"][0]["source_invariant_key"],
+        "required_projection_freshness"
+    );
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["invariants"]["failed_count"], 1);
+    assert_eq!(status["repair_lane"]["open_count"], 1);
+
+    assert_eq!(count_rows(&connection, "runtime_invariants")?, 8);
+    assert_eq!(count_rows(&connection, "repair_lane_items")?, 1);
+
+    Ok(())
+}
+
+#[test]
 fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result<()> {
     let temp_dir = TempDir::new("cold-docs")?;
     let app_data_dir = temp_dir.path().join("appdata");

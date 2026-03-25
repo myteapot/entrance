@@ -18,6 +18,7 @@ pub mod config_store;
 pub mod data_store;
 pub mod design_governance;
 pub mod environment_runtime;
+pub mod invariant_runtime;
 pub mod event_bus;
 pub mod hotkey;
 pub mod hygiene;
