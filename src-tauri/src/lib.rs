@@ -2114,6 +2114,7 @@ pub(crate) fn build_nota_runtime_overview(
         .iter()
         .find(|checkpoint| checkpoint.cadence_object.is_current);
     let checkpoint_scope_ids = active_checkpoint_scope_ids(data_store, current_checkpoint)?;
+    let transactions = list_nota_runtime_transactions(data_store)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
     let human_rounds = list_runtime_human_rounds(data_store)?;
@@ -2128,21 +2129,25 @@ pub(crate) fn build_nota_runtime_overview(
     )?;
     let review = derive_nota_runtime_review(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let integrate = derive_nota_runtime_integrate(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let finalize = derive_nota_runtime_finalize(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let next_step = derive_nota_runtime_next_step(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
@@ -2187,7 +2192,6 @@ pub(crate) fn build_nota_runtime_overview(
         projections.dirty_required_target_count,
     )?;
     let (invariants, repair_lane) = project_runtime_invariants(data_store)?;
-    let transactions = list_nota_runtime_transactions(data_store)?;
     let decisions = list_design_decisions(data_store)?;
     let front_door = build_nota_front_door_projection(
         current_checkpoint,
@@ -2260,21 +2264,25 @@ pub(crate) fn build_nota_runtime_status(
     )?;
     let review = derive_nota_runtime_review(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let integrate = derive_nota_runtime_integrate(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let finalize = derive_nota_runtime_finalize(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
     let next_step = derive_nota_runtime_next_step(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;

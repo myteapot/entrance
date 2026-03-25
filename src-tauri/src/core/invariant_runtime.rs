@@ -17,8 +17,9 @@ use crate::core::{
         active_checkpoint_scope_ids, derive_current_runtime_acceptance_bundle,
         derive_current_runtime_human_round, derive_nota_runtime_next_step,
         derive_runtime_round_state_projection, list_nota_runtime_allocations,
-        list_nota_runtime_receipts, list_runtime_checkpoints, NotaAcceptanceBundleRecord,
-        NotaCheckpointRecord, NotaHumanRoundRecord, NotaRoundStateProjection,
+        list_nota_runtime_receipts, list_nota_runtime_transactions, list_runtime_checkpoints,
+        NotaAcceptanceBundleRecord, NotaCheckpointRecord, NotaHumanRoundRecord,
+        NotaRoundStateProjection,
     },
     projection_runtime::{
         build_projection_status_report, ProjectionStatusReport, ProjectionTruthRevision,
@@ -207,9 +208,11 @@ fn gather_invariant_context(data_store: &DataStore) -> Result<InvariantContext> 
     let checkpoint_scope_ids =
         active_checkpoint_scope_ids(data_store, current_checkpoint.as_ref())?;
     let allocations = list_nota_runtime_allocations(data_store)?;
+    let transactions = list_nota_runtime_transactions(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
     let next_step = derive_nota_runtime_next_step(
         &checkpoint_scope_ids,
+        &transactions.transactions,
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
