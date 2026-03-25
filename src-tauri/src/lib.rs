@@ -38,6 +38,9 @@ use core::{
         list_design_decisions, record_design_decision, DesignDecisionListReport,
         DesignDecisionRequest,
     },
+    environment_runtime::{
+        current_runtime_host, list_owned_worktrees, OwnedWorktreeRegistryReport,
+    },
     event_bus::EventBus,
     hotkey,
     hygiene::{list_spec_hygiene_v0, run_spec_hygiene_v0, SpecHygieneReport},
@@ -141,6 +144,9 @@ pub(crate) struct NotaRuntimeOverview {
     todos: NotaTodoListReport,
     cold_docs: NotaColdDocListReport,
     #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<core::data_store::StoredRuntimeHost>,
+    worktrees: OwnedWorktreeRegistryReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     review: Option<NotaRuntimeReview>,
@@ -188,6 +194,10 @@ pub(crate) struct NotaRuntimeStatus {
     todo_count: usize,
     cold_doc_count: usize,
     cold_docs: NotaColdDocListReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<core::data_store::StoredRuntimeHost>,
+    worktree_count: usize,
+    worktrees: OwnedWorktreeRegistryReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     recommended_checkpoint: Option<NotaCheckpointRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -659,6 +669,8 @@ const NOTA_CLI_HELP: &str = r#"Usage:
   entrance nota acceptance-bundles
   entrance nota projections
   entrance nota cold-docs
+  entrance nota host
+  entrance nota worktrees
   entrance nota canonicalize-cold-docs --project-dir <path>
   entrance nota export-cold-docs --project-dir <path>
   entrance nota export-hot-root [--project-dir <path>]
@@ -963,6 +975,16 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             let status = build_nota_runtime_status(&startup.data_store())?;
             print_json(&status.cold_docs)
         }
+        [command] if command == "host" => {
+            print_json(&current_runtime_host(&startup.data_store())?)
+        }
+        [command] if command == "worktrees" => {
+            let host = current_runtime_host(&startup.data_store())?;
+            print_json(&list_owned_worktrees(
+                &startup.data_store(),
+                host.as_ref().map(|value| value.host_key.as_str()),
+            )?)
+        }
         [command, flag, value] if command == "canonicalize-cold-docs" && flag == "--project-dir" => {
             let report = canonicalize_cold_docs_from_repo(&startup.data_store(), value)?;
             print_json(&report)
@@ -1107,7 +1129,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&report)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota cold-docs`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota cold-docs`, `entrance nota host`, `entrance nota worktrees`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -2116,6 +2138,8 @@ pub(crate) fn build_nota_runtime_overview(
     );
     let projections = build_projection_status_report(data_store, projection_truth_revision.clone())?;
     let cold_docs = list_cold_documents(data_store, projection_truth_revision)?;
+    let host = current_runtime_host(data_store)?;
+    let worktrees = list_owned_worktrees(data_store, host.as_ref().map(|value| value.host_key.as_str()))?;
     let round_state = derive_runtime_round_state_projection(
         current_checkpoint,
         current_acceptance_bundle.as_ref(),
@@ -2153,6 +2177,8 @@ pub(crate) fn build_nota_runtime_overview(
         visions,
         todos,
         cold_docs,
+        host,
+        worktrees,
         recommended_checkpoint,
         review,
         integrate,
@@ -2228,6 +2254,8 @@ pub(crate) fn build_nota_runtime_status(
     );
     let projections = build_projection_status_report(data_store, projection_truth_revision.clone())?;
     let cold_docs = list_cold_documents(data_store, projection_truth_revision)?;
+    let host = current_runtime_host(data_store)?;
+    let worktrees = list_owned_worktrees(data_store, host.as_ref().map(|value| value.host_key.as_str()))?;
     let round_state = derive_runtime_round_state_projection(
         current_checkpoint.as_ref(),
         current_acceptance_bundle.as_ref(),
@@ -2275,6 +2303,9 @@ pub(crate) fn build_nota_runtime_status(
         todo_count: todos.todo_count,
         cold_doc_count: cold_docs.cold_doc_count,
         cold_docs,
+        host,
+        worktree_count: worktrees.worktree_count,
+        worktrees,
         recommended_checkpoint,
         review,
         integrate,
@@ -2579,10 +2610,16 @@ fn render_hot_root_files(
     let owner_root = startup.paths().app_data_dir().display().to_string();
     let config_path = startup.paths().config_path().display().to_string();
     let db_path = startup.paths().db_path().display().to_string();
+    let host_line = status
+        .host
+        .as_ref()
+        .map(|host| format!("{} on {}", host.host_label, host.os_family))
+        .unwrap_or_else(|| "No host snapshot has been recorded yet.".to_string());
 
     let readme = format!(
-        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n\nCurrent round:\n\n- human round: {human_round_line}\n- round state: {round_state_line}\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
+        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- host: {host_line}\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n- observed worktrees: {}\n\nCurrent round:\n\n- human round: {human_round_line}\n- round state: {round_state_line}\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n- projection freshness: {projection_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
         startup.paths().exports_dir().join("hot-root").display(),
+        status.worktree_count,
         status.anti_zeno.summary,
         status.anti_zeno.state
     );
@@ -2600,8 +2637,9 @@ fn render_hot_root_files(
     );
 
     let truth = format!(
-        "# Truth\n\n> Status: hot root projection\n\n## Canonical Law\n\n- DB-first is mandatory.\n- Every operation must write runtime truth before any projection is considered valid.\n- Files are preserved projections and may be regenerated from DB truth.\n- Cold docs remain canonicalized in DB and may be periodically projected back to files.\n\n## Projection Boundary\n\n- owner root: `{owner_root}`\n- config TOML: `{config_path}`\n- runtime DB: `{db_path}`\n- files are downstream of truth, never upstream of truth\n- anti-Zeno is a derived progress discipline, not a second truth plane\n- required projection freshness: {projection_line}\n- required dirty projections: {}\n",
-        status.projections.dirty_required_target_count
+        "# Truth\n\n> Status: hot root projection\n\n## Canonical Law\n\n- DB-first is mandatory.\n- Every operation must write runtime truth before any projection is considered valid.\n- Files are preserved projections and may be regenerated from DB truth.\n- Cold docs remain canonicalized in DB and may be periodically projected back to files.\n\n## Projection Boundary\n\n- owner root: `{owner_root}`\n- host visibility: {host_line}\n- config TOML: `{config_path}`\n- runtime DB: `{db_path}`\n- files are downstream of truth, never upstream of truth\n- anti-Zeno is a derived progress discipline, not a second truth plane\n- required projection freshness: {projection_line}\n- required dirty projections: {}\n- owned worktree count: {}\n",
+        status.projections.dirty_required_target_count,
+        status.worktree_count
     );
 
     let phase_todo = format!(

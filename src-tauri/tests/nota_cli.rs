@@ -2417,6 +2417,59 @@ fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result
 }
 
 #[test]
+fn nota_host_and_worktree_surfaces_reflect_owner_root_runtime_truth() -> Result<()> {
+    let temp_dir = TempDir::new("host-worktrees")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree)?;
+
+    let host_output = run_nota_cli(&app_data_dir, &["nota", "host"])?;
+    let host: Value =
+        serde_json::from_str(&host_output).context("nota host output should be valid JSON")?;
+    assert_eq!(
+        host["owner_root"],
+        app_data_dir.to_string_lossy().replace('\\', "/")
+    );
+    assert_eq!(
+        host["worktrees_root"],
+        app_data_dir
+            .join("worktrees")
+            .to_string_lossy()
+            .replace('\\', "/")
+    );
+
+    let worktrees_output = run_nota_cli(&app_data_dir, &["nota", "worktrees"])?;
+    let worktrees: Value = serde_json::from_str(&worktrees_output)
+        .context("nota worktrees output should be valid JSON")?;
+    assert_eq!(worktrees["worktree_count"], 1);
+    assert_eq!(worktrees["observed_count"], 1);
+    assert_eq!(worktrees["missing_count"], 0);
+    assert_eq!(worktrees["worktrees"][0]["project_name"], "Entrance");
+    assert_eq!(worktrees["worktrees"][0]["worktree_kind"], "managed_worktree");
+    assert_eq!(
+        worktrees["worktrees"][0]["worktree_path"],
+        managed_worktree.to_string_lossy().replace('\\', "/")
+    );
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["worktree_count"], 1);
+    assert_eq!(
+        status["host"]["owner_root"],
+        app_data_dir.to_string_lossy().replace('\\', "/")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn nota_cli_reads_canonical_vision_and_todo_surfaces() -> Result<()> {
     let temp_dir = TempDir::new("vision-todo-surfaces")?;
     let app_data_dir = temp_dir.path().join("appdata");

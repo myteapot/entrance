@@ -52,7 +52,12 @@ const CORE_PROJECTION_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0012_create_core_projection_runtime_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 8] = [
+const CORE_RUNTIME_ENVIRONMENT_MIGRATION: MigrationStep = MigrationStep {
+    name: "0013_create_core_runtime_environment_tables",
+    sql: include_str!("../../migrations/0013_create_core_runtime_environment_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 9] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -61,6 +66,7 @@ const CORE_MIGRATIONS: [MigrationStep; 8] = [
     CORE_CHAT_ARCHIVE_MIGRATION,
     CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION,
     CORE_PROJECTION_RUNTIME_MIGRATION,
+    CORE_RUNTIME_ENVIRONMENT_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -523,6 +529,42 @@ pub struct StoredProjectionRun {
     pub completed_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredRuntimeHost {
+    pub id: i64,
+    pub host_key: String,
+    pub os_family: String,
+    pub host_label: String,
+    pub kernel_label: String,
+    pub user_home: String,
+    pub owner_root: String,
+    pub config_path: String,
+    pub runtime_db_path: String,
+    pub exports_path: String,
+    pub worktrees_root: String,
+    pub wsl_distro_name: Option<String>,
+    pub path_style: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredOwnedWorktree {
+    pub id: i64,
+    pub host_key: String,
+    pub project_name: String,
+    pub issue_id: Option<String>,
+    pub branch_name: String,
+    pub worktree_kind: String,
+    pub worktree_path: String,
+    pub repo_root: Option<String>,
+    pub slot_name: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub last_seen_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertDocumentRecord<'a> {
     pub id: i64,
@@ -729,6 +771,36 @@ pub struct NewProjectionRun<'a> {
     pub repair_hint: Option<&'a str>,
     pub started_at: &'a str,
     pub completed_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertRuntimeHost<'a> {
+    pub host_key: &'a str,
+    pub os_family: &'a str,
+    pub host_label: &'a str,
+    pub kernel_label: &'a str,
+    pub user_home: &'a str,
+    pub owner_root: &'a str,
+    pub config_path: &'a str,
+    pub runtime_db_path: &'a str,
+    pub exports_path: &'a str,
+    pub worktrees_root: &'a str,
+    pub wsl_distro_name: Option<&'a str>,
+    pub path_style: &'a str,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertOwnedWorktree<'a> {
+    pub host_key: &'a str,
+    pub project_name: &'a str,
+    pub issue_id: Option<&'a str>,
+    pub branch_name: &'a str,
+    pub worktree_kind: &'a str,
+    pub worktree_path: &'a str,
+    pub repo_root: Option<&'a str>,
+    pub slot_name: Option<&'a str>,
+    pub status: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -2963,6 +3035,217 @@ impl DataStore {
         })
     }
 
+    pub fn upsert_runtime_host(&self, record: UpsertRuntimeHost<'_>) -> Result<StoredRuntimeHost> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO runtime_hosts (
+                    host_key,
+                    os_family,
+                    host_label,
+                    kernel_label,
+                    user_home,
+                    owner_root,
+                    config_path,
+                    runtime_db_path,
+                    exports_path,
+                    worktrees_root,
+                    wsl_distro_name,
+                    path_style,
+                    status,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
+                ON CONFLICT(host_key) DO UPDATE SET
+                    os_family = excluded.os_family,
+                    host_label = excluded.host_label,
+                    kernel_label = excluded.kernel_label,
+                    user_home = excluded.user_home,
+                    owner_root = excluded.owner_root,
+                    config_path = excluded.config_path,
+                    runtime_db_path = excluded.runtime_db_path,
+                    exports_path = excluded.exports_path,
+                    worktrees_root = excluded.worktrees_root,
+                    wsl_distro_name = excluded.wsl_distro_name,
+                    path_style = excluded.path_style,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.host_key,
+                    record.os_family,
+                    record.host_label,
+                    record.kernel_label,
+                    record.user_home,
+                    record.owner_root,
+                    record.config_path,
+                    record.runtime_db_path,
+                    record.exports_path,
+                    record.worktrees_root,
+                    record.wsl_distro_name,
+                    record.path_style,
+                    record.status,
+                    now,
+                ],
+            )?;
+            fetch_runtime_host_by_key(conn, record.host_key)?
+                .ok_or_else(|| anyhow!("runtime host disappeared after upsert"))
+        })
+    }
+
+    pub fn list_runtime_hosts(&self) -> Result<Vec<StoredRuntimeHost>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    host_key,
+                    os_family,
+                    host_label,
+                    kernel_label,
+                    user_home,
+                    owner_root,
+                    config_path,
+                    runtime_db_path,
+                    exports_path,
+                    worktrees_root,
+                    wsl_distro_name,
+                    path_style,
+                    status,
+                    created_at,
+                    updated_at
+                FROM runtime_hosts
+                ORDER BY updated_at DESC, id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_runtime_host_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn upsert_owned_worktree(
+        &self,
+        record: UpsertOwnedWorktree<'_>,
+    ) -> Result<StoredOwnedWorktree> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO owned_worktrees (
+                    host_key,
+                    project_name,
+                    issue_id,
+                    branch_name,
+                    worktree_kind,
+                    worktree_path,
+                    repo_root,
+                    slot_name,
+                    status,
+                    created_at,
+                    last_seen_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+                ON CONFLICT(worktree_path) DO UPDATE SET
+                    host_key = excluded.host_key,
+                    project_name = excluded.project_name,
+                    issue_id = excluded.issue_id,
+                    branch_name = excluded.branch_name,
+                    worktree_kind = excluded.worktree_kind,
+                    repo_root = excluded.repo_root,
+                    slot_name = excluded.slot_name,
+                    status = excluded.status,
+                    last_seen_at = excluded.last_seen_at
+                "#,
+                params![
+                    record.host_key,
+                    record.project_name,
+                    record.issue_id,
+                    record.branch_name,
+                    record.worktree_kind,
+                    record.worktree_path,
+                    record.repo_root,
+                    record.slot_name,
+                    record.status,
+                    now,
+                ],
+            )?;
+            fetch_owned_worktree_by_path(conn, record.worktree_path)?
+                .ok_or_else(|| anyhow!("owned worktree disappeared after upsert"))
+        })
+    }
+
+    pub fn mark_owned_worktrees_missing(
+        &self,
+        host_key: &str,
+        observed_worktree_paths: &[String],
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            if observed_worktree_paths.is_empty() {
+                conn.execute(
+                    r#"
+                    UPDATE owned_worktrees
+                    SET status = 'missing',
+                        last_seen_at = ?2
+                    WHERE host_key = ?1
+                    "#,
+                    params![host_key, now],
+                )?;
+                return Ok(());
+            }
+
+            let placeholders = std::iter::repeat_n("?", observed_worktree_paths.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut parameters: Vec<&dyn rusqlite::ToSql> =
+                Vec::with_capacity(2 + observed_worktree_paths.len());
+            parameters.push(&host_key);
+            parameters.push(&now);
+            for path in observed_worktree_paths {
+                parameters.push(path);
+            }
+            let sql = format!(
+                r#"
+                UPDATE owned_worktrees
+                SET status = 'missing',
+                    last_seen_at = ?2
+                WHERE host_key = ?1
+                  AND worktree_path NOT IN ({placeholders})
+                "#
+            );
+            conn.execute(&sql, rusqlite::params_from_iter(parameters))?;
+            Ok(())
+        })
+    }
+
+    pub fn list_owned_worktrees(&self) -> Result<Vec<StoredOwnedWorktree>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    host_key,
+                    project_name,
+                    issue_id,
+                    branch_name,
+                    worktree_kind,
+                    worktree_path,
+                    repo_root,
+                    slot_name,
+                    status,
+                    created_at,
+                    last_seen_at
+                FROM owned_worktrees
+                ORDER BY project_name ASC, worktree_kind ASC, worktree_path ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_owned_worktree_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_document_record_by_slug(
         &self,
         record: UpsertDocumentRecordBySlug<'_>,
@@ -4197,6 +4480,44 @@ fn map_projection_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredPro
     })
 }
 
+fn map_runtime_host_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRuntimeHost> {
+    Ok(StoredRuntimeHost {
+        id: row.get(0)?,
+        host_key: row.get(1)?,
+        os_family: row.get(2)?,
+        host_label: row.get(3)?,
+        kernel_label: row.get(4)?,
+        user_home: row.get(5)?,
+        owner_root: row.get(6)?,
+        config_path: row.get(7)?,
+        runtime_db_path: row.get(8)?,
+        exports_path: row.get(9)?,
+        worktrees_root: row.get(10)?,
+        wsl_distro_name: row.get(11)?,
+        path_style: row.get(12)?,
+        status: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
+}
+
+fn map_owned_worktree_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredOwnedWorktree> {
+    Ok(StoredOwnedWorktree {
+        id: row.get(0)?,
+        host_key: row.get(1)?,
+        project_name: row.get(2)?,
+        issue_id: row.get(3)?,
+        branch_name: row.get(4)?,
+        worktree_kind: row.get(5)?,
+        worktree_path: row.get(6)?,
+        repo_root: row.get(7)?,
+        slot_name: row.get(8)?,
+        status: row.get(9)?,
+        created_at: row.get(10)?,
+        last_seen_at: row.get(11)?,
+    })
+}
+
 fn fetch_vault_mcp_config(
     connection: &Connection,
     id: i64,
@@ -4638,6 +4959,70 @@ fn fetch_projection_run_by_id(
             "#,
             [id],
             map_projection_run_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_runtime_host_by_key(
+    connection: &Connection,
+    host_key: &str,
+) -> Result<Option<StoredRuntimeHost>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                host_key,
+                os_family,
+                host_label,
+                kernel_label,
+                user_home,
+                owner_root,
+                config_path,
+                runtime_db_path,
+                exports_path,
+                worktrees_root,
+                wsl_distro_name,
+                path_style,
+                status,
+                created_at,
+                updated_at
+            FROM runtime_hosts
+            WHERE host_key = ?1
+            "#,
+            [host_key],
+            map_runtime_host_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_owned_worktree_by_path(
+    connection: &Connection,
+    worktree_path: &str,
+) -> Result<Option<StoredOwnedWorktree>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                host_key,
+                project_name,
+                issue_id,
+                branch_name,
+                worktree_kind,
+                worktree_path,
+                repo_root,
+                slot_name,
+                status,
+                created_at,
+                last_seen_at
+            FROM owned_worktrees
+            WHERE worktree_path = ?1
+            "#,
+            [worktree_path],
+            map_owned_worktree_row,
         )
         .optional()
         .map_err(Into::into)
