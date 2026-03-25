@@ -20,6 +20,9 @@
 - `projection boundary` means every write lands in DB truth first, and only then may be projected to hot root, cold docs, GUI, CLI, or MCP.
 - `CADENCE_CHECKPOINT` and `CADENCE_ACCEPTANCE_BUNDLE` are durable truth objects; `PHASE` and anti-Zeno views remain projections.
 - anti-Zeno is derived progress visibility rather than a shadow truth plane.
+- projection freshness, dirty state, replayability, and repair are themselves truth concerns rather than file-only concerns.
+- cold-doc canonicalization belongs to DB truth even when the repository keeps exported Markdown copies.
+- recovery substrate may feed truth through governed import, but recovery substrate may not reclaim canonical status.
 
 ## Mounted Detail Docs
 
@@ -29,3 +32,5 @@
 
 - [concept_conflict_state_model.md](../cold/1.2-hierarchical-state-machine/concept_conflict_state_model.md)
 - [minimal_truth_plane.md](../cold/3.1-learning-truth-system/minimal_truth_plane.md)
+- [projection_boundary.md](../cold/1.1-os-core/projection_boundary.md)
+- [v0_constitution.md](../cold/1.1-os-core/v0_constitution.md)
