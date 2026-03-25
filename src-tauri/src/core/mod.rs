@@ -25,6 +25,7 @@ pub mod mcp_stdio_client;
 pub mod nota_runtime;
 pub mod permission;
 pub mod plugin_manager;
+pub mod projection_runtime;
 pub mod recovery;
 pub mod supervision;
 pub mod theme;

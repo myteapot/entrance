@@ -47,7 +47,12 @@ const CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0011_create_core_nota_runtime_allocations.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 7] = [
+const CORE_PROJECTION_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
+    name: "0012_create_core_projection_runtime_tables",
+    sql: include_str!("../../migrations/0012_create_core_projection_runtime_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 8] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -55,6 +60,7 @@ const CORE_MIGRATIONS: [MigrationStep; 7] = [
     CORE_DECISION_LINKS_MIGRATION,
     CORE_CHAT_ARCHIVE_MIGRATION,
     CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION,
+    CORE_PROJECTION_RUNTIME_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -474,6 +480,38 @@ pub struct StoredMemoryLink {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredProjectionTarget {
+    pub id: i64,
+    pub projection_class: String,
+    pub target_key: String,
+    pub title: String,
+    pub target_path: String,
+    pub source_scope: String,
+    pub repair_action: String,
+    pub projection_policy: String,
+    pub is_required: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredProjectionRun {
+    pub id: i64,
+    pub target_id: i64,
+    pub truth_checkpoint_id: Option<i64>,
+    pub truth_human_round_id: Option<i64>,
+    pub truth_acceptance_bundle_id: Option<i64>,
+    pub run_state: String,
+    pub freshness_state: String,
+    pub trigger_kind: String,
+    pub summary: String,
+    pub error_message: Option<String>,
+    pub repair_hint: Option<String>,
+    pub started_at: String,
+    pub completed_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertDocumentRecord<'a> {
     pub id: i64,
@@ -644,6 +682,34 @@ pub struct UpsertMemoryLinkRecord<'a> {
     pub relation_type: &'a str,
     pub status: &'a str,
     pub created_at: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertProjectionTarget<'a> {
+    pub projection_class: &'a str,
+    pub target_key: &'a str,
+    pub title: &'a str,
+    pub target_path: &'a str,
+    pub source_scope: &'a str,
+    pub repair_action: &'a str,
+    pub projection_policy: &'a str,
+    pub is_required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewProjectionRun<'a> {
+    pub target_id: i64,
+    pub truth_checkpoint_id: Option<i64>,
+    pub truth_human_round_id: Option<i64>,
+    pub truth_acceptance_bundle_id: Option<i64>,
+    pub run_state: &'a str,
+    pub freshness_state: &'a str,
+    pub trigger_kind: &'a str,
+    pub summary: &'a str,
+    pub error_message: Option<&'a str>,
+    pub repair_hint: Option<&'a str>,
+    pub started_at: &'a str,
+    pub completed_at: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -2734,6 +2800,150 @@ impl DataStore {
         })
     }
 
+    pub fn upsert_projection_target(
+        &self,
+        record: UpsertProjectionTarget<'_>,
+    ) -> Result<StoredProjectionTarget> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO projection_targets (
+                    projection_class,
+                    target_key,
+                    title,
+                    target_path,
+                    source_scope,
+                    repair_action,
+                    projection_policy,
+                    is_required,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                ON CONFLICT(projection_class, target_key) DO UPDATE SET
+                    title = excluded.title,
+                    target_path = excluded.target_path,
+                    source_scope = excluded.source_scope,
+                    repair_action = excluded.repair_action,
+                    projection_policy = excluded.projection_policy,
+                    is_required = excluded.is_required,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.projection_class,
+                    record.target_key,
+                    record.title,
+                    record.target_path,
+                    record.source_scope,
+                    record.repair_action,
+                    record.projection_policy,
+                    if record.is_required { 1 } else { 0 },
+                    now,
+                ],
+            )?;
+
+            fetch_projection_target_by_key(conn, record.projection_class, record.target_key)?
+                .ok_or_else(|| anyhow!("projection target disappeared after upsert"))
+        })
+    }
+
+    pub fn insert_projection_run(
+        &self,
+        record: NewProjectionRun<'_>,
+    ) -> Result<StoredProjectionRun> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO projection_runs (
+                    target_id,
+                    truth_checkpoint_id,
+                    truth_human_round_id,
+                    truth_acceptance_bundle_id,
+                    run_state,
+                    freshness_state,
+                    trigger_kind,
+                    summary,
+                    error_message,
+                    repair_hint,
+                    started_at,
+                    completed_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                "#,
+                params![
+                    record.target_id,
+                    record.truth_checkpoint_id,
+                    record.truth_human_round_id,
+                    record.truth_acceptance_bundle_id,
+                    record.run_state,
+                    record.freshness_state,
+                    record.trigger_kind,
+                    record.summary,
+                    record.error_message,
+                    record.repair_hint,
+                    record.started_at,
+                    record.completed_at,
+                ],
+            )?;
+            let row_id = conn.last_insert_rowid();
+            fetch_projection_run_by_id(conn, row_id)?
+                .ok_or_else(|| anyhow!("projection run disappeared after insert"))
+        })
+    }
+
+    pub fn list_projection_targets(&self) -> Result<Vec<StoredProjectionTarget>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    projection_class,
+                    target_key,
+                    title,
+                    target_path,
+                    source_scope,
+                    repair_action,
+                    projection_policy,
+                    is_required,
+                    created_at,
+                    updated_at
+                FROM projection_targets
+                ORDER BY is_required DESC, projection_class ASC, target_key ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_projection_target_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
+    pub fn list_projection_runs(&self) -> Result<Vec<StoredProjectionRun>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    target_id,
+                    truth_checkpoint_id,
+                    truth_human_round_id,
+                    truth_acceptance_bundle_id,
+                    run_state,
+                    freshness_state,
+                    trigger_kind,
+                    summary,
+                    error_message,
+                    repair_hint,
+                    started_at,
+                    completed_at
+                FROM projection_runs
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_projection_run_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_document_record(&self, record: UpsertDocumentRecord<'_>) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute(
@@ -3826,6 +4036,40 @@ fn map_memory_link_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemory
     })
 }
 
+fn map_projection_target_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProjectionTarget> {
+    Ok(StoredProjectionTarget {
+        id: row.get(0)?,
+        projection_class: row.get(1)?,
+        target_key: row.get(2)?,
+        title: row.get(3)?,
+        target_path: row.get(4)?,
+        source_scope: row.get(5)?,
+        repair_action: row.get(6)?,
+        projection_policy: row.get(7)?,
+        is_required: row.get::<_, i64>(8)? != 0,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn map_projection_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProjectionRun> {
+    Ok(StoredProjectionRun {
+        id: row.get(0)?,
+        target_id: row.get(1)?,
+        truth_checkpoint_id: row.get(2)?,
+        truth_human_round_id: row.get(3)?,
+        truth_acceptance_bundle_id: row.get(4)?,
+        run_state: row.get(5)?,
+        freshness_state: row.get(6)?,
+        trigger_kind: row.get(7)?,
+        summary: row.get(8)?,
+        error_message: row.get(9)?,
+        repair_hint: row.get(10)?,
+        started_at: row.get(11)?,
+        completed_at: row.get(12)?,
+    })
+}
+
 fn fetch_vault_mcp_config(
     connection: &Connection,
     id: i64,
@@ -4154,6 +4398,68 @@ fn fetch_cadence_link(
             "#,
             params![src_cadence_object_id, dst_cadence_object_id, relation_type],
             map_cadence_link_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_projection_target_by_key(
+    connection: &Connection,
+    projection_class: &str,
+    target_key: &str,
+) -> Result<Option<StoredProjectionTarget>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                projection_class,
+                target_key,
+                title,
+                target_path,
+                source_scope,
+                repair_action,
+                projection_policy,
+                is_required,
+                created_at,
+                updated_at
+            FROM projection_targets
+            WHERE projection_class = ?1
+              AND target_key = ?2
+            "#,
+            params![projection_class, target_key],
+            map_projection_target_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_projection_run_by_id(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredProjectionRun>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                target_id,
+                truth_checkpoint_id,
+                truth_human_round_id,
+                truth_acceptance_bundle_id,
+                run_state,
+                freshness_state,
+                trigger_kind,
+                summary,
+                error_message,
+                repair_hint,
+                started_at,
+                completed_at
+            FROM projection_runs
+            WHERE id = ?1
+            "#,
+            [id],
+            map_projection_run_row,
         )
         .optional()
         .map_err(Into::into)

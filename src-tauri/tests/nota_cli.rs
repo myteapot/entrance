@@ -2232,6 +2232,80 @@ fn nota_checkpoint_auto_exports_hot_root_projection() -> Result<()> {
 }
 
 #[test]
+fn nota_projection_status_surfaces_required_projection_freshness() -> Result<()> {
+    let temp_dir = TempDir::new("projection-status")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Projection checkpoint",
+            "--stable-level",
+            "projection truth is runtime-owned",
+            "--landed",
+            "required hot-root projection recorded in DB truth",
+            "--remaining",
+            "none",
+            "--human-continuity-bus",
+            "reduced for projection freshness",
+        ],
+    )?;
+
+    let projections_output = run_nota_cli(&app_data_dir, &["nota", "projections"])?;
+    let projections: Value = serde_json::from_str(&projections_output)
+        .context("nota projections output should be valid JSON")?;
+    assert_eq!(projections["required_target_count"], 2);
+    assert_eq!(projections["fresh_required_target_count"], 2);
+    assert_eq!(projections["dirty_required_target_count"], 0);
+    assert_eq!(projections["failed_required_target_count"], 0);
+    assert_eq!(projections["required_targets_fresh"], true);
+    assert_eq!(
+        projections["current_truth_revision"]["checkpoint_id"].as_i64(),
+        Some(1)
+    );
+
+    let hot_root_target = projections["targets"]
+        .as_array()
+        .context("projection targets should be an array")?
+        .iter()
+        .find(|target| target["target"]["target_key"] == "exports/hot-root")
+        .context("hot-root projection target should exist")?;
+    assert_eq!(hot_root_target["state"], "fresh");
+    assert_eq!(hot_root_target["required"], true);
+
+    let oracle_target = projections["targets"]
+        .as_array()
+        .context("projection targets should be an array")?
+        .iter()
+        .find(|target| target["target"]["target_key"] == "exports/hot-root/README.md")
+        .context("oracle projection target should exist")?;
+    assert_eq!(oracle_target["state"], "fresh");
+    assert_eq!(oracle_target["required"], true);
+
+    let status_output = run_nota_cli(&app_data_dir, &["nota", "status"])?;
+    let status: Value =
+        serde_json::from_str(&status_output).context("nota status output should be valid JSON")?;
+    assert_eq!(status["projections"]["required_targets_fresh"], true);
+
+    let overview_output = run_nota_cli(&app_data_dir, &["nota", "overview"])?;
+    let overview: Value = serde_json::from_str(&overview_output)
+        .context("nota overview output should be valid JSON")?;
+    assert_eq!(overview["projections"]["fresh_required_target_count"], 2);
+
+    let db_path = app_data_dir.join("data").join("entrance.db");
+    let connection = Connection::open(&db_path)
+        .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
+    assert_eq!(count_rows(&connection, "projection_targets")?, 2);
+    assert_eq!(count_rows(&connection, "projection_runs")?, 2);
+
+    Ok(())
+}
+
+#[test]
 fn nota_cli_reads_canonical_vision_and_todo_surfaces() -> Result<()> {
     let temp_dir = TempDir::new("vision-todo-surfaces")?;
     let app_data_dir = temp_dir.path().join("appdata");
