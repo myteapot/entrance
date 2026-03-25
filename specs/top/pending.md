@@ -9,13 +9,11 @@
 
 ## Current State
 
-- No root-level architecture rewrite is pending; the work now is consolidation and sharpening.
+- No root-level architecture rewrite is pending; the `V0` post-consolidation sharpening cut is landed and should now be held.
 - `v0` continuation policy is still partly hardcoded; a fuller human-configurable cadence policy remains future work.
 - Multi-role allocator expansion remains deferred until the post-consolidation cut is truly settled.
-- Cold-doc full DB canonicalization plus periodic projection sync still needs a complete runtime substrate.
-- Human-round objectification, projection freshness truth, and invariant-backed repair still need to be fully landed.
-- Cross-host path visibility and worktree ownership are not yet fully explicit runtime truth.
-- A native `NOTA` product shell must continue to reuse the same runtime truth plane rather than creating a shadow control plane.
+- Native `NOTA` shell growth must continue to reuse the same runtime truth plane rather than creating a shadow control plane.
+- Recovery remains import-only and may not reclaim canonical promotion authority.
 
 ## Rule
 

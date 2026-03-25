@@ -9,13 +9,11 @@
 
 ## Current Focus
 
-- finish the `V0` post-consolidation sharpening cut rather than opening new product surface sprawl
-- keep runtime owner root, cadence truth, and file projections all converging on one DB-first law
-- formalize `human round` itself as a governed runtime object rather than only a verbal rhythm
-- formalize `passed human round = acceptance` as a governed cadence object
-- formalize `fully settled round` as a strict machine predicate rather than a narrative summary
-- surface anti-Zeno in runtime status, overview, exported hot-root views, and enforcement boundaries
-- keep hot-root and cold-doc projections downstream of DB truth and make their dirty state visible
+- hold the landed `V0` post-consolidation sharpening cut closed rather than reopening product surface sprawl
+- keep runtime owner root, cadence truth, repair lane truth, and file projections converging on one DB-first law
+- keep `human round`, `acceptance`, and `fully settled` governed by runtime predicates rather than narrative summaries
+- keep anti-Zeno, invariants, and repair lane visible in runtime status, overview, and exported hot-root views
+- keep hot-root and cold-doc projections rebuildable from DB truth rather than authoring authority
 - keep human relay burden shrinking by resuming from checkpointed and acceptance-backed truth before replaying chat
 
 ## Execution Strategy
@@ -47,3 +45,5 @@
   keep boundary progress explicit and prevent unbounded review / integrate / repair loops
 - `Projection hardening`
   keep top docs and exported views downstream of DB truth with explicit dirty / repair semantics
+- `Recovery lowering`
+  keep recovery import-only and route rebuild through canonical runtime truth instead of seed promotion

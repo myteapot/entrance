@@ -113,8 +113,16 @@ fn nota_checkpoint_cli_persists_cadence_checkpoint_without_memory_fragment_fallb
     let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
-    assert_eq!(count_rows(&connection, "cadence_objects")?, 2);
-    assert_eq!(count_rows(&connection, "cadence_links")?, 1);
+    assert_eq!(count_rows(&connection, "cadence_objects")?, 4);
+    assert_eq!(count_rows(&connection, "cadence_links")?, 4);
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_CHECKPOINT")?,
+        2
+    );
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_HUMAN_ROUND")?,
+        2
+    );
     assert_eq!(count_rows(&connection, "memory_fragments")?, 0);
 
     Ok(())
@@ -319,7 +327,15 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
     assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
     assert_eq!(count_rows(&connection, "nota_runtime_allocations")?, 1);
-    assert_eq!(count_rows(&connection, "cadence_objects")?, 1);
+    assert_eq!(count_rows(&connection, "cadence_objects")?, 2);
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_CHECKPOINT")?,
+        1
+    );
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_HUMAN_ROUND")?,
+        1
+    );
     assert_eq!(count_rows(&connection, "plugin_forge_tasks")?, 1);
     let allocation_boundary = connection.query_row(
         r#"
@@ -684,7 +700,15 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
     assert_eq!(count_rows(&connection, "nota_runtime_transactions")?, 1);
     assert_eq!(count_rows(&connection, "nota_runtime_receipts")?, 5);
     assert_eq!(count_rows(&connection, "nota_runtime_allocations")?, 1);
-    assert_eq!(count_rows(&connection, "cadence_objects")?, 1);
+    assert_eq!(count_rows(&connection, "cadence_objects")?, 2);
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_CHECKPOINT")?,
+        1
+    );
+    assert_eq!(
+        count_cadence_objects_by_kind(&connection, "CADENCE_HUMAN_ROUND")?,
+        1
+    );
     assert_eq!(count_rows(&connection, "plugin_forge_tasks")?, 1);
 
     let blocked_message = "dev task blocked awaiting token";
@@ -2999,4 +3023,12 @@ fn write_delayed_success_agent(temp_root: &Path, completion_marker: &Path) -> Re
 fn count_rows(connection: &Connection, table: &str) -> Result<i64> {
     let query = format!("SELECT COUNT(*) FROM {table}");
     Ok(connection.query_row(&query, [], |row| row.get(0))?)
+}
+
+fn count_cadence_objects_by_kind(connection: &Connection, cadence_kind: &str) -> Result<i64> {
+    Ok(connection.query_row(
+        "SELECT COUNT(*) FROM cadence_objects WHERE cadence_kind = ?1",
+        rusqlite::params![cadence_kind],
+        |row| row.get(0),
+    )?)
 }

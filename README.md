@@ -54,6 +54,28 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 
 > English: Source builds are supported. Install Node.js, pnpm, Rust, and the Windows build toolchain, then run `pnpm install`, `pnpm build`, and `cargo build --manifest-path src-tauri/Cargo.toml --release`.
 
+## Runtime Operations
+
+推荐把以下命令当作当前 `V0` 收束期的主入口：
+
+```powershell
+.\entrance.exe nota status
+.\entrance.exe nota overview
+.\entrance.exe nota invariants
+.\entrance.exe nota repair
+.\entrance.exe nota rebuild-projections --project-dir <repo>
+.\entrance.exe recovery status
+```
+
+当前运行时约定：
+
+- `status / overview` 读取 DB-first 的连续性真相，而不是重放聊天摘要
+- `invariants / repair` 暴露当前不变量状态和 repair lane
+- `rebuild-projections` 从运行时 DB 反向重建 hot-root 与 cold-doc 投影
+- `recovery status` 明确 recovery 现在只是 import-only 的吸收面，不再拥有 promotion authority
+
+> English: During the current `V0` sharpening hold, prefer `nota status`, `nota overview`, `nota invariants`, `nota repair`, `nota rebuild-projections`, and `recovery status` as the main operator surfaces.
+
 ## 版权与许可
 
 当前仓库采用收紧的 source-available 许可模式。
