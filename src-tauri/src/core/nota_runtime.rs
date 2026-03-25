@@ -751,6 +751,7 @@ struct RecommendedCheckpointCandidate {
 enum RecommendedCheckpointCandidateKind {
     AgentEscalationContinuity,
     AgentReturnAcceptance,
+    AgentReturnClosure,
     DevReturnAcceptance,
     DevReturnClosure,
 }
@@ -2054,6 +2055,7 @@ fn ensure_runtime_closure_acceptance_receipt(
         RecommendedCheckpointCandidateKind::AgentReturnAcceptance => {
             ensure_agent_return_accepted_receipt(transaction, candidate, checkpoint)
         }
+        RecommendedCheckpointCandidateKind::AgentReturnClosure => Ok(()),
         RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
             ensure_dev_return_accepted_receipt(transaction, candidate, checkpoint)?;
             ensure_dev_return_review_ready_receipt(transaction, candidate, checkpoint)
@@ -2161,6 +2163,9 @@ fn build_runtime_acceptance_bundle(
         RecommendedCheckpointCandidateKind::AgentReturnAcceptance => {
             ("agent_return_acceptance", "accepted", false)
         }
+        RecommendedCheckpointCandidateKind::AgentReturnClosure => {
+            ("agent_return_acceptance", "fully_settled", true)
+        }
         RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
             ("dev_return_acceptance", "accepted", false)
         }
@@ -2201,6 +2206,9 @@ fn acceptance_bundle_source_ref(kind: RecommendedCheckpointCandidateKind) -> &'s
     match kind {
         RecommendedCheckpointCandidateKind::AgentReturnAcceptance => {
             "nota_runtime:agent_return_acceptance_bundle"
+        }
+        RecommendedCheckpointCandidateKind::AgentReturnClosure => {
+            "nota_runtime:agent_return_closure_bundle"
         }
         RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
             "nota_runtime:dev_return_acceptance_bundle"
@@ -3233,6 +3241,11 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
 
     let transaction_id = latest_allocation.source_transaction_id;
     let receipts = data_store.list_nota_runtime_receipts(Some(transaction_id))?;
+    let current_acceptance_bundle = if checkpoint_scope_ids.is_empty() {
+        None
+    } else {
+        derive_current_runtime_acceptance_bundle(data_store, checkpoint_scope_ids)?
+    };
     let terminal_receipt_fact = latest_terminal_receipt_for_allocation(&receipts, latest_allocation)?
         .map(|receipt| {
             format!(
@@ -3256,7 +3269,75 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
     let (kind, recommendation) = if outcome.boundary_kind == "return"
         && outcome.child_execution_status == "Done"
     {
-        (
+        let closure_ready = current_acceptance_bundle
+            .as_ref()
+            .map(|bundle| {
+                bundle.payload.acceptance_kind == "agent_return_acceptance"
+                    && bundle.payload.allocation_id == latest_allocation.id
+                    && !bundle.payload.fully_settled
+            })
+            .unwrap_or(false);
+
+        if closure_ready {
+            (
+                RecommendedCheckpointCandidateKind::AgentReturnClosure,
+                NotaCheckpointRequest {
+                    title: Some(format!(
+                        "Checkpoint: agent return closure truth for {}",
+                        allocation_payload.issue_id
+                    )),
+                    stable_level:
+                        "single-ingress, checkpointed, DB-first NOTA host with a minimal NOTA-owned closed agent-return boundary carried forward as storage-backed checkpoint truth"
+                            .to_string(),
+                    landed: vec![
+                        format!(
+                            "NOTA-owned agent allocation {} preserves lineage {} from runtime transaction {} into Forge task {}.",
+                            latest_allocation.id,
+                            latest_allocation.lineage_ref,
+                            transaction_id,
+                            latest_allocation.child_execution_ref
+                        ),
+                        format!(
+                            "Agent allocation {} terminal outcome remains return / Done back to {} {}.",
+                            latest_allocation.id,
+                            outcome.target_kind,
+                            outcome.target_ref
+                        ),
+                        format!(
+                            "Checkpoint carry-forward closes the accepted agent boundary on lineage `{}` without reopening a review / integrate loop.",
+                            latest_allocation.lineage_ref
+                        ),
+                        format!(
+                            "Transaction {transaction_id} already preserves {AGENT_RETURN_ACCEPTED_RECEIPT_KIND} for allocation {}.",
+                            latest_allocation.id
+                        ),
+                    ],
+                    remaining: vec![
+                        "This cut closes the current agent-return boundary, not fuller V0 closure or a general multi-role allocator."
+                            .to_string(),
+                        "Keep this checkpoint scoped to carry-forward for the already accepted boundary; do not infer a second truth plane or promote ARCH into a V0 runtime peer yet."
+                            .to_string(),
+                    ],
+                    human_continuity_bus:
+                        "further reduced for this boundary; a fresh window can resume from checkpointed closure truth"
+                            .to_string(),
+                    selected_trunk: Some("agent return closure truth".to_string()),
+                    next_start_hints: vec![
+                        "Start from `entrance nota status`, then `entrance nota overview`, then `entrance nota checkpoints`."
+                            .to_string(),
+                        format!(
+                            "Treat lineage `{}` as a closed agent-return boundary; do not reopen it unless a new runtime transaction or allocation is created.",
+                            latest_allocation.lineage_ref
+                        ),
+                        format!(
+                            "Use `entrance nota receipts --transaction-id {transaction_id}` when you need the full receipt chain behind the active closure checkpoint."
+                        ),
+                    ],
+                    project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
+                },
+            )
+        } else {
+            (
                 RecommendedCheckpointCandidateKind::AgentReturnAcceptance,
                 NotaCheckpointRequest {
                     title: Some(format!(
@@ -3317,6 +3398,7 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
                     project_dir: normalize_optional(Some(allocation_payload.project_root.as_str())),
                 },
             )
+        }
     } else {
         let outcome_fact = match outcome.child_execution_status_message.as_deref() {
                 Some(message) => format!(
@@ -5916,6 +5998,63 @@ mod tests {
             "agent_return_acceptance"
         );
         assert!(!current_bundle.payload.fully_settled);
+
+        let closure_recommendation = recommend_runtime_closure_checkpoint(
+            &store,
+            allocations.stored_allocations(),
+            Some(&checkpoint_report.checkpoint),
+        )?
+        .context("agent return closure recommendation should exist after acceptance")?;
+        assert_eq!(
+            closure_recommendation.selected_trunk.as_deref(),
+            Some("agent return closure truth")
+        );
+        assert_eq!(
+            closure_recommendation.title.as_deref(),
+            Some("Checkpoint: agent return closure truth for MYT-48")
+        );
+
+        let closure_checkpoint = materialize_runtime_closure_checkpoint(&store)?;
+        assert_eq!(closure_checkpoint.status, "applied");
+        assert_eq!(
+            closure_checkpoint
+                .source_recommendation
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.selected_trunk.as_deref()),
+            Some("agent return closure truth")
+        );
+        assert_eq!(
+            closure_checkpoint.superseded_checkpoint_id,
+            Some(checkpoint_report.checkpoint.cadence_object.id)
+        );
+
+        let closure_checkpoints = list_runtime_checkpoints(&store)?;
+        let closure_checkpoint_record = closure_checkpoints
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.cadence_object.is_current)
+            .context("agent closure checkpoint should become current")?;
+        let closure_scope_ids =
+            active_checkpoint_scope_ids(&store, Some(closure_checkpoint_record))?;
+        let current_acceptance =
+            derive_current_runtime_acceptance_bundle(&store, &closure_scope_ids)?
+                .context("agent closure acceptance bundle should be readable")?;
+        assert_eq!(
+            current_acceptance.payload.acceptance_kind,
+            "agent_return_acceptance"
+        );
+        assert_eq!(current_acceptance.payload.round_state, "fully_settled");
+        assert!(current_acceptance.payload.fully_settled);
+
+        let closure_round_state = derive_runtime_round_state_projection(
+            Some(closure_checkpoint_record),
+            Some(&current_acceptance),
+            None,
+        );
+        assert_eq!(closure_round_state.state, "fully_settled");
+        assert!(closure_round_state.accepted);
+        assert!(closure_round_state.carry_forward_checkpointed);
+        assert!(!closure_round_state.next_step_open);
 
         Ok(())
     }
