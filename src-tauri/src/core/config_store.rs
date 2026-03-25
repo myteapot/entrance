@@ -13,6 +13,8 @@ pub struct EntranceConfig {
     #[serde(default)]
     pub core: CoreConfig,
     #[serde(default)]
+    pub paths: PathsConfig,
+    #[serde(default)]
     pub plugins: PluginsConfig,
 }
 
@@ -20,6 +22,7 @@ impl Default for EntranceConfig {
     fn default() -> Self {
         Self {
             core: CoreConfig::default(),
+            paths: PathsConfig::default(),
             plugins: PluginsConfig::default(),
         }
     }
@@ -41,6 +44,35 @@ impl Default for CoreConfig {
             theme: default_theme(),
             log_level: default_log_level(),
             mcp_enabled: default_true(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathsConfig {
+    #[serde(default = "default_runtime_db_path")]
+    pub runtime_db: String,
+    #[serde(default = "default_logs_path")]
+    pub logs: String,
+    #[serde(default = "default_cache_path")]
+    pub cache: String,
+    #[serde(default = "default_exports_path")]
+    pub exports: String,
+    #[serde(default = "default_snapshots_path")]
+    pub snapshots: String,
+    #[serde(default = "default_worktrees_path")]
+    pub worktrees: String,
+}
+
+impl Default for PathsConfig {
+    fn default() -> Self {
+        Self {
+            runtime_db: default_runtime_db_path(),
+            logs: default_logs_path(),
+            cache: default_cache_path(),
+            exports: default_exports_path(),
+            snapshots: default_snapshots_path(),
+            worktrees: default_worktrees_path(),
         }
     }
 }
@@ -212,4 +244,28 @@ fn default_launcher_hotkey() -> String {
 
 fn default_forge_http_port() -> u16 {
     9721
+}
+
+fn default_runtime_db_path() -> String {
+    "data/entrance.db".to_string()
+}
+
+fn default_logs_path() -> String {
+    "logs".to_string()
+}
+
+fn default_cache_path() -> String {
+    "cache".to_string()
+}
+
+fn default_exports_path() -> String {
+    "exports".to_string()
+}
+
+fn default_snapshots_path() -> String {
+    "snapshots".to_string()
+}
+
+fn default_worktrees_path() -> String {
+    "worktrees".to_string()
 }

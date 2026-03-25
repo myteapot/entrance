@@ -19,7 +19,7 @@ fn forge_bootstrap_skill_points_to_entrance_owned_dispatch_runtime() -> Result<(
     assert!(contents.contains("harness/bootstrap/duet/SKILL.md"));
     assert!(contents.contains("entrance forge prepare-dispatch"));
     assert!(contents.contains("entrance forge verify-dispatch"));
-    assert!(contents.contains("%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}"));
+    assert!(contents.contains("~/.entrance/worktrees/{project}/feat-{ISSUE}"));
 
     assert!(!contents.contains("**DB 查询**: `python .agents/nota/scripts/db.py doc list`"));
     assert!(!contents

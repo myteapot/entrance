@@ -5,7 +5,7 @@
 ## Purpose
 
 - hold the compressed hot-root summary for machine semantics
-- keep the root view small while mounting detailed runtime and compiler docs below it
+- keep the machine cut reconstructable from runtime truth rather than prose-only recall
 
 ## Confirmed Oracle Points
 
@@ -14,10 +14,11 @@
 - The canonical machine stays in `FLOW_PHASE / ATTENTION_STATE / INTEGRITY_OVERLAY`.
 - `NOTA` may run its own boundary-scoped flow, but internal project lineage begins only after runtime admission.
 - `SUBMISSION / EXCEPTION / RETURN` are runtime transport lanes rather than canonical node phases.
-- Simulation gates upward promotion through governed `simulation_evidence` backed by receipts and artifacts.
 - Canonical truth follows single-writer ownership; foreign-slot mutation is invalid.
-- Compiler IR distinguishes `model-authored / runtime-derived / runtime-only`.
-- Supervision remains runtime-owned control plus hot projection; only execution failure consumes retry budget at v0.
+- Cadence truth now includes both `CADENCE_CHECKPOINT` and `CADENCE_ACCEPTANCE_BUNDLE`.
+- `passed human round` is modeled as acceptance, while `fully settled round` is a stricter machine condition layered above acceptance.
+- anti-Zeno is enforced as boundary progress across accepted rounds rather than endless smallest-step recursion.
+- phase remains projection over the canonical graph rather than a peer truth family.
 
 ## Mounted Detail Docs
 
@@ -25,8 +26,3 @@
 - [1.2-hierarchical-state-machine.md](./1.2-hierarchical-state-machine.md)
 - [1.3-compiler-action-ir.md](./1.3-compiler-action-ir.md)
 - [2.1-otp-supervisor-model.md](./2.1-otp-supervisor-model.md)
-
-## TODO(fill)
-
-- keep only cross-machine oracle summary here
-- move repeated rationale downward as transitional detail collapses into the compressed target

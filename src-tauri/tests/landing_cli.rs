@@ -41,7 +41,7 @@ fn landing_import_cli_absorbs_snapshot_into_existing_runtime_db() -> Result<()> 
     let temp_dir = TempDir::new("absorb-runtime-db")?;
     let app_data_dir = temp_dir.path().join("appdata");
     seed_app_state(&app_data_dir)?;
-    seed_pre_landing_runtime_db(&app_data_dir.join("entrance.db"))?;
+    seed_pre_landing_runtime_db(&app_data_dir.join("data").join("entrance.db"))?;
 
     let snapshot_path = write_test_snapshot(temp_dir.path())?;
     let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
@@ -74,7 +74,7 @@ fn landing_import_cli_absorbs_snapshot_into_existing_runtime_db() -> Result<()> 
     assert_eq!(report["imported_milestone_count"], 1);
     assert_eq!(report["imported_planning_item_count"], 3);
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
 
@@ -126,6 +126,9 @@ enabled = false
 }
 
 fn seed_pre_landing_runtime_db(db_path: &Path) -> Result<()> {
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute_batch(include_str!("../migrations/0000_create_core_tables.sql"))?;

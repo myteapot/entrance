@@ -924,7 +924,7 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
     let lineage_ref = do_report["result"]["structuredContent"]["allocation"]["lineage_ref"]
         .as_str()
         .context("nota_do should return an allocation lineage_ref")?;
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let task_id = do_report["result"]["structuredContent"]["task_id"]
@@ -1370,7 +1370,7 @@ fn external_client_can_create_nota_owned_dev_transaction_over_http() -> Result<(
     let task_id = dev_report["result"]["structuredContent"]["task_id"]
         .as_i64()
         .context("nota_dev should return a task id")?;
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute(
@@ -1556,7 +1556,7 @@ fn external_client_can_read_dev_review_ready_next_step_over_http() -> Result<()>
         .as_i64()
         .context("task id should be present")?;
 
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute(
@@ -1833,7 +1833,7 @@ fn external_client_can_read_dev_integrate_truth_over_http() -> Result<()> {
         .as_i64()
         .context("task id should be present")?;
 
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute(
@@ -2110,7 +2110,7 @@ fn external_client_can_read_dev_finalize_truth_over_http() -> Result<()> {
         .as_i64()
         .context("task id should be present")?;
 
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute(
@@ -2391,7 +2391,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
         .context("forge_verify_dispatch should return a numeric task_id")?;
     assert!(task_id > 0);
 
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
@@ -2554,7 +2554,7 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_http_without_a
         .context("forge_verify_dev_dispatch should return a numeric task_id")?;
     assert!(task_id > 0);
 
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
@@ -2689,7 +2689,7 @@ fn external_client_can_dispatch_agent_over_http_with_agent_lane_runtime() -> Res
         "Done"
     );
 
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
@@ -2819,7 +2819,7 @@ fn external_client_can_dispatch_dev_over_http_with_dev_lane_runtime() -> Result<
         "Done"
     );
 
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(
@@ -3015,7 +3015,7 @@ fn external_client_can_observe_dispatch_supervision_receipts_over_http() -> Resu
         json!([])
     );
 
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored_receipt = connection.query_row(
@@ -3235,7 +3235,7 @@ fn external_client_can_bootstrap_allocator_cycle_over_nota_http_surface() -> Res
     assert_eq!(child_receipts[0]["child_slot"], "agent-1");
     assert_eq!(child_receipts[1]["child_slot"], "agent-2");
 
-    let db_path = app_dir.path().join("entrance.db");
+    let db_path = app_dir.path().join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let stored = connection.query_row(

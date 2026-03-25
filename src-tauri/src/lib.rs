@@ -2,8 +2,10 @@ pub mod core;
 mod plugins;
 
 use std::{
+    fs,
     io::{self, Read},
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::Path,
     sync::Arc,
 };
 
@@ -43,17 +45,20 @@ use core::{
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
-        active_checkpoint_scope_ids, derive_nota_runtime_finalize, derive_nota_runtime_integrate,
-        derive_nota_runtime_next_step, derive_nota_runtime_review, list_nota_runtime_allocations,
-        list_nota_runtime_receipts, list_nota_runtime_transactions, list_runtime_checkpoints,
+        active_checkpoint_scope_ids, derive_anti_zeno_projection,
+        derive_current_runtime_acceptance_bundle, derive_nota_runtime_finalize,
+        derive_nota_runtime_integrate, derive_nota_runtime_next_step, derive_nota_runtime_review,
+        list_nota_runtime_allocations, list_nota_runtime_receipts, list_nota_runtime_transactions,
+        list_runtime_acceptance_bundles, list_runtime_checkpoints,
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
         run_nota_dev_dispatch, run_nota_do_agent_dispatch, write_runtime_checkpoint,
-        NotaCheckpointListReport, NotaCheckpointRequest, NotaDevDispatchRequest,
-        NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest,
-        NotaDispatchExecutionHost, NotaDoAgentDispatchRequest, NotaRuntimeAllocationReadRecord,
-        NotaRuntimeAllocationsReport, NotaRuntimeFinalize, NotaRuntimeIntegrate,
-        NotaRuntimeNextStep, NotaRuntimeReview, NotaRuntimeTransactionsReport,
+        NotaAcceptanceBundleListReport, NotaAntiZenoProjection, NotaCheckpointListReport,
+        NotaCheckpointRequest, NotaDevDispatchRequest, NotaDevReturnFinalizeRequest,
+        NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest, NotaDispatchExecutionHost,
+        NotaDoAgentDispatchRequest, NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport,
+        NotaRuntimeFinalize, NotaRuntimeIntegrate, NotaRuntimeNextStep, NotaRuntimeReview,
+        NotaRuntimeTransactionsReport,
     },
     plugin_manager::PluginManager,
     recovery::{
@@ -116,6 +121,7 @@ struct DashboardSummary {
 pub(crate) struct NotaRuntimeOverview {
     chat_policy: ChatArchivePolicyReport,
     checkpoints: NotaCheckpointListReport,
+    acceptance_bundles: NotaAcceptanceBundleListReport,
     transactions: NotaRuntimeTransactionsReport,
     allocations: NotaRuntimeAllocationsReport,
     visions: NotaVisionListReport,
@@ -130,6 +136,7 @@ pub(crate) struct NotaRuntimeOverview {
     finalize: Option<NotaRuntimeFinalize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_step: Option<NotaRuntimeNextStep>,
+    anti_zeno: NotaAntiZenoProjection,
     front_door: NotaFrontDoorProjection,
     decisions: DesignDecisionListReport,
     chat_captures: ChatCaptureListReport,
@@ -142,6 +149,9 @@ pub(crate) struct NotaRuntimeStatus {
     current_checkpoint_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     current_checkpoint: Option<core::nota_runtime::NotaCheckpointRecord>,
+    acceptance_bundle_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_acceptance_bundle: Option<core::nota_runtime::NotaAcceptanceBundleRecord>,
     transaction_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_transaction: Option<StoredNotaRuntimeTransaction>,
@@ -167,6 +177,7 @@ pub(crate) struct NotaRuntimeStatus {
     finalize: Option<NotaRuntimeFinalize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_step: Option<NotaRuntimeNextStep>,
+    anti_zeno: NotaAntiZenoProjection,
     front_door: NotaFrontDoorProjection,
 }
 
@@ -201,12 +212,21 @@ pub(crate) struct NotaFrontDoorProgressTrack {
     summary: String,
 }
 
+#[derive(Clone, Serialize)]
+pub(crate) struct HotRootProjectionWriteReport {
+    export_root: String,
+    files_written: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mirrored_repo_top_dir: Option<String>,
+}
+
 fn build_nota_front_door_projection(
     current_checkpoint: Option<&core::nota_runtime::NotaCheckpointRecord>,
     decision_count: usize,
     transaction_count: usize,
     allocation_count: usize,
     receipt_count: usize,
+    anti_zeno: &NotaAntiZenoProjection,
     recommended_checkpoint: Option<&NotaCheckpointRequest>,
     review: Option<&NotaRuntimeReview>,
     integrate: Option<&NotaRuntimeIntegrate>,
@@ -245,16 +265,12 @@ fn build_nota_front_door_projection(
     } else if let Some(checkpoint) = recommended_checkpoint {
         (
             "Suggested checkpoint".to_string(),
-            checkpoint
-                .remaining
-                .first()
-                .cloned()
-                .unwrap_or_else(|| {
-                    checkpoint
-                        .selected_trunk
-                        .clone()
-                        .unwrap_or_else(|| "Checkpoint the current closure boundary.".to_string())
-                }),
+            checkpoint.remaining.first().cloned().unwrap_or_else(|| {
+                checkpoint
+                    .selected_trunk
+                    .clone()
+                    .unwrap_or_else(|| "Checkpoint the current closure boundary.".to_string())
+            }),
         )
     } else if let Some(finalize) = finalize {
         (
@@ -310,7 +326,9 @@ fn build_nota_front_door_projection(
         .or_else(|| {
             recommended_checkpoint.map(|checkpoint| checkpoint.human_continuity_bus.clone())
         })
-        .unwrap_or_else(|| "Human relay is still heavy because no checkpoint is active yet.".to_string());
+        .unwrap_or_else(|| {
+            "Human relay is still heavy because no checkpoint is active yet.".to_string()
+        });
     let relay_relief_value = front_door_relay_relief_value(
         relay_relief_summary.as_str(),
         next_step.is_some(),
@@ -323,7 +341,7 @@ fn build_nota_front_door_projection(
         next_action_label,
         next_action_detail,
         dashboard_hook:
-            "Dashboard now reads the same runtime truth plane as Chat, with layered progress and bounded continuity detail."
+            "Dashboard now reads the same runtime truth plane as Chat, with acceptance-backed anti-Zeno progress and bounded continuity detail."
                 .to_string(),
         progress_tracks: vec![
             NotaFrontDoorProgressTrack {
@@ -347,6 +365,19 @@ fn build_nota_front_door_projection(
                 summary:
                     "This build exposes a Chat-first shell, a live state rail, mission progress, and a real import entry."
                         .to_string(),
+            },
+            NotaFrontDoorProgressTrack {
+                id: "anti-zeno".to_string(),
+                label: "Anti-Zeno progress".to_string(),
+                value: anti_zeno.value,
+                tone: if anti_zeno.fully_settled {
+                    "steady".to_string()
+                } else if anti_zeno.acceptance_present {
+                    "active".to_string()
+                } else {
+                    "caution".to_string()
+                },
+                summary: anti_zeno.summary.clone(),
             },
             NotaFrontDoorProgressTrack {
                 id: "relay-relief".to_string(),
@@ -430,7 +461,7 @@ fn front_door_relay_relief_value(
 fn setup_application<R: tauri::Runtime>(
     app: &mut tauri::App<R>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app_paths = AppPaths::new(app.path().app_data_dir()?);
+    let app_paths = AppPaths::new(resolve_app_data_dir()?);
     let startup = bootstrap_for_paths(app_paths)?;
     let launcher_hotkey = startup.launcher_hotkey().map(str::to_owned);
     app.manage(LauncherUiState {
@@ -529,8 +560,124 @@ fn launcher_hotkey(state: tauri::State<'_, LauncherUiState>) -> Option<String> {
     state.hotkey.clone()
 }
 
+const ROOT_CLI_HELP: &str = r#"Entrance V0 headless alpha runtime shell
+
+Usage:
+  entrance
+  entrance <command> [args...]
+  entrance --help
+
+Commands:
+  nota       Read or write NOTA runtime continuity surfaces
+  mcp        Serve Entrance as an MCP server over stdio or HTTP
+  forge      Run Forge dispatch and bootstrap helpers
+  landing    Import and inspect landing snapshots
+  recovery   Inspect and promote recovery seed data
+  hygiene    Run runtime and spec hygiene checks
+
+Notes:
+  Running `entrance` with no command starts the GUI shell.
+  Run `entrance <command> --help` for command-specific usage.
+"#;
+
+const LANDING_CLI_HELP: &str = r#"Usage:
+  entrance landing import --file <path>
+  entrance landing import <path>
+  entrance landing runs
+  entrance landing mirrors
+  entrance landing planning
+  entrance landing unreconciled
+"#;
+
+const RECOVERY_CLI_HELP: &str = r#"Usage:
+  entrance recovery import-seed --file <path>
+  entrance recovery import-seed <path>
+  entrance recovery runs
+  entrance recovery rows [--ingest-run-id <id>] [--table <name>] [--limit <n>]
+  entrance recovery promote-safe-v0 [--ingest-run-id <id>] [--table <name>]
+  entrance recovery promote-remaining-v0 [--ingest-run-id <id>] [--table <name>]
+"#;
+
+const HYGIENE_CLI_HELP: &str = r#"Usage:
+  entrance hygiene spec-v0
+  entrance hygiene list-spec-v0
+"#;
+
+const FORGE_CLI_HELP: &str = r#"Usage:
+  entrance forge prepare-dispatch
+  entrance forge prepare-dispatch --project-dir <path>
+  entrance forge verify-dispatch
+  entrance forge verify-dispatch --project-dir <path>
+  entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--agent-count <n>]
+  entrance forge run-bootstrap-dev-plan
+  entrance forge supervise-task --task-id <id>
+"#;
+
+const NOTA_CLI_HELP: &str = r#"Usage:
+  entrance nota overview
+  entrance nota status
+  entrance nota chat-policy [--policy <off|summary|full>]
+  entrance nota chat-captures
+  entrance nota checkpoints
+  entrance nota acceptance-bundles
+  entrance nota export-hot-root [--project-dir <path>]
+  entrance nota decisions
+  entrance nota visions
+  entrance nota todos
+  entrance nota allocations
+  entrance nota receipts [--transaction-id <id>]
+  entrance nota transactions
+  entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]
+  entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]
+  entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]
+  entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]
+  entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]
+  entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]
+  entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]
+  entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]
+  entrance nota checkpoint-runtime-closure
+"#;
+
+const MCP_CLI_HELP: &str = r#"Usage:
+  entrance mcp stdio [--actor-role <nota|arch|dev>]
+  entrance mcp http [--port <port>] [--endpoint <path>] [--actor-role <nota|arch|dev>]
+"#;
+
+fn is_help_flag(value: &str) -> bool {
+    matches!(value, "help" | "-h" | "--help")
+}
+
+fn cli_help_for_args(args: &[String]) -> Option<&'static str> {
+    match args {
+        [flag] if is_help_flag(flag) => Some(ROOT_CLI_HELP),
+        [command, flag] if command == "landing" && is_help_flag(flag) => Some(LANDING_CLI_HELP),
+        [command, flag] if command == "recovery" && is_help_flag(flag) => Some(RECOVERY_CLI_HELP),
+        [command, flag] if command == "hygiene" && is_help_flag(flag) => Some(HYGIENE_CLI_HELP),
+        [command, flag] if command == "nota" && is_help_flag(flag) => Some(NOTA_CLI_HELP),
+        [command, flag] if command == "forge" && is_help_flag(flag) => Some(FORGE_CLI_HELP),
+        [command, flag] if command == "mcp" && is_help_flag(flag) => Some(MCP_CLI_HELP),
+        [command, transport, flag]
+            if command == "mcp"
+                && matches!(transport.as_str(), "stdio" | "http")
+                && is_help_flag(flag) =>
+        {
+            Some(MCP_CLI_HELP)
+        }
+        _ => None,
+    }
+}
+
+fn print_cli_help(help: &str) {
+    println!("{help}");
+}
+
 pub fn dispatch_cli_or_run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if let Some(help) = cli_help_for_args(&args) {
+        print_cli_help(help);
+        return Ok(());
+    }
+
     match args.as_slice() {
         [command, rest @ ..] if command == "landing" => run_landing_cli(rest),
         [command, rest @ ..] if command == "recovery" => run_recovery_cli(rest),
@@ -762,6 +909,15 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "checkpoints" => {
             print_json(&list_runtime_checkpoints(&startup.data_store())?)
         }
+        [command] if command == "acceptance-bundles" => {
+            print_json(&list_runtime_acceptance_bundles(&startup.data_store())?)
+        }
+        [command] if command == "export-hot-root" => {
+            print_json(&write_hot_root_projection(&startup, None)?)
+        }
+        [command, flag, value] if command == "export-hot-root" && flag == "--project-dir" => {
+            print_json(&write_hot_root_projection(&startup, Some(value))?)
+        }
         [command] if command == "decisions" => {
             print_json(&list_design_decisions(&startup.data_store())?)
         }
@@ -789,11 +945,15 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         }
         [command, rest @ ..] if command == "capture-chat" => {
             let request = parse_nota_chat_capture_args(rest)?;
-            print_json(&capture_chat_message(&startup.data_store(), request)?)
+            let report = capture_chat_message(&startup.data_store(), request)?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
         }
         [command, rest @ ..] if command == "decision" => {
             let request = parse_nota_decision_args(rest)?;
-            print_json(&record_design_decision(&startup.data_store(), request)?)
+            let report = record_design_decision(&startup.data_store(), request)?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
         }
         [command, rest @ ..] if command == "do" => {
             if !startup.forge_enabled() {
@@ -809,7 +969,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                 .agent_command
                 .or_else(|| forge_config.agent_command.clone());
 
-            print_json(&run_nota_do_agent_dispatch(
+            let report = run_nota_do_agent_dispatch(
                 &startup.data_store(),
                 &forge_plugin,
                 NotaDoAgentDispatchRequest {
@@ -819,7 +979,9 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                     title: request.title,
                     execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor,
                 },
-            )?)
+            )?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
         }
         [command, rest @ ..] if command == "dev" => {
             if !startup.forge_enabled() {
@@ -835,7 +997,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                 .agent_command
                 .or_else(|| forge_config.agent_command.clone());
 
-            print_json(&run_nota_dev_dispatch(
+            let report = run_nota_dev_dispatch(
                 &startup.data_store(),
                 &forge_plugin,
                 NotaDevDispatchRequest {
@@ -845,29 +1007,47 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
                     title: request.title,
                     execution_host: NotaDispatchExecutionHost::DetachedForgeCliSupervisor,
                 },
-            )?)
+            )?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
         }
         [command, rest @ ..] if command == "checkpoint" => {
             let request = parse_nota_checkpoint_args(rest)?;
-            print_json(&write_runtime_checkpoint(&startup.data_store(), request)?)
+            let mirror_project_dir = request.project_dir.clone();
+            let report = write_runtime_checkpoint(&startup.data_store(), request)?;
+            write_hot_root_projection(&startup, mirror_project_dir.as_deref())?;
+            print_json(&report)
         }
         [command, rest @ ..] if command == "review" => {
             let request = parse_nota_review_args(rest)?;
-            print_json(&record_dev_return_review(&startup.data_store(), request)?)
+            let report = record_dev_return_review(&startup.data_store(), request)?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
         }
         [command, rest @ ..] if command == "integrate" => {
             let request = parse_nota_integrate_args(rest)?;
-            print_json(&record_dev_return_integration(&startup.data_store(), request)?)
+            let report = record_dev_return_integration(&startup.data_store(), request)?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
         }
         [command, rest @ ..] if command == "finalize" => {
             let request = parse_nota_finalize_args(rest)?;
-            print_json(&record_dev_return_finalize(&startup.data_store(), request)?)
+            let report = record_dev_return_finalize(&startup.data_store(), request)?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
         }
-        [command] if command == "checkpoint-runtime-closure" => print_json(
-            &materialize_runtime_closure_checkpoint(&startup.data_store())?,
-        ),
+        [command] if command == "checkpoint-runtime-closure" => {
+            let report = materialize_runtime_closure_checkpoint(&startup.data_store())?;
+            let mirror_project_dir = report
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.payload.repo_context.as_ref())
+                .map(|context| context.project_dir.as_str());
+            write_hot_root_projection(&startup, mirror_project_dir)?;
+            print_json(&report)
+        }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota acceptance-bundles`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -1833,6 +2013,7 @@ pub(crate) fn build_nota_runtime_overview(
     let checkpoint_scope_ids = active_checkpoint_scope_ids(data_store, current_checkpoint)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let acceptance_bundles = list_runtime_acceptance_bundles(data_store)?;
     let visions = list_nota_visions(data_store)?;
     let todos = list_nota_todos(data_store)?;
     let recommended_checkpoint = recommend_runtime_closure_checkpoint(
@@ -1860,6 +2041,14 @@ pub(crate) fn build_nota_runtime_overview(
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
+    let current_acceptance_bundle =
+        derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?;
+    let anti_zeno = derive_anti_zeno_projection(
+        current_checkpoint,
+        current_acceptance_bundle.as_ref(),
+        next_step.as_ref(),
+        recommended_checkpoint.as_ref(),
+    );
     let transactions = list_nota_runtime_transactions(data_store)?;
     let decisions = list_design_decisions(data_store)?;
     let front_door = build_nota_front_door_projection(
@@ -1868,6 +2057,7 @@ pub(crate) fn build_nota_runtime_overview(
         transactions.transaction_count,
         allocations.allocation_count,
         receipts.receipt_count,
+        &anti_zeno,
         recommended_checkpoint.as_ref(),
         review.as_ref(),
         integrate.as_ref(),
@@ -1878,6 +2068,7 @@ pub(crate) fn build_nota_runtime_overview(
     Ok(NotaRuntimeOverview {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
         checkpoints,
+        acceptance_bundles,
         transactions,
         allocations,
         visions,
@@ -1887,6 +2078,7 @@ pub(crate) fn build_nota_runtime_overview(
         integrate,
         finalize,
         next_step,
+        anti_zeno,
         front_door,
         decisions,
         chat_captures: list_chat_captures(data_store)?,
@@ -1907,6 +2099,7 @@ pub(crate) fn build_nota_runtime_status(
     let transactions = list_nota_runtime_transactions(data_store)?;
     let allocations = list_nota_runtime_allocations(data_store)?;
     let receipts = list_nota_runtime_receipts(data_store, None)?;
+    let acceptance_bundles = list_runtime_acceptance_bundles(data_store)?;
     let decisions = list_design_decisions(data_store)?;
     let chat_captures = list_chat_captures(data_store)?;
     let visions = list_nota_visions(data_store)?;
@@ -1936,12 +2129,21 @@ pub(crate) fn build_nota_runtime_status(
         allocations.stored_allocations(),
         &receipts.receipts,
     )?;
+    let current_acceptance_bundle =
+        derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?;
+    let anti_zeno = derive_anti_zeno_projection(
+        current_checkpoint.as_ref(),
+        current_acceptance_bundle.as_ref(),
+        next_step.as_ref(),
+        recommended_checkpoint.as_ref(),
+    );
     let front_door = build_nota_front_door_projection(
         current_checkpoint.as_ref(),
         decisions.decision_count,
         transactions.transaction_count,
         allocations.allocation_count,
         receipts.receipt_count,
+        &anti_zeno,
         recommended_checkpoint.as_ref(),
         review.as_ref(),
         integrate.as_ref(),
@@ -1954,6 +2156,8 @@ pub(crate) fn build_nota_runtime_status(
         checkpoint_count: checkpoints.checkpoint_count,
         current_checkpoint_id: checkpoints.current_checkpoint_id,
         current_checkpoint,
+        acceptance_bundle_count: acceptance_bundles.acceptance_bundle_count,
+        current_acceptance_bundle,
         transaction_count: transactions.transaction_count,
         latest_transaction: transactions.transactions.first().cloned(),
         allocation_count: allocations.allocation_count,
@@ -1970,8 +2174,144 @@ pub(crate) fn build_nota_runtime_status(
         integrate,
         finalize,
         next_step,
+        anti_zeno,
         front_door,
     })
+}
+
+fn write_hot_root_projection(
+    startup: &StartupState,
+    mirror_project_dir: Option<&str>,
+) -> Result<HotRootProjectionWriteReport> {
+    let status = build_nota_runtime_status(&startup.data_store())?;
+    let hot_root_dir = startup.paths().exports_dir().join("hot-root");
+    fs::create_dir_all(&hot_root_dir).with_context(|| {
+        format!(
+            "failed to create hot-root export directory at {}",
+            hot_root_dir.display()
+        )
+    })?;
+
+    let files = render_hot_root_files(startup, &status);
+    let mut files_written = Vec::new();
+    for (name, content) in &files {
+        let path = hot_root_dir.join(name);
+        fs::write(&path, content)
+            .with_context(|| format!("failed to write hot-root export at {}", path.display()))?;
+        files_written.push(path.display().to_string());
+    }
+
+    let mirrored_repo_top_dir = mirror_project_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|project_dir| project_dir.to_string());
+    if let Some(project_dir) = mirrored_repo_top_dir.as_deref() {
+        let repo_top_dir = Path::new(project_dir).join("specs").join("top");
+        fs::create_dir_all(&repo_top_dir).with_context(|| {
+            format!(
+                "failed to create mirrored repo top directory at {}",
+                repo_top_dir.display()
+            )
+        })?;
+        for (name, content) in &files {
+            let path = repo_top_dir.join(name);
+            fs::write(&path, content).with_context(|| {
+                format!(
+                    "failed to write mirrored hot-root projection at {}",
+                    path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(HotRootProjectionWriteReport {
+        export_root: hot_root_dir.display().to_string(),
+        files_written,
+        mirrored_repo_top_dir: mirrored_repo_top_dir
+            .map(|project_dir| Path::new(&project_dir).join("specs").join("top"))
+            .map(|path| path.display().to_string()),
+    })
+}
+
+fn render_hot_root_files(
+    startup: &StartupState,
+    status: &NotaRuntimeStatus,
+) -> Vec<(&'static str, String)> {
+    let checkpoint_label = status
+        .current_checkpoint
+        .as_ref()
+        .map(|checkpoint| checkpoint.cadence_object.title.clone())
+        .unwrap_or_else(|| "No active checkpoint".to_string());
+    let checkpoint_level = status
+        .current_checkpoint
+        .as_ref()
+        .map(|checkpoint| checkpoint.payload.stable_level.clone())
+        .unwrap_or_else(|| {
+            "Checkpoint the current human round before relying on exported views.".to_string()
+        });
+    let acceptance_line = status
+        .current_acceptance_bundle
+        .as_ref()
+        .map(|bundle| {
+            format!(
+                "{} on allocation {} ({})",
+                bundle.payload.acceptance_kind,
+                bundle.payload.allocation_id,
+                bundle.payload.round_state
+            )
+        })
+        .unwrap_or_else(|| "No formal acceptance bundle is current.".to_string());
+    let next_step_line = status
+        .next_step
+        .as_ref()
+        .map(|step| format!("{} for allocation {}", step.step, step.allocation_id))
+        .unwrap_or_else(|| "No follow-on runtime step is currently open.".to_string());
+    let owner_root = startup.paths().app_data_dir().display().to_string();
+    let config_path = startup.paths().config_path().display().to_string();
+    let db_path = startup.paths().db_path().display().to_string();
+
+    let readme = format!(
+        "# Top Layer\n\n> Status: exported hot root from DB-first runtime truth\n\nThe top layer is a retained projection, not an authoring authority.\n\nActive hot-root files:\n\n- [machine.md](./machine.md)\n- [control.md](./control.md)\n- [truth.md](./truth.md)\n- [phase-todo.md](./phase-todo.md)\n- [pending.md](./pending.md)\n\nCurrent owner root:\n\n- `{owner_root}`\n- config: `{config_path}`\n- runtime DB: `{db_path}`\n- exported hot root: `{}`\n\nCurrent round:\n\n- checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n\nProjection law:\n\n- DB is the only canonical writer.\n- README, hot root, cold docs, GUI, CLI, and MCP are projections from DB truth.\n- `passed human round = acceptance`.\n- `fully settled round = acceptance + no next_step + checkpoint carry-forward`.\n",
+        startup.paths().exports_dir().join("hot-root").display(),
+        status.anti_zeno.summary,
+        status.anti_zeno.state
+    );
+
+    let machine = format!(
+        "# Machine\n\n> Status: hot root projection\n\n## Current Runtime Cut\n\n- current checkpoint: {checkpoint_label}\n- stable level: {checkpoint_level}\n- acceptance bundle count: {}\n- current acceptance: {acceptance_line}\n- anti-Zeno state: {} ({})\n\n## State Law\n\n- runtime continuity is resumed from checkpoint, allocation, receipt, and cadence-object truth\n- `passed human round` is formalized as `CADENCE_ACCEPTANCE_BUNDLE`\n- `fully settled round` is stricter than acceptance and only holds after follow-on closure has been carried forward\n- phase is projection, not a peer truth plane\n",
+        status.acceptance_bundle_count, status.anti_zeno.state, status.anti_zeno.summary
+    );
+
+    let control = format!(
+        "# Control\n\n> Status: hot root projection\n\n## Runtime Authority\n\n- Human is the final sovereign.\n- NOTA is the only normal semantic ingress and egress.\n- Policy is the highest internal writer.\n- Arch / Dev / Agent are bounded execution lanes, not peer continuation authorities.\n\n## Active Control Boundary\n\n- current checkpoint: {checkpoint_label}\n- next step: {next_step_line}\n- review surface active: {}\n- integrate surface active: {}\n- finalize surface active: {}\n",
+        status.review.is_some(),
+        status.integrate.is_some(),
+        status.finalize.is_some()
+    );
+
+    let truth = format!(
+        "# Truth\n\n> Status: hot root projection\n\n## Canonical Law\n\n- DB-first is mandatory.\n- Every operation must write runtime truth before any projection is considered valid.\n- Files are preserved projections and may be regenerated from DB truth.\n- Cold docs remain canonicalized in DB and may be periodically projected back to files.\n\n## Projection Boundary\n\n- owner root: `{owner_root}`\n- config TOML: `{config_path}`\n- runtime DB: `{db_path}`\n- files are downstream of truth, never upstream of truth\n- anti-Zeno is a derived progress discipline, not a second truth plane\n",
+    );
+
+    let phase_todo = format!(
+        "# Phase Todo\n\n> Status: hot root projection\n\n## Current Focus\n\n- current checkpoint: {checkpoint_label}\n- acceptance: {acceptance_line}\n- anti-Zeno: {} ({})\n- next step: {next_step_line}\n\n## Ordered Work\n\n- keep runtime truth sharper than file projections\n- keep acceptance formalized as a cadence object rather than chat implication\n- keep anti-Zeno visible in status, overview, and exported hot root\n- keep hot-root export synchronized from DB truth after human-round writes\n",
+        status.anti_zeno.state, status.anti_zeno.summary
+    );
+
+    let pending = format!(
+        "# Pending\n\n> Status: hot utility projection\n\n## Current Pending Boundary\n\n- recommended checkpoint present: {}\n- current next step: {next_step_line}\n- fully settled: {}\n\n## Rule\n\n- pending only holds unresolved items that are not yet oracle truth\n- once a pending item becomes truth, it must be carried by DB and then projected back out\n- do not let file-local TODOs outrank runtime truth\n",
+        status.recommended_checkpoint.is_some(),
+        status.anti_zeno.fully_settled
+    );
+
+    vec![
+        ("README.md", readme),
+        ("machine.md", machine),
+        ("control.md", control),
+        ("truth.md", truth),
+        ("phase-todo.md", phase_todo),
+        ("pending.md", pending),
+    ]
 }
 
 pub(crate) fn list_nota_todos(
@@ -2133,7 +2473,10 @@ mod tests {
 
     use crate::core::config_store::{render_config, EntranceConfig};
 
-    use super::{prepare_forge_dispatch_cli, verify_forge_dispatch_cli};
+    use super::{
+        cli_help_for_args, prepare_forge_dispatch_cli, verify_forge_dispatch_cli, FORGE_CLI_HELP,
+        MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
+    };
 
     static CLI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -2200,6 +2543,24 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("CLI test lock should not be poisoned")
+    }
+
+    #[test]
+    fn cli_help_is_available_without_falling_back_to_gui() {
+        let root = vec!["--help".to_string()];
+        assert_eq!(cli_help_for_args(&root), Some(ROOT_CLI_HELP));
+
+        let nota = vec!["nota".to_string(), "--help".to_string()];
+        assert_eq!(cli_help_for_args(&nota), Some(NOTA_CLI_HELP));
+
+        let mcp = vec!["mcp".to_string(), "--help".to_string()];
+        assert_eq!(cli_help_for_args(&mcp), Some(MCP_CLI_HELP));
+
+        let mcp_stdio = vec!["mcp".to_string(), "stdio".to_string(), "--help".to_string()];
+        assert_eq!(cli_help_for_args(&mcp_stdio), Some(MCP_CLI_HELP));
+
+        let forge = vec!["forge".to_string(), "--help".to_string()];
+        assert_eq!(cli_help_for_args(&forge), Some(FORGE_CLI_HELP));
     }
 
     fn init_git_repo(path: &Path) {

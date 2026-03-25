@@ -12,7 +12,7 @@
 
 - Source snapshot: `A:\Agent\linear-entrance-snapshot-2026-03-22.json`
 - Original landing proof DB: `A:\Agent\Entrance\.tmp\landing-appdata\entrance.db`
-- Live runtime DB after real landing import and recovery-seed absorption: `%LOCALAPPDATA%/Entrance/entrance.db`
+- Live runtime DB after real landing import and recovery-seed absorption: `~/.entrance/data/entrance.db`
 - Verified landing counts now present in the live runtime DB:
   - `external_issue_mirrors = 50`
   - `planning_items = 50`
@@ -109,7 +109,7 @@ These shells should remain mirrored as evidence but should not stay in the activ
 
 - `MYT-57` `control.py retirement` is `Done` in Linear, but current repo facts still show a runtime cut that remains unverified under `.agents`-absent conditions:
   - `src-tauri/src/plugins/forge/mod.rs` now generates Agent prompts from `harness/bootstrap/duet/SKILL.md` and no longer shells to `A:/.agents/nota/scripts/control.py`
-  - `src-tauri/src/plugins/forge/mod.rs` now uses `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}` as its only runtime worktree owner path
+  - `src-tauri/src/plugins/forge/mod.rs` now uses `~/.entrance/worktrees/{project}/feat-{ISSUE}` as its only runtime worktree owner path
   - `src/pages/Forge.tsx` now shows prompt source as `Entrance-owned harness/bootstrap prompt`
 - Therefore `MYT-57` should still be treated as partial progress, not as fully promoted internal truth, because `.agents`-absent end-to-end verification is still open.
 

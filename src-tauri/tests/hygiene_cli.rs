@@ -57,7 +57,7 @@ fn hygiene_spec_v0_cli_persists_and_lists_spec_self_clean_findings() -> Result<(
                 && finding["status"] == "archived"
         }));
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(

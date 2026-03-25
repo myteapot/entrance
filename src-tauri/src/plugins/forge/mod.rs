@@ -4,7 +4,6 @@ pub mod http;
 
 use std::{
     env,
-    ffi::OsStr,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     path::{Path, PathBuf},
     process::Command,
@@ -791,6 +790,9 @@ fn build_dispatch_task_request(
 }
 
 fn resolve_dispatch_command_for_runner(runner: &str, command: String) -> String {
+    #[cfg(not(target_os = "windows"))]
+    let _ = runner;
+
     #[cfg(target_os = "windows")]
     {
         if matches!(runner, "codex" | "codex-cli") {
@@ -931,13 +933,14 @@ fn split_runner_and_variant(model: &str) -> (&str, Option<&str>) {
     }
 }
 
+#[cfg(test)]
 fn managed_worktrees_root_for_app_data_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("worktrees")
 }
 
 fn resolve_dispatch_worktree_roots() -> Result<Vec<PathBuf>, String> {
-    let app_data_dir = crate::core::resolve_app_data_dir().map_err(|error| error.to_string())?;
-    Ok(vec![managed_worktrees_root_for_app_data_dir(&app_data_dir)])
+    let runtime_paths = crate::core::resolve_runtime_paths().map_err(|error| error.to_string())?;
+    Ok(vec![runtime_paths.worktrees_dir().to_path_buf()])
 }
 
 pub(crate) fn allocate_agent_slot_worktree(
@@ -1647,9 +1650,9 @@ mod tests {
     use super::{
         allocate_agent_slot_worktree, build_agent_task_request, build_dev_task_request,
         build_prepared_agent_dispatch, build_prepared_dev_dispatch, generate_agent_prompt,
-        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, normalize_display_path,
-        parse_issue_id_from_branch, prepare_agent_dispatch, prepare_agent_dispatch_for_worktree,
-        prepare_dev_dispatch, resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
+        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
+        prepare_agent_dispatch, prepare_agent_dispatch_for_worktree, prepare_dev_dispatch,
+        resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
     };
 
     static FORGE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1819,7 +1822,7 @@ mod tests {
     fn codex_agent_requests_are_translated_into_cli_tasks() {
         let request = build_agent_task_request(
             "MYT-48".to_string(),
-            "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48".to_string(),
+            "C:/Users/test/.entrance/worktrees/Entrance/feat-MYT-48".to_string(),
             "codex:gpt-5-codex".to_string(),
             "implement the task".to_string(),
             vec!["openai".to_string()],
@@ -1830,7 +1833,7 @@ mod tests {
         assert_default_codex_command(&request.command);
         assert_eq!(
             request.working_dir.as_deref(),
-            Some("C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48")
+            Some("C:/Users/test/.entrance/worktrees/Entrance/feat-MYT-48")
         );
         assert_eq!(request.stdin_text.as_deref(), Some("implement the task"));
         assert!(request.args.contains("\"exec\""));
@@ -1853,7 +1856,7 @@ mod tests {
     fn codex_dev_requests_are_translated_into_cli_tasks() {
         let request = build_dev_task_request(
             "MYT-48".to_string(),
-            "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48".to_string(),
+            "C:/Users/test/.entrance/worktrees/Entrance/feat-MYT-48".to_string(),
             "codex:gpt-5-codex".to_string(),
             "manage the issue".to_string(),
             vec!["openai".to_string()],
@@ -1864,7 +1867,7 @@ mod tests {
         assert_default_codex_command(&request.command);
         assert_eq!(
             request.working_dir.as_deref(),
-            Some("C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48")
+            Some("C:/Users/test/.entrance/worktrees/Entrance/feat-MYT-48")
         );
         assert_eq!(request.stdin_text.as_deref(), Some("manage the issue"));
         assert!(request.args.contains("\"exec\""));
@@ -1896,7 +1899,7 @@ mod tests {
 
         let request = build_dev_task_request(
             "MYT-48".to_string(),
-            "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48".to_string(),
+            "C:/Users/test/.entrance/worktrees/Entrance/feat-MYT-48".to_string(),
             "codex:gpt-5-codex".to_string(),
             "manage the issue".to_string(),
             Vec::new(),
@@ -1911,7 +1914,7 @@ mod tests {
 
         let overridden_request = build_dev_task_request(
             "MYT-48".to_string(),
-            "C:/Users/test/AppData/Local/Entrance/worktrees/Entrance/feat-MYT-48".to_string(),
+            "C:/Users/test/.entrance/worktrees/Entrance/feat-MYT-48".to_string(),
             "codex:gpt-5-codex".to_string(),
             "manage the issue".to_string(),
             Vec::new(),
@@ -1940,7 +1943,7 @@ mod tests {
 
     #[test]
     fn managed_worktree_root_is_derived_from_app_data_dir() {
-        let app_data_dir = PathBuf::from("C:/Users/test/AppData/Local/Entrance");
+        let app_data_dir = PathBuf::from("C:/Users/test/.entrance");
         assert_eq!(
             managed_worktrees_root_for_app_data_dir(&app_data_dir),
             app_data_dir.join("worktrees")

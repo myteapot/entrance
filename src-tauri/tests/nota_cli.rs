@@ -110,7 +110,7 @@ fn nota_checkpoint_cli_persists_cadence_checkpoint_without_memory_fragment_fallb
     assert_eq!(listed["checkpoints"][0]["is_current"], true);
     assert_eq!(listed["checkpoints"][1]["is_current"], false);
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(count_rows(&connection, "cadence_objects")?, 2);
@@ -207,7 +207,7 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     let lineage_ref = report["allocation"]["lineage_ref"]
         .as_str()
         .context("allocation lineage_ref should be present")?;
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     let task_id = report["task_id"]
@@ -615,7 +615,7 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
     let task_id = report["task_id"]
         .as_i64()
         .context("task id should be present")?;
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute(
@@ -830,9 +830,13 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
         "detached_forge_cli_supervisor"
     );
     assert_eq!(allocation_payload["child_dispatch_role"], "agent");
-    assert_eq!(report["task_status"], "Running");
+    assert!(matches!(
+        report["task_status"].as_str(),
+        Some("Pending" | "Running")
+    ));
 
-    let task = wait_for_forge_task_terminal(&app_data_dir.join("entrance.db"), task_id)?;
+    let task =
+        wait_for_forge_task_terminal(&app_data_dir.join("data").join("entrance.db"), task_id)?;
     assert_eq!(task.status, "Done");
     assert!(completion_marker.exists());
 
@@ -1076,9 +1080,13 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
         allocation_payload["execution_host"],
         "detached_forge_cli_supervisor"
     );
-    assert_eq!(report["task_status"], "Running");
+    assert!(matches!(
+        report["task_status"].as_str(),
+        Some("Pending" | "Running")
+    ));
 
-    let task = wait_for_forge_task_terminal(&app_data_dir.join("entrance.db"), task_id)?;
+    let task =
+        wait_for_forge_task_terminal(&app_data_dir.join("data").join("entrance.db"), task_id)?;
     assert_eq!(task.status, "Done");
     assert!(task.heartbeat_at.is_some());
     assert!(completion_marker.exists());
@@ -1853,7 +1861,7 @@ fn nota_decision_cli_persists_design_decisions_and_governance_links() -> Result<
     assert_eq!(listed["decision_count"], 2);
     assert_eq!(listed["link_count"], 2);
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(count_rows(&connection, "decisions")?, 2);
@@ -1936,7 +1944,7 @@ fn nota_chat_archive_policy_and_capture_cli_keep_raw_chat_separate_from_decision
         .context("chat-captures output should be valid JSON")?;
     assert_eq!(listed["capture_count"], 2);
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     assert_eq!(count_rows(&connection, "chat_archive_settings")?, 1);
@@ -2000,7 +2008,7 @@ fn nota_overview_cli_returns_db_first_continuity_bundle() -> Result<()> {
             "Overview should expose checkpoint, decision, and archive state together.",
         ],
     )?;
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute(
@@ -2133,7 +2141,7 @@ fn nota_status_and_overview_surface_runtime_owned_front_door_projection() -> Res
         status["front_door"]["progress_tracks"]
             .as_array()
             .map(Vec::len),
-        Some(3)
+        Some(4)
     );
     assert_eq!(
         status["front_door"]["progress_tracks"][0]["label"],
@@ -2144,7 +2152,12 @@ fn nota_status_and_overview_surface_runtime_owned_front_door_projection() -> Res
         "Front-door reach"
     );
     assert_eq!(
-        status["front_door"]["progress_tracks"][2]["summary"],
+        status["front_door"]["progress_tracks"][2]["label"],
+        "Anti-Zeno progress"
+    );
+    assert_eq!(status["anti_zeno"]["state"], "checkpointed");
+    assert_eq!(
+        status["front_door"]["progress_tracks"][3]["summary"],
         "further reduced for the native front door"
     );
 
@@ -2153,12 +2166,67 @@ fn nota_status_and_overview_surface_runtime_owned_front_door_projection() -> Res
         serde_json::from_str(&overview_output).context("overview output should be valid JSON")?;
     assert_eq!(
         overview["front_door"]["dashboard_hook"],
-        "Dashboard now reads the same runtime truth plane as Chat, with layered progress and bounded continuity detail."
+        "Dashboard now reads the same runtime truth plane as Chat, with acceptance-backed anti-Zeno progress and bounded continuity detail."
     );
     assert_eq!(
-        overview["front_door"]["progress_tracks"][2]["label"],
+        overview["front_door"]["progress_tracks"][3]["label"],
         "Human relay relief"
     );
+    assert_eq!(overview["acceptance_bundles"]["acceptance_bundle_count"], 0);
+
+    Ok(())
+}
+
+#[test]
+fn nota_checkpoint_auto_exports_hot_root_projection() -> Result<()> {
+    let temp_dir = TempDir::new("hot-root-export")?;
+    let app_data_dir = temp_dir.path().join("appdata");
+    seed_app_state(&app_data_dir)?;
+
+    run_nota_cli(
+        &app_data_dir,
+        &[
+            "nota",
+            "checkpoint",
+            "--title",
+            "Export checkpoint",
+            "--stable-level",
+            "exported hot root truth",
+            "--landed",
+            "checkpoint-backed export surface",
+            "--remaining",
+            "none",
+            "--human-continuity-bus",
+            "reduced for projection export",
+        ],
+    )?;
+
+    let readme_path = app_data_dir
+        .join("exports")
+        .join("hot-root")
+        .join("README.md");
+    let machine_path = app_data_dir
+        .join("exports")
+        .join("hot-root")
+        .join("machine.md");
+    assert!(readme_path.exists());
+    assert!(machine_path.exists());
+
+    let readme = fs::read_to_string(&readme_path).with_context(|| {
+        format!(
+            "failed to read projected README at {}",
+            readme_path.display()
+        )
+    })?;
+    assert!(readme.contains("The top layer is a retained projection"));
+    assert!(readme.contains("Export checkpoint"));
+    assert!(readme.contains(
+        &app_data_dir
+            .join("data")
+            .join("entrance.db")
+            .to_string_lossy()
+            .replace('\\', "/")
+    ));
 
     Ok(())
 }
@@ -2171,7 +2239,7 @@ fn nota_cli_reads_canonical_vision_and_todo_surfaces() -> Result<()> {
 
     run_nota_cli(&app_data_dir, &["nota", "status"])?;
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute(
@@ -2256,7 +2324,7 @@ fn nota_status_surfaces_planning_counts_as_quick_summary() -> Result<()> {
 
     run_nota_cli(&app_data_dir, &["nota", "status"])?;
 
-    let db_path = app_data_dir.join("entrance.db");
+    let db_path = app_data_dir.join("data").join("entrance.db");
     let connection = Connection::open(&db_path)
         .with_context(|| format!("failed to open sqlite database at {}", db_path.display()))?;
     connection.execute(

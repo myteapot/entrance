@@ -61,7 +61,7 @@
   - recovery provenance copies now exist under `specs/recovery/`
   - `.agents` remains preserved, but these docs are no longer recovery-only in location
 - `MYT-63` has now advanced through four small runtime cuts:
-  - Forge worktree discovery now uses `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}` as its only runtime owner path
+  - Forge worktree discovery now uses `~/.entrance/worktrees/{project}/feat-{ISSUE}` as its only runtime owner path
   - Forge prompt generation now reads Entrance-owned `harness/bootstrap/duet/SKILL.md` instead of shelling to `A:/.agents/nota/scripts/control.py`
   - Forge now exposes prompt source as `Entrance-owned harness/bootstrap prompt`
 - `MYT-61` is now treated as a completed verification gate kept hot-adjacent, not as an active shell.
@@ -105,7 +105,7 @@
   - `specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
   - `specs/cold/3.1-learning-truth-system/minimal_truth_plane.md`
 - `pending.md` should now be read as "no active architecture or operational blocker in hot view"; prior GitLab MCP token notes are fallback history, not active pending.
-- `%LOCALAPPDATA%/Entrance/entrance.db` is now the canonical runtime storage owner for both landing truth and absorbed repo-root recovery seed truth.
+- `~/.entrance/data/entrance.db` is now the canonical runtime storage owner for both landing truth and absorbed repo-root recovery seed truth.
 - `.tmp/landing-appdata/entrance.db` remains only as sandbox proof residue for the original landing import path.
 - Repo-root `entrance.db` and `entrance.db.manifest.json` are no longer required as active storage carriers once their absorbed runtime copy is verified.
 - Local repo caution:

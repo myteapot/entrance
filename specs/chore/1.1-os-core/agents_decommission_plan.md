@@ -61,7 +61,7 @@ As of this design, the active Forge runtime path no longer depends on old `.agen
 
 - `src-tauri/src/plugins/forge/mod.rs`
   - prompt generation now reads Entrance-owned `harness/bootstrap/duet/SKILL.md`
-  - managed worktree discovery now uses `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}` as its only runtime owner path
+  - managed worktree discovery now uses `~/.entrance/worktrees/{project}/feat-{ISSUE}` as its only runtime owner path
 - `src/pages/Forge.tsx`
   - UI now surfaces `Entrance-owned harness/bootstrap prompt`
 
@@ -160,8 +160,8 @@ This location becomes the shipped bootstrap source for role, rule, and prompt be
 
 Mutable user or machine state should live in app data, not in the repo:
 
-- `%LOCALAPPDATA%/Entrance/entrance.db`
-- `%LOCALAPPDATA%/Entrance/entrance.toml`
+- `~/.entrance/data/entrance.db`
+- `~/.entrance/entrance.toml`
 - Vault secret storage
 - managed worktrees
 
@@ -170,7 +170,7 @@ Managed worktrees should no longer live under `A:/.agents/.worktrees`.
 Recommended new owner:
 
 - Harness or Forge managed path rooted in app data, for example
-  `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}`
+  `~/.entrance/worktrees/{project}/feat-{ISSUE}`
 
 The exact path may differ, but it must no longer depend on `.agents`.
 

@@ -73,7 +73,7 @@ continuous-learning = true
 **Legacy Memory Bridge**: `db.py` remains a preserved historical bridge for docs/instincts until memory ownership is absorbed into Entrance local state
 **Agent Prompt 生成**: Entrance Forge runtime owns prompt preparation via `entrance forge prepare-dispatch [--project-dir <path>]`
 **Dispatch Verification**: use `entrance forge verify-dispatch [--project-dir <path>]` to persist a Pending Forge task without requiring `.agents`
-**Worktree Owner**: `%LOCALAPPDATA%/Entrance/worktrees/{project}/feat-{ISSUE}`
+**Worktree Owner**: `~/.entrance/worktrees/{project}/feat-{ISSUE}`
 
 ### Linear 状态速查 (摘要)
 
