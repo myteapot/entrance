@@ -2,13 +2,14 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 #[cfg(test)]
 use rusqlite::OpenFlags;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 
 use crate::plugins::launcher::scanner::DiscoveredApp;
@@ -1081,6 +1082,469 @@ pub struct NewForgeDispatchReceipt<'a> {
 pub struct DataStore {
     connection: Arc<Mutex<Connection>>,
     path: Arc<PathBuf>,
+    mode: DataStoreConnectionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataStoreConnectionMode {
+    ReadWriteFile,
+    ReadOnlyFile,
+    InMemory,
+}
+
+pub struct DataStoreTransaction<'conn> {
+    transaction: Transaction<'conn>,
+}
+
+impl<'conn> DataStoreTransaction<'conn> {
+    fn new(transaction: Transaction<'conn>) -> Self {
+        Self { transaction }
+    }
+
+    fn connection(&self) -> &Connection {
+        &self.transaction
+    }
+
+    fn commit(self) -> Result<()> {
+        self.transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn list_cadence_objects_by_kind(
+        &self,
+        cadence_kind: &str,
+    ) -> Result<Vec<StoredCadenceObject>> {
+        let mut stmt = self.connection().prepare(
+            r#"
+            SELECT
+                id,
+                cadence_kind,
+                title,
+                summary,
+                payload_json,
+                scope_type,
+                scope_ref,
+                source_type,
+                source_ref,
+                admission_policy,
+                projection_policy,
+                status,
+                is_current,
+                created_at,
+                updated_at
+            FROM cadence_objects
+            WHERE cadence_kind = ?1
+            ORDER BY is_current DESC, id DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([cadence_kind], map_cadence_object_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_cadence_links(&self) -> Result<Vec<StoredCadenceLink>> {
+        let mut stmt = self.connection().prepare(
+            r#"
+            SELECT
+                id,
+                src_cadence_object_id,
+                dst_cadence_object_id,
+                relation_type,
+                status,
+                created_at
+            FROM cadence_links
+            ORDER BY id ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], map_cadence_link_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_cadence_object(
+        &self,
+        record: NewCadenceObject<'_>,
+    ) -> Result<StoredCadenceObject> {
+        let now = Utc::now().to_rfc3339();
+
+        if record.is_current {
+            self.connection().execute(
+                r#"
+                UPDATE cadence_objects
+                SET is_current = 0,
+                    status = CASE
+                        WHEN status = 'active' THEN 'superseded'
+                        ELSE status
+                    END,
+                    updated_at = ?2
+                WHERE cadence_kind = ?1
+                  AND is_current != 0
+                "#,
+                params![record.cadence_kind, now],
+            )?;
+        }
+
+        self.connection().execute(
+            r#"
+            INSERT INTO cadence_objects (
+                cadence_kind,
+                title,
+                summary,
+                payload_json,
+                scope_type,
+                scope_ref,
+                source_type,
+                source_ref,
+                admission_policy,
+                projection_policy,
+                status,
+                is_current,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+            "#,
+            params![
+                record.cadence_kind,
+                record.title,
+                record.summary,
+                record.payload_json,
+                record.scope_type,
+                record.scope_ref,
+                record.source_type,
+                record.source_ref,
+                record.admission_policy,
+                record.projection_policy,
+                record.status,
+                if record.is_current { 1 } else { 0 },
+                now,
+            ],
+        )?;
+        let row_id = self.connection().last_insert_rowid();
+        fetch_cadence_object_by_id(self.connection(), row_id)?
+            .ok_or_else(|| anyhow!("cadence object disappeared after insert"))
+    }
+
+    pub fn insert_cadence_link(&self, record: NewCadenceLink<'_>) -> Result<StoredCadenceLink> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO cadence_links (
+                src_cadence_object_id,
+                dst_cadence_object_id,
+                relation_type,
+                status,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(src_cadence_object_id, dst_cadence_object_id, relation_type) DO UPDATE SET
+                status = excluded.status,
+                created_at = excluded.created_at
+            "#,
+            params![
+                record.src_cadence_object_id,
+                record.dst_cadence_object_id,
+                record.relation_type,
+                record.status,
+                now,
+            ],
+        )?;
+
+        fetch_cadence_link(
+            self.connection(),
+            record.src_cadence_object_id,
+            record.dst_cadence_object_id,
+            record.relation_type,
+        )?
+        .ok_or_else(|| anyhow!("cadence link disappeared after upsert"))
+    }
+
+    pub fn insert_nota_runtime_transaction(
+        &self,
+        record: NewNotaRuntimeTransaction<'_>,
+    ) -> Result<StoredNotaRuntimeTransaction> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO nota_runtime_transactions (
+                actor_role,
+                surface_action,
+                transaction_kind,
+                title,
+                payload_json,
+                status,
+                forge_task_id,
+                cadence_checkpoint_id,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+            "#,
+            params![
+                record.actor_role,
+                record.surface_action,
+                record.transaction_kind,
+                record.title,
+                record.payload_json,
+                record.status,
+                record.forge_task_id,
+                record.cadence_checkpoint_id,
+                now,
+            ],
+        )?;
+
+        fetch_nota_runtime_transaction(self.connection(), self.connection().last_insert_rowid())?
+            .ok_or_else(|| anyhow!("nota runtime transaction disappeared after insert"))
+    }
+
+    pub fn update_nota_runtime_transaction(
+        &self,
+        id: i64,
+        update: NotaRuntimeTransactionUpdate<'_>,
+    ) -> Result<StoredNotaRuntimeTransaction> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            UPDATE nota_runtime_transactions
+            SET status = ?2,
+                forge_task_id = COALESCE(?3, forge_task_id),
+                cadence_checkpoint_id = COALESCE(?4, cadence_checkpoint_id),
+                updated_at = ?5
+            WHERE id = ?1
+            "#,
+            params![
+                id,
+                update.status,
+                update.forge_task_id,
+                update.cadence_checkpoint_id,
+                now,
+            ],
+        )?;
+
+        fetch_nota_runtime_transaction(self.connection(), id)?
+            .ok_or_else(|| anyhow!("nota runtime transaction `{id}` does not exist"))
+    }
+
+    pub fn get_nota_runtime_transaction(
+        &self,
+        id: i64,
+    ) -> Result<Option<StoredNotaRuntimeTransaction>> {
+        fetch_nota_runtime_transaction(self.connection(), id)
+    }
+
+    pub fn list_nota_runtime_receipts(
+        &self,
+        transaction_id: Option<i64>,
+    ) -> Result<Vec<StoredNotaRuntimeReceipt>> {
+        let mut stmt = if transaction_id.is_some() {
+            self.connection().prepare(
+                r#"
+                SELECT
+                    id,
+                    transaction_id,
+                    receipt_kind,
+                    payload_json,
+                    status,
+                    created_at
+                FROM nota_runtime_receipts
+                WHERE transaction_id = ?1
+                ORDER BY id ASC
+                "#,
+            )?
+        } else {
+            self.connection().prepare(
+                r#"
+                SELECT
+                    id,
+                    transaction_id,
+                    receipt_kind,
+                    payload_json,
+                    status,
+                    created_at
+                FROM nota_runtime_receipts
+                ORDER BY id ASC
+                "#,
+            )?
+        };
+
+        let rows = if let Some(transaction_id) = transaction_id {
+            stmt.query_map([transaction_id], map_nota_runtime_receipt_row)?
+        } else {
+            stmt.query_map([], map_nota_runtime_receipt_row)?
+        };
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn append_nota_runtime_receipt(
+        &self,
+        record: NewNotaRuntimeReceipt<'_>,
+    ) -> Result<StoredNotaRuntimeReceipt> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO nota_runtime_receipts (
+                transaction_id,
+                receipt_kind,
+                payload_json,
+                status,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                record.transaction_id,
+                record.receipt_kind,
+                record.payload_json,
+                record.status,
+                now,
+            ],
+        )?;
+
+        fetch_nota_runtime_receipt(self.connection(), self.connection().last_insert_rowid())?
+            .ok_or_else(|| anyhow!("nota runtime receipt disappeared after insert"))
+    }
+
+    pub fn list_nota_runtime_allocations(&self) -> Result<Vec<StoredNotaRuntimeAllocation>> {
+        let mut stmt = self.connection().prepare(
+            r#"
+            SELECT
+                id,
+                allocator_role,
+                allocator_surface,
+                allocation_kind,
+                source_transaction_id,
+                lineage_ref,
+                child_execution_kind,
+                child_execution_ref,
+                return_target_kind,
+                return_target_ref,
+                escalation_target_kind,
+                escalation_target_ref,
+                status,
+                payload_json,
+                created_at,
+                updated_at
+            FROM nota_runtime_allocations
+            ORDER BY id DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([], map_nota_runtime_allocation_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_nota_runtime_allocation(
+        &self,
+        record: NewNotaRuntimeAllocation<'_>,
+    ) -> Result<StoredNotaRuntimeAllocation> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO nota_runtime_allocations (
+                allocator_role,
+                allocator_surface,
+                allocation_kind,
+                source_transaction_id,
+                lineage_ref,
+                child_execution_kind,
+                child_execution_ref,
+                return_target_kind,
+                return_target_ref,
+                escalation_target_kind,
+                escalation_target_ref,
+                status,
+                payload_json,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
+            "#,
+            params![
+                record.allocator_role,
+                record.allocator_surface,
+                record.allocation_kind,
+                record.source_transaction_id,
+                record.lineage_ref,
+                record.child_execution_kind,
+                record.child_execution_ref,
+                record.return_target_kind,
+                record.return_target_ref,
+                record.escalation_target_kind,
+                record.escalation_target_ref,
+                record.status,
+                record.payload_json,
+                now,
+            ],
+        )?;
+
+        fetch_nota_runtime_allocation(self.connection(), self.connection().last_insert_rowid())?
+            .ok_or_else(|| anyhow!("nota runtime allocation disappeared after insert"))
+    }
+
+    pub fn update_nota_runtime_allocation(
+        &self,
+        id: i64,
+        update: NotaRuntimeAllocationUpdate<'_>,
+    ) -> Result<StoredNotaRuntimeAllocation> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            UPDATE nota_runtime_allocations
+            SET status = ?2,
+                payload_json = COALESCE(?3, payload_json),
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+            params![id, update.status, update.payload_json, now],
+        )?;
+
+        fetch_nota_runtime_allocation(self.connection(), id)?
+            .ok_or_else(|| anyhow!("nota runtime allocation `{id}` does not exist"))
+    }
+
+    pub fn insert_anti_zeno_event(
+        &self,
+        record: NewAntiZenoEvent<'_>,
+    ) -> Result<StoredAntiZenoEvent> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO anti_zeno_events (
+                checkpoint_id,
+                acceptance_bundle_id,
+                event_kind,
+                boundary_ref,
+                budget_axis,
+                event_weight,
+                summary,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            params![
+                record.checkpoint_id,
+                record.acceptance_bundle_id,
+                record.event_kind,
+                record.boundary_ref,
+                record.budget_axis,
+                record.event_weight,
+                record.summary,
+                now,
+            ],
+        )?;
+        let row_id = self.connection().last_insert_rowid();
+        fetch_anti_zeno_event_by_id(self.connection(), row_id)?
+            .ok_or_else(|| anyhow!("anti-Zeno event disappeared after insert"))
+    }
+}
+
+fn configure_connection(connection: &Connection, mode: DataStoreConnectionMode) -> Result<()> {
+    connection.busy_timeout(Duration::from_secs(5))?;
+    connection.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+        PRAGMA synchronous = FULL;
+        "#,
+    )?;
+    if mode == DataStoreConnectionMode::ReadWriteFile {
+        connection.execute_batch("PRAGMA journal_mode = WAL;")?;
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for DataStore {
@@ -1100,10 +1564,12 @@ impl DataStore {
         }
 
         let connection = Connection::open(&path)?;
+        configure_connection(&connection, DataStoreConnectionMode::ReadWriteFile)?;
 
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(path),
+            mode: DataStoreConnectionMode::ReadWriteFile,
         };
         store.migrate(migration_plan)?;
         Ok(store)
@@ -1116,10 +1582,12 @@ impl DataStore {
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        configure_connection(&connection, DataStoreConnectionMode::ReadOnlyFile)?;
 
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(path),
+            mode: DataStoreConnectionMode::ReadOnlyFile,
         };
         store.migrate(migration_plan)?;
         Ok(store)
@@ -1129,9 +1597,11 @@ impl DataStore {
     #[allow(dead_code)]
     pub fn in_memory(migration_plan: MigrationPlan<'_>) -> Result<Self> {
         let connection = Connection::open_in_memory()?;
+        configure_connection(&connection, DataStoreConnectionMode::InMemory)?;
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(PathBuf::from(":memory:")),
+            mode: DataStoreConnectionMode::InMemory,
         };
         store.migrate(migration_plan)?;
         Ok(store)
@@ -1139,6 +1609,18 @@ impl DataStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn with_immediate_transaction<T, F>(&self, callback: F) -> Result<T>
+    where
+        F: FnOnce(&DataStoreTransaction<'_>) -> Result<T>,
+    {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let transaction = DataStoreTransaction::new(transaction);
+        let result = callback(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
     }
 
     pub fn launcher_app_count(&self) -> Result<i64> {
@@ -3631,45 +4113,31 @@ impl DataStore {
     ) -> Result<StoredDocumentRecord> {
         let now = Utc::now().to_rfc3339();
         self.with_connection(|conn| {
-            if let Some(existing) =
-                fetch_document_by_slug_and_category(conn, record.slug, record.category)?
-            {
-                conn.execute(
-                    r#"
-                    UPDATE documents
-                    SET title = ?2,
-                        content = ?3,
-                        updated_at = ?4
-                    WHERE id = ?1
-                    "#,
-                    params![existing.id, record.title, record.content, now],
-                )?;
-                fetch_document_by_id(conn, existing.id)?
-                    .ok_or_else(|| anyhow!("document disappeared after update"))
-            } else {
-                conn.execute(
-                    r#"
-                    INSERT INTO documents (
-                        slug,
-                        title,
-                        content,
-                        category,
-                        created_at,
-                        updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-                    "#,
-                    params![
-                        record.slug,
-                        record.title,
-                        record.content,
-                        record.category,
-                        now,
-                    ],
-                )?;
-                let row_id = conn.last_insert_rowid();
-                fetch_document_by_id(conn, row_id)?
-                    .ok_or_else(|| anyhow!("document disappeared after insert"))
-            }
+            conn.execute(
+                r#"
+                INSERT INTO documents (
+                    slug,
+                    title,
+                    content,
+                    category,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                ON CONFLICT(slug, category) DO UPDATE SET
+                    title = excluded.title,
+                    content = excluded.content,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    record.slug,
+                    record.title,
+                    record.content,
+                    record.category,
+                    now,
+                ],
+            )?;
+            fetch_document_by_slug_and_category(conn, record.slug, record.category)?
+                .ok_or_else(|| anyhow!("document disappeared after upsert"))
         })
     }
 
@@ -4361,6 +4829,7 @@ impl DataStore {
     }
 
     fn migrate(&self, migration_plan: MigrationPlan<'_>) -> Result<()> {
+        let mode = self.mode;
         self.with_connection(|connection| {
             for migration in migration_plan
                 .core
@@ -4371,7 +4840,7 @@ impl DataStore {
                 connection.execute_batch(migration.sql)?;
             }
             ensure_forge_task_columns(connection)?;
-            ensure_curated_memory_tables(connection)?;
+            ensure_curated_memory_tables(connection, mode)?;
             Ok(())
         })
     }
@@ -4961,28 +5430,6 @@ fn fetch_vault_mcp_config(
             "#,
             [id],
             map_vault_mcp_row,
-        )
-        .optional()
-        .map_err(Into::into)
-}
-
-fn fetch_document_by_id(connection: &Connection, id: i64) -> Result<Option<StoredDocumentRecord>> {
-    connection
-        .query_row(
-            r#"
-            SELECT
-                id,
-                slug,
-                title,
-                content,
-                category,
-                created_at,
-                updated_at
-            FROM documents
-            WHERE id = ?1
-            "#,
-            [id],
-            map_document_record_row,
         )
         .optional()
         .map_err(Into::into)
@@ -5802,7 +6249,10 @@ fn ensure_forge_task_columns(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn ensure_curated_memory_tables(connection: &Connection) -> Result<()> {
+fn ensure_curated_memory_tables(
+    connection: &Connection,
+    mode: DataStoreConnectionMode,
+) -> Result<()> {
     connection.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS documents (
@@ -5925,6 +6375,9 @@ fn ensure_curated_memory_tables(connection: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    if mode != DataStoreConnectionMode::ReadOnlyFile {
+        harden_document_truth_constraints(connection)?;
+    }
 
     ensure_table_column(
         connection,
@@ -5987,6 +6440,32 @@ fn ensure_curated_memory_tables(connection: &Connection) -> Result<()> {
         "coffee_chats",
         "temperature",
         "ALTER TABLE coffee_chats ADD COLUMN temperature TEXT NOT NULL DEFAULT 'warm'",
+    )?;
+
+    Ok(())
+}
+
+fn harden_document_truth_constraints(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        DELETE FROM documents
+        WHERE id IN (
+            SELECT id
+            FROM (
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY slug, category
+                        ORDER BY updated_at DESC, id DESC
+                    ) AS duplicate_rank
+                FROM documents
+            ) ranked_documents
+            WHERE duplicate_rank > 1
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_slug_category
+            ON documents(slug, category);
+        "#,
     )?;
 
     Ok(())

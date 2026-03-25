@@ -9,15 +9,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::core::anti_zeno_runtime::{
-    record_acceptance_recorded_event, record_checkpoint_written_event,
-    record_repair_requested_event,
-};
 use crate::core::data_store::{
-    DataStore, NewCadenceLink, NewCadenceObject, NewNotaRuntimeAllocation, NewNotaRuntimeReceipt,
-    NewNotaRuntimeTransaction, NotaRuntimeAllocationUpdate, NotaRuntimeTransactionUpdate,
-    StoredCadenceLink, StoredCadenceObject, StoredForgeTask, StoredNotaRuntimeAllocation,
-    StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
+    DataStore, DataStoreTransaction, NewCadenceLink, NewCadenceObject, NewNotaRuntimeAllocation,
+    NewNotaRuntimeReceipt, NewNotaRuntimeTransaction, NotaRuntimeAllocationUpdate,
+    NotaRuntimeTransactionUpdate, StoredCadenceLink, StoredCadenceObject, StoredForgeTask,
+    StoredNotaRuntimeAllocation, StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
 };
 use crate::core::invariant_runtime::refresh_runtime_invariants;
 use crate::plugins::forge::{
@@ -748,6 +744,17 @@ pub fn write_runtime_checkpoint(
     data_store: &DataStore,
     request: NotaCheckpointRequest,
 ) -> Result<NotaCheckpointWriteReport> {
+    let report = data_store.with_immediate_transaction(|transaction| {
+        write_runtime_checkpoint_in_transaction(transaction, request)
+    })?;
+    sync_runtime_truth(data_store, None)?;
+    Ok(report)
+}
+
+fn write_runtime_checkpoint_in_transaction(
+    transaction: &DataStoreTransaction<'_>,
+    request: NotaCheckpointRequest,
+) -> Result<NotaCheckpointWriteReport> {
     let stable_level = request.stable_level.trim().to_string();
     if stable_level.is_empty() {
         return Err(anyhow!("`stable_level` must not be empty"));
@@ -784,7 +791,7 @@ pub fn write_runtime_checkpoint(
     let payload_json =
         serde_json::to_string(&payload).context("failed to serialize nota checkpoint payload")?;
 
-    let superseded_checkpoint = data_store
+    let superseded_checkpoint = transaction
         .list_cadence_objects_by_kind(CADENCE_CHECKPOINT_KIND)?
         .into_iter()
         .find(|object| object.is_current);
@@ -797,7 +804,7 @@ pub fn write_runtime_checkpoint(
         .map(str::to_string)
         .unwrap_or_else(|| format!("NOTA runtime checkpoint: {stable_level}"));
     let summary = build_checkpoint_summary(&stable_level, &landed);
-    let cadence_object = data_store.insert_cadence_object(NewCadenceObject {
+    let cadence_object = transaction.insert_cadence_object(NewCadenceObject {
         cadence_kind: CADENCE_CHECKPOINT_KIND,
         title: &title,
         summary: &summary,
@@ -813,7 +820,7 @@ pub fn write_runtime_checkpoint(
     })?;
 
     let supersession_link = if let Some(previous) = superseded_checkpoint.as_ref() {
-        Some(data_store.insert_cadence_link(NewCadenceLink {
+        Some(transaction.insert_cadence_link(NewCadenceLink {
             src_cadence_object_id: previous.id,
             dst_cadence_object_id: cadence_object.id,
             relation_type: "superseded_by",
@@ -823,8 +830,15 @@ pub fn write_runtime_checkpoint(
         None
     };
 
-    record_checkpoint_written_event(data_store, cadence_object.id, &summary)?;
-    refresh_runtime_invariants(data_store)?;
+    transaction.insert_anti_zeno_event(crate::core::data_store::NewAntiZenoEvent {
+        checkpoint_id: Some(cadence_object.id),
+        acceptance_bundle_id: None,
+        event_kind: "checkpoint_written",
+        boundary_ref: "checkpoint",
+        budget_axis: "semantic",
+        event_weight: 1,
+        summary: &summary,
+    })?;
 
     Ok(NotaCheckpointWriteReport {
         checkpoint: NotaCheckpointRecord {
@@ -857,8 +871,6 @@ pub fn list_runtime_checkpoints(data_store: &DataStore) -> Result<NotaCheckpoint
 pub fn list_runtime_acceptance_bundles(
     data_store: &DataStore,
 ) -> Result<NotaAcceptanceBundleListReport> {
-    materialize_terminal_receipt_backflow(data_store, None)?;
-    materialize_runtime_closure_acceptance_receipt_backflow(data_store, None)?;
     let acceptance_bundles = data_store
         .list_cadence_objects_by_kind(CADENCE_ACCEPTANCE_BUNDLE_KIND)?
         .into_iter()
@@ -877,7 +889,6 @@ pub fn list_runtime_acceptance_bundles(
 }
 
 pub fn list_runtime_human_rounds(data_store: &DataStore) -> Result<NotaHumanRoundListReport> {
-    materialize_current_runtime_human_round(data_store)?;
     let human_rounds = data_store
         .list_cadence_objects_by_kind(CADENCE_HUMAN_ROUND_KIND)?
         .into_iter()
@@ -1001,8 +1012,9 @@ fn run_nota_dispatch(
         .map(str::to_string)
         .unwrap_or_else(|| lane.default_title(&dispatch.issue_id));
 
-    let mut transaction =
-        data_store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+    let mut receipts = Vec::new();
+    let transaction = data_store.with_immediate_transaction(|tx| {
+        let transaction = tx.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
             surface_action: lane.surface_action(),
             transaction_kind: lane.transaction_kind(),
@@ -1012,15 +1024,16 @@ fn run_nota_dispatch(
             forge_task_id: None,
             cadence_checkpoint_id: None,
         })?;
-    let mut receipts = Vec::new();
-    receipts.push(
-        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+        let accepted_receipt = tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
             transaction_id: transaction.id,
             receipt_kind: "DO_ACCEPTED",
             payload_json: &payload_json,
             status: "recorded",
-        })?,
-    );
+        })?;
+        Ok((transaction, accepted_receipt))
+    })?;
+    receipts.push(transaction.1.clone());
+    let mut transaction = transaction.0;
 
     let task_request =
         lane.build_task_request(&dispatch, model.clone(), request.agent_command.clone())?;
@@ -1028,14 +1041,6 @@ fn run_nota_dispatch(
     let task = forge
         .get_task(task_id)?
         .ok_or_else(|| anyhow!("stored Forge task disappeared after nota do dispatch"))?;
-    transaction = data_store.update_nota_runtime_transaction(
-        transaction.id,
-        NotaRuntimeTransactionUpdate {
-            status: "task_created",
-            forge_task_id: Some(task_id),
-            cadence_checkpoint_id: None,
-        },
-    )?;
     let allocation_payload = NotaDoAllocationPayload {
         issue_id: dispatch.issue_id.clone(),
         issue_status: dispatch.issue_status.clone(),
@@ -1056,58 +1061,6 @@ fn run_nota_dispatch(
     let child_execution_ref = task_id.to_string();
     let return_target_ref = transaction.id.to_string();
     let lineage_ref = lane.build_lineage_ref(transaction.id, task_id);
-    let mut allocation = data_store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
-        allocator_role: "nota",
-        allocator_surface: lane.allocator_surface(),
-        allocation_kind: lane.transaction_kind(),
-        source_transaction_id: transaction.id,
-        lineage_ref: &lineage_ref,
-        child_execution_kind: "forge_task",
-        child_execution_ref: &child_execution_ref,
-        return_target_kind: "nota_runtime_transaction",
-        return_target_ref: &return_target_ref,
-        escalation_target_kind: "nota_runtime_transaction",
-        escalation_target_ref: &return_target_ref,
-        status: "task_created",
-        payload_json: &allocation_payload_json,
-    })?;
-    receipts.push(
-        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
-            transaction_id: transaction.id,
-            receipt_kind: "FORGE_TASK_CREATED",
-            payload_json: &serde_json::to_string(&json!({
-                "task_id": task_id,
-                "task_status": task.status,
-                "task_command": task.command,
-                "worktree_path": task.working_dir,
-            }))
-            .context("failed to serialize forge task receipt payload")?,
-            status: "recorded",
-        })?,
-    );
-    receipts.push(
-        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
-            transaction_id: transaction.id,
-            receipt_kind: "ALLOCATION_RECORDED",
-            payload_json: &serde_json::to_string(&json!({
-                "allocation_id": allocation.id,
-                "allocator_role": allocation.allocator_role,
-                "allocator_surface": allocation.allocator_surface,
-                "allocation_kind": allocation.allocation_kind,
-                "source_transaction_id": allocation.source_transaction_id,
-                "lineage_ref": allocation.lineage_ref,
-                "child_execution_kind": allocation.child_execution_kind,
-                "child_execution_ref": allocation.child_execution_ref,
-                "return_target_kind": allocation.return_target_kind,
-                "return_target_ref": allocation.return_target_ref,
-                "escalation_target_kind": allocation.escalation_target_kind,
-                "escalation_target_ref": allocation.escalation_target_ref,
-                "status": allocation.status,
-            }))
-            .context("failed to serialize allocation receipt payload")?,
-            status: "recorded",
-        })?,
-    );
 
     let spawn_error = launch_forge_task(forge, task_id, request.execution_host)
         .err()
@@ -1120,95 +1073,172 @@ fn run_nota_dispatch(
     } else {
         "dispatched"
     };
-    transaction = data_store.update_nota_runtime_transaction(
-        transaction.id,
-        NotaRuntimeTransactionUpdate {
-            status: transaction_status,
-            forge_task_id: Some(task_id),
-            cadence_checkpoint_id: None,
-        },
-    )?;
-    allocation = data_store.update_nota_runtime_allocation(
-        allocation.id,
-        NotaRuntimeAllocationUpdate {
-            status: transaction_status,
-            payload_json: None,
-        },
-    )?;
     let launch_receipt_kind = if spawn_error.is_some() {
         "FORGE_TASK_SPAWN_FAILED"
     } else {
         "FORGE_TASK_DISPATCHED"
     };
-    receipts.push(
-        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
-            transaction_id: transaction.id,
-            receipt_kind: launch_receipt_kind,
-            payload_json: &serde_json::to_string(&json!({
-                "task_id": task_id,
-                "task_status": task_after_spawn.status.clone(),
-                "status_message": task_after_spawn.status_message.clone(),
-                "spawn_error": spawn_error.clone(),
-            }))
-            .context("failed to serialize forge launch receipt payload")?,
-            status: "recorded",
-        })?,
-    );
+    let checkpoint_title = Some(lane.checkpoint_title(&dispatch.issue_id));
+    let checkpoint_stable_level = lane.checkpoint_stable_level().to_string();
+    let checkpoint_human_continuity_bus = if spawn_error.is_some() {
+        "still required for operator recovery".to_string()
+    } else {
+        "reduced but not eliminated".to_string()
+    };
+    let checkpoint_selected_trunk = Some(lane.selected_trunk().to_string());
+    let checkpoint_project_dir = Some(dispatch.project_root.clone());
+    let forge_task_created_payload = serde_json::to_string(&json!({
+        "task_id": task_id,
+        "task_status": task.status,
+        "task_command": task.command,
+        "worktree_path": task.working_dir,
+    }))
+    .context("failed to serialize forge task receipt payload")?;
+    let forge_launch_payload = serde_json::to_string(&json!({
+        "task_id": task_id,
+        "task_status": task_after_spawn.status.clone(),
+        "status_message": task_after_spawn.status_message.clone(),
+        "spawn_error": spawn_error.clone(),
+    }))
+    .context("failed to serialize forge launch receipt payload")?;
 
-    let checkpoint_report = write_runtime_checkpoint(
-        data_store,
-        NotaCheckpointRequest {
-            title: Some(lane.checkpoint_title(&dispatch.issue_id)),
-            stable_level: lane.checkpoint_stable_level().to_string(),
-            landed: lane.build_checkpoint_landed_items(
+    let (updated_transaction, allocation, staged_receipts, checkpoint_report) = data_store
+        .with_immediate_transaction(|tx| {
+            let mut transaction = tx.update_nota_runtime_transaction(
                 transaction.id,
-                &allocation,
-                task_id,
-                &dispatch,
-                &spawn_error,
-            ),
-            remaining: lane.build_checkpoint_remaining_items(allocation.id, task_id, &spawn_error),
-            human_continuity_bus: if spawn_error.is_some() {
-                "still required for operator recovery".to_string()
-            } else {
-                "reduced but not eliminated".to_string()
-            },
-            selected_trunk: Some(lane.selected_trunk().to_string()),
-            next_start_hints: lane.build_checkpoint_hints(
+                NotaRuntimeTransactionUpdate {
+                    status: "task_created",
+                    forge_task_id: Some(task_id),
+                    cadence_checkpoint_id: None,
+                },
+            )?;
+            let mut staged_receipts = Vec::new();
+            let mut allocation = tx.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+                allocator_role: "nota",
+                allocator_surface: lane.allocator_surface(),
+                allocation_kind: lane.transaction_kind(),
+                source_transaction_id: transaction.id,
+                lineage_ref: &lineage_ref,
+                child_execution_kind: "forge_task",
+                child_execution_ref: &child_execution_ref,
+                return_target_kind: "nota_runtime_transaction",
+                return_target_ref: &return_target_ref,
+                escalation_target_kind: "nota_runtime_transaction",
+                escalation_target_ref: &return_target_ref,
+                status: "task_created",
+                payload_json: &allocation_payload_json,
+            })?;
+            staged_receipts.push(tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+                transaction_id: transaction.id,
+                receipt_kind: "FORGE_TASK_CREATED",
+                payload_json: &forge_task_created_payload,
+                status: "recorded",
+            })?);
+            staged_receipts.push(
+                tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+                    transaction_id: transaction.id,
+                    receipt_kind: "ALLOCATION_RECORDED",
+                    payload_json: &serde_json::to_string(&json!({
+                        "allocation_id": allocation.id,
+                        "allocator_role": allocation.allocator_role,
+                        "allocator_surface": allocation.allocator_surface,
+                        "allocation_kind": allocation.allocation_kind,
+                        "source_transaction_id": allocation.source_transaction_id,
+                        "lineage_ref": allocation.lineage_ref,
+                        "child_execution_kind": allocation.child_execution_kind,
+                        "child_execution_ref": allocation.child_execution_ref,
+                        "return_target_kind": allocation.return_target_kind,
+                        "return_target_ref": allocation.return_target_ref,
+                        "escalation_target_kind": allocation.escalation_target_kind,
+                        "escalation_target_ref": allocation.escalation_target_ref,
+                        "status": allocation.status,
+                    }))
+                    .context("failed to serialize allocation receipt payload in transaction")?,
+                    status: "recorded",
+                })?,
+            );
+
+            transaction = tx.update_nota_runtime_transaction(
                 transaction.id,
+                NotaRuntimeTransactionUpdate {
+                    status: transaction_status,
+                    forge_task_id: Some(task_id),
+                    cadence_checkpoint_id: None,
+                },
+            )?;
+            allocation = tx.update_nota_runtime_allocation(
                 allocation.id,
-                task_id,
-                &spawn_error,
-            ),
-            project_dir: Some(dispatch.project_root.clone()),
-        },
-    )?;
-    transaction = data_store.update_nota_runtime_transaction(
-        transaction.id,
-        NotaRuntimeTransactionUpdate {
-            status: if spawn_error.is_some() {
-                "checkpointed_with_spawn_failure"
-            } else {
-                "checkpointed"
-            },
-            forge_task_id: Some(task_id),
-            cadence_checkpoint_id: Some(checkpoint_report.checkpoint.cadence_object.id),
-        },
-    )?;
-    receipts.push(
-        data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
-            transaction_id: transaction.id,
-            receipt_kind: "CADENCE_CHECKPOINT_WRITTEN",
-            payload_json: &serde_json::to_string(&json!({
-                "checkpoint_id": checkpoint_report.checkpoint.cadence_object.id,
-                "selected_trunk": checkpoint_report.checkpoint.payload.selected_trunk,
-            }))
-            .context("failed to serialize checkpoint receipt payload")?,
-            status: "recorded",
-        })?,
-    );
+                NotaRuntimeAllocationUpdate {
+                    status: transaction_status,
+                    payload_json: None,
+                },
+            )?;
+            staged_receipts.push(tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+                transaction_id: transaction.id,
+                receipt_kind: launch_receipt_kind,
+                payload_json: &forge_launch_payload,
+                status: "recorded",
+            })?);
 
-    refresh_runtime_invariants(data_store)?;
+            let checkpoint_report = write_runtime_checkpoint_in_transaction(
+                tx,
+                NotaCheckpointRequest {
+                    title: checkpoint_title.clone(),
+                    stable_level: checkpoint_stable_level.clone(),
+                    landed: lane.build_checkpoint_landed_items(
+                        transaction.id,
+                        &allocation,
+                        task_id,
+                        &dispatch,
+                        &spawn_error,
+                    ),
+                    remaining: lane.build_checkpoint_remaining_items(
+                        allocation.id,
+                        task_id,
+                        &spawn_error,
+                    ),
+                    human_continuity_bus: checkpoint_human_continuity_bus.clone(),
+                    selected_trunk: checkpoint_selected_trunk.clone(),
+                    next_start_hints: lane.build_checkpoint_hints(
+                        transaction.id,
+                        allocation.id,
+                        task_id,
+                        &spawn_error,
+                    ),
+                    project_dir: checkpoint_project_dir.clone(),
+                },
+            )?;
+            transaction = tx.update_nota_runtime_transaction(
+                transaction.id,
+                NotaRuntimeTransactionUpdate {
+                    status: if spawn_error.is_some() {
+                        "checkpointed_with_spawn_failure"
+                    } else {
+                        "checkpointed"
+                    },
+                    forge_task_id: Some(task_id),
+                    cadence_checkpoint_id: Some(checkpoint_report.checkpoint.cadence_object.id),
+                },
+            )?;
+            staged_receipts.push(
+                tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+                    transaction_id: transaction.id,
+                    receipt_kind: "CADENCE_CHECKPOINT_WRITTEN",
+                    payload_json: &serde_json::to_string(&json!({
+                        "checkpoint_id": checkpoint_report.checkpoint.cadence_object.id,
+                        "selected_trunk": checkpoint_report.checkpoint.payload.selected_trunk,
+                    }))
+                    .context("failed to serialize checkpoint receipt payload in transaction")?,
+                    status: "recorded",
+                })?,
+            );
+
+            Ok((transaction, allocation, staged_receipts, checkpoint_report))
+        })?;
+
+    transaction = updated_transaction;
+    receipts.extend(staged_receipts);
+    sync_runtime_truth(data_store, Some(transaction.id))?;
 
     Ok(NotaDoDispatchReport {
         transaction,
@@ -1286,16 +1316,16 @@ pub fn list_nota_runtime_transactions(
 pub fn list_nota_runtime_allocations(
     data_store: &DataStore,
 ) -> Result<NotaRuntimeAllocationsReport> {
-    let stored_allocations = materialize_terminal_allocation_outcomes(data_store)?;
-    let allocations = stored_allocations
+    let projected_allocations = project_terminal_allocation_outcomes(data_store)?;
+    let allocations = projected_allocations
         .iter()
         .cloned()
         .map(project_nota_runtime_allocation_read_record)
         .collect();
     Ok(NotaRuntimeAllocationsReport {
-        allocation_count: stored_allocations.len(),
+        allocation_count: projected_allocations.len(),
         allocations,
-        stored_allocations,
+        stored_allocations: projected_allocations,
     })
 }
 
@@ -1320,8 +1350,6 @@ pub fn list_nota_runtime_receipts(
     data_store: &DataStore,
     transaction_id: Option<i64>,
 ) -> Result<NotaRuntimeReceiptsReport> {
-    materialize_terminal_receipt_backflow(data_store, transaction_id)?;
-    materialize_runtime_closure_acceptance_receipt_backflow(data_store, transaction_id)?;
     let receipts = data_store.list_nota_runtime_receipts(transaction_id)?;
     Ok(NotaRuntimeReceiptsReport {
         receipt_count: receipts.len(),
@@ -1330,29 +1358,7 @@ pub fn list_nota_runtime_receipts(
     })
 }
 
-fn materialize_terminal_receipt_backflow(
-    data_store: &DataStore,
-    transaction_id: Option<i64>,
-) -> Result<()> {
-    for allocation in data_store
-        .list_nota_runtime_allocations()?
-        .into_iter()
-        .filter(|allocation| {
-            transaction_id
-                .map(|requested_id| allocation.source_transaction_id == requested_id)
-                .unwrap_or(true)
-        })
-    {
-        materialize_terminal_allocation_outcome(data_store, allocation)?;
-    }
-
-    Ok(())
-}
-
-fn materialize_runtime_closure_acceptance_receipt_backflow(
-    data_store: &DataStore,
-    transaction_id: Option<i64>,
-) -> Result<()> {
+fn sync_runtime_closure_truth(data_store: &DataStore, transaction_id: Option<i64>) -> Result<()> {
     let checkpoints = list_runtime_checkpoints(data_store)?;
     let Some(current_checkpoint) = checkpoints
         .checkpoints
@@ -1362,7 +1368,7 @@ fn materialize_runtime_closure_acceptance_receipt_backflow(
         return Ok(());
     };
 
-    let allocations = materialize_terminal_allocation_outcomes(data_store)?;
+    let allocations = project_terminal_allocation_outcomes(data_store)?;
     let Some(candidate) = latest_runtime_closure_checkpoint_candidate(data_store, &allocations)?
     else {
         return Ok(());
@@ -1379,36 +1385,23 @@ fn materialize_runtime_closure_acceptance_receipt_backflow(
         return Ok(());
     }
 
-    if let Err(error) =
-        sync_runtime_closure_checkpoint_to_transaction(data_store, &candidate, current_checkpoint)
-    {
-        if !is_readonly_sqlite_error(&error) {
-            return Err(error);
-        }
-
-        tracing::warn!(
-            allocation_id = candidate.allocation_id,
-            transaction_id = candidate.source_transaction_id,
-            checkpoint_id = current_checkpoint.cadence_object.id,
-            error = %error,
-            "Skipping runtime closure acceptance receipt backflow on read-only database"
-        );
-    }
-
+    data_store.with_immediate_transaction(|tx| {
+        sync_runtime_closure_checkpoint_to_transaction(tx, &candidate, current_checkpoint)
+    })?;
     Ok(())
 }
 
-fn materialize_terminal_allocation_outcomes(
+fn project_terminal_allocation_outcomes(
     data_store: &DataStore,
 ) -> Result<Vec<StoredNotaRuntimeAllocation>> {
     data_store
         .list_nota_runtime_allocations()?
         .into_iter()
-        .map(|allocation| materialize_terminal_allocation_outcome(data_store, allocation))
+        .map(|allocation| project_terminal_allocation_outcome(data_store, allocation))
         .collect()
 }
 
-fn materialize_terminal_allocation_outcome(
+fn project_terminal_allocation_outcome(
     data_store: &DataStore,
     allocation: StoredNotaRuntimeAllocation,
 ) -> Result<StoredNotaRuntimeAllocation> {
@@ -1456,13 +1449,64 @@ fn materialize_terminal_allocation_outcome(
         })?;
     }
 
-    persist_terminal_allocation_projection(data_store, &allocation, &projected, &outcome)?;
-
     Ok(projected)
 }
 
-fn persist_terminal_allocation_projection(
+fn reconcile_terminal_allocation_outcomes(
     data_store: &DataStore,
+    transaction_id: Option<i64>,
+) -> Result<()> {
+    for stored_allocation in data_store
+        .list_nota_runtime_allocations()?
+        .into_iter()
+        .filter(|allocation| {
+            transaction_id
+                .map(|requested_id| allocation.source_transaction_id == requested_id)
+                .unwrap_or(true)
+        })
+    {
+        let projected_allocation =
+            project_terminal_allocation_outcome(data_store, stored_allocation.clone())?;
+        let payload: NotaDoAllocationPayload =
+            serde_json::from_str(&projected_allocation.payload_json).with_context(|| {
+                format!(
+                    "failed to parse projected nota allocation payload for allocation {}",
+                    projected_allocation.id
+                )
+            })?;
+        let Some(outcome) = payload.terminal_outcome.as_ref() else {
+            continue;
+        };
+        if stored_allocation.status == projected_allocation.status
+            && stored_allocation.payload_json == projected_allocation.payload_json
+            && has_allocation_terminal_outcome_receipt(
+                data_store,
+                stored_allocation.source_transaction_id,
+                &build_allocation_terminal_outcome_receipt_payload(
+                    &projected_allocation,
+                    &projected_allocation.status,
+                    outcome,
+                ),
+            )?
+        {
+            continue;
+        }
+
+        data_store.with_immediate_transaction(|tx| {
+            persist_terminal_allocation_projection(
+                tx,
+                &stored_allocation,
+                &projected_allocation,
+                outcome,
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn persist_terminal_allocation_projection(
+    transaction: &DataStoreTransaction<'_>,
     stored_allocation: &StoredNotaRuntimeAllocation,
     projected_allocation: &StoredNotaRuntimeAllocation,
     outcome: &NotaDoAllocationTerminalOutcome,
@@ -1470,19 +1514,13 @@ fn persist_terminal_allocation_projection(
     if stored_allocation.status != projected_allocation.status
         || stored_allocation.payload_json != projected_allocation.payload_json
     {
-        if let Err(error) = data_store.update_nota_runtime_allocation(
+        transaction.update_nota_runtime_allocation(
             stored_allocation.id,
             NotaRuntimeAllocationUpdate {
                 status: &projected_allocation.status,
                 payload_json: Some(&projected_allocation.payload_json),
             },
-        ) {
-            ignore_readonly_allocation_persistence_error(
-                error,
-                stored_allocation,
-                "update_terminal_outcome",
-            )?;
-        }
+        )?;
     }
 
     let receipt_payload = build_allocation_terminal_outcome_receipt_payload(
@@ -1490,11 +1528,15 @@ fn persist_terminal_allocation_projection(
         &projected_allocation.status,
         outcome,
     );
-    let receipt_recorded = has_allocation_terminal_outcome_receipt(
-        data_store,
-        stored_allocation.source_transaction_id,
-        &receipt_payload,
-    )?;
+    let receipt_recorded = transaction
+        .list_nota_runtime_receipts(Some(stored_allocation.source_transaction_id))?
+        .into_iter()
+        .filter(|receipt| receipt.receipt_kind == ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND)
+        .filter_map(|receipt| {
+            serde_json::from_str::<AllocationTerminalOutcomeReceiptPayload>(&receipt.payload_json)
+                .ok()
+        })
+        .any(|payload| payload == receipt_payload);
     if !receipt_recorded {
         let receipt_payload_json = serde_json::to_string(&receipt_payload).with_context(|| {
             format!(
@@ -1502,49 +1544,15 @@ fn persist_terminal_allocation_projection(
                 stored_allocation.id
             )
         })?;
-        if let Err(error) = data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+        transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
             transaction_id: stored_allocation.source_transaction_id,
             receipt_kind: ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
             payload_json: &receipt_payload_json,
             status: "recorded",
-        }) {
-            ignore_readonly_allocation_persistence_error(
-                error,
-                stored_allocation,
-                "append_terminal_outcome_receipt",
-            )?;
-        }
+        })?;
     }
 
     Ok(())
-}
-
-fn ignore_readonly_allocation_persistence_error(
-    error: anyhow::Error,
-    allocation: &StoredNotaRuntimeAllocation,
-    operation: &'static str,
-) -> Result<()> {
-    if !is_readonly_sqlite_error(&error) {
-        return Err(error);
-    }
-
-    tracing::warn!(
-        allocation_id = allocation.id,
-        lineage_ref = %allocation.lineage_ref,
-        operation,
-        error = %error,
-        "Skipping NOTA allocation read-surface persistence on read-only database"
-    );
-    Ok(())
-}
-
-fn is_readonly_sqlite_error(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .to_string()
-            .to_ascii_lowercase()
-            .contains("readonly database")
-    })
 }
 
 fn build_allocation_terminal_outcome_receipt_payload(
@@ -1587,6 +1595,13 @@ fn has_allocation_terminal_outcome_receipt(
     }
 
     Ok(false)
+}
+
+fn sync_runtime_truth(data_store: &DataStore, transaction_id: Option<i64>) -> Result<()> {
+    reconcile_terminal_allocation_outcomes(data_store, transaction_id)?;
+    sync_runtime_closure_truth(data_store, transaction_id)?;
+    materialize_current_runtime_human_round(data_store)?;
+    refresh_runtime_invariants(data_store).map(|_| ())
 }
 
 fn build_terminal_allocation_outcome<'a>(
@@ -1868,11 +1883,10 @@ pub fn materialize_runtime_closure_checkpoint(
 
     if checkpoint_request_matches_current(current_checkpoint.as_ref(), &candidate.request) {
         if let Some(current_checkpoint) = current_checkpoint.as_ref() {
-            sync_runtime_closure_checkpoint_to_transaction(
-                data_store,
-                &candidate,
-                current_checkpoint,
-            )?;
+            data_store.with_immediate_transaction(|tx| {
+                sync_runtime_closure_checkpoint_to_transaction(tx, &candidate, current_checkpoint)
+            })?;
+            sync_runtime_truth(data_store, Some(candidate.source_transaction_id))?;
         }
         return Ok(NotaRuntimeClosureCheckpointMaterializationReport {
             status: "already_current".to_string(),
@@ -1886,16 +1900,19 @@ pub fn materialize_runtime_closure_checkpoint(
     let source_recommendation = candidate.request.clone();
     let source_transaction_id = candidate.source_transaction_id;
     let write_report = write_runtime_checkpoint(data_store, candidate.request)?;
-    sync_runtime_closure_checkpoint_to_transaction(
-        data_store,
-        &RecommendedCheckpointCandidate {
-            kind: candidate.kind,
-            allocation_id: candidate.allocation_id,
-            source_transaction_id,
-            request: source_recommendation.clone(),
-        },
-        &write_report.checkpoint,
-    )?;
+    data_store.with_immediate_transaction(|tx| {
+        sync_runtime_closure_checkpoint_to_transaction(
+            tx,
+            &RecommendedCheckpointCandidate {
+                kind: candidate.kind,
+                allocation_id: candidate.allocation_id,
+                source_transaction_id,
+                request: source_recommendation.clone(),
+            },
+            &write_report.checkpoint,
+        )
+    })?;
+    sync_runtime_truth(data_store, Some(source_transaction_id))?;
     Ok(NotaRuntimeClosureCheckpointMaterializationReport {
         status: "applied".to_string(),
         checkpoint: Some(write_report.checkpoint),
@@ -1930,38 +1947,38 @@ fn latest_runtime_closure_checkpoint_candidate(
 }
 
 fn sync_runtime_closure_checkpoint_to_transaction(
-    data_store: &DataStore,
+    transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
-    let Some(transaction) =
-        data_store.get_nota_runtime_transaction(candidate.source_transaction_id)?
+    let Some(runtime_transaction) =
+        transaction.get_nota_runtime_transaction(candidate.source_transaction_id)?
     else {
         return Ok(());
     };
 
-    if transaction.cadence_checkpoint_id != Some(checkpoint.cadence_object.id) {
-        data_store.update_nota_runtime_transaction(
-            transaction.id,
+    if runtime_transaction.cadence_checkpoint_id != Some(checkpoint.cadence_object.id) {
+        transaction.update_nota_runtime_transaction(
+            runtime_transaction.id,
             NotaRuntimeTransactionUpdate {
-                status: &transaction.status,
-                forge_task_id: transaction.forge_task_id,
+                status: &runtime_transaction.status,
+                forge_task_id: runtime_transaction.forge_task_id,
                 cadence_checkpoint_id: Some(checkpoint.cadence_object.id),
             },
         )?;
     }
 
-    ensure_checkpoint_written_receipt(data_store, transaction.id, checkpoint)?;
-    ensure_runtime_closure_acceptance_receipt(data_store, candidate, checkpoint)?;
-    ensure_runtime_acceptance_bundle(data_store, candidate, checkpoint)
+    ensure_checkpoint_written_receipt(transaction, runtime_transaction.id, checkpoint)?;
+    ensure_runtime_closure_acceptance_receipt(transaction, candidate, checkpoint)?;
+    ensure_runtime_acceptance_bundle(transaction, candidate, checkpoint)
 }
 
 fn ensure_checkpoint_written_receipt(
-    data_store: &DataStore,
+    transaction: &DataStoreTransaction<'_>,
     transaction_id: i64,
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
-    let receipts = data_store.list_nota_runtime_receipts(Some(transaction_id))?;
+    let receipts = transaction.list_nota_runtime_receipts(Some(transaction_id))?;
     let has_receipt = receipts.into_iter().any(|receipt| {
         if receipt.receipt_kind != CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND {
             return false;
@@ -1979,7 +1996,7 @@ fn ensure_checkpoint_written_receipt(
         return Ok(());
     }
 
-    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+    transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
         transaction_id,
         receipt_kind: CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
         payload_json: &serde_json::to_string(&json!({
@@ -1994,33 +2011,33 @@ fn ensure_checkpoint_written_receipt(
 }
 
 fn ensure_runtime_closure_acceptance_receipt(
-    data_store: &DataStore,
+    transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
     match candidate.kind {
         RecommendedCheckpointCandidateKind::AgentEscalationContinuity => Ok(()),
         RecommendedCheckpointCandidateKind::AgentReturnAcceptance => {
-            ensure_agent_return_accepted_receipt(data_store, candidate, checkpoint)
+            ensure_agent_return_accepted_receipt(transaction, candidate, checkpoint)
         }
         RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
-            ensure_dev_return_accepted_receipt(data_store, candidate, checkpoint)?;
-            ensure_dev_return_review_ready_receipt(data_store, candidate, checkpoint)
+            ensure_dev_return_accepted_receipt(transaction, candidate, checkpoint)?;
+            ensure_dev_return_review_ready_receipt(transaction, candidate, checkpoint)
         }
         RecommendedCheckpointCandidateKind::DevReturnClosure => Ok(()),
     }
 }
 
 fn ensure_runtime_acceptance_bundle(
-    data_store: &DataStore,
+    transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
-    let Some(bundle) = build_runtime_acceptance_bundle(candidate, checkpoint, data_store)? else {
+    let Some(bundle) = build_runtime_acceptance_bundle(candidate, checkpoint, transaction)? else {
         return Ok(());
     };
 
-    let existing_current = data_store
+    let existing_current = transaction
         .list_cadence_objects_by_kind(CADENCE_ACCEPTANCE_BUNDLE_KIND)?
         .into_iter()
         .find(|object| object.is_current)
@@ -2038,7 +2055,7 @@ fn ensure_runtime_acceptance_bundle(
     let summary = build_acceptance_bundle_summary(&bundle);
     let payload_json =
         serde_json::to_string(&bundle).context("failed to serialize acceptance bundle payload")?;
-    let cadence_object = data_store.insert_cadence_object(NewCadenceObject {
+    let cadence_object = transaction.insert_cadence_object(NewCadenceObject {
         cadence_kind: CADENCE_ACCEPTANCE_BUNDLE_KIND,
         title: &title,
         summary: &summary,
@@ -2056,19 +2073,21 @@ fn ensure_runtime_acceptance_bundle(
         },
         is_current: true,
     })?;
-    data_store.insert_cadence_link(NewCadenceLink {
+    transaction.insert_cadence_link(NewCadenceLink {
         src_cadence_object_id: checkpoint.cadence_object.id,
         dst_cadence_object_id: cadence_object.id,
         relation_type: "acceptance_bundle",
         status: "active",
     })?;
-    record_acceptance_recorded_event(
-        data_store,
-        checkpoint.cadence_object.id,
-        cadence_object.id,
-        &bundle.lineage_ref,
-        &summary,
-    )?;
+    transaction.insert_anti_zeno_event(crate::core::data_store::NewAntiZenoEvent {
+        checkpoint_id: Some(checkpoint.cadence_object.id),
+        acceptance_bundle_id: Some(cadence_object.id),
+        event_kind: "acceptance_recorded",
+        boundary_ref: &bundle.lineage_ref,
+        budget_axis: "semantic",
+        event_weight: 1,
+        summary: &summary,
+    })?;
 
     Ok(())
 }
@@ -2076,9 +2095,9 @@ fn ensure_runtime_acceptance_bundle(
 fn build_runtime_acceptance_bundle(
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
-    data_store: &DataStore,
+    transaction: &DataStoreTransaction<'_>,
 ) -> Result<Option<CadenceAcceptanceBundlePayload>> {
-    let Some(allocation) = data_store
+    let Some(allocation) = transaction
         .list_nota_runtime_allocations()?
         .into_iter()
         .find(|allocation| allocation.id == candidate.allocation_id)
@@ -2099,7 +2118,7 @@ fn build_runtime_acceptance_bundle(
         return Ok(None);
     }
 
-    let receipts = data_store.list_nota_runtime_receipts(Some(candidate.source_transaction_id))?;
+    let receipts = transaction.list_nota_runtime_receipts(Some(candidate.source_transaction_id))?;
     let latest_review = latest_dev_return_review_recorded_for_boundary(&receipts, &allocation)?;
     let latest_integrate =
         latest_dev_return_integrate_recorded_for_boundary(&receipts, &allocation)?;
@@ -2184,11 +2203,11 @@ fn build_acceptance_bundle_summary(bundle: &CadenceAcceptanceBundlePayload) -> S
 }
 
 fn ensure_agent_return_accepted_receipt(
-    data_store: &DataStore,
+    transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
-    let Some(allocation) = data_store
+    let Some(allocation) = transaction
         .list_nota_runtime_allocations()?
         .into_iter()
         .find(|allocation| allocation.id == candidate.allocation_id)
@@ -2222,7 +2241,7 @@ fn ensure_agent_return_accepted_receipt(
         target_kind: outcome.target_kind.clone(),
         target_ref: outcome.target_ref.clone(),
     };
-    let has_receipt = data_store
+    let has_receipt = transaction
         .list_nota_runtime_receipts(Some(candidate.source_transaction_id))?
         .into_iter()
         .any(|receipt| {
@@ -2241,7 +2260,7 @@ fn ensure_agent_return_accepted_receipt(
         return Ok(());
     }
 
-    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+    transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
         transaction_id: candidate.source_transaction_id,
         receipt_kind: AGENT_RETURN_ACCEPTED_RECEIPT_KIND,
         payload_json: &serde_json::to_string(&receipt_payload)
@@ -2253,11 +2272,11 @@ fn ensure_agent_return_accepted_receipt(
 }
 
 fn ensure_dev_return_accepted_receipt(
-    data_store: &DataStore,
+    transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
-    let Some(allocation) = data_store
+    let Some(allocation) = transaction
         .list_nota_runtime_allocations()?
         .into_iter()
         .find(|allocation| allocation.id == candidate.allocation_id)
@@ -2288,7 +2307,7 @@ fn ensure_dev_return_accepted_receipt(
         target_kind: outcome.target_kind.clone(),
         target_ref: outcome.target_ref.clone(),
     };
-    let has_receipt = data_store
+    let has_receipt = transaction
         .list_nota_runtime_receipts(Some(candidate.source_transaction_id))?
         .into_iter()
         .any(|receipt| {
@@ -2307,7 +2326,7 @@ fn ensure_dev_return_accepted_receipt(
         return Ok(());
     }
 
-    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+    transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
         transaction_id: candidate.source_transaction_id,
         receipt_kind: DEV_RETURN_ACCEPTED_RECEIPT_KIND,
         payload_json: &serde_json::to_string(&receipt_payload)
@@ -2319,11 +2338,11 @@ fn ensure_dev_return_accepted_receipt(
 }
 
 fn ensure_dev_return_review_ready_receipt(
-    data_store: &DataStore,
+    transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
 ) -> Result<()> {
-    let Some(allocation) = data_store
+    let Some(allocation) = transaction
         .list_nota_runtime_allocations()?
         .into_iter()
         .find(|allocation| allocation.id == candidate.allocation_id)
@@ -2357,7 +2376,7 @@ fn ensure_dev_return_review_ready_receipt(
             outcome,
         ),
     };
-    let has_receipt = data_store
+    let has_receipt = transaction
         .list_nota_runtime_receipts(Some(candidate.source_transaction_id))?
         .into_iter()
         .any(|receipt| {
@@ -2376,7 +2395,7 @@ fn ensure_dev_return_review_ready_receipt(
         return Ok(());
     }
 
-    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+    transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
         transaction_id: candidate.source_transaction_id,
         receipt_kind: DEV_RETURN_REVIEW_READY_RECEIPT_KIND,
         payload_json: &serde_json::to_string(&receipt_payload)
@@ -2393,6 +2412,7 @@ pub fn record_dev_return_review(
 ) -> Result<NotaDevReturnReviewReport> {
     let verdict = normalize_dev_return_review_verdict(&request.verdict)?;
     let summary = normalize_optional(request.summary.as_deref());
+    sync_runtime_truth(data_store, Some(request.transaction_id))?;
     let checkpoints = list_runtime_checkpoints(data_store)?;
     let current_checkpoint = checkpoints
         .checkpoints
@@ -2534,45 +2554,50 @@ pub fn record_dev_return_review(
         );
     }
 
-    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
-        transaction_id: request.transaction_id,
-        receipt_kind: DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
-        payload_json: &serde_json::to_string(&receipt_payload)
-            .context("failed to serialize dev review recorded receipt payload")?,
-        status: "recorded",
-    })?;
-
-    let receipt = data_store
-        .list_nota_runtime_receipts(Some(request.transaction_id))?
-        .into_iter()
-        .rev()
-        .find(|receipt| {
-            receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
-                && serde_json::from_str::<DevReturnReviewRecordedReceiptPayload>(
-                    &receipt.payload_json,
-                )
-                .map(|payload| payload == receipt_payload)
-                .unwrap_or(false)
-        })
-        .context("dev review recorded receipt should be readable after append")?;
-
-    if verdict == DEV_RETURN_REVIEW_CHANGES_REQUESTED_VERDICT {
-        let repair_summary = summary.clone().unwrap_or_else(|| {
+    let receipt_payload_json = serde_json::to_string(&receipt_payload)
+        .context("failed to serialize dev review recorded receipt payload")?;
+    let repair_summary = (verdict == DEV_RETURN_REVIEW_CHANGES_REQUESTED_VERDICT).then(|| {
+        summary.clone().unwrap_or_else(|| {
             format!(
                 "Review requested repair for returned dev boundary {} on checkpoint {}.",
                 allocation.lineage_ref, current_checkpoint.cadence_object.id
             )
-        });
-        record_repair_requested_event(
-            data_store,
-            Some(current_checkpoint.cadence_object.id),
-            None,
-            &allocation.lineage_ref,
-            &repair_summary,
-        )?;
-    }
+        })
+    });
+    let receipt = data_store.with_immediate_transaction(|tx| {
+        tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: request.transaction_id,
+            receipt_kind: DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
+            payload_json: &receipt_payload_json,
+            status: "recorded",
+        })?;
 
-    refresh_runtime_invariants(data_store)?;
+        if let Some(repair_summary) = repair_summary.as_deref() {
+            tx.insert_anti_zeno_event(crate::core::data_store::NewAntiZenoEvent {
+                checkpoint_id: Some(current_checkpoint.cadence_object.id),
+                acceptance_bundle_id: None,
+                event_kind: "repair_requested",
+                boundary_ref: &allocation.lineage_ref,
+                budget_axis: "repair",
+                event_weight: 1,
+                summary: repair_summary,
+            })?;
+        }
+
+        tx.list_nota_runtime_receipts(Some(request.transaction_id))?
+            .into_iter()
+            .rev()
+            .find(|receipt| {
+                receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+                    && serde_json::from_str::<DevReturnReviewRecordedReceiptPayload>(
+                        &receipt.payload_json,
+                    )
+                    .map(|payload| payload == receipt_payload)
+                    .unwrap_or(false)
+            })
+            .context("dev review recorded receipt should be readable after append")
+    })?;
+    sync_runtime_truth(data_store, Some(request.transaction_id))?;
 
     Ok(NotaDevReturnReviewReport {
         status: "recorded".to_string(),
@@ -2588,6 +2613,7 @@ pub fn record_dev_return_integration(
 ) -> Result<NotaDevReturnIntegrateReport> {
     let state = normalize_dev_return_integrate_state(&request.state)?;
     let summary = normalize_optional(request.summary.as_deref());
+    sync_runtime_truth(data_store, Some(request.transaction_id))?;
     let checkpoints = list_runtime_checkpoints(data_store)?;
     let current_checkpoint = checkpoints
         .checkpoints
@@ -2750,45 +2776,50 @@ pub fn record_dev_return_integration(
         }
     }
 
-    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
-        transaction_id: request.transaction_id,
-        receipt_kind: DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND,
-        payload_json: &serde_json::to_string(&receipt_payload)
-            .context("failed to serialize dev integrate recorded receipt payload")?,
-        status: "recorded",
-    })?;
-
-    let receipt = data_store
-        .list_nota_runtime_receipts(Some(request.transaction_id))?
-        .into_iter()
-        .rev()
-        .find(|receipt| {
-            receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
-                && serde_json::from_str::<DevReturnIntegrateRecordedReceiptPayload>(
-                    &receipt.payload_json,
-                )
-                .map(|payload| payload == receipt_payload)
-                .unwrap_or(false)
-        })
-        .context("dev integrate recorded receipt should be readable after append")?;
-
-    if state == DEV_RETURN_INTEGRATE_REPAIR_REQUESTED_STATE {
-        let repair_summary = summary.clone().unwrap_or_else(|| {
+    let receipt_payload_json = serde_json::to_string(&receipt_payload)
+        .context("failed to serialize dev integrate recorded receipt payload")?;
+    let repair_summary = (state == DEV_RETURN_INTEGRATE_REPAIR_REQUESTED_STATE).then(|| {
+        summary.clone().unwrap_or_else(|| {
             format!(
                 "Integration requested repair for returned dev boundary {} on checkpoint {}.",
                 allocation.lineage_ref, current_checkpoint.cadence_object.id
             )
-        });
-        record_repair_requested_event(
-            data_store,
-            Some(current_checkpoint.cadence_object.id),
-            None,
-            &allocation.lineage_ref,
-            &repair_summary,
-        )?;
-    }
+        })
+    });
+    let receipt = data_store.with_immediate_transaction(|tx| {
+        tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: request.transaction_id,
+            receipt_kind: DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND,
+            payload_json: &receipt_payload_json,
+            status: "recorded",
+        })?;
 
-    refresh_runtime_invariants(data_store)?;
+        if let Some(repair_summary) = repair_summary.as_deref() {
+            tx.insert_anti_zeno_event(crate::core::data_store::NewAntiZenoEvent {
+                checkpoint_id: Some(current_checkpoint.cadence_object.id),
+                acceptance_bundle_id: None,
+                event_kind: "repair_requested",
+                boundary_ref: &allocation.lineage_ref,
+                budget_axis: "repair",
+                event_weight: 1,
+                summary: repair_summary,
+            })?;
+        }
+
+        tx.list_nota_runtime_receipts(Some(request.transaction_id))?
+            .into_iter()
+            .rev()
+            .find(|receipt| {
+                receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+                    && serde_json::from_str::<DevReturnIntegrateRecordedReceiptPayload>(
+                        &receipt.payload_json,
+                    )
+                    .map(|payload| payload == receipt_payload)
+                    .unwrap_or(false)
+            })
+            .context("dev integrate recorded receipt should be readable after append")
+    })?;
+    sync_runtime_truth(data_store, Some(request.transaction_id))?;
 
     Ok(NotaDevReturnIntegrateReport {
         status: "recorded".to_string(),
@@ -2803,6 +2834,7 @@ pub fn record_dev_return_finalize(
     request: NotaDevReturnFinalizeRequest,
 ) -> Result<NotaDevReturnFinalizeReport> {
     let summary = normalize_optional(request.summary.as_deref());
+    sync_runtime_truth(data_store, Some(request.transaction_id))?;
     let checkpoints = list_runtime_checkpoints(data_store)?;
     let current_checkpoint = checkpoints
         .checkpoints
@@ -2946,29 +2978,30 @@ pub fn record_dev_return_finalize(
         );
     }
 
-    data_store.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
-        transaction_id: request.transaction_id,
-        receipt_kind: DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND,
-        payload_json: &serde_json::to_string(&receipt_payload)
-            .context("failed to serialize dev finalize recorded receipt payload")?,
-        status: "recorded",
+    let receipt_payload_json = serde_json::to_string(&receipt_payload)
+        .context("failed to serialize dev finalize recorded receipt payload")?;
+    let receipt = data_store.with_immediate_transaction(|tx| {
+        tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: request.transaction_id,
+            receipt_kind: DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND,
+            payload_json: &receipt_payload_json,
+            status: "recorded",
+        })?;
+
+        tx.list_nota_runtime_receipts(Some(request.transaction_id))?
+            .into_iter()
+            .rev()
+            .find(|receipt| {
+                receipt.receipt_kind == DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
+                    && serde_json::from_str::<DevReturnFinalizeRecordedReceiptPayload>(
+                        &receipt.payload_json,
+                    )
+                    .map(|payload| payload == receipt_payload)
+                    .unwrap_or(false)
+            })
+            .context("dev finalize recorded receipt should be readable after append")
     })?;
-
-    let receipt = data_store
-        .list_nota_runtime_receipts(Some(request.transaction_id))?
-        .into_iter()
-        .rev()
-        .find(|receipt| {
-            receipt.receipt_kind == DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
-                && serde_json::from_str::<DevReturnFinalizeRecordedReceiptPayload>(
-                    &receipt.payload_json,
-                )
-                .map(|payload| payload == receipt_payload)
-                .unwrap_or(false)
-        })
-        .context("dev finalize recorded receipt should be readable after append")?;
-
-    refresh_runtime_invariants(data_store)?;
+    sync_runtime_truth(data_store, Some(request.transaction_id))?;
 
     Ok(NotaDevReturnFinalizeReport {
         status: "recorded".to_string(),
@@ -3167,11 +3200,25 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
 
     let transaction_id = latest_allocation.source_transaction_id;
     let receipts = data_store.list_nota_runtime_receipts(Some(transaction_id))?;
-    let Some(latest_terminal_receipt) =
-        latest_terminal_receipt_for_allocation(&receipts, latest_allocation)?
-    else {
-        return Ok(None);
-    };
+    let terminal_receipt_fact = latest_terminal_receipt_for_allocation(&receipts, latest_allocation)?
+        .map(|receipt| {
+            format!(
+                "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
+                latest_allocation.id,
+                receipt.target_kind,
+                receipt.target_ref
+            )
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "Allocation {} already projects terminal outcome {} / {} back to {} {}, but the terminal outcome receipt still needs to be persisted by an explicit runtime write.",
+                latest_allocation.id,
+                outcome.boundary_kind,
+                outcome.child_execution_status,
+                outcome.target_kind,
+                outcome.target_ref
+            )
+        });
 
     let (kind, recommendation) = if outcome.boundary_kind == "return"
         && outcome.child_execution_status == "Done"
@@ -3200,12 +3247,7 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
                             outcome.target_kind,
                             outcome.target_ref
                         ),
-                        format!(
-                            "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
-                            latest_allocation.id,
-                            latest_terminal_receipt.target_kind,
-                            latest_terminal_receipt.target_ref
-                        ),
+                        terminal_receipt_fact.clone(),
                         format!(
                             "Runtime payloads keep execution_host `{}` and child_dispatch_role `{}` visible for transaction {} / allocation {}.",
                             allocation_payload.execution_host,
@@ -3291,12 +3333,7 @@ fn recommend_single_lane_allocator_checkpoint_candidate(
                             latest_allocation.child_execution_ref
                         ),
                         outcome_fact,
-                        format!(
-                            "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
-                            latest_allocation.id,
-                            latest_terminal_receipt.target_kind,
-                            latest_terminal_receipt.target_ref
-                        ),
+                        terminal_receipt_fact,
                         "Dedicated headless CLI and MCP read boundaries now expose the same runtime slice through `entrance nota overview` / `allocations` / `receipts` and `nota_runtime_overview` / `nota_runtime_allocations` / `nota_runtime_receipts`.".to_string(),
                     ],
                     remaining: vec![
@@ -3367,11 +3404,23 @@ fn recommend_dev_return_checkpoint_candidate(
 
     let transaction_id = latest_allocation.source_transaction_id;
     let receipts = data_store.list_nota_runtime_receipts(Some(transaction_id))?;
-    let Some(latest_terminal_receipt) =
-        latest_terminal_receipt_for_allocation(&receipts, latest_allocation)?
-    else {
-        return Ok(None);
-    };
+    let terminal_receipt_fact = latest_terminal_receipt_for_allocation(&receipts, latest_allocation)?
+        .map(|receipt| {
+            format!(
+                "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
+                latest_allocation.id,
+                receipt.target_kind,
+                receipt.target_ref
+            )
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "Allocation {} already projects terminal outcome return / Done back to {} {}, but the terminal outcome receipt still needs to be persisted by an explicit runtime write.",
+                latest_allocation.id,
+                outcome.target_kind,
+                outcome.target_ref
+            )
+        });
 
     let latest_review =
         latest_dev_return_review_recorded_for_boundary(&receipts, latest_allocation)?;
@@ -3487,12 +3536,7 @@ fn recommend_dev_return_checkpoint_candidate(
                 outcome.target_kind,
                 outcome.target_ref
             ),
-            format!(
-                "Transaction {transaction_id} receipt history includes terminal receipt {ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND} capturing allocation {} back to {} {}.",
-                latest_allocation.id,
-                latest_terminal_receipt.target_kind,
-                latest_terminal_receipt.target_ref
-            ),
+            terminal_receipt_fact,
             format!(
                 "Runtime payloads keep execution_host `{}` and child_dispatch_role `{}` visible for transaction {} / allocation {}.",
                 allocation_payload.execution_host,
@@ -4467,16 +4511,16 @@ mod tests {
         list_runtime_checkpoints, list_runtime_human_rounds,
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
-        write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
-        NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest,
-        NotaDispatchExecutionHost, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
-        AGENT_RETURN_ACCEPTED_RECEIPT_KIND, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
-        CADENCE_ACCEPTANCE_BUNDLE_KIND, CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
-        DEV_RETURN_ACCEPTED_RECEIPT_KIND, DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE,
-        DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND, DEV_RETURN_INTEGRATE_INTEGRATED_STATE,
-        DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND, DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE,
-        DEV_RETURN_REVIEW_APPROVED_VERDICT, DEV_RETURN_REVIEW_READY_RECEIPT_KIND,
-        DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
+        sync_runtime_truth, write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload,
+        NotaCheckpointRequest, NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest,
+        NotaDevReturnReviewRequest, NotaDispatchExecutionHost, NotaDoAllocationPayload,
+        NotaDoAllocationTerminalOutcome, AGENT_RETURN_ACCEPTED_RECEIPT_KIND,
+        ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND, CADENCE_ACCEPTANCE_BUNDLE_KIND,
+        CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND, DEV_RETURN_ACCEPTED_RECEIPT_KIND,
+        DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE, DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND,
+        DEV_RETURN_INTEGRATE_INTEGRATED_STATE, DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND,
+        DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE, DEV_RETURN_REVIEW_APPROVED_VERDICT,
+        DEV_RETURN_REVIEW_READY_RECEIPT_KIND, DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
     };
 
     struct TempDbPath {
@@ -4670,7 +4714,7 @@ mod tests {
     }
 
     #[test]
-    fn allocation_terminal_outcome_receipt_backfills_existing_terminal_state() -> Result<()> {
+    fn allocation_surface_does_not_backfill_terminal_receipt_on_read() -> Result<()> {
         let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
 
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
@@ -4739,44 +4783,36 @@ mod tests {
             report.allocations[0].child_dispatch_tool_name.as_deref(),
             Some("forge_dispatch_agent")
         );
-        let first_receipts = store.list_nota_runtime_receipts(Some(transaction.id))?;
-        assert_eq!(first_receipts.len(), 1);
+        let projected_payload: NotaDoAllocationPayload =
+            serde_json::from_str(&report.allocations[0].payload_json)?;
+        let projected_outcome = projected_payload
+            .terminal_outcome
+            .expect("allocation read surface should expose the existing terminal outcome");
         assert_eq!(
-            first_receipts[0].receipt_kind,
-            ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND
-        );
-        assert!(!first_receipts[0].created_at.is_empty());
-
-        let receipt_payload: AllocationTerminalOutcomeReceiptPayload =
-            serde_json::from_str(&first_receipts[0].payload_json)?;
-        assert_eq!(
-            receipt_payload,
-            AllocationTerminalOutcomeReceiptPayload {
-                allocation_id: report.allocations[0].id,
-                lineage_ref: report.allocations[0].lineage_ref.clone(),
+            projected_outcome,
+            NotaDoAllocationTerminalOutcome {
                 boundary_kind: "escalation".to_string(),
                 child_execution_status: "Blocked".to_string(),
                 child_execution_status_message: Some("add openai to Vault first".to_string()),
                 target_kind: "nota_runtime_transaction".to_string(),
                 target_ref: transaction.id.to_string(),
-                allocation_status: "escalated_blocked".to_string(),
             }
         );
+        assert!(store
+            .list_nota_runtime_receipts(Some(transaction.id))?
+            .is_empty());
 
         let second_report = list_nota_runtime_allocations(&store)?;
         assert_eq!(second_report.allocations[0].status, "escalated_blocked");
-        assert_eq!(
-            store
-                .list_nota_runtime_receipts(Some(transaction.id))?
-                .len(),
-            1
-        );
+        assert!(store
+            .list_nota_runtime_receipts(Some(transaction.id))?
+            .is_empty());
 
         Ok(())
     }
 
     #[test]
-    fn receipt_surface_backfills_terminal_outcome_without_allocation_preread() -> Result<()> {
+    fn receipt_surface_does_not_materialize_terminal_outcome_without_explicit_sync() -> Result<()> {
         let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
 
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
@@ -4828,19 +4864,122 @@ mod tests {
             .is_empty());
 
         let report = list_nota_runtime_receipts(&store, Some(transaction.id))?;
-        assert_eq!(report.receipt_count, 1);
+        assert_eq!(report.receipt_count, 0);
+
+        let allocation_report = list_nota_runtime_allocations(&store)?;
+        assert_eq!(allocation_report.allocation_count, 1);
+        assert_eq!(allocation_report.allocations[0].status, "escalated_failed");
+        let projected_payload: NotaDoAllocationPayload =
+            serde_json::from_str(&allocation_report.allocations[0].payload_json)?;
+        let projected_outcome = projected_payload
+            .terminal_outcome
+            .expect("allocation read surface should project a terminal outcome");
+        assert_eq!(projected_outcome.boundary_kind, "escalation");
+        assert_eq!(projected_outcome.child_execution_status, "Failed");
         assert_eq!(
-            report.receipts[0].receipt_kind,
-            ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND
+            projected_outcome.child_execution_status_message.as_deref(),
+            Some("Task heartbeat lost")
         );
 
+        let stored_allocations = store.list_nota_runtime_allocations()?;
+        assert_eq!(stored_allocations.len(), 1);
+        assert_eq!(stored_allocations[0].status, "task_created");
+        let stored_payload: NotaDoAllocationPayload =
+            serde_json::from_str(&stored_allocations[0].payload_json)?;
+        assert!(stored_payload.terminal_outcome.is_none());
+        assert!(store
+            .list_nota_runtime_receipts(Some(transaction.id))?
+            .is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_runtime_sync_persists_terminal_outcome_and_receipt_truth() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+
+        let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "dev",
+            transaction_kind: "forge_dev_dispatch",
+            title: "Explicit runtime sync",
+            payload_json: "{}",
+            status: "checkpointed",
+            forge_task_id: None,
+            cadence_checkpoint_id: None,
+        })?;
+        let task_id =
+            store.insert_forge_task("Heartbeat child", "echo", "[]", None, None, "[]", "{}")?;
+        store.update_forge_task_status(task_id, "Failed", None, Some("Task heartbeat lost"))?;
+        let allocation_payload = NotaDoAllocationPayload {
+            issue_id: "MYT-1048".to_string(),
+            issue_status: "Todo".to_string(),
+            issue_status_source: "fallback".to_string(),
+            issue_title: None,
+            project_root: "A:/Agent/Entrance".to_string(),
+            worktree_path: "A:/Agent/Entrance/worktrees/feat-MYT-1048".to_string(),
+            prompt_source: "test".to_string(),
+            model: "codex".to_string(),
+            agent_command: None,
+            execution_host: default_nota_dispatch_execution_host(),
+            child_dispatch_role: "dev".to_string(),
+            child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
+            terminal_outcome: None,
+        };
+        let allocation = store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_dev",
+            allocation_kind: "forge_dev_dispatch",
+            source_transaction_id: transaction.id,
+            lineage_ref: "nota/dev/transaction/1/forge-task/1",
+            child_execution_kind: "forge_task",
+            child_execution_ref: &task_id.to_string(),
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: &transaction.id.to_string(),
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: &transaction.id.to_string(),
+            status: "task_created",
+            payload_json: &serde_json::to_string(&allocation_payload)?,
+        })?;
+
+        assert!(store
+            .list_nota_runtime_receipts(Some(transaction.id))?
+            .is_empty());
+        assert_eq!(
+            store.list_nota_runtime_allocations()?[0].status,
+            "task_created"
+        );
+
+        sync_runtime_truth(&store, Some(transaction.id))?;
+
+        let stored_allocations = store.list_nota_runtime_allocations()?;
+        assert_eq!(stored_allocations.len(), 1);
+        assert_eq!(stored_allocations[0].status, "escalated_failed");
+        let stored_payload: NotaDoAllocationPayload =
+            serde_json::from_str(&stored_allocations[0].payload_json)?;
+        let stored_outcome = stored_payload
+            .terminal_outcome
+            .expect("explicit sync should persist the terminal outcome");
+        assert_eq!(stored_outcome.boundary_kind, "escalation");
+        assert_eq!(stored_outcome.child_execution_status, "Failed");
+        assert_eq!(
+            stored_outcome.child_execution_status_message.as_deref(),
+            Some("Task heartbeat lost")
+        );
+
+        let receipts = store.list_nota_runtime_receipts(Some(transaction.id))?;
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(
+            receipts[0].receipt_kind,
+            ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND
+        );
         let receipt_payload: AllocationTerminalOutcomeReceiptPayload =
-            serde_json::from_str(&report.receipts[0].payload_json)?;
+            serde_json::from_str(&receipts[0].payload_json)?;
         assert_eq!(
             receipt_payload,
             AllocationTerminalOutcomeReceiptPayload {
-                allocation_id: 1,
-                lineage_ref: "nota/dev/transaction/1/forge-task/1".to_string(),
+                allocation_id: allocation.id,
+                lineage_ref: allocation.lineage_ref.clone(),
                 boundary_kind: "escalation".to_string(),
                 child_execution_status: "Failed".to_string(),
                 child_execution_status_message: Some("Task heartbeat lost".to_string()),
@@ -4848,20 +4987,6 @@ mod tests {
                 target_ref: transaction.id.to_string(),
                 allocation_status: "escalated_failed".to_string(),
             }
-        );
-
-        let stored_allocations = store.list_nota_runtime_allocations()?;
-        assert_eq!(stored_allocations.len(), 1);
-        assert_eq!(stored_allocations[0].status, "escalated_failed");
-        let stored_payload: NotaDoAllocationPayload =
-            serde_json::from_str(&stored_allocations[0].payload_json)?;
-        let terminal_outcome = stored_payload
-            .terminal_outcome
-            .expect("receipt read should persist the allocation terminal outcome");
-        assert_eq!(terminal_outcome.child_execution_status, "Failed");
-        assert_eq!(
-            terminal_outcome.child_execution_status_message.as_deref(),
-            Some("Task heartbeat lost")
         );
 
         Ok(())
