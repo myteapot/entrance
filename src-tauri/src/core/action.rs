@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::core::supervision::SupervisionScope;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KnowledgeLayer {
@@ -101,6 +103,141 @@ pub enum ActionRoom {
     Approval,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionObjectKind {
+    RuntimeQuery,
+    CadenceCheckpoint,
+    ControlDecision,
+    RuntimeDispatch,
+    AgentWorkArtifact,
+    ReturnReview,
+    ReturnIntegration,
+    RuntimeContinuation,
+    RepairFollowup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowPhaseCode {
+    In,
+    Cycle,
+    Out,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionStateCode {
+    Ready,
+    Running,
+    Waiting,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrityOverlayCode {
+    LineageBlocked,
+    AdminHold,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlPolicyCode {
+    RuntimeQueryLocal,
+    NotaBoundaryWrite,
+    StrategyShape,
+    DispatchPrep,
+    AgentWorkExecution,
+    ReviewReturn,
+    IntegrateReturn,
+    RuntimeContinuation,
+    RepairFollowup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriterPolicyCode {
+    OwnerAppend,
+    RuntimeAppend,
+    NotaBoundaryOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutePolicyCode {
+    HumanNotaBoundary,
+    LocalOnly,
+    UpwardOnly,
+    RuntimeInternal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatePolicyCode {
+    None,
+    ReviewReady,
+    IntegrationReady,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxPolicyCode {
+    None,
+    WorktreeRwAllowlist,
+    RuntimeAdminOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionPolicyCode {
+    StorageAlways,
+    StorageAndColdAlways,
+    StorageColdHotOnAttention,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionPolicyCode {
+    HotNever,
+    HotActiveOnly,
+    HotOnAttentionOrReject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionEffectKind {
+    Observe,
+    TruthWrite,
+    StrategyWrite,
+    DispatchWrite,
+    ArtifactWrite,
+    ReviewWrite,
+    IntegrateWrite,
+    ContinuationWrite,
+    RepairWrite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledActionPlan {
+    pub object_kind: ActionObjectKind,
+    pub flow_phase: FlowPhaseCode,
+    pub attention_state: AttentionStateCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrity_overlay: Option<IntegrityOverlayCode>,
+    pub control_policy_code: ControlPolicyCode,
+    pub writer_policy_code: WriterPolicyCode,
+    pub route_policy_code: RoutePolicyCode,
+    pub gate_policy_code: GatePolicyCode,
+    pub sandbox_policy_code: SandboxPolicyCode,
+    pub admission_policy_code: AdmissionPolicyCode,
+    pub projection_policy_code: ProjectionPolicyCode,
+    pub effect_kind: ActionEffectKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervision_scope: Option<SupervisionScope>,
+}
+
 const NOTA_SURFACE_ACTIONS: [NotaSurfaceAction; 3] = [
     NotaSurfaceAction::Chat,
     NotaSurfaceAction::Learn,
@@ -195,6 +332,117 @@ impl ActionPrimitive {
             Self::Report => &ROOM_SURFACE,
         }
     }
+
+    fn object_kind(self) -> ActionObjectKind {
+        match self {
+            Self::Chat | Self::Read | Self::Report => ActionObjectKind::RuntimeQuery,
+            Self::Learn => ActionObjectKind::CadenceCheckpoint,
+            Self::Shape | Self::Split | Self::Assign => ActionObjectKind::ControlDecision,
+            Self::Prepare | Self::Dispatch => ActionObjectKind::RuntimeDispatch,
+            Self::Make => ActionObjectKind::AgentWorkArtifact,
+            Self::Review => ActionObjectKind::ReturnReview,
+            Self::Integrate => ActionObjectKind::ReturnIntegration,
+            Self::Update | Self::Escalate => ActionObjectKind::RuntimeContinuation,
+            Self::Repair => ActionObjectKind::RepairFollowup,
+        }
+    }
+
+    fn flow_phase(self) -> FlowPhaseCode {
+        match self {
+            Self::Chat | Self::Read | Self::Report => FlowPhaseCode::In,
+            Self::Review | Self::Integrate | Self::Escalate => FlowPhaseCode::Out,
+            _ => FlowPhaseCode::Cycle,
+        }
+    }
+
+    fn attention_state(self) -> AttentionStateCode {
+        match self {
+            Self::Prepare | Self::Dispatch | Self::Make | Self::Review | Self::Integrate => {
+                AttentionStateCode::Running
+            }
+            Self::Repair | Self::Escalate => AttentionStateCode::Waiting,
+            Self::Report => AttentionStateCode::Stopped,
+            _ => AttentionStateCode::Ready,
+        }
+    }
+
+    fn integrity_overlay(self) -> Option<IntegrityOverlayCode> {
+        match self {
+            Self::Escalate => Some(IntegrityOverlayCode::AdminHold),
+            Self::Repair => Some(IntegrityOverlayCode::LineageBlocked),
+            _ => None,
+        }
+    }
+
+    fn control_policy_code(self) -> ControlPolicyCode {
+        match self {
+            Self::Chat | Self::Read | Self::Report => ControlPolicyCode::RuntimeQueryLocal,
+            Self::Learn => ControlPolicyCode::NotaBoundaryWrite,
+            Self::Shape | Self::Split | Self::Assign => ControlPolicyCode::StrategyShape,
+            Self::Prepare | Self::Dispatch => ControlPolicyCode::DispatchPrep,
+            Self::Make => ControlPolicyCode::AgentWorkExecution,
+            Self::Review => ControlPolicyCode::ReviewReturn,
+            Self::Integrate => ControlPolicyCode::IntegrateReturn,
+            Self::Update | Self::Escalate => ControlPolicyCode::RuntimeContinuation,
+            Self::Repair => ControlPolicyCode::RepairFollowup,
+        }
+    }
+
+    fn writer_policy_code(self) -> WriterPolicyCode {
+        match self {
+            Self::Learn => WriterPolicyCode::NotaBoundaryOnly,
+            Self::Report => WriterPolicyCode::RuntimeAppend,
+            _ => WriterPolicyCode::OwnerAppend,
+        }
+    }
+
+    fn route_policy_code(self) -> RoutePolicyCode {
+        match self {
+            Self::Learn => RoutePolicyCode::HumanNotaBoundary,
+            Self::Dispatch | Self::Make | Self::Escalate => RoutePolicyCode::UpwardOnly,
+            Self::Report => RoutePolicyCode::RuntimeInternal,
+            _ => RoutePolicyCode::LocalOnly,
+        }
+    }
+
+    fn gate_policy_code(self) -> GatePolicyCode {
+        match self {
+            Self::Review => GatePolicyCode::ReviewReady,
+            Self::Integrate => GatePolicyCode::IntegrationReady,
+            _ => GatePolicyCode::None,
+        }
+    }
+
+    fn sandbox_policy_code(self) -> SandboxPolicyCode {
+        match self {
+            Self::Dispatch | Self::Make | Self::Repair => SandboxPolicyCode::WorktreeRwAllowlist,
+            Self::Report => SandboxPolicyCode::RuntimeAdminOnly,
+            _ => SandboxPolicyCode::None,
+        }
+    }
+
+    fn effect_kind(self) -> ActionEffectKind {
+        match self {
+            Self::Chat | Self::Read | Self::Report => ActionEffectKind::Observe,
+            Self::Learn => ActionEffectKind::TruthWrite,
+            Self::Shape | Self::Split | Self::Assign => ActionEffectKind::StrategyWrite,
+            Self::Prepare | Self::Dispatch => ActionEffectKind::DispatchWrite,
+            Self::Make => ActionEffectKind::ArtifactWrite,
+            Self::Review => ActionEffectKind::ReviewWrite,
+            Self::Integrate => ActionEffectKind::IntegrateWrite,
+            Self::Update | Self::Escalate => ActionEffectKind::ContinuationWrite,
+            Self::Repair => ActionEffectKind::RepairWrite,
+        }
+    }
+
+    fn supervision_scope(self) -> Option<SupervisionScope> {
+        match self {
+            Self::Dispatch => Some(SupervisionScope::DispatchPipeline),
+            Self::Make => Some(SupervisionScope::AgentProcess),
+            Self::Review | Self::Integrate | Self::Repair => Some(SupervisionScope::SessionBundle),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,14 +475,48 @@ impl ActionRecord {
             target_layer,
         })
     }
+
+    pub fn lower(&self) -> CompiledActionPlan {
+        let (admission_policy_code, projection_policy_code) = match (self.target_layer, self.verb) {
+            (_, ActionPrimitive::Chat | ActionPrimitive::Read | ActionPrimitive::Report) => (
+                AdmissionPolicyCode::StorageAlways,
+                ProjectionPolicyCode::HotNever,
+            ),
+            (KnowledgeLayer::Cold, _) => (
+                AdmissionPolicyCode::StorageAndColdAlways,
+                ProjectionPolicyCode::HotActiveOnly,
+            ),
+            (KnowledgeLayer::Hot, _) => (
+                AdmissionPolicyCode::StorageColdHotOnAttention,
+                ProjectionPolicyCode::HotOnAttentionOrReject,
+            ),
+        };
+
+        CompiledActionPlan {
+            object_kind: self.verb.object_kind(),
+            flow_phase: self.verb.flow_phase(),
+            attention_state: self.verb.attention_state(),
+            integrity_overlay: self.verb.integrity_overlay(),
+            control_policy_code: self.verb.control_policy_code(),
+            writer_policy_code: self.verb.writer_policy_code(),
+            route_policy_code: self.verb.route_policy_code(),
+            gate_policy_code: self.verb.gate_policy_code(),
+            sandbox_policy_code: self.verb.sandbox_policy_code(),
+            admission_policy_code,
+            projection_policy_code,
+            effect_kind: self.verb.effect_kind(),
+            supervision_scope: self.verb.supervision_scope(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_layer_write_order, ActionPrimitive, ActionRecord, ActionRoom, ActorRole,
-        GovernancePrinciple, KnowledgeLayer, NotaSurfaceAction, CANONICAL_LAYER_WRITE_ORDER,
-        FIRST_GUIDING_PRINCIPLE,
+        validate_layer_write_order, ActionEffectKind, ActionObjectKind, ActionPrimitive,
+        ActionRecord, ActionRoom, ActorRole, ControlPolicyCode, GovernancePrinciple,
+        KnowledgeLayer, NotaSurfaceAction, ProjectionPolicyCode, RoutePolicyCode, SupervisionScope,
+        CANONICAL_LAYER_WRITE_ORDER, FIRST_GUIDING_PRINCIPLE,
     };
 
     #[test]
@@ -331,6 +613,77 @@ mod tests {
         assert_eq!(
             wrong_room,
             Err("action primitive is not allowed in the selected room")
+        );
+    }
+
+    #[test]
+    fn lowered_checkpoint_write_surfaces_boundary_compiler_plan() {
+        let record = ActionRecord::new(
+            ActorRole::Nota,
+            ActionPrimitive::Learn,
+            ActionRoom::Memory,
+            KnowledgeLayer::Cold,
+        )
+        .expect("checkpoint write should compile");
+
+        let lowered = record.lower();
+        assert_eq!(lowered.object_kind, ActionObjectKind::CadenceCheckpoint);
+        assert_eq!(
+            lowered.control_policy_code,
+            ControlPolicyCode::NotaBoundaryWrite
+        );
+        assert_eq!(lowered.effect_kind, ActionEffectKind::TruthWrite);
+        assert_eq!(
+            lowered.projection_policy_code,
+            ProjectionPolicyCode::HotActiveOnly
+        );
+        assert_eq!(lowered.supervision_scope, None);
+    }
+
+    #[test]
+    fn lowered_dispatch_and_review_keep_runtime_policies_explicit() {
+        let dispatch = ActionRecord::new(
+            ActorRole::Dev,
+            ActionPrimitive::Dispatch,
+            ActionRoom::Prep,
+            KnowledgeLayer::Hot,
+        )
+        .expect("dispatch should compile");
+        let dispatch_lowered = dispatch.lower();
+        assert_eq!(
+            dispatch_lowered.object_kind,
+            ActionObjectKind::RuntimeDispatch
+        );
+        assert_eq!(
+            dispatch_lowered.control_policy_code,
+            ControlPolicyCode::DispatchPrep
+        );
+        assert_eq!(
+            dispatch_lowered.route_policy_code,
+            RoutePolicyCode::UpwardOnly
+        );
+        assert_eq!(
+            dispatch_lowered.supervision_scope,
+            Some(SupervisionScope::DispatchPipeline)
+        );
+
+        let review = ActionRecord::new(
+            ActorRole::Dev,
+            ActionPrimitive::Review,
+            ActionRoom::Review,
+            KnowledgeLayer::Hot,
+        )
+        .expect("review should compile");
+        let review_lowered = review.lower();
+        assert_eq!(review_lowered.object_kind, ActionObjectKind::ReturnReview);
+        assert_eq!(
+            review_lowered.control_policy_code,
+            ControlPolicyCode::ReviewReturn
+        );
+        assert_eq!(review_lowered.effect_kind, ActionEffectKind::ReviewWrite);
+        assert_eq!(
+            review_lowered.supervision_scope,
+            Some(SupervisionScope::SessionBundle)
         );
     }
 }

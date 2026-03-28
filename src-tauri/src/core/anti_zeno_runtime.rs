@@ -11,6 +11,9 @@ pub struct AntiZenoBudgetReport {
     pub semantic_budget_limit: i64,
     pub repair_budget_limit: i64,
     pub semantic_event_count: i64,
+    pub boundary_anchor_count: i64,
+    pub acceptance_event_count: i64,
+    pub closure_event_count: i64,
     pub repair_event_count: i64,
     pub projection_debt_count: usize,
     pub budget_exhausted: bool,
@@ -52,23 +55,58 @@ pub fn build_anti_zeno_budget_report(
         .filter(|event| event.budget_axis == "repair")
         .map(|event| event.event_weight)
         .sum::<i64>();
+    let boundary_anchor_count = scoped_events
+        .iter()
+        .filter(|event| event.event_kind == "checkpoint_written")
+        .map(|event| event.event_weight)
+        .sum::<i64>();
+    let acceptance_event_count = scoped_events
+        .iter()
+        .filter(|event| event.event_kind == "acceptance_recorded")
+        .map(|event| event.event_weight)
+        .sum::<i64>();
+    let closure_event_count = scoped_events
+        .iter()
+        .filter(|event| event.event_kind == "closure_recorded")
+        .map(|event| event.event_weight)
+        .sum::<i64>();
     let total_pressure = semantic_event_count + repair_event_count + projection_debt_count as i64;
 
     let (state, summary, forced_action) = if fully_settled && projection_debt_count == 0 {
         (
             "settled".to_string(),
-            "The current round is fully settled and the anti-Zeno budget has no outstanding pressure.".to_string(),
+            format!(
+                "The current round is fully settled with anchors={} acceptance={} closure={} and no outstanding anti-Zeno pressure.",
+                boundary_anchor_count, acceptance_event_count, closure_event_count
+            ),
             None,
         )
     } else if repair_event_count >= REPAIR_BUDGET_LIMIT || total_pressure >= SEMANTIC_BUDGET_LIMIT {
         (
             "budget_exhausted".to_string(),
             format!(
-                "Anti-Zeno budget is exhausted at semantic={} repair={} projection_debt={}.",
-                semantic_event_count, repair_event_count, projection_debt_count
+                "Anti-Zeno budget is exhausted at semantic={} anchor={} acceptance={} closure={} repair={} projection_debt={}.",
+                semantic_event_count,
+                boundary_anchor_count,
+                acceptance_event_count,
+                closure_event_count,
+                repair_event_count,
+                projection_debt_count
             ),
             Some(
                 "Force bounded closure, repair, or explicit human decision before opening another recursive cut."
+                    .to_string(),
+            ),
+        )
+    } else if acceptance_present && closure_event_count == 0 && !next_step_open {
+        (
+            "closure_required".to_string(),
+            format!(
+                "Acceptance is recorded with anchors={} acceptance={}, but no closure event has carried the round forward yet.",
+                boundary_anchor_count, acceptance_event_count
+            ),
+            Some(
+                "Write the closure checkpoint that carries the accepted boundary forward before reopening the cycle."
                     .to_string(),
             ),
         )
@@ -76,27 +114,36 @@ pub fn build_anti_zeno_budget_report(
         (
             "repair_required".to_string(),
             format!(
-                "Anti-Zeno pressure is currently repair-weighted with repair={} and projection_debt={}.",
-                repair_event_count, projection_debt_count
+                "Anti-Zeno pressure is currently repair-weighted with repair={} projection_debt={} and closure={}.",
+                repair_event_count, projection_debt_count, closure_event_count
             ),
             Some("Close the repair lane or refresh dirty projections before deepening the cycle.".to_string()),
         )
     } else if next_step_open {
         (
             "bounded_followup".to_string(),
-            "A bounded next-step is open, but the budget remains within the current anti-Zeno envelope.".to_string(),
+            format!(
+                "A bounded next-step is open within the current anti-Zeno envelope; anchors={} acceptance={} closure={}.",
+                boundary_anchor_count, acceptance_event_count, closure_event_count
+            ),
             None,
         )
     } else if acceptance_present {
         (
             "accepted_waiting_closure".to_string(),
-            "Acceptance is present and the budget is still healthy, but closure has not fully settled yet.".to_string(),
+            format!(
+                "Acceptance is present and the budget is still healthy, but closure has not fully settled yet; anchors={} acceptance={} closure={}.",
+                boundary_anchor_count, acceptance_event_count, closure_event_count
+            ),
             None,
         )
     } else if current_checkpoint_id.is_some() {
         (
             "checkpointed".to_string(),
-            "A checkpoint exists and anti-Zeno tracking is live, but acceptance has not landed yet.".to_string(),
+            format!(
+                "A checkpoint exists and anti-Zeno tracking is live with anchors={}, but acceptance has not landed yet.",
+                boundary_anchor_count
+            ),
             None,
         )
     } else {
@@ -111,6 +158,9 @@ pub fn build_anti_zeno_budget_report(
         semantic_budget_limit: SEMANTIC_BUDGET_LIMIT,
         repair_budget_limit: REPAIR_BUDGET_LIMIT,
         semantic_event_count,
+        boundary_anchor_count,
+        acceptance_event_count,
+        closure_event_count,
         repair_event_count,
         projection_debt_count,
         budget_exhausted: state == "budget_exhausted",
@@ -180,6 +230,24 @@ pub fn record_acceptance_recorded_event(
     })
 }
 
+pub fn record_closure_recorded_event(
+    data_store: &DataStore,
+    checkpoint_id: i64,
+    acceptance_bundle_id: i64,
+    boundary_ref: &str,
+    summary: &str,
+) -> Result<StoredAntiZenoEvent> {
+    data_store.insert_anti_zeno_event(NewAntiZenoEvent {
+        checkpoint_id: Some(checkpoint_id),
+        acceptance_bundle_id: Some(acceptance_bundle_id),
+        event_kind: "closure_recorded",
+        boundary_ref,
+        budget_axis: "semantic",
+        event_weight: 1,
+        summary,
+    })
+}
+
 pub fn record_repair_requested_event(
     data_store: &DataStore,
     checkpoint_id: Option<i64>,
@@ -212,7 +280,8 @@ mod tests {
 
     use super::{
         build_anti_zeno_budget_report, record_acceptance_recorded_event,
-        record_checkpoint_written_event, record_repair_requested_event,
+        record_checkpoint_written_event, record_closure_recorded_event,
+        record_repair_requested_event,
     };
 
     struct TempDbPath {
@@ -281,6 +350,9 @@ mod tests {
 
         let report = build_anti_zeno_budget_report(&store, Some(7), None, false, false, false, 0)?;
         assert_eq!(report.semantic_event_count, 1);
+        assert_eq!(report.boundary_anchor_count, 1);
+        assert_eq!(report.acceptance_event_count, 0);
+        assert_eq!(report.closure_event_count, 0);
         assert_eq!(report.repair_event_count, 0);
         assert_eq!(report.state, "checkpointed");
 
@@ -301,6 +373,34 @@ mod tests {
         assert_eq!(report.semantic_event_count, 0);
         assert_eq!(report.repair_event_count, 1);
         assert_eq!(report.state, "repair_required");
+
+        Ok(())
+    }
+
+    #[test]
+    fn anti_zeno_budget_distinguishes_acceptance_from_closure() -> Result<()> {
+        let temp_db = TempDbPath::new("closure-classification")?;
+        let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+        let store = DataStore::open(temp_db.path(), migration_plan)?;
+
+        record_checkpoint_written_event(&store, 7, "checkpoint written")?;
+        record_acceptance_recorded_event(&store, 7, 9, "acceptance", "acceptance recorded")?;
+
+        let pre_closure =
+            build_anti_zeno_budget_report(&store, Some(7), Some(9), true, false, false, 0)?;
+        assert_eq!(pre_closure.state, "closure_required");
+        assert_eq!(pre_closure.boundary_anchor_count, 1);
+        assert_eq!(pre_closure.acceptance_event_count, 1);
+        assert_eq!(pre_closure.closure_event_count, 0);
+        assert!(pre_closure.forced_action.is_some());
+
+        record_closure_recorded_event(&store, 7, 9, "acceptance", "closure recorded")?;
+        let settled =
+            build_anti_zeno_budget_report(&store, Some(7), Some(9), true, true, false, 0)?;
+        assert_eq!(settled.state, "settled");
+        assert_eq!(settled.boundary_anchor_count, 1);
+        assert_eq!(settled.acceptance_event_count, 1);
+        assert_eq!(settled.closure_event_count, 1);
 
         Ok(())
     }

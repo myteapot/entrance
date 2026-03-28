@@ -1,6 +1,8 @@
 use serde::Serialize;
 
-use crate::core::action::{ActionPrimitive, ActionRecord, ActionRoom, ActorRole, KnowledgeLayer};
+use crate::core::action::{
+    ActionPrimitive, ActionRecord, ActionRoom, ActorRole, CompiledActionPlan, KnowledgeLayer,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,6 +11,14 @@ pub struct McpToolPermission {
     pub primitive: ActionPrimitive,
     pub room: ActionRoom,
     pub target_layer: KnowledgeLayer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolPermissionView {
+    #[serde(flatten)]
+    pub permission: McpToolPermission,
+    pub lowering: CompiledActionPlan,
 }
 
 impl McpToolPermission {
@@ -33,6 +43,17 @@ impl McpToolPermission {
             self.room,
             self.target_layer,
         )
+    }
+
+    pub fn lowering_plan(self) -> Result<CompiledActionPlan, &'static str> {
+        self.action_record().map(|record| record.lower())
+    }
+
+    pub fn view(self) -> Result<McpToolPermissionView, &'static str> {
+        Ok(McpToolPermissionView {
+            permission: self,
+            lowering: self.lowering_plan()?,
+        })
     }
 }
 
@@ -110,6 +131,8 @@ pub fn permission_for_mcp_tool(name: &str) -> Option<McpToolPermission> {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::action::ControlPolicyCode;
+
     use super::{permission_for_mcp_tool, ActionPrimitive, ActionRoom, ActorRole, KnowledgeLayer};
 
     #[test]
@@ -141,7 +164,31 @@ mod tests {
             permission
                 .action_record()
                 .unwrap_or_else(|error| panic!("invalid permission mapping for `{name}`: {error}"));
+            permission
+                .lowering_plan()
+                .unwrap_or_else(|error| panic!("invalid lowering plan for `{name}`: {error}"));
         }
+    }
+
+    #[test]
+    fn runtime_checkpoint_and_dispatch_tools_export_lowering_metadata() {
+        let checkpoint = permission_for_mcp_tool("nota_write_checkpoint")
+            .expect("checkpoint permission should exist")
+            .view()
+            .expect("checkpoint lowering should compile");
+        assert_eq!(
+            checkpoint.lowering.control_policy_code,
+            ControlPolicyCode::NotaBoundaryWrite
+        );
+
+        let dispatch = permission_for_mcp_tool("forge_dispatch_agent")
+            .expect("dispatch permission should exist")
+            .view()
+            .expect("dispatch lowering should compile");
+        assert_eq!(
+            dispatch.lowering.control_policy_code,
+            ControlPolicyCode::DispatchPrep
+        );
     }
 
     #[test]
