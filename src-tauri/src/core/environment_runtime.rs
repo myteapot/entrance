@@ -63,7 +63,10 @@ pub fn list_owned_worktrees(
     })
 }
 
-fn record_runtime_host_snapshot(data_store: &DataStore, paths: &AppPaths) -> Result<StoredRuntimeHost> {
+fn record_runtime_host_snapshot(
+    data_store: &DataStore,
+    paths: &AppPaths,
+) -> Result<StoredRuntimeHost> {
     let host_label = env::var("HOSTNAME")
         .ok()
         .or_else(|| env::var("COMPUTERNAME").ok())
@@ -158,7 +161,10 @@ struct ObservedWorktreeMetadata {
     slot_name: Option<String>,
 }
 
-fn derive_worktree_metadata(relative_path: &Path, worktree_path: &Path) -> ObservedWorktreeMetadata {
+fn derive_worktree_metadata(
+    relative_path: &Path,
+    worktree_path: &Path,
+) -> ObservedWorktreeMetadata {
     let components = relative_path
         .components()
         .filter_map(|component| match component {
@@ -169,9 +175,13 @@ fn derive_worktree_metadata(relative_path: &Path, worktree_path: &Path) -> Obser
     let project_name = components.first().cloned().unwrap_or_default();
     let is_slot = components.get(1).map(String::as_str) == Some("slots");
     let repo_root = git_output(worktree_path, ["rev-parse", "--show-toplevel"]);
-    let branch_name = git_output(worktree_path, ["branch", "--show-current"]).unwrap_or_else(|| {
-        components.last().cloned().unwrap_or_else(|| "unknown".to_string())
-    });
+    let branch_name =
+        git_output(worktree_path, ["branch", "--show-current"]).unwrap_or_else(|| {
+            components
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string())
+        });
     let issue_id = if is_slot {
         components.get(2).cloned()
     } else {
@@ -248,7 +258,9 @@ mod tests {
 
     use crate::core::{data_store::MigrationPlan, AppPaths};
 
-    use super::{current_runtime_host, list_owned_worktrees, normalize_path, record_runtime_environment};
+    use super::{
+        current_runtime_host, list_owned_worktrees, normalize_path, record_runtime_environment,
+    };
 
     struct TempRoot {
         root: PathBuf,

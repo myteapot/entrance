@@ -67,7 +67,9 @@ pub fn list_cold_documents(
         let projection_state = projection_status
             .map(|status| status.state.clone())
             .unwrap_or_else(|| "unprojected".to_string());
-        let projection_fresh = projection_status.map(|status| status.fresh).unwrap_or(false);
+        let projection_fresh = projection_status
+            .map(|status| status.fresh)
+            .unwrap_or(false);
         let projection_dirty = projection_status
             .map(|status| status.dirty)
             .unwrap_or(false);
@@ -125,21 +127,21 @@ pub fn canonicalize_cold_docs_from_repo(
             continue;
         }
 
-        let relative_path = entry
-            .path()
-            .strip_prefix(project_dir)
-            .with_context(|| {
-                format!(
-                    "failed to derive repo-relative path for cold doc `{}`",
-                    entry.path().display()
-                )
-            })?;
+        let relative_path = entry.path().strip_prefix(project_dir).with_context(|| {
+            format!(
+                "failed to derive repo-relative path for cold doc `{}`",
+                entry.path().display()
+            )
+        })?;
         let slug = normalize_relative_path(relative_path);
         let content = fs::read_to_string(entry.path()).with_context(|| {
-            format!("failed to read cold doc source at {}", entry.path().display())
+            format!(
+                "failed to read cold doc source at {}",
+                entry.path().display()
+            )
         })?;
-        let title = derive_markdown_title(&content)
-            .unwrap_or_else(|| derive_title_from_path(entry.path()));
+        let title =
+            derive_markdown_title(&content).unwrap_or_else(|| derive_title_from_path(entry.path()));
         let stored = data_store.upsert_document_record_by_slug(UpsertDocumentRecordBySlug {
             slug: &slug,
             title: &title,
@@ -187,7 +189,10 @@ pub fn export_cold_docs_to_repo(
         }
 
         if let Err(error) = fs::write(&target_path, &document.content).with_context(|| {
-            format!("failed to write cold-doc projection at {}", target_path.display())
+            format!(
+                "failed to write cold-doc projection at {}",
+                target_path.display()
+            )
         }) {
             record_cold_doc_projection_failure(
                 data_store,
@@ -356,7 +361,9 @@ mod tests {
 
         let import_report = canonicalize_cold_docs_from_repo(
             &store,
-            project_dir.to_str().expect("project path should be valid UTF-8"),
+            project_dir
+                .to_str()
+                .expect("project path should be valid UTF-8"),
         )?;
         assert_eq!(import_report.imported_count, 1);
         assert_eq!(import_report.docs[0].category, COLD_DOC_CATEGORY);
@@ -368,7 +375,9 @@ mod tests {
         fs::remove_file(&cold_doc_path)?;
         let export_report = export_cold_docs_to_repo(
             &store,
-            project_dir.to_str().expect("project path should be valid UTF-8"),
+            project_dir
+                .to_str()
+                .expect("project path should be valid UTF-8"),
             &ProjectionTruthRevision::default(),
         )?;
         assert_eq!(export_report.exported_count, 1);
