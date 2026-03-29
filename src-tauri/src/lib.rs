@@ -57,7 +57,7 @@ use core::{
     logging::LoggingSystem,
     mcp_server::{McpPluginSet, McpServer, McpTransport},
     nota_runtime::{
-        active_checkpoint_scope_ids, derive_anti_zeno_projection,
+        accept_current_runtime_round, active_checkpoint_scope_ids, derive_anti_zeno_projection,
         derive_current_runtime_acceptance_bundle, derive_current_runtime_handout,
         derive_current_runtime_human_round, derive_current_runtime_wake_request,
         derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
@@ -66,13 +66,15 @@ use core::{
         list_runtime_acceptance_bundles, list_runtime_checkpoints, list_runtime_human_rounds,
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
-        run_nota_dev_dispatch, run_nota_do_agent_dispatch, write_runtime_checkpoint,
-        NotaAcceptanceBundleListReport, NotaAntiZenoProjection, NotaCheckpointListReport,
-        NotaCheckpointRequest, NotaDevDispatchRequest, NotaDevReturnFinalizeRequest,
-        NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest, NotaDispatchExecutionHost,
-        NotaDoAgentDispatchRequest, NotaHandoutRecord, NotaHumanRoundListReport,
-        NotaRoundStateProjection, NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport,
-        NotaRuntimeFinalize, NotaRuntimeIntegrate, NotaRuntimeNextStep, NotaRuntimeReview,
+        record_nota_boundary_ask, record_nota_boundary_clarification, run_nota_dev_dispatch,
+        run_nota_do_agent_dispatch, write_runtime_checkpoint, NotaAcceptanceBundleListReport,
+        NotaAntiZenoProjection, NotaBoundaryAskRequest, NotaBoundaryClarificationRequest,
+        NotaCheckpointListReport, NotaCheckpointRequest, NotaCurrentRoundAcceptanceRequest,
+        NotaDevDispatchRequest, NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest,
+        NotaDevReturnReviewRequest, NotaDispatchExecutionHost, NotaDoAgentDispatchRequest,
+        NotaHandoutRecord, NotaHumanRoundListReport, NotaRoundStateProjection,
+        NotaRuntimeAllocationReadRecord, NotaRuntimeAllocationsReport, NotaRuntimeFinalize,
+        NotaRuntimeIntegrate, NotaRuntimeNextStep, NotaRuntimeReview,
         NotaRuntimeTransactionsReport, NotaWakeRequestRecord,
     },
     plugin_manager::PluginManager,
@@ -478,6 +480,23 @@ fn build_nota_front_door_projection(
 }
 
 fn describe_nota_front_door_next_step(step: &NotaRuntimeNextStep) -> String {
+    if step.allocation_id == 0 {
+        let checkpoint_ref = step.target_ref.as_str();
+        let action = match step.step.as_str() {
+            "clarify" => "Resolve the current clarification boundary",
+            "ask_unblock" => "Resolve the current unblock ask",
+            "ask_decide" => "Resolve the current decision ask",
+            "ask_replace" => "Resolve the current replace ask",
+            "ask_override" => "Resolve the current override ask",
+            other => return format!("Follow `{other}` on checkpoint {checkpoint_ref}."),
+        };
+
+        return format!(
+            "{action} on checkpoint {checkpoint_ref} via runtime transaction {}.",
+            step.transaction_id
+        );
+    }
+
     let action = match step.step.as_str() {
         "review" => "Review the returned boundary",
         "integrate" => "Record the integration result",
@@ -720,6 +739,9 @@ const NOTA_CLI_HELP: &str = r#"Usage:
   entrance nota allocations
   entrance nota receipts [--transaction-id <id>]
   entrance nota transactions
+  entrance nota clarify --summary <text>
+  entrance nota ask --ask-code <unblock|decide|replace|override> --summary <text>
+  entrance nota accept-current-round [--summary <text>]
   entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]
   entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>] [--repair-of-allocation-id <id>]
   entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]
@@ -1048,6 +1070,24 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
         [command] if command == "transactions" => {
             print_json(&list_nota_runtime_transactions(&startup.data_store())?)
         }
+        [command, rest @ ..] if command == "clarify" => {
+            let request = parse_nota_clarify_args(rest)?;
+            let report = record_nota_boundary_clarification(&startup.data_store(), request)?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
+        }
+        [command, rest @ ..] if command == "ask" => {
+            let request = parse_nota_ask_args(rest)?;
+            let report = record_nota_boundary_ask(&startup.data_store(), request)?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
+        }
+        [command, rest @ ..] if command == "accept-current-round" => {
+            let request = parse_nota_accept_current_round_args(rest)?;
+            let report = accept_current_runtime_round(&startup.data_store(), request)?;
+            write_hot_root_projection(&startup, None)?;
+            print_json(&report)
+        }
         [command, rest @ ..] if command == "receipts" => {
             let transaction_id = parse_nota_receipts_args(rest)?;
             print_json(&list_nota_runtime_receipts(
@@ -1165,7 +1205,7 @@ fn run_nota_cli(args: &[String]) -> Result<()> {
             print_json(&report)
         }
         _ => bail!(
-            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>] [--repair-of-allocation-id <id>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota anti-zeno`, `entrance nota invariants`, `entrance nota repair`, `entrance nota cold-docs`, `entrance nota host`, `entrance nota worktrees`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota rebuild-projections [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
+            "unsupported nota command, expected `entrance nota overview`, `entrance nota status`, `entrance nota clarify --summary <text>`, `entrance nota ask --ask-code <unblock|decide|replace|override> --summary <text>`, `entrance nota accept-current-round [--summary <text>]`, `entrance nota do [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>]`, `entrance nota dev [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--title <text>] [--repair-of-allocation-id <id>]`, `entrance nota review --transaction-id <id> --allocation-id <id> --verdict <approved|changes_requested> [--summary <text>]`, `entrance nota integrate --transaction-id <id> --allocation-id <id> --state <started|integrated|repair_requested> [--summary <text>]`, `entrance nota finalize --transaction-id <id> --allocation-id <id> [--summary <text>]`, `entrance nota decision --title <text> --statement <text> [--rationale <text>] [--decision-type <text>] [--scope-type <text>] [--scope-ref <text>] [--source-ref <text>] [--decided-by <text>] [--enforcement-level <text>] [--actor-scope <text>] [--confidence <float>] [--supersedes <id> ...] [--conflicts-with <id> ...]`, `entrance nota chat-policy [--policy <off|summary|full>]`, `entrance nota capture-chat --role <human|nota> --content <text> [--summary <text>] [--session-ref <id>] [--scope-type <text>] [--scope-ref <text>] [--linked-decision-id <id>]`, `entrance nota checkpoint --stable-level <text> --landed <text> [--landed <text> ...] --remaining <text> [--remaining <text> ...] --human-continuity-bus <text> [--selected-trunk <text>] [--next-start-hint <text> ...] [--title <text>] [--project-dir <path>]`, `entrance nota checkpoint-runtime-closure`, `entrance nota checkpoints`, `entrance nota rounds`, `entrance nota acceptance-bundles`, `entrance nota projections`, `entrance nota anti-zeno`, `entrance nota invariants`, `entrance nota repair`, `entrance nota cold-docs`, `entrance nota host`, `entrance nota worktrees`, `entrance nota canonicalize-cold-docs --project-dir <path>`, `entrance nota export-cold-docs --project-dir <path>`, `entrance nota export-hot-root [--project-dir <path>]`, `entrance nota rebuild-projections [--project-dir <path>]`, `entrance nota decisions`, `entrance nota visions`, `entrance nota todos`, `entrance nota chat-captures`, `entrance nota allocations`, `entrance nota receipts [--transaction-id <id>]`, or `entrance nota transactions`"
         ),
     }
 }
@@ -1688,6 +1728,91 @@ fn parse_nota_finalize_args(args: &[String]) -> Result<NotaDevReturnFinalizeRequ
     }
     if request.allocation_id <= 0 {
         bail!("`entrance nota finalize --allocation-id` is required");
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_clarify_args(args: &[String]) -> Result<NotaBoundaryClarificationRequest> {
+    let mut request = NotaBoundaryClarificationRequest {
+        summary: String::new(),
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--summary" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota clarify --summary` requires a value")?;
+                request.summary = value.to_string();
+                index += 2;
+            }
+            other => bail!("unsupported nota clarify argument `{other}`"),
+        }
+    }
+
+    if request.summary.trim().is_empty() {
+        bail!("`entrance nota clarify --summary` is required");
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_ask_args(args: &[String]) -> Result<NotaBoundaryAskRequest> {
+    let mut request = NotaBoundaryAskRequest {
+        ask_code: String::new(),
+        summary: String::new(),
+    };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--ask-code" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota ask --ask-code` requires a value")?;
+                request.ask_code = value.to_string();
+                index += 2;
+            }
+            "--summary" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota ask --summary` requires a value")?;
+                request.summary = value.to_string();
+                index += 2;
+            }
+            other => bail!("unsupported nota ask argument `{other}`"),
+        }
+    }
+
+    if request.ask_code.trim().is_empty() {
+        bail!("`entrance nota ask --ask-code` is required");
+    }
+    if request.summary.trim().is_empty() {
+        bail!("`entrance nota ask --summary` is required");
+    }
+
+    Ok(request)
+}
+
+fn parse_nota_accept_current_round_args(
+    args: &[String],
+) -> Result<NotaCurrentRoundAcceptanceRequest> {
+    let mut request = NotaCurrentRoundAcceptanceRequest { summary: None };
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--summary" => {
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance nota accept-current-round --summary` requires a value")?;
+                request.summary = Some(value.to_string());
+                index += 2;
+            }
+            other => bail!("unsupported nota accept-current-round argument `{other}`"),
+        }
     }
 
     Ok(request)
@@ -2756,18 +2881,33 @@ fn render_hot_root_files(
         .current_acceptance_bundle
         .as_ref()
         .map(|bundle| {
-            format!(
-                "{} on allocation {} ({})",
-                bundle.payload.acceptance_kind,
-                bundle.payload.allocation_id,
-                bundle.payload.round_state
-            )
+            if bundle.payload.allocation_id == 0 {
+                format!(
+                    "{} on checkpoint {} ({})",
+                    bundle.payload.acceptance_kind,
+                    bundle.payload.checkpoint_id,
+                    bundle.payload.round_state
+                )
+            } else {
+                format!(
+                    "{} on allocation {} ({})",
+                    bundle.payload.acceptance_kind,
+                    bundle.payload.allocation_id,
+                    bundle.payload.round_state
+                )
+            }
         })
         .unwrap_or_else(|| "No formal acceptance bundle is current.".to_string());
     let next_step_line = status
         .next_step
         .as_ref()
-        .map(|step| format!("{} for allocation {}", step.step, step.allocation_id))
+        .map(|step| {
+            if step.allocation_id == 0 {
+                format!("{} on checkpoint {}", step.step, step.target_ref)
+            } else {
+                format!("{} for allocation {}", step.step, step.allocation_id)
+            }
+        })
         .unwrap_or_else(|| "No follow-on runtime step is currently open.".to_string());
     let round_state_line = format!(
         "{} / {} ({})",

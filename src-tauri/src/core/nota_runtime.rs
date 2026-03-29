@@ -37,6 +37,8 @@ const NOTA_RUNTIME_SCOPE_REF: &str = "Entrance";
 const CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND: &str = "CADENCE_CHECKPOINT_WRITTEN";
 const AGENT_RETURN_ACCEPTED_RECEIPT_KIND: &str = "AGENT_RETURN_ACCEPTED";
 const DEV_RETURN_ACCEPTED_RECEIPT_KIND: &str = "DEV_RETURN_ACCEPTED";
+const DO_CLARIFICATION_RECORDED_RECEIPT_KIND: &str = "DO_CLARIFICATION_RECORDED";
+const DO_ASK_RECORDED_RECEIPT_KIND: &str = "DO_ASK_RECORDED";
 const DEV_RETURN_REVIEW_READY_RECEIPT_KIND: &str = "DEV_RETURN_REVIEW_READY";
 const DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND: &str = "DEV_RETURN_REVIEW_RECORDED";
 const DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND: &str = "DEV_RETURN_INTEGRATE_RECORDED";
@@ -52,6 +54,13 @@ const DEV_RETURN_INTEGRATE_REPAIR_REQUESTED_STATE: &str = "repair_requested";
 const DEV_RETURN_INTEGRATE_STARTED_RUNTIME_STATE: &str = "integrate_started";
 const DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE: &str = "integrate_recorded";
 const DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE: &str = "closed";
+const HUMAN_ROUND_ACCEPTANCE_KIND: &str = "human_round_acceptance";
+const NOTA_DO_CLARIFICATION_TRANSACTION_KIND: &str = "nota_do_clarification";
+const NOTA_DO_ASK_TRANSACTION_KIND: &str = "nota_do_ask";
+const NOTA_BOUNDARY_EXECUTION_HOST: &str = "boundary";
+const CLARIFICATION_OPEN_TRANSACTION_STATUS: &str = "clarification_open";
+const ASK_OPEN_TRANSACTION_STATUS: &str = "ask_open";
+const BOUNDARY_INTAKE_SUPERSEDED_TRANSACTION_STATUS: &str = "superseded";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NotaCheckpointRequest {
@@ -188,6 +197,62 @@ pub struct NotaWakeRequestRecord {
     #[serde(flatten)]
     pub cadence_object: StoredCadenceObject,
     pub payload: CadenceWakeRequestPayload,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaBoundaryClarificationRequest {
+    pub summary: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaBoundaryAskRequest {
+    pub ask_code: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotaCurrentRoundAcceptanceRequest {
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotaBoundaryClarificationPayload {
+    pub checkpoint_id: i64,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotaBoundaryAskPayload {
+    pub checkpoint_id: i64,
+    pub ask_code: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaBoundaryClarificationReport {
+    pub status: String,
+    pub transaction: StoredNotaRuntimeTransaction,
+    pub clarification: NotaBoundaryClarificationPayload,
+    pub next_step: NotaRuntimeNextStep,
+    pub receipt: StoredNotaRuntimeReceipt,
+    pub superseded_transaction_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaBoundaryAskReport {
+    pub status: String,
+    pub transaction: StoredNotaRuntimeTransaction,
+    pub ask: NotaBoundaryAskPayload,
+    pub next_step: NotaRuntimeNextStep,
+    pub receipt: StoredNotaRuntimeReceipt,
+    pub superseded_transaction_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotaCurrentRoundAcceptanceReport {
+    pub status: String,
+    pub acceptance_bundle: NotaAcceptanceBundleRecord,
+    pub superseded_transaction_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -781,6 +846,20 @@ pub struct NotaRuntimeFinalize {
 struct DevReturnReviewReadyReceiptPayload {
     checkpoint_id: i64,
     #[serde(flatten)]
+    next_step: NotaRuntimeNextStep,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DoClarificationRecordedReceiptPayload {
+    checkpoint_id: i64,
+    clarification: NotaBoundaryClarificationPayload,
+    next_step: NotaRuntimeNextStep,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DoAskRecordedReceiptPayload {
+    checkpoint_id: i64,
+    ask: NotaBoundaryAskPayload,
     next_step: NotaRuntimeNextStep,
 }
 
@@ -2506,6 +2585,13 @@ fn acceptance_bundle_source_ref(kind: RecommendedCheckpointCandidateKind) -> &'s
 }
 
 fn build_acceptance_bundle_title(bundle: &CadenceAcceptanceBundlePayload) -> String {
+    if bundle.allocation_id == 0 {
+        return format!(
+            "Acceptance bundle: current round acceptance on checkpoint {}",
+            bundle.checkpoint_id
+        );
+    }
+
     format!(
         "Acceptance bundle: {} {}",
         bundle.acceptance_kind.replace('_', " "),
@@ -2514,6 +2600,13 @@ fn build_acceptance_bundle_title(bundle: &CadenceAcceptanceBundlePayload) -> Str
 }
 
 fn build_acceptance_bundle_summary(bundle: &CadenceAcceptanceBundlePayload) -> String {
+    if bundle.allocation_id == 0 {
+        return format!(
+            "Acceptance is formalized for current human round target {} on checkpoint {}.",
+            bundle.target_ref, bundle.checkpoint_id
+        );
+    }
+
     if bundle.fully_settled {
         format!(
             "Acceptance is fully settled for allocation {} on lineage {}.",
@@ -2729,6 +2822,446 @@ fn ensure_dev_return_review_ready_receipt(
     })?;
 
     Ok(())
+}
+
+fn normalize_boundary_ask_code(raw: &str) -> Result<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "unblock" | "decide" | "replace" | "override" => Ok(normalized),
+        _ => {
+            bail!("unsupported ask code `{raw}`; use `unblock`, `decide`, `replace`, or `override`")
+        }
+    }
+}
+
+fn build_boundary_intake_lineage_ref(
+    boundary_kind: &str,
+    checkpoint_id: i64,
+    transaction_id: i64,
+) -> String {
+    format!("nota/boundary/{boundary_kind}/checkpoint/{checkpoint_id}/transaction/{transaction_id}")
+}
+
+fn build_current_round_acceptance_lineage_ref(checkpoint_id: i64, human_round_id: i64) -> String {
+    format!("nota/human-round/{human_round_id}/checkpoint/{checkpoint_id}/acceptance")
+}
+
+fn build_boundary_intake_next_step(
+    step: &str,
+    transaction_id: i64,
+    checkpoint_id: i64,
+) -> NotaRuntimeNextStep {
+    NotaRuntimeNextStep {
+        step: step.to_string(),
+        transaction_id,
+        allocation_id: 0,
+        lineage_ref: build_boundary_intake_lineage_ref(step, checkpoint_id, transaction_id),
+        child_dispatch_role: "nota".to_string(),
+        execution_host: NOTA_BOUNDARY_EXECUTION_HOST.to_string(),
+        target_kind: "cadence_checkpoint".to_string(),
+        target_ref: checkpoint_id.to_string(),
+    }
+}
+
+fn build_boundary_clarification_next_step(
+    transaction_id: i64,
+    checkpoint_id: i64,
+) -> NotaRuntimeNextStep {
+    build_boundary_intake_next_step("clarify", transaction_id, checkpoint_id)
+}
+
+fn build_boundary_ask_next_step(
+    transaction_id: i64,
+    checkpoint_id: i64,
+    ask_code: &str,
+) -> NotaRuntimeNextStep {
+    build_boundary_intake_next_step(
+        format!("ask_{ask_code}").as_str(),
+        transaction_id,
+        checkpoint_id,
+    )
+}
+
+fn is_boundary_intake_transaction_open(transaction: &StoredNotaRuntimeTransaction) -> bool {
+    matches!(
+        (
+            transaction.transaction_kind.as_str(),
+            transaction.status.as_str(),
+        ),
+        (
+            NOTA_DO_CLARIFICATION_TRANSACTION_KIND,
+            CLARIFICATION_OPEN_TRANSACTION_STATUS
+        ) | (NOTA_DO_ASK_TRANSACTION_KIND, ASK_OPEN_TRANSACTION_STATUS)
+    )
+}
+
+fn update_boundary_intake_transactions_to_superseded(
+    transaction: &DataStoreTransaction<'_>,
+    transactions: &[StoredNotaRuntimeTransaction],
+) -> Result<()> {
+    for boundary_transaction in transactions {
+        transaction.update_nota_runtime_transaction(
+            boundary_transaction.id,
+            NotaRuntimeTransactionUpdate {
+                status: BOUNDARY_INTAKE_SUPERSEDED_TRANSACTION_STATUS,
+                forge_task_id: boundary_transaction.forge_task_id,
+                cadence_checkpoint_id: boundary_transaction.cadence_checkpoint_id,
+            },
+        )?;
+    }
+
+    Ok(())
+}
+
+fn current_runtime_checkpoint(
+    data_store: &DataStore,
+    context: &str,
+) -> Result<NotaCheckpointRecord> {
+    let checkpoints = list_runtime_checkpoints(data_store)?;
+    checkpoints
+        .checkpoints
+        .into_iter()
+        .find(|checkpoint| checkpoint.cadence_object.is_current)
+        .with_context(|| format!("{context} requires a current runtime checkpoint"))
+}
+
+fn current_runtime_checkpoint_scope(
+    data_store: &DataStore,
+    checkpoint: &NotaCheckpointRecord,
+) -> Result<Vec<i64>> {
+    active_checkpoint_scope_ids(data_store, Some(checkpoint))
+}
+
+fn boundary_intake_next_step_from_transaction(
+    transaction: &StoredNotaRuntimeTransaction,
+) -> Result<Option<NotaRuntimeNextStep>> {
+    if transaction.cadence_checkpoint_id.is_none() {
+        return Ok(None);
+    }
+    if !is_boundary_intake_transaction_open(transaction) {
+        return Ok(None);
+    }
+
+    match transaction.transaction_kind.as_str() {
+        NOTA_DO_CLARIFICATION_TRANSACTION_KIND => {
+            let payload: NotaBoundaryClarificationPayload =
+                serde_json::from_str(&transaction.payload_json).with_context(|| {
+                    format!(
+                        "failed to parse clarification payload for runtime transaction {}",
+                        transaction.id
+                    )
+                })?;
+            Ok(Some(build_boundary_clarification_next_step(
+                transaction.id,
+                payload.checkpoint_id,
+            )))
+        }
+        NOTA_DO_ASK_TRANSACTION_KIND => {
+            let payload: NotaBoundaryAskPayload = serde_json::from_str(&transaction.payload_json)
+                .with_context(|| {
+                format!(
+                    "failed to parse ask payload for runtime transaction {}",
+                    transaction.id
+                )
+            })?;
+            Ok(Some(build_boundary_ask_next_step(
+                transaction.id,
+                payload.checkpoint_id,
+                &payload.ask_code,
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn derive_open_boundary_intake_next_step(
+    checkpoint_scope_ids: &[i64],
+    transactions: &[StoredNotaRuntimeTransaction],
+) -> Result<Option<NotaRuntimeNextStep>> {
+    if checkpoint_scope_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let checkpoint_rank = scoped_checkpoint_rank_map(checkpoint_scope_ids);
+    let mut selected: Option<(usize, i64, &StoredNotaRuntimeTransaction)> = None;
+
+    for transaction in transactions
+        .iter()
+        .filter(|transaction| is_boundary_intake_transaction_open(transaction))
+    {
+        let Some(checkpoint_id) = transaction.cadence_checkpoint_id else {
+            continue;
+        };
+        let Some(scope_rank) = checkpoint_rank.get(&checkpoint_id).copied() else {
+            continue;
+        };
+
+        match selected {
+            Some((selected_rank, selected_id, _))
+                if selected_rank < scope_rank
+                    || (selected_rank == scope_rank && selected_id >= transaction.id) => {}
+            _ => selected = Some((scope_rank, transaction.id, transaction)),
+        }
+    }
+
+    let Some((_, _, transaction)) = selected else {
+        return Ok(None);
+    };
+    boundary_intake_next_step_from_transaction(transaction)
+}
+
+pub fn record_nota_boundary_clarification(
+    data_store: &DataStore,
+    request: NotaBoundaryClarificationRequest,
+) -> Result<NotaBoundaryClarificationReport> {
+    let summary = normalize_optional(Some(request.summary.as_str()))
+        .context("`entrance nota clarify --summary` must not be empty")?;
+    sync_runtime_truth(data_store, None)?;
+    let current_checkpoint = current_runtime_checkpoint(data_store, "runtime clarification")?;
+    let superseded_transactions = list_nota_runtime_transactions(data_store)?
+        .transactions
+        .into_iter()
+        .filter(|transaction| {
+            transaction.cadence_checkpoint_id == Some(current_checkpoint.cadence_object.id)
+                && is_boundary_intake_transaction_open(transaction)
+        })
+        .collect::<Vec<_>>();
+    let superseded_transaction_ids = superseded_transactions
+        .iter()
+        .map(|transaction| transaction.id)
+        .collect::<Vec<_>>();
+    let clarification = NotaBoundaryClarificationPayload {
+        checkpoint_id: current_checkpoint.cadence_object.id,
+        summary: summary.clone(),
+    };
+    let payload_json = serde_json::to_string(&clarification)
+        .context("failed to serialize clarification payload")?;
+    let title = format!(
+        "Clarify checkpoint {}",
+        current_checkpoint.cadence_object.id
+    );
+
+    let (transaction, next_step, receipt) = data_store.with_immediate_transaction(|tx| {
+        update_boundary_intake_transactions_to_superseded(tx, &superseded_transactions)?;
+
+        let transaction = tx.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "clarify",
+            transaction_kind: NOTA_DO_CLARIFICATION_TRANSACTION_KIND,
+            title: &title,
+            payload_json: &payload_json,
+            status: CLARIFICATION_OPEN_TRANSACTION_STATUS,
+            forge_task_id: None,
+            cadence_checkpoint_id: Some(current_checkpoint.cadence_object.id),
+        })?;
+        let next_step =
+            build_boundary_clarification_next_step(transaction.id, clarification.checkpoint_id);
+        let receipt_payload = DoClarificationRecordedReceiptPayload {
+            checkpoint_id: clarification.checkpoint_id,
+            clarification: clarification.clone(),
+            next_step: next_step.clone(),
+        };
+        let receipt = tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: transaction.id,
+            receipt_kind: DO_CLARIFICATION_RECORDED_RECEIPT_KIND,
+            payload_json: &serde_json::to_string(&receipt_payload)
+                .context("failed to serialize clarification receipt payload")?,
+            status: "recorded",
+        })?;
+
+        Ok((transaction, next_step, receipt))
+    })?;
+    sync_runtime_truth(data_store, Some(transaction.id))?;
+
+    Ok(NotaBoundaryClarificationReport {
+        status: "recorded".to_string(),
+        transaction,
+        clarification,
+        next_step,
+        receipt,
+        superseded_transaction_ids,
+    })
+}
+
+pub fn record_nota_boundary_ask(
+    data_store: &DataStore,
+    request: NotaBoundaryAskRequest,
+) -> Result<NotaBoundaryAskReport> {
+    let ask_code = normalize_boundary_ask_code(&request.ask_code)?;
+    let summary = normalize_optional(Some(request.summary.as_str()))
+        .context("`entrance nota ask --summary` must not be empty")?;
+    sync_runtime_truth(data_store, None)?;
+    let current_checkpoint = current_runtime_checkpoint(data_store, "runtime ask")?;
+    let superseded_transactions = list_nota_runtime_transactions(data_store)?
+        .transactions
+        .into_iter()
+        .filter(|transaction| {
+            transaction.cadence_checkpoint_id == Some(current_checkpoint.cadence_object.id)
+                && is_boundary_intake_transaction_open(transaction)
+        })
+        .collect::<Vec<_>>();
+    let superseded_transaction_ids = superseded_transactions
+        .iter()
+        .map(|transaction| transaction.id)
+        .collect::<Vec<_>>();
+    let ask = NotaBoundaryAskPayload {
+        checkpoint_id: current_checkpoint.cadence_object.id,
+        ask_code,
+        summary,
+    };
+    let payload_json = serde_json::to_string(&ask).context("failed to serialize ask payload")?;
+    let title = format!(
+        "Ask {} on checkpoint {}",
+        ask.ask_code, current_checkpoint.cadence_object.id
+    );
+
+    let (transaction, next_step, receipt) = data_store.with_immediate_transaction(|tx| {
+        update_boundary_intake_transactions_to_superseded(tx, &superseded_transactions)?;
+
+        let transaction = tx.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "ask",
+            transaction_kind: NOTA_DO_ASK_TRANSACTION_KIND,
+            title: &title,
+            payload_json: &payload_json,
+            status: ASK_OPEN_TRANSACTION_STATUS,
+            forge_task_id: None,
+            cadence_checkpoint_id: Some(current_checkpoint.cadence_object.id),
+        })?;
+        let next_step =
+            build_boundary_ask_next_step(transaction.id, ask.checkpoint_id, &ask.ask_code);
+        let receipt_payload = DoAskRecordedReceiptPayload {
+            checkpoint_id: ask.checkpoint_id,
+            ask: ask.clone(),
+            next_step: next_step.clone(),
+        };
+        let receipt = tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+            transaction_id: transaction.id,
+            receipt_kind: DO_ASK_RECORDED_RECEIPT_KIND,
+            payload_json: &serde_json::to_string(&receipt_payload)
+                .context("failed to serialize ask receipt payload")?,
+            status: "recorded",
+        })?;
+
+        Ok((transaction, next_step, receipt))
+    })?;
+    sync_runtime_truth(data_store, Some(transaction.id))?;
+
+    Ok(NotaBoundaryAskReport {
+        status: "recorded".to_string(),
+        transaction,
+        ask,
+        next_step,
+        receipt,
+        superseded_transaction_ids,
+    })
+}
+
+pub fn accept_current_runtime_round(
+    data_store: &DataStore,
+    request: NotaCurrentRoundAcceptanceRequest,
+) -> Result<NotaCurrentRoundAcceptanceReport> {
+    sync_runtime_truth(data_store, None)?;
+    let current_checkpoint = current_runtime_checkpoint(data_store, "current round acceptance")?;
+    let checkpoint_scope_ids = current_runtime_checkpoint_scope(data_store, &current_checkpoint)?;
+    if let Some(acceptance_bundle) =
+        derive_current_runtime_acceptance_bundle(data_store, &checkpoint_scope_ids)?
+    {
+        return Ok(NotaCurrentRoundAcceptanceReport {
+            status: "already_recorded".to_string(),
+            acceptance_bundle,
+            superseded_transaction_ids: Vec::new(),
+        });
+    }
+
+    let current_human_round = derive_current_runtime_human_round(data_store)?
+        .context("current round acceptance requires a materialized human round")?;
+    let superseded_transactions = list_nota_runtime_transactions(data_store)?
+        .transactions
+        .into_iter()
+        .filter(|transaction| {
+            transaction.cadence_checkpoint_id == Some(current_checkpoint.cadence_object.id)
+                && is_boundary_intake_transaction_open(transaction)
+        })
+        .collect::<Vec<_>>();
+    let superseded_transaction_ids = superseded_transactions
+        .iter()
+        .map(|transaction| transaction.id)
+        .collect::<Vec<_>>();
+    let payload = CadenceAcceptanceBundlePayload {
+        checkpoint_id: current_checkpoint.cadence_object.id,
+        transaction_id: 0,
+        allocation_id: 0,
+        lineage_ref: build_current_round_acceptance_lineage_ref(
+            current_checkpoint.cadence_object.id,
+            current_human_round.cadence_object.id,
+        ),
+        acceptance_kind: HUMAN_ROUND_ACCEPTANCE_KIND.to_string(),
+        round_state: "accepted".to_string(),
+        fully_settled: false,
+        child_dispatch_role: "human".to_string(),
+        execution_host: NOTA_BOUNDARY_EXECUTION_HOST.to_string(),
+        target_kind: "cadence_human_round".to_string(),
+        target_ref: current_human_round.cadence_object.id.to_string(),
+        review_verdict: None,
+        integrate_outcome: None,
+        finalize_state: None,
+    };
+    let title = "Acceptance bundle: current round acceptance".to_string();
+    let summary = normalize_optional(request.summary.as_deref()).unwrap_or_else(|| {
+        format!(
+            "Acceptance is formalized for current human round {} on checkpoint {}.",
+            current_human_round.cadence_object.id, current_checkpoint.cadence_object.id
+        )
+    });
+    let payload_json = serde_json::to_string(&payload)
+        .context("failed to serialize current round acceptance payload")?;
+
+    let acceptance_bundle = data_store.with_immediate_transaction(|tx| {
+        update_boundary_intake_transactions_to_superseded(tx, &superseded_transactions)?;
+
+        let cadence_object = tx.insert_cadence_object(NewCadenceObject {
+            cadence_kind: CADENCE_ACCEPTANCE_BUNDLE_KIND,
+            title: &title,
+            summary: &summary,
+            payload_json: &payload_json,
+            scope_type: NOTA_RUNTIME_SCOPE_TYPE,
+            scope_ref: NOTA_RUNTIME_SCOPE_REF,
+            source_type: NOTA_RUNTIME_SOURCE_TYPE,
+            source_ref: "nota_runtime:current_round_acceptance_bundle",
+            admission_policy: admission_policy_for_kind(CADENCE_ACCEPTANCE_BUNDLE_KIND),
+            projection_policy: projection_policy_for_kind(CADENCE_ACCEPTANCE_BUNDLE_KIND),
+            status: "accepted",
+            is_current: true,
+        })?;
+        tx.insert_cadence_link(NewCadenceLink {
+            src_cadence_object_id: current_checkpoint.cadence_object.id,
+            dst_cadence_object_id: cadence_object.id,
+            relation_type: "acceptance_bundle",
+            status: "active",
+        })?;
+        tx.insert_anti_zeno_event(crate::core::data_store::NewAntiZenoEvent {
+            checkpoint_id: Some(current_checkpoint.cadence_object.id),
+            acceptance_bundle_id: Some(cadence_object.id),
+            event_kind: "acceptance_recorded",
+            boundary_ref: &payload.lineage_ref,
+            budget_axis: "semantic",
+            event_weight: 1,
+            summary: &summary,
+        })?;
+
+        Ok(NotaAcceptanceBundleRecord {
+            cadence_object,
+            payload: payload.clone(),
+        })
+    })?;
+    sync_runtime_truth(data_store, None)?;
+
+    Ok(NotaCurrentRoundAcceptanceReport {
+        status: "recorded".to_string(),
+        acceptance_bundle,
+        superseded_transaction_ids,
+    })
 }
 
 pub fn record_dev_return_review(
@@ -4403,124 +4936,130 @@ pub fn derive_nota_runtime_next_step(
         return Ok(None);
     }
 
-    let Some(latest_dev_allocation) = active_scoped_lane_allocation(
+    if let Some(latest_dev_allocation) = active_scoped_lane_allocation(
         checkpoint_scope_ids,
         transactions,
         allocations,
         RuntimeBoundaryLane::Dev,
-    ) else {
-        return Ok(None);
-    };
-    if latest_dev_allocation.status != "return_ready" {
-        return Ok(None);
+    ) {
+        if latest_dev_allocation.status == "return_ready" {
+            if receipts
+                .iter()
+                .filter(|receipt| {
+                    receipt.receipt_kind == DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
+                        && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+                })
+                .map(|receipt| {
+                    let payload: DevReturnFinalizeRecordedReceiptPayload =
+                        serde_json::from_str(&receipt.payload_json).with_context(|| {
+                            format!(
+                                "failed to parse dev finalize recorded receipt {}",
+                                receipt.id
+                            )
+                        })?;
+                    Ok((receipt.id, payload))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .any(|(_, payload)| {
+                    checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                        && payload.finalize.allocation_id == latest_dev_allocation.id
+                        && payload.finalize.transaction_id
+                            == latest_dev_allocation.source_transaction_id
+                        && payload.finalize.lineage_ref == latest_dev_allocation.lineage_ref
+                })
+            {
+                return derive_open_boundary_intake_next_step(checkpoint_scope_ids, transactions);
+            }
+
+            if let Some((_, payload)) = receipts
+                .iter()
+                .filter(|receipt| {
+                    receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
+                        && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+                })
+                .map(|receipt| {
+                    let payload: DevReturnIntegrateRecordedReceiptPayload =
+                        serde_json::from_str(&receipt.payload_json).with_context(|| {
+                            format!(
+                                "failed to parse dev integrate recorded receipt {}",
+                                receipt.id
+                            )
+                        })?;
+                    Ok((receipt.id, payload))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|(_, payload)| {
+                    checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                        && payload.integrate.allocation_id == latest_dev_allocation.id
+                        && payload.integrate.transaction_id
+                            == latest_dev_allocation.source_transaction_id
+                        && payload.integrate.lineage_ref == latest_dev_allocation.lineage_ref
+                })
+                .max_by_key(|(receipt_id, _)| *receipt_id)
+            {
+                return Ok(payload.next_step);
+            }
+
+            if let Some((_, payload)) = receipts
+                .iter()
+                .filter(|receipt| {
+                    receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
+                        && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+                })
+                .map(|receipt| {
+                    let payload: DevReturnReviewRecordedReceiptPayload =
+                        serde_json::from_str(&receipt.payload_json).with_context(|| {
+                            format!("failed to parse dev review recorded receipt {}", receipt.id)
+                        })?;
+                    Ok((receipt.id, payload))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|(_, payload)| {
+                    checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                        && payload.review.allocation_id == latest_dev_allocation.id
+                        && payload.review.transaction_id
+                            == latest_dev_allocation.source_transaction_id
+                        && payload.review.lineage_ref == latest_dev_allocation.lineage_ref
+                })
+                .max_by_key(|(receipt_id, _)| *receipt_id)
+            {
+                return Ok(Some(payload.next_step));
+            }
+
+            if let Some(next_step) = receipts
+                .iter()
+                .filter(|receipt| {
+                    receipt.receipt_kind == DEV_RETURN_REVIEW_READY_RECEIPT_KIND
+                        && receipt.transaction_id == latest_dev_allocation.source_transaction_id
+                })
+                .map(|receipt| {
+                    let payload: DevReturnReviewReadyReceiptPayload =
+                        serde_json::from_str(&receipt.payload_json).with_context(|| {
+                            format!("failed to parse dev review-ready receipt {}", receipt.id)
+                        })?;
+                    Ok((receipt.id, payload))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|(_, payload)| {
+                    checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
+                        && payload.next_step.allocation_id == latest_dev_allocation.id
+                        && payload.next_step.transaction_id
+                            == latest_dev_allocation.source_transaction_id
+                        && payload.next_step.lineage_ref == latest_dev_allocation.lineage_ref
+                })
+                .max_by_key(|(receipt_id, _)| *receipt_id)
+                .map(|(_, payload)| payload.next_step)
+            {
+                return Ok(Some(next_step));
+            }
+        }
     }
 
-    if receipts
-        .iter()
-        .filter(|receipt| {
-            receipt.receipt_kind == DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND
-                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
-        })
-        .map(|receipt| {
-            let payload: DevReturnFinalizeRecordedReceiptPayload =
-                serde_json::from_str(&receipt.payload_json).with_context(|| {
-                    format!(
-                        "failed to parse dev finalize recorded receipt {}",
-                        receipt.id
-                    )
-                })?;
-            Ok((receipt.id, payload))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .any(|(_, payload)| {
-            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
-                && payload.finalize.allocation_id == latest_dev_allocation.id
-                && payload.finalize.transaction_id == latest_dev_allocation.source_transaction_id
-                && payload.finalize.lineage_ref == latest_dev_allocation.lineage_ref
-        })
-    {
-        return Ok(None);
-    }
-
-    if let Some((_, payload)) = receipts
-        .iter()
-        .filter(|receipt| {
-            receipt.receipt_kind == DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND
-                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
-        })
-        .map(|receipt| {
-            let payload: DevReturnIntegrateRecordedReceiptPayload =
-                serde_json::from_str(&receipt.payload_json).with_context(|| {
-                    format!(
-                        "failed to parse dev integrate recorded receipt {}",
-                        receipt.id
-                    )
-                })?;
-            Ok((receipt.id, payload))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|(_, payload)| {
-            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
-                && payload.integrate.allocation_id == latest_dev_allocation.id
-                && payload.integrate.transaction_id == latest_dev_allocation.source_transaction_id
-                && payload.integrate.lineage_ref == latest_dev_allocation.lineage_ref
-        })
-        .max_by_key(|(receipt_id, _)| *receipt_id)
-    {
-        return Ok(payload.next_step);
-    }
-
-    if let Some((_, payload)) = receipts
-        .iter()
-        .filter(|receipt| {
-            receipt.receipt_kind == DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND
-                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
-        })
-        .map(|receipt| {
-            let payload: DevReturnReviewRecordedReceiptPayload =
-                serde_json::from_str(&receipt.payload_json).with_context(|| {
-                    format!("failed to parse dev review recorded receipt {}", receipt.id)
-                })?;
-            Ok((receipt.id, payload))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|(_, payload)| {
-            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
-                && payload.review.allocation_id == latest_dev_allocation.id
-                && payload.review.transaction_id == latest_dev_allocation.source_transaction_id
-                && payload.review.lineage_ref == latest_dev_allocation.lineage_ref
-        })
-        .max_by_key(|(receipt_id, _)| *receipt_id)
-    {
-        return Ok(Some(payload.next_step));
-    }
-
-    Ok(receipts
-        .iter()
-        .filter(|receipt| {
-            receipt.receipt_kind == DEV_RETURN_REVIEW_READY_RECEIPT_KIND
-                && receipt.transaction_id == latest_dev_allocation.source_transaction_id
-        })
-        .map(|receipt| {
-            let payload: DevReturnReviewReadyReceiptPayload =
-                serde_json::from_str(&receipt.payload_json).with_context(|| {
-                    format!("failed to parse dev review-ready receipt {}", receipt.id)
-                })?;
-            Ok((receipt.id, payload))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|(_, payload)| {
-            checkpoint_scope_contains(checkpoint_scope_ids, payload.checkpoint_id)
-                && payload.next_step.allocation_id == latest_dev_allocation.id
-                && payload.next_step.transaction_id == latest_dev_allocation.source_transaction_id
-                && payload.next_step.lineage_ref == latest_dev_allocation.lineage_ref
-        })
-        .max_by_key(|(receipt_id, _)| *receipt_id)
-        .map(|(_, payload)| payload.next_step))
+    derive_open_boundary_intake_next_step(checkpoint_scope_ids, transactions)
 }
 
 fn checkpoint_request_matches_current(
@@ -4915,16 +5454,29 @@ fn build_runtime_handout_summary(
     }
 }
 
+fn next_step_requires_active_human_wake(step: &str) -> bool {
+    matches!(
+        step,
+        "review" | "integrate" | "finalize" | "repair" | "ask_decide" | "ask_override"
+    )
+}
+
 fn build_runtime_wake_request_summary(
     checkpoint: &NotaCheckpointRecord,
     round_state: &NotaRoundStateProjection,
 ) -> (String, String, Option<String>) {
     if let Some(step) = round_state.next_step.as_deref() {
-        (
-            format!("Wake request: {step}"),
-            "requested".to_string(),
-            Some(step.to_string()),
-        )
+        let status = if next_step_requires_active_human_wake(step) {
+            "requested"
+        } else {
+            "resolved"
+        };
+        let title = if status == "requested" {
+            format!("Wake request: {step}")
+        } else {
+            format!("Wake request resolved: {step}")
+        };
+        (title, status.to_string(), Some(step.to_string()))
     } else if !round_state.acceptance_present {
         (
             format!("Wake request: checkpoint {}", checkpoint.cadence_object.id),
@@ -4997,6 +5549,26 @@ fn materialize_current_runtime_bridge_objects(data_store: &DataStore) -> Result<
         summary: build_runtime_handout_summary(&current_checkpoint, &round_state),
     };
     let wake_summary = match round_state.next_step.as_deref() {
+        Some("clarify") => format!(
+            "Clarification is recorded on checkpoint {}; no active human wake is required until NOTA re-opens a human-facing ask or accepts the round.",
+            current_checkpoint.cadence_object.id
+        ),
+        Some("ask_unblock") => format!(
+            "Unblock ask is recorded on checkpoint {}; it stays local to NOTA by default and does not open an active human wake request.",
+            current_checkpoint.cadence_object.id
+        ),
+        Some("ask_replace") => format!(
+            "Replace ask is recorded on checkpoint {}; it stays local to NOTA by default and does not open an active human wake request.",
+            current_checkpoint.cadence_object.id
+        ),
+        Some("ask_decide") => format!(
+            "Wake on checkpoint {} because the current ask requires an explicit human decision before the round can proceed.",
+            current_checkpoint.cadence_object.id
+        ),
+        Some("ask_override") => format!(
+            "Wake on checkpoint {} because the current ask requires an explicit human override before the round can proceed.",
+            current_checkpoint.cadence_object.id
+        ),
         Some(step) => format!(
             "Wake on checkpoint {} and complete `{step}` before treating the round as settled.",
             current_checkpoint.cadence_object.id
@@ -5157,7 +5729,20 @@ pub fn derive_anti_zeno_projection(
     let summary = if current_checkpoint.is_none() {
         "No checkpoint has anchored the current human round yet, so the system can still fall back into replay.".to_string()
     } else if let Some(bundle) = acceptance_bundle {
-        if round_state.fully_settled {
+        if bundle.payload.allocation_id == 0 {
+            if round_state.fully_settled {
+                format!(
+                    "Current human round acceptance is fully settled and can resume from checkpointed closure truth."
+                )
+            } else if let Some(step) = next_step {
+                format!(
+                    "Current human round acceptance is landed, and the next semantic boundary is `{}` instead of open-ended recursion.",
+                    step.step
+                )
+            } else {
+                "Current human round acceptance is landed, but a fresh closure checkpoint still needs to carry the round into a fully settled state.".to_string()
+            }
+        } else if round_state.fully_settled {
             format!(
                 "Acceptance for allocation {} is fully settled and can resume from checkpointed closure truth.",
                 bundle.payload.allocation_id
@@ -5306,26 +5891,31 @@ mod tests {
     };
 
     use super::{
-        active_checkpoint_scope_ids, default_nota_dispatch_execution_host,
-        derive_anti_zeno_projection, derive_current_runtime_acceptance_bundle,
-        derive_current_runtime_handout, derive_current_runtime_wake_request,
-        derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
-        derive_nota_runtime_review, derive_runtime_round_state_projection,
-        list_nota_runtime_allocations, list_nota_runtime_receipts, list_runtime_acceptance_bundles,
-        list_runtime_checkpoints, list_runtime_human_rounds,
+        accept_current_runtime_round, active_checkpoint_scope_ids,
+        default_nota_dispatch_execution_host, derive_anti_zeno_projection,
+        derive_current_runtime_acceptance_bundle, derive_current_runtime_handout,
+        derive_current_runtime_wake_request, derive_nota_runtime_finalize,
+        derive_nota_runtime_integrate, derive_nota_runtime_next_step, derive_nota_runtime_review,
+        derive_runtime_round_state_projection, list_nota_runtime_allocations,
+        list_nota_runtime_receipts, list_nota_runtime_transactions,
+        list_runtime_acceptance_bundles, list_runtime_checkpoints, list_runtime_human_rounds,
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
-        resolve_dev_repair_origin, sync_runtime_truth, write_runtime_checkpoint,
-        AllocationTerminalOutcomeReceiptPayload, NotaCheckpointRequest,
-        NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest,
-        NotaDispatchExecutionHost, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
+        record_nota_boundary_ask, record_nota_boundary_clarification, resolve_dev_repair_origin,
+        sync_runtime_truth, write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload,
+        NotaBoundaryAskRequest, NotaBoundaryClarificationRequest, NotaCheckpointRequest,
+        NotaCurrentRoundAcceptanceRequest, NotaDevReturnFinalizeRequest,
+        NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest, NotaDispatchExecutionHost,
+        NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
         AGENT_RETURN_ACCEPTED_RECEIPT_KIND, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
+        ASK_OPEN_TRANSACTION_STATUS, BOUNDARY_INTAKE_SUPERSEDED_TRANSACTION_STATUS,
         CADENCE_ACCEPTANCE_BUNDLE_KIND, CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
-        DEV_RETURN_ACCEPTED_RECEIPT_KIND, DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE,
-        DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND, DEV_RETURN_INTEGRATE_INTEGRATED_STATE,
-        DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND, DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE,
-        DEV_RETURN_REVIEW_APPROVED_VERDICT, DEV_RETURN_REVIEW_READY_RECEIPT_KIND,
-        DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
+        CLARIFICATION_OPEN_TRANSACTION_STATUS, DEV_RETURN_ACCEPTED_RECEIPT_KIND,
+        DEV_RETURN_FINALIZE_CLOSED_RUNTIME_STATE, DEV_RETURN_FINALIZE_RECORDED_RECEIPT_KIND,
+        DEV_RETURN_INTEGRATE_INTEGRATED_STATE, DEV_RETURN_INTEGRATE_RECORDED_RECEIPT_KIND,
+        DEV_RETURN_INTEGRATE_RECORDED_RUNTIME_STATE, DEV_RETURN_REVIEW_APPROVED_VERDICT,
+        DEV_RETURN_REVIEW_READY_RECEIPT_KIND, DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
+        HUMAN_ROUND_ACCEPTANCE_KIND,
     };
 
     struct TempDbPath {
@@ -5512,6 +6102,306 @@ mod tests {
             .payload
             .summary
             .contains("formalize acceptance"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn accept_current_round_formalizes_generic_acceptance_bundle() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        let checkpoint = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: Some("Acceptance seed".to_string()),
+                stable_level: "single-ingress, checkpointed, DB-first NOTA host".to_string(),
+                landed: vec!["anchored the current human round".to_string()],
+                remaining: vec!["formal acceptance still pending".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("acceptance seed".to_string()),
+                next_start_hints: vec!["run accept current round".to_string()],
+                project_dir: None,
+            },
+        )?;
+
+        let report = accept_current_runtime_round(
+            &store,
+            NotaCurrentRoundAcceptanceRequest {
+                summary: Some("current round is explicitly accepted".to_string()),
+            },
+        )?;
+
+        assert_eq!(report.status, "recorded");
+        assert_eq!(
+            report.acceptance_bundle.payload.acceptance_kind,
+            HUMAN_ROUND_ACCEPTANCE_KIND
+        );
+        assert_eq!(report.acceptance_bundle.payload.transaction_id, 0);
+        assert_eq!(report.acceptance_bundle.payload.allocation_id, 0);
+        assert_eq!(
+            report.acceptance_bundle.payload.checkpoint_id,
+            checkpoint.checkpoint.cadence_object.id
+        );
+
+        let checkpoint_scope_ids =
+            active_checkpoint_scope_ids(&store, Some(&checkpoint.checkpoint))?;
+        let current_acceptance =
+            derive_current_runtime_acceptance_bundle(&store, &checkpoint_scope_ids)?
+                .context("generic acceptance bundle should be current")?;
+        assert_eq!(
+            current_acceptance.cadence_object.id,
+            report.acceptance_bundle.cadence_object.id
+        );
+
+        let current_round = list_runtime_human_rounds(&store)?
+            .human_rounds
+            .into_iter()
+            .find(|round| round.cadence_object.is_current)
+            .context("current human round should still be materialized")?;
+        assert_eq!(current_round.payload.round_state, "accepted");
+        assert_eq!(
+            current_round.payload.detail_round_state.as_deref(),
+            Some("accepted_waiting_carry_forward")
+        );
+
+        let wake_request = derive_current_runtime_wake_request(&store)?
+            .context("accepted round should still request carry-forward wake")?;
+        assert_eq!(wake_request.cadence_object.status, "requested");
+        assert!(wake_request.payload.summary.contains("carry"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn clarification_creates_local_next_step_without_active_wake_request() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+
+        let checkpoint = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: Some("Clarify seed".to_string()),
+                stable_level: "clarify seed".to_string(),
+                landed: vec!["opened clarification gate".to_string()],
+                remaining: vec!["clarification still pending".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("clarify seed".to_string()),
+                next_start_hints: vec!["record clarify".to_string()],
+                project_dir: None,
+            },
+        )?;
+
+        let report = record_nota_boundary_clarification(
+            &store,
+            NotaBoundaryClarificationRequest {
+                summary: "need to clarify the target ask graph".to_string(),
+            },
+        )?;
+
+        assert_eq!(report.status, "recorded");
+        assert_eq!(
+            report.transaction.status,
+            CLARIFICATION_OPEN_TRANSACTION_STATUS
+        );
+        assert_eq!(report.next_step.step, "clarify");
+        assert_eq!(report.next_step.allocation_id, 0);
+        assert_eq!(
+            report.next_step.target_ref,
+            checkpoint.checkpoint.cadence_object.id.to_string()
+        );
+
+        let checkpoint_scope_ids =
+            active_checkpoint_scope_ids(&store, Some(&checkpoint.checkpoint))?;
+        let transactions = list_nota_runtime_transactions(&store)?;
+        let receipts = list_nota_runtime_receipts(&store, None)?;
+        let next_step = derive_nota_runtime_next_step(
+            &checkpoint_scope_ids,
+            &transactions.transactions,
+            &[],
+            &receipts.receipts,
+        )?
+        .context("clarification should be the active next step")?;
+        assert_eq!(next_step.step, "clarify");
+        assert!(derive_current_runtime_wake_request(&store)?.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn ask_decide_creates_active_human_wake_request() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+
+        let checkpoint = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: Some("Ask decide seed".to_string()),
+                stable_level: "ask decide seed".to_string(),
+                landed: vec!["opened ask decide gate".to_string()],
+                remaining: vec!["decision still pending".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("ask decide seed".to_string()),
+                next_start_hints: vec!["record ask decide".to_string()],
+                project_dir: None,
+            },
+        )?;
+
+        let report = record_nota_boundary_ask(
+            &store,
+            NotaBoundaryAskRequest {
+                ask_code: "decide".to_string(),
+                summary: "human needs to decide whether ask graph becomes canonical".to_string(),
+            },
+        )?;
+
+        assert_eq!(report.transaction.status, ASK_OPEN_TRANSACTION_STATUS);
+        assert_eq!(report.next_step.step, "ask_decide");
+        assert_eq!(
+            report.next_step.target_ref,
+            checkpoint.checkpoint.cadence_object.id.to_string()
+        );
+
+        let wake_request = derive_current_runtime_wake_request(&store)?
+            .context("ask decide should open a wake request")?;
+        assert_eq!(wake_request.cadence_object.status, "requested");
+        assert_eq!(
+            wake_request.payload.requested_step.as_deref(),
+            Some("ask_decide")
+        );
+        assert!(wake_request
+            .payload
+            .summary
+            .contains("explicit human decision"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn ask_unblock_stays_local_and_supersedes_previous_open_intake() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+
+        let checkpoint = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: Some("Ask unblock seed".to_string()),
+                stable_level: "ask unblock seed".to_string(),
+                landed: vec!["opened local unblock ask".to_string()],
+                remaining: vec!["unblock still pending".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("ask unblock seed".to_string()),
+                next_start_hints: vec!["record ask unblock".to_string()],
+                project_dir: None,
+            },
+        )?;
+
+        let first = record_nota_boundary_ask(
+            &store,
+            NotaBoundaryAskRequest {
+                ask_code: "decide".to_string(),
+                summary: "first ask opens a human-facing decision".to_string(),
+            },
+        )?;
+        let second = record_nota_boundary_ask(
+            &store,
+            NotaBoundaryAskRequest {
+                ask_code: "unblock".to_string(),
+                summary: "second ask stays local to NOTA".to_string(),
+            },
+        )?;
+
+        assert_eq!(second.next_step.step, "ask_unblock");
+        assert_eq!(
+            second.superseded_transaction_ids,
+            vec![first.transaction.id]
+        );
+
+        let transactions = list_nota_runtime_transactions(&store)?.transactions;
+        let first_transaction = transactions
+            .iter()
+            .find(|transaction| transaction.id == first.transaction.id)
+            .context("first ask transaction should still exist")?;
+        assert_eq!(
+            first_transaction.status,
+            BOUNDARY_INTAKE_SUPERSEDED_TRANSACTION_STATUS
+        );
+
+        let checkpoint_scope_ids =
+            active_checkpoint_scope_ids(&store, Some(&checkpoint.checkpoint))?;
+        let receipts = list_nota_runtime_receipts(&store, None)?;
+        let next_step = derive_nota_runtime_next_step(
+            &checkpoint_scope_ids,
+            &transactions,
+            &[],
+            &receipts.receipts,
+        )?
+        .context("second ask should become the active next step")?;
+        assert_eq!(next_step.step, "ask_unblock");
+        assert!(derive_current_runtime_wake_request(&store)?.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn accept_current_round_supersedes_open_boundary_intake() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+
+        let checkpoint = write_runtime_checkpoint(
+            &store,
+            NotaCheckpointRequest {
+                title: Some("Accept after ask".to_string()),
+                stable_level: "accept after ask".to_string(),
+                landed: vec!["checkpoint anchored before acceptance".to_string()],
+                remaining: vec!["clarify closure still pending".to_string()],
+                human_continuity_bus: "reduced".to_string(),
+                selected_trunk: Some("accept after ask".to_string()),
+                next_start_hints: vec!["record ask then accept".to_string()],
+                project_dir: None,
+            },
+        )?;
+
+        let ask = record_nota_boundary_ask(
+            &store,
+            NotaBoundaryAskRequest {
+                ask_code: "override".to_string(),
+                summary: "human override is temporarily required".to_string(),
+            },
+        )?;
+
+        let acceptance = accept_current_runtime_round(
+            &store,
+            NotaCurrentRoundAcceptanceRequest {
+                summary: Some("override has been resolved and round can be accepted".to_string()),
+            },
+        )?;
+
+        assert_eq!(acceptance.status, "recorded");
+        assert_eq!(
+            acceptance.superseded_transaction_ids,
+            vec![ask.transaction.id]
+        );
+
+        let transactions = list_nota_runtime_transactions(&store)?.transactions;
+        let ask_transaction = transactions
+            .iter()
+            .find(|transaction| transaction.id == ask.transaction.id)
+            .context("ask transaction should still exist after acceptance")?;
+        assert_eq!(
+            ask_transaction.status,
+            BOUNDARY_INTAKE_SUPERSEDED_TRANSACTION_STATUS
+        );
+
+        let checkpoint_scope_ids =
+            active_checkpoint_scope_ids(&store, Some(&checkpoint.checkpoint))?;
+        let receipts = list_nota_runtime_receipts(&store, None)?;
+        assert!(derive_nota_runtime_next_step(
+            &checkpoint_scope_ids,
+            &transactions,
+            &[],
+            &receipts.receipts,
+        )?
+        .is_none());
+
+        let wake_request = derive_current_runtime_wake_request(&store)?
+            .context("accepted round should still request carry-forward wake")?;
+        assert!(wake_request.payload.summary.contains("carry"));
 
         Ok(())
     }
