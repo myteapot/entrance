@@ -333,7 +333,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn object_kind(self) -> ActionObjectKind {
+    pub(crate) fn object_kind(self) -> ActionObjectKind {
         match self {
             Self::Chat | Self::Read | Self::Report => ActionObjectKind::RuntimeQuery,
             Self::Learn => ActionObjectKind::CadenceCheckpoint,
@@ -347,7 +347,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn flow_phase(self) -> FlowPhaseCode {
+    pub(crate) fn flow_phase(self) -> FlowPhaseCode {
         match self {
             Self::Chat | Self::Read | Self::Report => FlowPhaseCode::In,
             Self::Review | Self::Integrate | Self::Escalate => FlowPhaseCode::Out,
@@ -355,7 +355,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn attention_state(self) -> AttentionStateCode {
+    pub(crate) fn attention_state(self) -> AttentionStateCode {
         match self {
             Self::Prepare | Self::Dispatch | Self::Make | Self::Review | Self::Integrate => {
                 AttentionStateCode::Running
@@ -366,7 +366,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn integrity_overlay(self) -> Option<IntegrityOverlayCode> {
+    pub(crate) fn integrity_overlay(self) -> Option<IntegrityOverlayCode> {
         match self {
             Self::Escalate => Some(IntegrityOverlayCode::AdminHold),
             Self::Repair => Some(IntegrityOverlayCode::LineageBlocked),
@@ -374,7 +374,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn control_policy_code(self) -> ControlPolicyCode {
+    pub(crate) fn control_policy_code(self) -> ControlPolicyCode {
         match self {
             Self::Chat | Self::Read | Self::Report => ControlPolicyCode::RuntimeQueryLocal,
             Self::Learn => ControlPolicyCode::NotaBoundaryWrite,
@@ -388,7 +388,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn writer_policy_code(self) -> WriterPolicyCode {
+    pub(crate) fn writer_policy_code(self) -> WriterPolicyCode {
         match self {
             Self::Learn => WriterPolicyCode::NotaBoundaryOnly,
             Self::Report => WriterPolicyCode::RuntimeAppend,
@@ -396,7 +396,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn route_policy_code(self) -> RoutePolicyCode {
+    pub(crate) fn route_policy_code(self) -> RoutePolicyCode {
         match self {
             Self::Learn => RoutePolicyCode::HumanNotaBoundary,
             Self::Dispatch | Self::Make | Self::Escalate => RoutePolicyCode::UpwardOnly,
@@ -405,7 +405,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn gate_policy_code(self) -> GatePolicyCode {
+    pub(crate) fn gate_policy_code(self) -> GatePolicyCode {
         match self {
             Self::Review => GatePolicyCode::ReviewReady,
             Self::Integrate => GatePolicyCode::IntegrationReady,
@@ -413,7 +413,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn sandbox_policy_code(self) -> SandboxPolicyCode {
+    pub(crate) fn sandbox_policy_code(self) -> SandboxPolicyCode {
         match self {
             Self::Dispatch | Self::Make | Self::Repair => SandboxPolicyCode::WorktreeRwAllowlist,
             Self::Report => SandboxPolicyCode::RuntimeAdminOnly,
@@ -421,7 +421,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn effect_kind(self) -> ActionEffectKind {
+    pub(crate) fn effect_kind(self) -> ActionEffectKind {
         match self {
             Self::Chat | Self::Read | Self::Report => ActionEffectKind::Observe,
             Self::Learn => ActionEffectKind::TruthWrite,
@@ -435,7 +435,7 @@ impl ActionPrimitive {
         }
     }
 
-    fn supervision_scope(self) -> Option<SupervisionScope> {
+    pub(crate) fn supervision_scope(self) -> Option<SupervisionScope> {
         match self {
             Self::Dispatch => Some(SupervisionScope::DispatchPipeline),
             Self::Make => Some(SupervisionScope::AgentProcess),

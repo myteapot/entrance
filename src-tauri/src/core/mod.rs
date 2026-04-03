@@ -238,6 +238,7 @@ pub fn bootstrap_for_paths(paths: AppPaths) -> Result<StartupState> {
     let plugin_migrations = enabled_plugin_migrations(&config);
     let migration_plan = MigrationPlan::new(plugin_migrations.as_slice());
     let data_store = DataStore::open(paths.db_path(), migration_plan)?;
+    compiler::registry::seed_registry_snapshot(&data_store)?;
     environment_runtime::record_runtime_environment(&data_store, &paths)?;
 
     Ok(StartupState {
