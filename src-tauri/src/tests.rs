@@ -13,7 +13,8 @@ use crate::core::config_store::{render_config, EntranceConfig};
 use crate::core::data_store::{DataStore, MigrationPlan};
 use crate::{
     build_nota_runtime_status, cli_help_for_args, prepare_forge_dispatch_cli,
-    verify_forge_dispatch_cli, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
+    verify_forge_dispatch_cli, COMPILER_CLI_HELP, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP,
+    ROOT_CLI_HELP,
 };
 
 static CLI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -99,6 +100,19 @@ fn cli_help_is_available_without_falling_back_to_gui() {
 
     let forge = vec!["forge".to_string(), "--help".to_string()];
     assert_eq!(cli_help_for_args(&forge), Some(FORGE_CLI_HELP));
+
+    let compiler = vec!["compiler".to_string(), "--help".to_string()];
+    assert_eq!(cli_help_for_args(&compiler), Some(COMPILER_CLI_HELP));
+
+    let compiler_registry = vec![
+        "compiler".to_string(),
+        "registry".to_string(),
+        "--help".to_string(),
+    ];
+    assert_eq!(
+        cli_help_for_args(&compiler_registry),
+        Some(COMPILER_CLI_HELP)
+    );
 }
 
 #[test]

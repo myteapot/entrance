@@ -1,3 +1,4 @@
+mod compiler_cli;
 mod forge_cli;
 mod mcp_cli;
 mod nota_cli;
@@ -26,6 +27,7 @@ use crate::{
 pub(crate) use forge_cli::{prepare_forge_dispatch_cli, verify_forge_dispatch_cli};
 
 use self::{
+    compiler_cli::run_compiler_cli,
     forge_cli::run_forge_cli,
     mcp_cli::{run_mcp_http, run_mcp_stdio},
     nota_cli::run_nota_cli,
@@ -39,6 +41,7 @@ Usage:
   entrance --help
 
 Commands:
+  compiler    Inspect the compiler registry query surface
   nota       Read or write NOTA runtime continuity surfaces
   mcp        Serve Entrance as an MCP server over stdio or HTTP
   forge      Run Forge dispatch and bootstrap helpers
@@ -71,6 +74,10 @@ pub(crate) const RECOVERY_CLI_HELP: &str = r#"Usage:
 pub(crate) const HYGIENE_CLI_HELP: &str = r#"Usage:
   entrance hygiene spec-v0
   entrance hygiene list-spec-v0
+"#;
+
+pub(crate) const COMPILER_CLI_HELP: &str = r#"Usage:
+  entrance compiler registry list [--format <json|table>]
 "#;
 
 pub(crate) const FORGE_CLI_HELP: &str = r#"Usage:
@@ -137,6 +144,12 @@ pub(crate) fn cli_help_for_args(args: &[String]) -> Option<&'static str> {
         [command, flag] if command == "landing" && is_help_flag(flag) => Some(LANDING_CLI_HELP),
         [command, flag] if command == "recovery" && is_help_flag(flag) => Some(RECOVERY_CLI_HELP),
         [command, flag] if command == "hygiene" && is_help_flag(flag) => Some(HYGIENE_CLI_HELP),
+        [command, flag] if command == "compiler" && is_help_flag(flag) => Some(COMPILER_CLI_HELP),
+        [command, subcommand, flag]
+            if command == "compiler" && subcommand == "registry" && is_help_flag(flag) =>
+        {
+            Some(COMPILER_CLI_HELP)
+        }
         [command, flag] if command == "nota" && is_help_flag(flag) => Some(NOTA_CLI_HELP),
         [command, flag] if command == "forge" && is_help_flag(flag) => Some(FORGE_CLI_HELP),
         [command, flag] if command == "mcp" && is_help_flag(flag) => Some(MCP_CLI_HELP),
@@ -166,6 +179,7 @@ pub fn dispatch_cli_or_run() -> Result<()> {
         [command, rest @ ..] if command == "landing" => run_landing_cli(rest),
         [command, rest @ ..] if command == "recovery" => run_recovery_cli(rest),
         [command, rest @ ..] if command == "hygiene" => run_hygiene_cli(rest),
+        [command, rest @ ..] if command == "compiler" => run_compiler_cli(rest),
         [command, rest @ ..] if command == "nota" => run_nota_cli(rest),
         [command, rest @ ..] if command == "forge" => run_forge_cli(rest),
         [command, transport, rest @ ..] if command == "mcp" && transport == "stdio" => {
@@ -338,7 +352,7 @@ pub(crate) fn bootstrap_cli_state() -> Result<StartupState> {
     bootstrap_for_paths(app_paths)
 }
 
-pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
+pub(crate) fn print_json<T: Serialize + ?Sized>(value: &T) -> Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(value).context("failed to serialize CLI output")?

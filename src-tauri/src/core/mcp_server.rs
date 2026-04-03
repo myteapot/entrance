@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 use crate::core::{
     action::ActorRole,
     bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
+    compiler::registry::registry,
     data_store::DataStore,
     nota_runtime::{
         list_nota_runtime_allocations, list_nota_runtime_receipts,
@@ -303,6 +304,7 @@ impl McpServer {
             "nota_finalize" => self.handle_nota_finalize(arguments),
             "nota_write_checkpoint" => self.handle_nota_write_checkpoint(arguments),
             "nota_checkpoint_runtime_closure" => self.handle_nota_checkpoint_runtime_closure(),
+            "compiler_registry_list" => self.handle_compiler_registry_list(),
             "recovery_list_seed_runs" => self.handle_recovery_list_seed_runs(),
             "recovery_list_seed_rows" => self.handle_recovery_list_seed_rows(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
@@ -637,6 +639,17 @@ impl McpServer {
             .as_ref()
             .context("core data store is not available on the current MCP surface")?;
         Ok(json!(list_recovery_seed_runs(data_store)?))
+    }
+
+    fn handle_compiler_registry_list(&self) -> Result<Value> {
+        if let Some(data_store) = self.plugins.core_data_store.as_ref() {
+            let snapshot = data_store.list_compiler_registry_snapshot()?;
+            if !snapshot.is_empty() {
+                return Ok(json!(snapshot));
+            }
+        }
+
+        Ok(json!(registry()))
     }
 
     fn handle_nota_runtime_overview(&self) -> Result<Value> {
@@ -1126,6 +1139,16 @@ fn build_tool_descriptors(
     }
 
     if plugins.core_data_store.is_some() {
+        tools.push(McpToolDescriptor {
+            name: "compiler_registry_list",
+            description: "List the compiled action registry entries that back the compiler registry snapshot.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
         tools.push(McpToolDescriptor {
             name: "nota_runtime_overview",
             description: "Read the current NOTA runtime continuity bundle that powers `entrance nota overview`.",
@@ -1872,6 +1895,7 @@ mod tests {
                 "forge_bootstrap_mcp_cycle",
                 "forge_status",
                 "forge_cancel",
+                "compiler_registry_list",
                 "nota_runtime_overview",
                 "nota_runtime_status",
                 "nota_runtime_allocations",
@@ -1907,6 +1931,10 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "forge_bootstrap_mcp_cycle")
             .expect("forge_bootstrap_mcp_cycle should exist");
+        let compiler_registry = tools
+            .iter()
+            .find(|tool| tool["name"] == "compiler_registry_list")
+            .expect("compiler_registry_list should exist");
         let nota_overview = tools
             .iter()
             .find(|tool| tool["name"] == "nota_runtime_overview")
@@ -1965,6 +1993,8 @@ mod tests {
         assert_eq!(bootstrap_cycle["permission"]["primitive"], "assign");
         assert_eq!(bootstrap_cycle["permission"]["room"], "strategy");
         assert!(bootstrap_cycle["dispatchRole"].is_null());
+        assert!(compiler_registry["permission"].is_null());
+        assert!(compiler_registry["dispatchRole"].is_null());
         assert_eq!(nota_overview["permission"]["actorRole"], "nota");
         assert_eq!(nota_overview["permission"]["primitive"], "chat");
         assert_eq!(nota_overview["permission"]["room"], "surface");
@@ -2043,6 +2073,7 @@ mod tests {
                 "forge_dispatch_dev",
                 "forge_status",
                 "forge_cancel",
+                "compiler_registry_list",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
                 "vault_get_token",
@@ -2082,6 +2113,7 @@ mod tests {
                 "forge_bootstrap_mcp_cycle",
                 "forge_status",
                 "forge_cancel",
+                "compiler_registry_list",
                 "nota_runtime_overview",
                 "nota_runtime_status",
                 "nota_runtime_allocations",
@@ -2231,6 +2263,7 @@ mod tests {
                 "forge_dispatch_agent",
                 "forge_status",
                 "forge_cancel",
+                "compiler_registry_list",
                 "recovery_list_seed_runs",
                 "recovery_list_seed_rows",
                 "vault_get_token",
@@ -2337,6 +2370,21 @@ mod tests {
         assert_eq!(
             mcp_list_response["structuredContent"]["servers"][0]["transport"],
             "stdio"
+        );
+
+        let compiler_registry_response = call_tool(&server, "compiler_registry_list", json!({}))?;
+        assert_eq!(compiler_registry_response["isError"], false);
+        assert!(compiler_registry_response["entranceSurface"]["actorRole"].is_null());
+        assert!(compiler_registry_response["permission"].is_null());
+        assert!(compiler_registry_response["dispatchRole"].is_null());
+        assert!(compiler_registry_response["canonicalToolName"].is_null());
+        assert_eq!(
+            compiler_registry_response["structuredContent"][0]["primitive"],
+            "chat"
+        );
+        assert_eq!(
+            compiler_registry_response["structuredContent"][0]["allowed_roles"],
+            json!(["nota"])
         );
 
         let forge_response = runtime.block_on(async {

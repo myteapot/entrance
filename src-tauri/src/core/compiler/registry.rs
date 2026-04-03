@@ -73,18 +73,54 @@ pub fn registry() -> &'static [RegistryEntry] {
     REGISTRY.as_slice()
 }
 
+pub fn lookup_primitive(primitive: ActionPrimitive) -> Option<&'static RegistryEntry> {
+    lookup_primitive_in(registry(), primitive)
+}
+
+pub fn lookup_by_flow_phase(phase: FlowPhaseCode) -> Vec<&'static RegistryEntry> {
+    lookup_by_flow_phase_in(registry(), phase)
+}
+
+pub fn lookup_by_role(role: ActorRole) -> Vec<&'static RegistryEntry> {
+    lookup_by_role_in(registry(), role)
+}
+
 pub fn seed_registry_snapshot(data_store: &DataStore) -> Result<usize> {
     data_store.seed_compiler_registry_snapshot(registry())
 }
 
+fn lookup_primitive_in(
+    entries: &[RegistryEntry],
+    primitive: ActionPrimitive,
+) -> Option<&RegistryEntry> {
+    entries.iter().find(|entry| entry.primitive == primitive)
+}
+
+fn lookup_by_flow_phase_in(entries: &[RegistryEntry], phase: FlowPhaseCode) -> Vec<&RegistryEntry> {
+    entries
+        .iter()
+        .filter(|entry| entry.flow_phase == phase)
+        .collect()
+}
+
+fn lookup_by_role_in(entries: &[RegistryEntry], role: ActorRole) -> Vec<&RegistryEntry> {
+    entries
+        .iter()
+        .filter(|entry| entry.allowed_roles.contains(&role))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{registry, seed_registry_snapshot, REGISTRY};
+    use super::{
+        lookup_by_flow_phase, lookup_by_role, lookup_primitive, lookup_primitive_in, registry,
+        seed_registry_snapshot, REGISTRY,
+    };
     use anyhow::Result;
 
     use crate::{
         core::{
-            action::{ActionRecord, KnowledgeLayer},
+            action::{ActionPrimitive, ActionRecord, ActorRole, FlowPhaseCode, KnowledgeLayer},
             data_store::{DataStore, MigrationPlan},
         },
         plugins,
@@ -93,6 +129,63 @@ mod tests {
     #[test]
     fn registry_has_all_15_primitives() {
         assert_eq!(REGISTRY.len(), 15);
+    }
+
+    #[test]
+    fn lookup_primitive_chat_returns_entry() {
+        let entry = lookup_primitive(ActionPrimitive::Chat)
+            .expect("chat primitive should always be present in the registry");
+
+        assert_eq!(entry.primitive, ActionPrimitive::Chat);
+        assert_eq!(entry.flow_phase, FlowPhaseCode::In);
+        assert_eq!(entry.allowed_roles, vec![ActorRole::Nota]);
+    }
+
+    #[test]
+    fn lookup_primitive_nonexistent_returns_none() {
+        assert!(lookup_primitive_in(&[], ActionPrimitive::Chat).is_none());
+    }
+
+    #[test]
+    fn lookup_by_role_nota_returns_all_nota_primitives() {
+        let primitives = lookup_by_role(ActorRole::Nota)
+            .into_iter()
+            .map(|entry| entry.primitive)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            primitives,
+            vec![
+                ActionPrimitive::Chat,
+                ActionPrimitive::Learn,
+                ActionPrimitive::Assign,
+                ActionPrimitive::Update,
+                ActionPrimitive::Escalate,
+            ]
+        );
+    }
+
+    #[test]
+    fn lookup_by_flow_phase_cycle_returns_middle_registry_slice() {
+        let primitives = lookup_by_flow_phase(FlowPhaseCode::Cycle)
+            .into_iter()
+            .map(|entry| entry.primitive)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            primitives,
+            vec![
+                ActionPrimitive::Learn,
+                ActionPrimitive::Shape,
+                ActionPrimitive::Split,
+                ActionPrimitive::Assign,
+                ActionPrimitive::Prepare,
+                ActionPrimitive::Dispatch,
+                ActionPrimitive::Make,
+                ActionPrimitive::Update,
+                ActionPrimitive::Repair,
+            ]
+        );
     }
 
     #[test]
