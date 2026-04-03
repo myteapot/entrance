@@ -17,7 +17,9 @@ use crate::core::data_store::{
     StoredNotaRuntimeAllocation, StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
 };
 use crate::core::invariant_runtime::refresh_runtime_invariants;
-use crate::core::supervision::derive_runtime_supervision_projection;
+use crate::core::supervision::{
+    build_runtime_supervision_incident_summary, derive_runtime_supervision_projection_with_budget,
+};
 use crate::plugins::forge::ForgePlugin;
 
 use helpers::*;
@@ -810,6 +812,11 @@ fn project_nota_runtime_allocation_read_record(
         .map(|task_id| data_store.get_forge_task(task_id))
         .transpose()?
         .flatten();
+    let supervision =
+        derive_runtime_supervision_projection_with_budget(&allocation, task.as_ref(), data_store);
+    let budget_ledger = data_store.list_budget_ledger(allocation.id)?;
+    let supervision_incident =
+        build_runtime_supervision_incident_summary(&supervision, &budget_ledger);
 
     Ok(NotaRuntimeAllocationReadRecord {
         child_dispatch_role: dispatch_truth
@@ -818,7 +825,8 @@ fn project_nota_runtime_allocation_read_record(
         child_dispatch_tool_name: dispatch_truth
             .as_ref()
             .map(|payload| payload.child_dispatch_tool_name.clone()),
-        supervision: derive_runtime_supervision_projection(&allocation, task.as_ref()),
+        supervision,
+        supervision_incident,
         allocation,
     })
 }

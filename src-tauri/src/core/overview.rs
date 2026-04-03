@@ -37,7 +37,7 @@ use crate::core::{
         build_projection_status_report, ProjectionStatusReport, ProjectionTruthRevision,
     },
     recovery::{build_recovery_status_report, RecoveryImportOnlyStatusReport},
-    supervision::RuntimeSupervisionProjection,
+    supervision::{RuntimeSupervisionIncidentSummary, RuntimeSupervisionProjection},
 };
 
 #[derive(Clone, Serialize)]
@@ -80,6 +80,8 @@ pub(crate) struct NotaRuntimeOverview {
     pub(crate) chat_captures: ChatCaptureListReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_supervision: Option<RuntimeSupervisionProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_supervision_incident: Option<RuntimeSupervisionIncidentSummary>,
 }
 
 #[derive(Clone, Serialize)]
@@ -103,6 +105,8 @@ pub(crate) struct NotaRuntimeStatus {
     pub(crate) latest_allocation: Option<NotaRuntimeAllocationReadRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_supervision: Option<RuntimeSupervisionProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_supervision_incident: Option<RuntimeSupervisionIncidentSummary>,
     pub(crate) receipt_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) latest_receipt: Option<StoredNotaRuntimeReceipt>,
@@ -271,6 +275,10 @@ pub(crate) fn build_nota_runtime_overview(data_store: &DataStore) -> Result<Nota
         .allocations
         .first()
         .map(|allocation| allocation.supervision.clone());
+    let current_supervision_incident = allocations
+        .allocations
+        .first()
+        .and_then(|allocation| allocation.supervision_incident.clone());
 
     Ok(NotaRuntimeOverview {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
@@ -302,6 +310,7 @@ pub(crate) fn build_nota_runtime_overview(data_store: &DataStore) -> Result<Nota
         decisions,
         chat_captures: list_chat_captures(data_store)?,
         current_supervision,
+        current_supervision_incident,
     })
 }
 
@@ -415,6 +424,10 @@ pub(crate) fn build_nota_runtime_status(data_store: &DataStore) -> Result<NotaRu
         .allocations
         .first()
         .map(|allocation| allocation.supervision.clone());
+    let current_supervision_incident = allocations
+        .allocations
+        .first()
+        .and_then(|allocation| allocation.supervision_incident.clone());
 
     Ok(NotaRuntimeStatus {
         chat_policy: get_chat_archive_policy(data_store, None, None)?,
@@ -430,6 +443,7 @@ pub(crate) fn build_nota_runtime_status(data_store: &DataStore) -> Result<NotaRu
         allocation_count: allocations.allocation_count,
         latest_allocation: allocations.allocations.first().cloned(),
         current_supervision,
+        current_supervision_incident,
         receipt_count: receipts.receipt_count,
         latest_receipt: receipts.receipts.last().cloned(),
         decision_count: decisions.decision_count,

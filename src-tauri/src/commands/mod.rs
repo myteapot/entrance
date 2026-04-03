@@ -561,16 +561,31 @@ fn render_hot_root_files(
         status.repair_lane.open_count, status.repair_lane.resolved_count
     );
     let recovery_line = format!("{} ({})", status.recovery.mode, status.recovery.summary);
-    let supervision_line = status
-        .current_supervision
-        .as_ref()
-        .map(|projection| {
+    let supervision_line = match (
+        status.current_supervision.as_ref(),
+        status.current_supervision_incident.as_ref(),
+    ) {
+        (Some(projection), Some(incident)) => {
+            let exhaustion_suffix = if incident.budget_exhausted {
+                ", budget exhausted"
+            } else {
+                ""
+            };
             format!(
-                "{:?} via {:?}",
-                projection.current_supervision_state, projection.last_supervisor_action
+                "{:?} (attempt {}/{}, action: {:?}{})",
+                projection.current_supervision_state,
+                incident.retry_count,
+                incident.max_restarts,
+                incident.last_supervisor_action,
+                exhaustion_suffix,
             )
-        })
-        .unwrap_or_else(|| "No supervised allocation is currently active.".to_string());
+        }
+        (Some(projection), None) => format!(
+            "{:?} via {:?}",
+            projection.current_supervision_state, projection.last_supervisor_action
+        ),
+        (None, _) => "No supervised allocation is currently active.".to_string(),
+    };
     let owner_root = startup.paths().app_data_dir().display().to_string();
     let config_path = startup.paths().config_path().display().to_string();
     let db_path = startup.paths().db_path().display().to_string();
