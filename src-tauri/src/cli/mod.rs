@@ -77,7 +77,7 @@ pub(crate) const HYGIENE_CLI_HELP: &str = r#"Usage:
 "#;
 
 pub(crate) const COMPILER_CLI_HELP: &str = r#"Usage:
-  entrance compiler registry list [--format <json|table>]
+  entrance compiler registry list [--format <json|table>] [--include-semantics]
 "#;
 
 pub(crate) const FORGE_CLI_HELP: &str = r#"Usage:
