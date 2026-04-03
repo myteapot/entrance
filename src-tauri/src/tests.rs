@@ -3,7 +3,6 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,8 +18,6 @@ use crate::{
     verify_forge_dispatch_cli, COMPILER_CLI_HELP, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP,
     ROOT_CLI_HELP,
 };
-
-static CLI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 struct TestDir {
     path: PathBuf,
@@ -81,10 +78,7 @@ impl Drop for EnvVarGuard {
 }
 
 fn cli_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    CLI_TEST_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("CLI test lock should not be poisoned")
+    crate::test_env_guard()
 }
 
 #[test]

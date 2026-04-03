@@ -12,8 +12,13 @@ use serde_json::json;
 
 use crate::core::action::{ActionPrimitive, ActionRecord, ActionRoom, ActorRole, KnowledgeLayer};
 use crate::core::compiler::{
-    lowering::{lower_dispatch, LoweringContext},
+    admission::{admit_dispatch, AdmittedDispatch},
+    lowering::{
+        lower_dispatch, DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext,
+        SandboxConfig,
+    },
     packet::TypedActionPacket,
+    routing::{resolve_return_route, ReturnBoundary, TerminalStatus},
 };
 use crate::core::data_store::{
     DataStore, DataStoreTransaction, NewCadenceLink, NewCadenceObject, NewNotaRuntimeAllocation,
@@ -521,15 +526,7 @@ fn run_nota_dispatch(
     let lineage_ref = lane.build_lineage_ref(transaction.id, task_id);
     let lowering_context =
         build_lowering_context(&transaction, task_id, &lane, &dispatch.project_root);
-    let dispatch_packet = TypedActionPacket::compile(
-        ActionRecord::new(
-            ActorRole::Dev,
-            ActionPrimitive::Dispatch,
-            ActionRoom::Prep,
-            KnowledgeLayer::Cold,
-        )
-        .expect("nota dispatch lowering should always compile a valid dispatch action"),
-    );
+    let dispatch_packet = compile_nota_dispatch_packet();
     let lowered_dispatch = lower_dispatch(&dispatch_packet, &lowering_context)
         .expect("nota dispatch allocation lowering must succeed");
 
@@ -804,6 +801,18 @@ fn build_lowering_context(
         allocator_surface: lane.surface_action().to_string(),
         project_root: project_root.to_string(),
     }
+}
+
+fn compile_nota_dispatch_packet() -> TypedActionPacket {
+    TypedActionPacket::compile(
+        ActionRecord::new(
+            ActorRole::Dev,
+            ActionPrimitive::Dispatch,
+            ActionRoom::Prep,
+            KnowledgeLayer::Cold,
+        )
+        .expect("nota dispatch reconstruction should always compile a valid dispatch action"),
+    )
 }
 
 fn launch_forge_task(
@@ -1179,53 +1188,89 @@ fn sync_runtime_truth(data_store: &DataStore, transaction_id: Option<i64>) -> Re
     refresh_runtime_invariants(data_store).map(|_| ())
 }
 
+fn reconstruct_terminal_admitted_dispatch(
+    allocation: &StoredNotaRuntimeAllocation,
+) -> AdmittedDispatch {
+    let packet = compile_nota_dispatch_packet();
+    let sandbox_requirement = packet.semantics().sandbox_requirement;
+    let routing_constraint = packet.semantics().routing_constraint;
+    let lowered_dispatch = LoweredDispatch {
+        packet,
+        lineage: DispatchLineage {
+            lineage_ref: allocation.lineage_ref.clone(),
+            child_execution_kind: allocation.child_execution_kind.clone(),
+            child_execution_ref: allocation.child_execution_ref.clone(),
+            return_target_kind: allocation.return_target_kind.clone(),
+            return_target_ref: allocation.return_target_ref.clone(),
+            escalation_target_kind: allocation.escalation_target_kind.clone(),
+            escalation_target_ref: allocation.escalation_target_ref.clone(),
+        },
+        sandbox: SandboxConfig {
+            requirement: sandbox_requirement,
+            working_dir: None,
+        },
+        routing: DispatchRouting {
+            constraint: routing_constraint,
+            allocator_role: allocation.allocator_role.clone(),
+            allocation_kind: allocation.allocation_kind.clone(),
+        },
+    };
+
+    admit_dispatch(lowered_dispatch)
+        .expect("stored nota runtime allocation should always reconstruct an admitted dispatch")
+}
+
+fn boundary_kind(boundary: ReturnBoundary) -> &'static str {
+    match boundary {
+        ReturnBoundary::Return => "return",
+        ReturnBoundary::Escalation => "escalation",
+    }
+}
+
 fn build_terminal_allocation_outcome<'a>(
     allocation: &'a StoredNotaRuntimeAllocation,
     task: &'a StoredForgeTask,
 ) -> Option<(&'static str, NotaDoAllocationTerminalOutcome)> {
-    match task.status.as_str() {
-        "Done" => Some((
+    let terminal_status = TerminalStatus::from_task_status(task.status.as_str())?;
+    let (status, target_kind, target_ref) = match terminal_status {
+        TerminalStatus::Done => (
             "return_ready",
-            NotaDoAllocationTerminalOutcome {
-                boundary_kind: "return".to_string(),
-                child_execution_status: task.status.clone(),
-                child_execution_status_message: task.status_message.clone(),
-                target_kind: allocation.return_target_kind.clone(),
-                target_ref: allocation.return_target_ref.clone(),
-            },
-        )),
-        "Blocked" => Some((
+            allocation.return_target_kind.as_str(),
+            allocation.return_target_ref.as_str(),
+        ),
+        TerminalStatus::Blocked => (
             "escalated_blocked",
-            NotaDoAllocationTerminalOutcome {
-                boundary_kind: "escalation".to_string(),
-                child_execution_status: task.status.clone(),
-                child_execution_status_message: task.status_message.clone(),
-                target_kind: allocation.escalation_target_kind.clone(),
-                target_ref: allocation.escalation_target_ref.clone(),
-            },
-        )),
-        "Failed" => Some((
+            allocation.escalation_target_kind.as_str(),
+            allocation.escalation_target_ref.as_str(),
+        ),
+        TerminalStatus::Failed => (
             "escalated_failed",
-            NotaDoAllocationTerminalOutcome {
-                boundary_kind: "escalation".to_string(),
-                child_execution_status: task.status.clone(),
-                child_execution_status_message: task.status_message.clone(),
-                target_kind: allocation.escalation_target_kind.clone(),
-                target_ref: allocation.escalation_target_ref.clone(),
-            },
-        )),
-        "Cancelled" => Some((
+            allocation.escalation_target_kind.as_str(),
+            allocation.escalation_target_ref.as_str(),
+        ),
+        TerminalStatus::Cancelled => (
             "escalated_cancelled",
-            NotaDoAllocationTerminalOutcome {
-                boundary_kind: "escalation".to_string(),
-                child_execution_status: task.status.clone(),
-                child_execution_status_message: task.status_message.clone(),
-                target_kind: allocation.escalation_target_kind.clone(),
-                target_ref: allocation.escalation_target_ref.clone(),
-            },
-        )),
-        _ => None,
-    }
+            allocation.escalation_target_kind.as_str(),
+            allocation.escalation_target_ref.as_str(),
+        ),
+    };
+    let admitted = reconstruct_terminal_admitted_dispatch(allocation);
+    let route = resolve_return_route(&admitted, terminal_status)
+        .expect("stored nota runtime allocation should always resolve a terminal return route");
+
+    debug_assert_eq!(target_kind, route.target_kind.as_str());
+    debug_assert_eq!(target_ref, route.target_ref.as_str());
+
+    Some((
+        status,
+        NotaDoAllocationTerminalOutcome {
+            boundary_kind: boundary_kind(route.boundary).to_string(),
+            child_execution_status: task.status.clone(),
+            child_execution_status_message: task.status_message.clone(),
+            target_kind: route.target_kind,
+            target_ref: route.target_ref,
+        },
+    ))
 }
 
 // admission_policy_for_kind, projection_policy_for_kind moved to policy.rs
@@ -4981,7 +5026,6 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         process::Command,
-        sync::{Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -4992,13 +5036,19 @@ mod tests {
         action::{ActionPrimitive, ActionRecord, ActionRoom, ActorRole, KnowledgeLayer},
         bootstrap_for_paths,
         compiler::{
-            lowering::{lower_dispatch, LoweringContext},
+            admission::admit_dispatch,
+            lowering::{
+                lower_dispatch, DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext,
+                SandboxConfig,
+            },
             packet::TypedActionPacket,
+            routing::{resolve_return_route, ReturnBoundary, TerminalStatus},
         },
         config_store::{render_config, EntranceConfig},
         data_store::{
             DataStore, MigrationPlan, NewNotaRuntimeAllocation, NewNotaRuntimeReceipt,
-            NewNotaRuntimeTransaction, NotaRuntimeTransactionUpdate,
+            NewNotaRuntimeTransaction, NotaRuntimeTransactionUpdate, StoredForgeTask,
+            StoredNotaRuntimeAllocation,
         },
         event_bus::EventBus,
         AppPaths,
@@ -5006,7 +5056,8 @@ mod tests {
     use crate::plugins::forge::ForgePlugin;
 
     use super::{
-        accept_current_runtime_round, active_checkpoint_scope_ids, build_lowering_context,
+        accept_current_runtime_round, active_checkpoint_scope_ids, boundary_kind,
+        build_lowering_context, build_terminal_allocation_outcome, compile_nota_dispatch_packet,
         default_nota_dispatch_execution_host, derive_anti_zeno_projection,
         derive_current_runtime_acceptance_bundle, derive_current_runtime_handout,
         derive_current_runtime_wake_request, derive_nota_runtime_finalize,
@@ -5033,8 +5084,6 @@ mod tests {
         DEV_RETURN_REVIEW_READY_RECEIPT_KIND, DEV_RETURN_REVIEW_RECORDED_RECEIPT_KIND,
         HUMAN_ROUND_ACCEPTANCE_KIND,
     };
-
-    static NOTA_DISPATCH_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     struct TempDbPath {
         root: PathBuf,
@@ -5126,10 +5175,7 @@ mod tests {
     }
 
     fn nota_dispatch_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        NOTA_DISPATCH_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("nota dispatch test lock should not be poisoned")
+        crate::test_env_guard()
     }
 
     fn init_git_repo(path: &Path) {
@@ -6065,6 +6111,137 @@ mod tests {
         assert!(store
             .list_nota_runtime_receipts(Some(transaction.id))?
             .is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_terminal_allocation_outcome_matches_resolved_return_route() -> Result<()> {
+        let allocation_payload = NotaDoAllocationPayload {
+            issue_id: "MYT-visibility".to_string(),
+            issue_status: "Todo".to_string(),
+            issue_status_source: "test".to_string(),
+            issue_title: Some("Visibility reconstruction".to_string()),
+            project_root: "A:/Publish/entrance".to_string(),
+            worktree_path: "A:/Publish/entrance/worktrees/feat-MYT-visibility".to_string(),
+            prompt_source: "test".to_string(),
+            model: "codex".to_string(),
+            agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
+            execution_host: default_nota_dispatch_execution_host(),
+            child_dispatch_role: "dev".to_string(),
+            child_dispatch_tool_name: "forge_dispatch_dev".to_string(),
+            terminal_outcome: None,
+        };
+        let allocation = StoredNotaRuntimeAllocation {
+            id: 41,
+            allocator_role: "nota".to_string(),
+            allocator_surface: "nota_dev".to_string(),
+            allocation_kind: "forge_dev_dispatch".to_string(),
+            source_transaction_id: 11,
+            lineage_ref: "nota/dev/transaction/11/forge-task/7".to_string(),
+            child_execution_kind: "forge_task".to_string(),
+            child_execution_ref: "7".to_string(),
+            return_target_kind: "nota_runtime_transaction".to_string(),
+            return_target_ref: "11".to_string(),
+            escalation_target_kind: "human".to_string(),
+            escalation_target_ref: "review".to_string(),
+            status: "task_created".to_string(),
+            payload_json: serde_json::to_string(&allocation_payload)?,
+            created_at: "2026-04-03T00:00:00Z".to_string(),
+            updated_at: "2026-04-03T00:00:00Z".to_string(),
+        };
+        let task_with_status = |status: &str, message: Option<&str>| StoredForgeTask {
+            id: 7,
+            name: "Synthetic terminal task".to_string(),
+            command: "echo".to_string(),
+            args: "[]".to_string(),
+            working_dir: None,
+            stdin_text: None,
+            required_tokens: "[]".to_string(),
+            metadata: "{}".to_string(),
+            status: status.to_string(),
+            status_message: message.map(str::to_string),
+            exit_code: Some(0),
+            created_at: "2026-04-03T00:00:00Z".to_string(),
+            heartbeat_at: Some("2026-04-03T00:00:05Z".to_string()),
+            finished_at: Some("2026-04-03T00:00:10Z".to_string()),
+        };
+        let expected_route = |terminal_status| {
+            let packet = compile_nota_dispatch_packet();
+            let sandbox_requirement = packet.semantics().sandbox_requirement;
+            let routing_constraint = packet.semantics().routing_constraint;
+            let lowered_dispatch = LoweredDispatch {
+                packet,
+                lineage: DispatchLineage {
+                    lineage_ref: allocation.lineage_ref.clone(),
+                    child_execution_kind: allocation.child_execution_kind.clone(),
+                    child_execution_ref: allocation.child_execution_ref.clone(),
+                    return_target_kind: allocation.return_target_kind.clone(),
+                    return_target_ref: allocation.return_target_ref.clone(),
+                    escalation_target_kind: allocation.escalation_target_kind.clone(),
+                    escalation_target_ref: allocation.escalation_target_ref.clone(),
+                },
+                sandbox: SandboxConfig {
+                    requirement: sandbox_requirement,
+                    working_dir: None,
+                },
+                routing: DispatchRouting {
+                    constraint: routing_constraint,
+                    allocator_role: allocation.allocator_role.clone(),
+                    allocation_kind: allocation.allocation_kind.clone(),
+                },
+            };
+            let admitted = admit_dispatch(lowered_dispatch)
+                .expect("synthetic allocation should reconstruct an admitted dispatch");
+
+            resolve_return_route(&admitted, terminal_status)
+                .expect("synthetic allocation should resolve a return route")
+        };
+
+        let (done_status, done_outcome) = build_terminal_allocation_outcome(
+            &allocation,
+            &task_with_status("Done", Some("Merged cleanly")),
+        )
+        .expect("done task should produce a terminal outcome");
+        let done_route = expected_route(TerminalStatus::Done);
+        assert_eq!(done_status, "return_ready");
+        assert_eq!(done_route.boundary, ReturnBoundary::Return);
+        assert_eq!(
+            done_outcome.boundary_kind,
+            boundary_kind(done_route.boundary)
+        );
+        assert_eq!(done_outcome.child_execution_status, "Done");
+        assert_eq!(
+            done_outcome.child_execution_status_message.as_deref(),
+            Some("Merged cleanly")
+        );
+        assert_eq!(done_outcome.target_kind, done_route.target_kind);
+        assert_eq!(done_outcome.target_ref, done_route.target_ref);
+
+        let (blocked_status, blocked_outcome) = build_terminal_allocation_outcome(
+            &allocation,
+            &task_with_status("Blocked", Some("Needs human review")),
+        )
+        .expect("blocked task should produce a terminal outcome");
+        let blocked_route = expected_route(TerminalStatus::Blocked);
+        assert_eq!(blocked_status, "escalated_blocked");
+        assert_eq!(blocked_route.boundary, ReturnBoundary::Escalation);
+        assert_eq!(
+            blocked_outcome.boundary_kind,
+            boundary_kind(blocked_route.boundary)
+        );
+        assert_eq!(blocked_outcome.child_execution_status, "Blocked");
+        assert_eq!(
+            blocked_outcome.child_execution_status_message.as_deref(),
+            Some("Needs human review")
+        );
+        assert_eq!(blocked_outcome.target_kind, blocked_route.target_kind);
+        assert_eq!(blocked_outcome.target_ref, blocked_route.target_ref);
+        assert_eq!(blocked_outcome.target_kind, "human");
+        assert_eq!(blocked_outcome.target_ref, "review");
 
         Ok(())
     }

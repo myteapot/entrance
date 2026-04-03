@@ -20,11 +20,25 @@ use crate::{
 pub use cli::dispatch_cli_or_run;
 
 #[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(test)]
 pub(crate) use cli::{
     cli_help_for_args, prepare_forge_dispatch_cli, verify_forge_dispatch_cli, COMPILER_CLI_HELP,
     FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
 };
 pub(crate) use core::overview::{build_nota_runtime_overview, build_nota_runtime_status};
+
+#[cfg(test)]
+static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn test_env_guard() -> std::sync::MutexGuard<'static, ()> {
+    TEST_ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("test environment lock should not be poisoned")
+}
 
 fn setup_application<R: tauri::Runtime>(
     app: &mut tauri::App<R>,
