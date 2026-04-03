@@ -10,6 +10,11 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
 
+use crate::core::action::{ActionPrimitive, ActionRecord, ActionRoom, ActorRole, KnowledgeLayer};
+use crate::core::compiler::{
+    lowering::{lower_dispatch, LoweringContext},
+    packet::TypedActionPacket,
+};
 use crate::core::data_store::{
     DataStore, DataStoreTransaction, NewCadenceLink, NewCadenceObject, NewNotaRuntimeAllocation,
     NewNotaRuntimeReceipt, NewNotaRuntimeTransaction, NotaRuntimeAllocationUpdate,
@@ -514,6 +519,50 @@ fn run_nota_dispatch(
     let child_execution_ref = task_id.to_string();
     let return_target_ref = transaction.id.to_string();
     let lineage_ref = lane.build_lineage_ref(transaction.id, task_id);
+    let lowering_context =
+        build_lowering_context(&transaction, task_id, &lane, &dispatch.project_root);
+    let dispatch_packet = TypedActionPacket::compile(
+        ActionRecord::new(
+            ActorRole::Dev,
+            ActionPrimitive::Dispatch,
+            ActionRoom::Prep,
+            KnowledgeLayer::Cold,
+        )
+        .expect("nota dispatch lowering should always compile a valid dispatch action"),
+    );
+    let lowered_dispatch = lower_dispatch(&dispatch_packet, &lowering_context)
+        .expect("nota dispatch allocation lowering must succeed");
+
+    debug_assert_eq!(lineage_ref, lowered_dispatch.lineage.lineage_ref);
+    debug_assert_eq!(
+        lane.transaction_kind(),
+        lowered_dispatch.routing.allocation_kind
+    );
+    debug_assert_eq!("nota", lowered_dispatch.routing.allocator_role);
+    debug_assert_eq!(
+        "forge_task",
+        lowered_dispatch.lineage.child_execution_kind.as_str()
+    );
+    debug_assert_eq!(
+        child_execution_ref,
+        lowered_dispatch.lineage.child_execution_ref
+    );
+    debug_assert_eq!(
+        "nota_runtime_transaction",
+        lowered_dispatch.lineage.return_target_kind.as_str()
+    );
+    debug_assert_eq!(
+        return_target_ref,
+        lowered_dispatch.lineage.return_target_ref
+    );
+    debug_assert_eq!(
+        "nota_runtime_transaction",
+        lowered_dispatch.lineage.escalation_target_kind.as_str()
+    );
+    debug_assert_eq!(
+        return_target_ref,
+        lowered_dispatch.lineage.escalation_target_ref
+    );
 
     let spawn_error = launch_forge_task(forge, task_id, request.execution_host)
         .err()
@@ -567,20 +616,41 @@ fn run_nota_dispatch(
             )?;
             let mut staged_receipts = Vec::new();
             let mut allocation = tx.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
-                allocator_role: "nota",
+                allocator_role: lowered_dispatch.routing.allocator_role.as_str(),
                 allocator_surface: lane.allocator_surface(),
-                allocation_kind: lane.transaction_kind(),
+                allocation_kind: lowered_dispatch.routing.allocation_kind.as_str(),
                 source_transaction_id: transaction.id,
-                lineage_ref: &lineage_ref,
-                child_execution_kind: "forge_task",
-                child_execution_ref: &child_execution_ref,
-                return_target_kind: "nota_runtime_transaction",
-                return_target_ref: &return_target_ref,
-                escalation_target_kind: "nota_runtime_transaction",
-                escalation_target_ref: &return_target_ref,
+                lineage_ref: lowered_dispatch.lineage.lineage_ref.as_str(),
+                child_execution_kind: lowered_dispatch.lineage.child_execution_kind.as_str(),
+                child_execution_ref: lowered_dispatch.lineage.child_execution_ref.as_str(),
+                return_target_kind: lowered_dispatch.lineage.return_target_kind.as_str(),
+                return_target_ref: lowered_dispatch.lineage.return_target_ref.as_str(),
+                escalation_target_kind: lowered_dispatch.lineage.escalation_target_kind.as_str(),
+                escalation_target_ref: lowered_dispatch.lineage.escalation_target_ref.as_str(),
                 status: "task_created",
                 payload_json: &allocation_payload_json,
             })?;
+            debug_assert_eq!(allocation.lineage_ref, lowered_dispatch.lineage.lineage_ref);
+            debug_assert_eq!(
+                allocation.child_execution_ref,
+                lowered_dispatch.lineage.child_execution_ref
+            );
+            debug_assert_eq!(
+                allocation.return_target_ref,
+                lowered_dispatch.lineage.return_target_ref
+            );
+            debug_assert_eq!(
+                allocation.escalation_target_ref,
+                lowered_dispatch.lineage.escalation_target_ref
+            );
+            debug_assert_eq!(
+                allocation.allocation_kind,
+                lowered_dispatch.routing.allocation_kind
+            );
+            debug_assert_eq!(
+                allocation.allocator_role,
+                lowered_dispatch.routing.allocator_role
+            );
             staged_receipts.push(tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
                 transaction_id: transaction.id,
                 receipt_kind: "FORGE_TASK_CREATED",
@@ -719,6 +789,21 @@ fn run_nota_dispatch(
         spawn_error,
         checkpoint: checkpoint_report.checkpoint,
     })
+}
+
+fn build_lowering_context(
+    transaction: &StoredNotaRuntimeTransaction,
+    task_id: i64,
+    lane: &NotaDispatchLane,
+    project_root: &str,
+) -> LoweringContext {
+    LoweringContext {
+        transaction_id: transaction.id,
+        task_id,
+        dispatch_lane: lane.allocator_surface().to_string(),
+        allocator_surface: lane.surface_action().to_string(),
+        project_root: project_root.to_string(),
+    }
 }
 
 fn launch_forge_task(
@@ -4891,21 +4976,37 @@ pub fn derive_anti_zeno_projection(
 #[cfg(test)]
 mod tests {
     use std::{
+        env,
+        ffi::{OsStr, OsString},
         fs,
         path::{Path, PathBuf},
+        process::Command,
+        sync::{Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use anyhow::{Context, Result};
     use serde_json::Value;
 
-    use crate::core::data_store::{
-        DataStore, MigrationPlan, NewNotaRuntimeAllocation, NewNotaRuntimeReceipt,
-        NewNotaRuntimeTransaction, NotaRuntimeTransactionUpdate,
+    use crate::core::{
+        action::{ActionPrimitive, ActionRecord, ActionRoom, ActorRole, KnowledgeLayer},
+        bootstrap_for_paths,
+        compiler::{
+            lowering::{lower_dispatch, LoweringContext},
+            packet::TypedActionPacket,
+        },
+        config_store::{render_config, EntranceConfig},
+        data_store::{
+            DataStore, MigrationPlan, NewNotaRuntimeAllocation, NewNotaRuntimeReceipt,
+            NewNotaRuntimeTransaction, NotaRuntimeTransactionUpdate,
+        },
+        event_bus::EventBus,
+        AppPaths,
     };
+    use crate::plugins::forge::ForgePlugin;
 
     use super::{
-        accept_current_runtime_round, active_checkpoint_scope_ids,
+        accept_current_runtime_round, active_checkpoint_scope_ids, build_lowering_context,
         default_nota_dispatch_execution_host, derive_anti_zeno_projection,
         derive_current_runtime_acceptance_bundle, derive_current_runtime_handout,
         derive_current_runtime_wake_request, derive_nota_runtime_finalize,
@@ -4916,10 +5017,11 @@ mod tests {
         materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
         record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
         record_nota_boundary_ask, record_nota_boundary_clarification, resolve_dev_repair_origin,
-        sync_runtime_truth, write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload,
-        NotaBoundaryAskRequest, NotaBoundaryClarificationRequest, NotaCheckpointRequest,
-        NotaCurrentRoundAcceptanceRequest, NotaDevReturnFinalizeRequest,
-        NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest, NotaDispatchExecutionHost,
+        run_nota_dev_dispatch, sync_runtime_truth, write_runtime_checkpoint,
+        AllocationTerminalOutcomeReceiptPayload, NotaBoundaryAskRequest,
+        NotaBoundaryClarificationRequest, NotaCheckpointRequest, NotaCurrentRoundAcceptanceRequest,
+        NotaDevDispatchRequest, NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest,
+        NotaDevReturnReviewRequest, NotaDispatchExecutionHost, NotaDispatchLane,
         NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
         AGENT_RETURN_ACCEPTED_RECEIPT_KIND, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
         ASK_OPEN_TRANSACTION_STATUS, BOUNDARY_INTAKE_SUPERSEDED_TRANSACTION_STATUS,
@@ -4932,9 +5034,20 @@ mod tests {
         HUMAN_ROUND_ACCEPTANCE_KIND,
     };
 
+    static NOTA_DISPATCH_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
     struct TempDbPath {
         root: PathBuf,
         db_path: PathBuf,
+    }
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
     }
 
     impl TempDbPath {
@@ -4961,6 +5074,278 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "entrance-nota-dispatch-{label}-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("test temp directory should be created");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = env::var_os(key);
+            env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = env::var_os(key);
+            env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                env::set_var(self.key, value);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn nota_dispatch_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        NOTA_DISPATCH_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("nota dispatch test lock should not be poisoned")
+    }
+
+    fn init_git_repo(path: &Path) {
+        let output = Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .current_dir(path)
+            .output()
+            .expect("git init should run");
+        assert!(
+            output.status.success(),
+            "git init should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo_with_commit(path: &Path) {
+        init_git_repo(path);
+
+        let add = Command::new("git")
+            .args(["add", "."])
+            .current_dir(path)
+            .output()
+            .expect("git add should run");
+        assert!(
+            add.status.success(),
+            "git add should succeed: {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+
+        let commit = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Entrance Test",
+                "-c",
+                "user.email=entrance@example.com",
+                "commit",
+                "--quiet",
+                "-m",
+                "initial commit",
+            ])
+            .current_dir(path)
+            .output()
+            .expect("git commit should run");
+        assert!(
+            commit.status.success(),
+            "git commit should succeed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+    }
+
+    fn add_git_worktree(repo_root: &Path, worktree_path: &Path, branch: &str) {
+        let output = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                branch,
+                worktree_path
+                    .to_str()
+                    .expect("worktree path should be valid UTF-8"),
+            ])
+            .current_dir(repo_root)
+            .output()
+            .expect("git worktree add should run");
+        assert!(
+            output.status.success(),
+            "git worktree add should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn build_lowering_context_populates_all_fields() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+        let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "dev",
+            transaction_kind: "forge_dev_dispatch",
+            title: "Dispatch seed",
+            payload_json: "{}",
+            status: "accepted",
+            forge_task_id: None,
+            cadence_checkpoint_id: None,
+        })?;
+
+        let context = build_lowering_context(
+            &transaction,
+            42,
+            &NotaDispatchLane::Dev,
+            "A:/Publish/entrance",
+        );
+
+        assert_eq!(
+            context,
+            LoweringContext {
+                transaction_id: transaction.id,
+                task_id: 42,
+                dispatch_lane: "nota_dev".to_string(),
+                allocator_surface: "dev".to_string(),
+                project_root: "A:/Publish/entrance".to_string(),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn lowering_matches_hand_coded_allocation() -> Result<()> {
+        let _guard = nota_dispatch_test_guard();
+
+        let temp_dir = TestDir::new("lowering-enforcement");
+        let app_data_dir = temp_dir.path().join("appdata");
+        let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+        let _linear_api_key_guard = EnvVarGuard::remove("LINEAR_API_KEY");
+        let _linear_token_guard = EnvVarGuard::remove("LINEAR_TOKEN");
+
+        fs::create_dir_all(&app_data_dir)?;
+        let mut config = EntranceConfig::default();
+        config.plugins.forge.enabled = true;
+        fs::write(app_data_dir.join("entrance.toml"), render_config(&config)?)?;
+
+        let startup = bootstrap_for_paths(AppPaths::new(app_data_dir.clone()))?;
+        let store = startup.data_store();
+        let forge = ForgePlugin::new(store.clone(), EventBus::new());
+
+        let project_root = temp_dir.path().join("Entrance");
+        let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+        let dev_role_dir = bootstrap_skill.join("roles");
+        fs::create_dir_all(&dev_role_dir)?;
+        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(dev_role_dir.join("dev.md"), "# test dev role\n")?;
+        fs::write(
+            project_root.join("README.md"),
+            "dispatch lowering fixture\n",
+        )?;
+        init_git_repo_with_commit(&project_root);
+
+        let managed_worktree = app_data_dir
+            .join("worktrees")
+            .join("Entrance")
+            .join("feat-MYT-53");
+        fs::create_dir_all(
+            managed_worktree
+                .parent()
+                .expect("managed worktree parent should exist"),
+        )?;
+        add_git_worktree(&project_root, &managed_worktree, "feat-MYT-53");
+
+        let report = run_nota_dev_dispatch(
+            &store,
+            &forge,
+            NotaDevDispatchRequest {
+                project_dir: Some(project_root.to_string_lossy().replace('\\', "/")),
+                model: "codex".to_string(),
+                agent_command: Some("__entrance_missing_runner__".to_string()),
+                title: None,
+                repair_of_allocation_id: None,
+                execution_host: NotaDispatchExecutionHost::InProcess,
+            },
+        )?;
+
+        let packet = TypedActionPacket::compile(
+            ActionRecord::new(
+                ActorRole::Dev,
+                ActionPrimitive::Dispatch,
+                ActionRoom::Prep,
+                KnowledgeLayer::Cold,
+            )
+            .expect("test dispatch record should satisfy lowering constraints"),
+        );
+        let context = build_lowering_context(
+            &report.transaction,
+            report.task_id,
+            &NotaDispatchLane::Dev,
+            &report.dispatch.project_root,
+        );
+        let lowered =
+            lower_dispatch(&packet, &context).expect("nota dev dispatch should lower successfully");
+
+        assert_eq!(report.allocation.lineage_ref, lowered.lineage.lineage_ref);
+        assert_eq!(
+            report.allocation.child_execution_kind,
+            lowered.lineage.child_execution_kind
+        );
+        assert_eq!(
+            report.allocation.child_execution_ref,
+            lowered.lineage.child_execution_ref
+        );
+        assert_eq!(
+            report.allocation.return_target_kind,
+            lowered.lineage.return_target_kind
+        );
+        assert_eq!(
+            report.allocation.return_target_ref,
+            lowered.lineage.return_target_ref
+        );
+        assert_eq!(
+            report.allocation.escalation_target_kind,
+            lowered.lineage.escalation_target_kind
+        );
+        assert_eq!(
+            report.allocation.escalation_target_ref,
+            lowered.lineage.escalation_target_ref
+        );
+        assert_eq!(
+            report.allocation.allocator_role,
+            lowered.routing.allocator_role
+        );
+        assert_eq!(
+            report.allocation.allocation_kind,
+            lowered.routing.allocation_kind
+        );
+
+        Ok(())
     }
 
     #[test]
