@@ -1630,7 +1630,6 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         process::Command,
-        sync::{Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1655,8 +1654,6 @@ mod tests {
         prepare_agent_dispatch, prepare_agent_dispatch_for_worktree, prepare_dev_dispatch,
         resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
     };
-
-    static FORGE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     struct TestDir {
         path: PathBuf,
@@ -1788,10 +1785,7 @@ mod tests {
     }
 
     fn forge_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        FORGE_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("forge test lock should not be poisoned")
+        crate::test_env_guard()
     }
 
     fn assert_default_codex_command(command: &str) {
