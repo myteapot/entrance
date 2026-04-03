@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::data_store::{StoredForgeTask, StoredNotaRuntimeAllocation};
+use crate::core::data_store::{
+    BudgetLedgerEntry, DataStore, StoredForgeTask, StoredNotaRuntimeAllocation,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +72,46 @@ pub enum SupervisorAction {
     SurfaceIncident,
 }
 
+impl SupervisionSignalFamily {
+    pub const fn ledger_key(self) -> &'static str {
+        match self {
+            Self::ExecutionFailure => "execution_failure",
+            Self::AdmissionRejection => "admission_rejection",
+            Self::VerdictReturn => "verdict_return",
+            Self::Integrity => "integrity",
+        }
+    }
+}
+
+impl SupervisorAction {
+    pub const fn ledger_key(self) -> &'static str {
+        match self {
+            Self::ObserveChild => "observe_child",
+            Self::RouteReturn => "route_return",
+            Self::RestartChild => "restart_child",
+            Self::ReplaceChild => "replace_child",
+            Self::BlockLineage => "block_lineage",
+            Self::QuarantineLineage => "quarantine_lineage",
+            Self::EscalateUp => "escalate_up",
+            Self::SurfaceIncident => "surface_incident",
+        }
+    }
+
+    pub fn from_ledger_key(value: &str) -> Option<Self> {
+        match value {
+            "observe_child" => Some(Self::ObserveChild),
+            "route_return" => Some(Self::RouteReturn),
+            "restart_child" => Some(Self::RestartChild),
+            "replace_child" => Some(Self::ReplaceChild),
+            "block_lineage" => Some(Self::BlockLineage),
+            "quarantine_lineage" => Some(Self::QuarantineLineage),
+            "escalate_up" => Some(Self::EscalateUp),
+            "surface_incident" => Some(Self::SurfaceIncident),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SupervisorActionResolution {
     pub action: SupervisorAction,
@@ -110,6 +152,7 @@ pub enum SupervisionEvent<'a> {
 pub struct RuntimeSupervisionProjection {
     pub current_supervision_state: RuntimeChildState,
     pub retry_count: u8,
+    pub max_restarts: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_failure_signal_family: Option<SupervisionSignalFamily>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -117,6 +160,18 @@ pub struct RuntimeSupervisionProjection {
     pub last_supervisor_action: SupervisorAction,
     pub escalation_pending: bool,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSupervisionIncidentSummary {
+    pub retry_count: u8,
+    pub max_restarts: u8,
+    pub last_supervisor_action: SupervisorAction,
+    pub budget_exhausted: bool,
+    pub ledger_entry_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_budget_entry: Option<BudgetLedgerEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -302,8 +357,26 @@ pub fn classify_signal(event: SupervisionEvent<'_>) -> SupervisionSignal {
 pub fn derive_runtime_supervision_projection(
     allocation: &StoredNotaRuntimeAllocation,
     task: Option<&StoredForgeTask>,
+    consumed_attempts: u8,
 ) -> RuntimeSupervisionProjection {
-    derive_runtime_supervision_projection_with_attempts(allocation, task, 0)
+    derive_runtime_supervision_projection_with_attempts(allocation, task, consumed_attempts)
+}
+
+pub fn derive_runtime_supervision_projection_with_budget(
+    allocation: &StoredNotaRuntimeAllocation,
+    task: Option<&StoredForgeTask>,
+    data_store: &DataStore,
+) -> RuntimeSupervisionProjection {
+    let signal = match task {
+        Some(task) => classify_signal(SupervisionEvent::TaskStateChange { allocation, task }),
+        None => classify_signal(SupervisionEvent::AllocationStateChange { allocation }),
+    };
+    let budget_signal_family = budget_consumption_signal_family(signal.family());
+    let consumed_attempts = data_store
+        .get_budget_consumption_count(allocation.id, budget_signal_family.ledger_key())
+        .unwrap_or_default();
+
+    derive_runtime_supervision_projection_with_attempts(allocation, task, consumed_attempts)
 }
 
 fn derive_runtime_supervision_projection_with_attempts(
@@ -381,65 +454,106 @@ fn build_projection_from_signal(
     current_status: &str,
 ) -> RuntimeSupervisionProjection {
     let resolution = resolve_supervisor_action(signal, &policy, consumed_attempts);
+    let retry_count = projected_retry_count(signal.family, consumed_attempts, resolution);
+    let last_supervisor_action = projected_last_supervisor_action(
+        signal.family,
+        current_status,
+        consumed_attempts,
+        resolution.action,
+    );
 
     match signal.family {
         SupervisionSignalFamily::VerdictReturn => match current_status {
             "Done" | "return_ready" => RuntimeSupervisionProjection {
                 current_supervision_state: RuntimeChildState::Done,
-                retry_count: resolution.attempt_number,
+                retry_count,
+                max_restarts: policy.retry_budget.max_restarts,
                 last_failure_signal_family: None,
                 last_failure_code: None,
-                last_supervisor_action: resolution.action,
+                last_supervisor_action,
                 escalation_pending: supervisor_action_requires_escalation(resolution.action),
                 summary: signal.summary.clone(),
             },
             "Running" => RuntimeSupervisionProjection {
                 current_supervision_state: RuntimeChildState::Running,
-                retry_count: resolution.attempt_number,
+                retry_count,
+                max_restarts: policy.retry_budget.max_restarts,
                 last_failure_signal_family: None,
                 last_failure_code: None,
-                last_supervisor_action: resolution.action,
+                last_supervisor_action,
                 escalation_pending: supervisor_action_requires_escalation(resolution.action),
                 summary: signal.summary.clone(),
             },
             _ => RuntimeSupervisionProjection {
                 current_supervision_state: RuntimeChildState::Pending,
-                retry_count: resolution.attempt_number,
+                retry_count,
+                max_restarts: policy.retry_budget.max_restarts,
                 last_failure_signal_family: None,
                 last_failure_code: None,
-                last_supervisor_action: resolution.action,
+                last_supervisor_action,
                 escalation_pending: supervisor_action_requires_escalation(resolution.action),
                 summary: signal.summary.clone(),
             },
         },
         SupervisionSignalFamily::ExecutionFailure => RuntimeSupervisionProjection {
             current_supervision_state: execution_failure_state(current_status, resolution.action),
-            retry_count: resolution.attempt_number,
+            retry_count,
+            max_restarts: policy.retry_budget.max_restarts,
             last_failure_signal_family: Some(SupervisionSignalFamily::ExecutionFailure),
             last_failure_code: signal.error_code.clone(),
-            last_supervisor_action: resolution.action,
+            last_supervisor_action,
             escalation_pending: supervisor_action_requires_escalation(resolution.action),
             summary: signal.summary.clone(),
         },
         SupervisionSignalFamily::Integrity => RuntimeSupervisionProjection {
             current_supervision_state: RuntimeChildState::Cancelled,
-            retry_count: resolution.attempt_number,
+            retry_count,
+            max_restarts: policy.retry_budget.max_restarts,
             last_failure_signal_family: Some(SupervisionSignalFamily::Integrity),
             last_failure_code: signal.error_code.clone(),
-            last_supervisor_action: resolution.action,
+            last_supervisor_action,
             escalation_pending: supervisor_action_requires_escalation(resolution.action),
             summary: signal.summary.clone(),
         },
         SupervisionSignalFamily::AdmissionRejection => RuntimeSupervisionProjection {
             current_supervision_state: RuntimeChildState::Blocked,
-            retry_count: resolution.attempt_number,
+            retry_count,
+            max_restarts: policy.retry_budget.max_restarts,
             last_failure_signal_family: Some(SupervisionSignalFamily::AdmissionRejection),
             last_failure_code: signal.error_code.clone(),
-            last_supervisor_action: resolution.action,
+            last_supervisor_action,
             escalation_pending: supervisor_action_requires_escalation(resolution.action),
             summary: signal.summary.clone(),
         },
     }
+}
+
+pub fn build_runtime_supervision_incident_summary(
+    projection: &RuntimeSupervisionProjection,
+    budget_ledger: &[BudgetLedgerEntry],
+) -> Option<RuntimeSupervisionIncidentSummary> {
+    if projection.retry_count == 0 && !projection.escalation_pending {
+        return None;
+    }
+
+    let last_budget_entry = budget_ledger.last().cloned();
+    let last_supervisor_action = last_budget_entry
+        .as_ref()
+        .and_then(|entry| SupervisorAction::from_ledger_key(entry.action_taken.as_str()))
+        .unwrap_or(projection.last_supervisor_action);
+    let budget_exhausted = last_budget_entry
+        .as_ref()
+        .map(|entry| entry.exhausted)
+        .unwrap_or(projection.escalation_pending);
+
+    Some(RuntimeSupervisionIncidentSummary {
+        retry_count: projection.retry_count,
+        max_restarts: projection.max_restarts,
+        last_supervisor_action,
+        budget_exhausted,
+        ledger_entry_count: budget_ledger.len(),
+        last_budget_entry,
+    })
 }
 
 fn execution_failure_state(current_status: &str, action: SupervisorAction) -> RuntimeChildState {
@@ -463,6 +577,47 @@ fn supervisor_action_requires_escalation(action: SupervisorAction) -> bool {
     )
 }
 
+fn budget_consumption_signal_family(
+    signal_family: SupervisionSignalFamily,
+) -> SupervisionSignalFamily {
+    match signal_family {
+        SupervisionSignalFamily::VerdictReturn | SupervisionSignalFamily::ExecutionFailure => {
+            SupervisionSignalFamily::ExecutionFailure
+        }
+        SupervisionSignalFamily::AdmissionRejection => SupervisionSignalFamily::AdmissionRejection,
+        SupervisionSignalFamily::Integrity => SupervisionSignalFamily::Integrity,
+    }
+}
+
+fn projected_retry_count(
+    signal_family: SupervisionSignalFamily,
+    consumed_attempts: u8,
+    resolution: SupervisorActionResolution,
+) -> u8 {
+    match signal_family {
+        SupervisionSignalFamily::VerdictReturn if consumed_attempts > 0 => {
+            consumed_attempts.saturating_add(1)
+        }
+        _ => resolution.attempt_number,
+    }
+}
+
+fn projected_last_supervisor_action(
+    signal_family: SupervisionSignalFamily,
+    current_status: &str,
+    consumed_attempts: u8,
+    resolved_action: SupervisorAction,
+) -> SupervisorAction {
+    if matches!(signal_family, SupervisionSignalFamily::VerdictReturn)
+        && consumed_attempts > 0
+        && !matches!(current_status, "Done" | "return_ready")
+    {
+        SupervisorAction::RestartChild
+    } else {
+        resolved_action
+    }
+}
+
 fn supervision_policy_for_allocation(
     allocation: &StoredNotaRuntimeAllocation,
 ) -> SupervisionPolicy {
@@ -475,13 +630,17 @@ fn supervision_policy_for_allocation(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_signal, derive_runtime_supervision_projection, resolve_supervisor_action,
+        classify_signal, derive_runtime_supervision_projection,
+        derive_runtime_supervision_projection_with_budget, resolve_supervisor_action,
         FailureVisibility, RestartPolicy, RuntimeChildState, SupervisionEvent, SupervisionScope,
         SupervisionSignal, SupervisionSignalFamily, SupervisionStrategy, SupervisorAction,
         DEFAULT_AGENT_PROCESS_POLICY, DEFAULT_DISPATCH_PIPELINE_POLICY,
         DEFAULT_SESSION_BUNDLE_POLICY,
     };
-    use crate::core::data_store::{StoredForgeTask, StoredNotaRuntimeAllocation};
+    use crate::core::data_store::{
+        DataStore, MigrationPlan, NewNotaRuntimeAllocation, NewNotaRuntimeTransaction,
+        StoredForgeTask, StoredNotaRuntimeAllocation,
+    };
 
     #[test]
     fn default_agent_process_policy_matches_otp_style_intent() {
@@ -548,12 +707,13 @@ mod tests {
         let allocation = sample_allocation("escalated_blocked");
         let task = sample_task("Blocked", Some("missing token"));
 
-        let projection = derive_runtime_supervision_projection(&allocation, Some(&task));
+        let projection = derive_runtime_supervision_projection(&allocation, Some(&task), 0);
         assert_eq!(
             projection.current_supervision_state,
             RuntimeChildState::Retrying
         );
         assert_eq!(projection.retry_count, 1);
+        assert_eq!(projection.max_restarts, 3);
         assert_eq!(
             projection.last_supervisor_action,
             SupervisorAction::RestartChild
@@ -564,16 +724,116 @@ mod tests {
     #[test]
     fn runtime_supervision_projects_return_ready_allocation_to_route_return() {
         let allocation = sample_allocation("return_ready");
-        let projection = derive_runtime_supervision_projection(&allocation, None);
+        let projection = derive_runtime_supervision_projection(&allocation, None, 0);
         assert_eq!(
             projection.current_supervision_state,
             RuntimeChildState::Done
         );
+        assert_eq!(projection.max_restarts, 3);
         assert_eq!(
             projection.last_supervisor_action,
             SupervisorAction::RouteReturn
         );
         assert!(!projection.escalation_pending);
+    }
+
+    #[test]
+    fn projection_with_budget_uses_real_count() -> anyhow::Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+        let allocation = insert_allocation(&store, "task_created")?;
+        store.record_budget_consumption(
+            allocation.id,
+            SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+            1,
+            SupervisorAction::RestartChild.ledger_key(),
+            DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts,
+            2,
+            false,
+            Some("first restart"),
+        )?;
+        store.record_budget_consumption(
+            allocation.id,
+            SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+            2,
+            SupervisorAction::RestartChild.ledger_key(),
+            DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts,
+            1,
+            false,
+            Some("second restart"),
+        )?;
+
+        let task = sample_task("Blocked", Some("flaky integration"));
+        let projection =
+            derive_runtime_supervision_projection_with_budget(&allocation, Some(&task), &store);
+
+        assert_eq!(projection.retry_count, 3);
+        assert_eq!(projection.max_restarts, 3);
+        assert_eq!(
+            projection.last_supervisor_action,
+            SupervisorAction::RestartChild
+        );
+        assert!(!projection.escalation_pending);
+
+        Ok(())
+    }
+
+    #[test]
+    fn projection_with_zero_budget_matches_default() -> anyhow::Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+        let allocation = insert_allocation(&store, "task_created")?;
+        let task = sample_task("Blocked", Some("flaky integration"));
+
+        let baseline = derive_runtime_supervision_projection(&allocation, Some(&task), 0);
+        let with_budget =
+            derive_runtime_supervision_projection_with_budget(&allocation, Some(&task), &store);
+
+        assert_eq!(
+            with_budget.current_supervision_state,
+            baseline.current_supervision_state
+        );
+        assert_eq!(with_budget.retry_count, baseline.retry_count);
+        assert_eq!(with_budget.max_restarts, baseline.max_restarts);
+        assert_eq!(
+            with_budget.last_supervisor_action,
+            baseline.last_supervisor_action
+        );
+        assert_eq!(with_budget.escalation_pending, baseline.escalation_pending);
+
+        Ok(())
+    }
+
+    #[test]
+    fn escalation_pending_when_budget_exhausted() -> anyhow::Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+        let allocation = insert_allocation(&store, "task_created")?;
+        for attempt in 1..=DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts {
+            store.record_budget_consumption(
+                allocation.id,
+                SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+                attempt,
+                SupervisorAction::RestartChild.ledger_key(),
+                DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts,
+                DEFAULT_AGENT_PROCESS_POLICY
+                    .retry_budget
+                    .max_restarts
+                    .saturating_sub(attempt),
+                false,
+                Some("retry consumed"),
+            )?;
+        }
+
+        let task = sample_task("Failed", Some("still failing"));
+        let projection =
+            derive_runtime_supervision_projection_with_budget(&allocation, Some(&task), &store);
+
+        assert!(projection.escalation_pending);
+        assert_eq!(projection.retry_count, 4);
+        assert_eq!(
+            projection.last_supervisor_action,
+            SupervisorAction::EscalateUp
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -739,5 +999,37 @@ mod tests {
             summary: "sample".to_string(),
             timestamp: "2026-03-25T00:00:00Z".to_string(),
         }
+    }
+
+    fn insert_allocation(
+        store: &DataStore,
+        status: &str,
+    ) -> anyhow::Result<StoredNotaRuntimeAllocation> {
+        let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "do",
+            transaction_kind: "forge_agent_dispatch",
+            title: "supervision-test",
+            payload_json: "{}",
+            status: "opened",
+            forge_task_id: None,
+            cadence_checkpoint_id: None,
+        })?;
+
+        store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_do",
+            allocation_kind: "forge_agent_dispatch",
+            source_transaction_id: transaction.id,
+            lineage_ref: "nota/do/transaction/1/forge-task/7",
+            child_execution_kind: "forge_task",
+            child_execution_ref: "7",
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: "1",
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: "1",
+            status,
+            payload_json: "{}",
+        })
     }
 }

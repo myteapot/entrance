@@ -7,7 +7,7 @@ use crate::core::data_store::{
     DataStore, StoredCadenceLink, StoredCadenceObject, StoredNotaRuntimeAllocation,
     StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
 };
-use crate::core::supervision::RuntimeSupervisionProjection;
+use crate::core::supervision::{RuntimeSupervisionIncidentSummary, RuntimeSupervisionProjection};
 use crate::plugins::forge::{
     build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
     prepare_dev_dispatch_blocking, CreateTaskRequest, PreparedAgentDispatch, PreparedDevDispatch,
@@ -709,6 +709,8 @@ pub struct NotaRuntimeAllocationReadRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_dispatch_tool_name: Option<String>,
     pub supervision: RuntimeSupervisionProjection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervision_incident: Option<RuntimeSupervisionIncidentSummary>,
 }
 
 impl Deref for NotaRuntimeAllocationReadRecord {

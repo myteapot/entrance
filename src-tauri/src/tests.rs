@@ -10,7 +10,10 @@ use std::{
 use anyhow::Result;
 
 use crate::core::config_store::{render_config, EntranceConfig};
-use crate::core::data_store::{DataStore, MigrationPlan};
+use crate::core::data_store::{
+    DataStore, MigrationPlan, NewNotaRuntimeAllocation, NewNotaRuntimeTransaction,
+};
+use crate::core::supervision::{SupervisionSignalFamily, SupervisorAction};
 use crate::{
     build_nota_runtime_status, cli_help_for_args, prepare_forge_dispatch_cli,
     verify_forge_dispatch_cli, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
@@ -124,6 +127,107 @@ fn nota_status_can_project_runtime_invariants_on_readonly_store() -> Result<()> 
         .invariants
         .iter()
         .any(|invariant| invariant.invariant_key == "runtime_host_snapshot"));
+
+    Ok(())
+}
+
+#[test]
+fn nota_status_surfaces_supervision_incident_visibility() -> Result<()> {
+    let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+    let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+        actor_role: "nota",
+        surface_action: "do",
+        transaction_kind: "forge_agent_dispatch",
+        title: "Incident visibility",
+        payload_json: "{}",
+        status: "opened",
+        forge_task_id: None,
+        cadence_checkpoint_id: None,
+    })?;
+    let allocation_payload = serde_json::to_string(&serde_json::json!({
+        "issue_id": "MYT-83",
+        "issue_status": "In Progress",
+        "issue_status_source": "test",
+        "issue_title": "Incident visibility",
+        "project_root": "A:/Publish/entrance",
+        "worktree_path": "A:/Publish/entrance/worktrees/feat-m8-3",
+        "prompt_source": "test fixture",
+        "model": "codex",
+        "agent_command": null,
+        "repair_of_allocation_id": null,
+        "repair_of_transaction_id": null,
+        "repair_of_lineage_ref": null,
+        "execution_host": "in_process",
+        "child_dispatch_role": "agent",
+        "child_dispatch_tool_name": "forge_dispatch_agent",
+        "terminal_outcome": null
+    }))?;
+    let allocation = store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+        allocator_role: "nota",
+        allocator_surface: "nota_do",
+        allocation_kind: "forge_agent_dispatch",
+        source_transaction_id: transaction.id,
+        lineage_ref: "nota/do/transaction/1/forge-task/1",
+        child_execution_kind: "forge_task",
+        child_execution_ref: "1",
+        return_target_kind: "nota_runtime_transaction",
+        return_target_ref: "1",
+        escalation_target_kind: "nota_runtime_transaction",
+        escalation_target_ref: "1",
+        status: "task_created",
+        payload_json: &allocation_payload,
+    })?;
+    store.record_budget_consumption(
+        allocation.id,
+        SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+        1,
+        SupervisorAction::RestartChild.ledger_key(),
+        3,
+        2,
+        false,
+        Some("first retry"),
+    )?;
+    store.record_budget_consumption(
+        allocation.id,
+        SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+        2,
+        SupervisorAction::RestartChild.ledger_key(),
+        3,
+        1,
+        false,
+        Some("second retry"),
+    )?;
+
+    let status = build_nota_runtime_status(&store)?;
+    let incident = status
+        .current_supervision_incident
+        .as_ref()
+        .expect("status should surface the supervision incident summary");
+    let latest_allocation = status
+        .latest_allocation
+        .as_ref()
+        .expect("status should surface the latest allocation");
+    let allocation_incident = latest_allocation
+        .supervision_incident
+        .as_ref()
+        .expect("latest allocation should include supervision incident visibility");
+
+    assert_eq!(incident.retry_count, 3);
+    assert_eq!(incident.max_restarts, 3);
+    assert_eq!(
+        incident.last_supervisor_action,
+        SupervisorAction::RestartChild
+    );
+    assert!(!incident.budget_exhausted);
+    assert_eq!(incident.ledger_entry_count, 2);
+    assert_eq!(allocation_incident.retry_count, 3);
+    assert_eq!(
+        status
+            .current_supervision
+            .as_ref()
+            .map(|projection| projection.retry_count),
+        Some(3)
+    );
 
     Ok(())
 }
