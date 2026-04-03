@@ -14,7 +14,10 @@ use rusqlite::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::core::compiler::registry::RegistryEntry;
+use crate::core::compiler::{
+    evidence::{EvidenceKind, EvidenceVerdict, StoredAttemptReceipt, StoredGateEvidence},
+    registry::RegistryEntry,
+};
 use crate::plugins::launcher::scanner::DiscoveredApp;
 
 const CORE_MIGRATION: MigrationStep = MigrationStep {
@@ -82,7 +85,12 @@ const CORE_SUPERVISION_BUDGET_LEDGER_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0017_create_supervision_budget_ledger.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 13] = [
+const CORE_SIMULATION_GATE_EVIDENCE_MIGRATION: MigrationStep = MigrationStep {
+    name: "0018_create_simulation_gate_evidence",
+    sql: include_str!("../../migrations/0018_create_simulation_gate_evidence.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 14] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -96,6 +104,7 @@ const CORE_MIGRATIONS: [MigrationStep; 13] = [
     CORE_RUNTIME_INVARIANT_MIGRATION,
     CORE_COMPILER_REGISTRY_MIGRATION,
     CORE_SUPERVISION_BUDGET_LEDGER_MIGRATION,
+    CORE_SIMULATION_GATE_EVIDENCE_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -3530,6 +3539,142 @@ impl DataStore {
         })
     }
 
+    pub fn insert_gate_evidence(
+        &self,
+        allocation_id: i64,
+        kind: EvidenceKind,
+        summary: &str,
+        payload_json: &str,
+    ) -> Result<StoredGateEvidence> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO simulation_gate_evidence (
+                    allocation_id,
+                    evidence_kind,
+                    verdict,
+                    summary,
+                    payload_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                "#,
+                params![
+                    allocation_id,
+                    kind.as_str(),
+                    EvidenceVerdict::Pending.as_str(),
+                    summary,
+                    payload_json,
+                    now,
+                ],
+            )?;
+
+            fetch_gate_evidence_by_id(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("simulation gate evidence disappeared after insert"))
+        })
+    }
+
+    pub fn update_gate_evidence_verdict(&self, id: i64, verdict: EvidenceVerdict) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            let changed = conn.execute(
+                r#"
+                UPDATE simulation_gate_evidence
+                SET verdict = ?2,
+                    updated_at = ?3
+                WHERE id = ?1
+                "#,
+                params![id, verdict.as_str(), now],
+            )?;
+
+            if changed == 0 {
+                return Err(anyhow!("simulation gate evidence `{id}` does not exist"));
+            }
+
+            Ok(())
+        })
+    }
+
+    pub fn insert_attempt_receipt(
+        &self,
+        evidence_id: i64,
+        attempt: u8,
+        passed: bool,
+        reason: &str,
+    ) -> Result<StoredAttemptReceipt> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO simulation_gate_attempt_receipts (
+                    evidence_id,
+                    attempt_number,
+                    passed,
+                    reason,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    evidence_id,
+                    i64::from(attempt),
+                    i64::from(passed),
+                    reason,
+                    now
+                ],
+            )?;
+
+            fetch_attempt_receipt_by_id(conn, conn.last_insert_rowid())?
+                .ok_or_else(|| anyhow!("simulation gate attempt receipt disappeared after insert"))
+        })
+    }
+
+    pub fn list_gate_evidence(&self, allocation_id: i64) -> Result<Vec<StoredGateEvidence>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    allocation_id,
+                    evidence_kind,
+                    verdict,
+                    summary,
+                    payload_json,
+                    created_at,
+                    updated_at
+                FROM simulation_gate_evidence
+                WHERE allocation_id = ?1
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([allocation_id], map_gate_evidence_row)?;
+            let evidence = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(evidence)
+        })
+    }
+
+    pub fn list_attempt_receipts(&self, evidence_id: i64) -> Result<Vec<StoredAttemptReceipt>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    evidence_id,
+                    attempt_number,
+                    passed,
+                    reason,
+                    created_at
+                FROM simulation_gate_attempt_receipts
+                WHERE evidence_id = ?1
+                ORDER BY attempt_number ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([evidence_id], map_attempt_receipt_row)?;
+            let receipts = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(receipts)
+        })
+    }
+
     pub fn list_memory_fragment_records(&self) -> Result<Vec<StoredMemoryFragment>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
@@ -5630,6 +5775,36 @@ fn map_compiler_registry_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Resu
     })
 }
 
+fn map_gate_evidence_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredGateEvidence> {
+    Ok(StoredGateEvidence {
+        id: row.get(0)?,
+        allocation_id: row.get(1)?,
+        evidence_kind: row.get(2)?,
+        verdict: row.get(3)?,
+        summary: row.get(4)?,
+        payload_json: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+fn map_attempt_receipt_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAttemptReceipt> {
+    Ok(StoredAttemptReceipt {
+        id: row.get(0)?,
+        evidence_id: row.get(1)?,
+        attempt_number: {
+            let value: i64 = row.get(2)?;
+            u8::try_from(value).unwrap_or(u8::MAX)
+        },
+        passed: {
+            let value: i64 = row.get(3)?;
+            value != 0
+        },
+        reason: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
 fn map_budget_ledger_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BudgetLedgerEntry> {
     Ok(BudgetLedgerEntry {
         id: row.get(0)?,
@@ -6383,6 +6558,56 @@ fn fetch_nota_runtime_allocation(
         .map_err(Into::into)
 }
 
+fn fetch_gate_evidence_by_id(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredGateEvidence>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                allocation_id,
+                evidence_kind,
+                verdict,
+                summary,
+                payload_json,
+                created_at,
+                updated_at
+            FROM simulation_gate_evidence
+            WHERE id = ?1
+            "#,
+            [id],
+            map_gate_evidence_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn fetch_attempt_receipt_by_id(
+    connection: &Connection,
+    id: i64,
+) -> Result<Option<StoredAttemptReceipt>> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                evidence_id,
+                attempt_number,
+                passed,
+                reason,
+                created_at
+            FROM simulation_gate_attempt_receipts
+            WHERE id = ?1
+            "#,
+            [id],
+            map_attempt_receipt_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
 fn fetch_decision_record(connection: &Connection, id: i64) -> Result<Option<StoredDecisionRecord>> {
     connection
         .query_row(
@@ -6823,6 +7048,36 @@ mod tests {
     use super::*;
     use std::{thread, time::Duration};
 
+    fn insert_test_allocation(store: &DataStore) -> Result<StoredNotaRuntimeAllocation> {
+        let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "review",
+            transaction_kind: "gate_eval",
+            title: "simulation gate",
+            payload_json: r#"{"step":"review"}"#,
+            status: "open",
+            forge_task_id: None,
+            cadence_checkpoint_id: None,
+        })?;
+        let return_target_ref = transaction.id.to_string();
+
+        store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_do",
+            allocation_kind: "simulation_gate",
+            source_transaction_id: transaction.id,
+            lineage_ref: "lineage:simulation-gate:test",
+            child_execution_kind: "forge_task",
+            child_execution_ref: "forge:task:1",
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: return_target_ref.as_str(),
+            escalation_target_kind: "human",
+            escalation_target_ref: "review",
+            status: "task_created",
+            payload_json: r#"{"allocation":"simulation_gate"}"#,
+        })
+    }
+
     #[test]
     fn forge_task_logs_round_trip() -> Result<()> {
         let store = DataStore::in_memory(MigrationPlan::new(&[
@@ -6957,6 +7212,79 @@ mod tests {
         assert_eq!(child_receipts.len(), 1);
         assert_eq!(child_receipts[0].child_task_id, child_task_id);
         assert_eq!(child_receipts[0].child_slot.as_deref(), Some("agent-1"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_insert_and_list_round_trip() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let allocation = insert_test_allocation(&store)?;
+
+        let evidence = store.insert_gate_evidence(
+            allocation.id,
+            EvidenceKind::TestResult,
+            "smoke suite green",
+            r#"{"suite":"smoke","passed":true}"#,
+        )?;
+        let listed = store.list_gate_evidence(allocation.id)?;
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, evidence.id);
+        assert_eq!(listed[0].allocation_id, allocation.id);
+        assert_eq!(listed[0].evidence_kind, "test_result");
+        assert_eq!(listed[0].verdict, "pending");
+        assert_eq!(listed[0].summary, "smoke suite green");
+        assert_eq!(listed[0].payload_json, r#"{"suite":"smoke","passed":true}"#);
+
+        Ok(())
+    }
+
+    #[test]
+    fn verdict_update_changes_status() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let allocation = insert_test_allocation(&store)?;
+
+        let evidence = store.insert_gate_evidence(
+            allocation.id,
+            EvidenceKind::ReviewVerdict,
+            "human review ready",
+            r#"{"reviewer":"human"}"#,
+        )?;
+
+        store.update_gate_evidence_verdict(evidence.id, EvidenceVerdict::Accepted)?;
+
+        let listed = store.list_gate_evidence(allocation.id)?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].verdict, "accepted");
+
+        Ok(())
+    }
+
+    #[test]
+    fn attempt_receipt_records_pass_and_fail() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let allocation = insert_test_allocation(&store)?;
+        let evidence = store.insert_gate_evidence(
+            allocation.id,
+            EvidenceKind::IntegrationProbe,
+            "integration probe executed",
+            r#"{"probe":"smoke"}"#,
+        )?;
+
+        let failed = store.insert_attempt_receipt(evidence.id, 1, false, "smoke probe failed")?;
+        let passed = store.insert_attempt_receipt(evidence.id, 2, true, "smoke probe passed")?;
+        let receipts = store.list_attempt_receipts(evidence.id)?;
+
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[0].id, failed.id);
+        assert_eq!(receipts[0].attempt_number, 1);
+        assert!(!receipts[0].passed);
+        assert_eq!(receipts[0].reason, "smoke probe failed");
+        assert_eq!(receipts[1].id, passed.id);
+        assert_eq!(receipts[1].attempt_number, 2);
+        assert!(receipts[1].passed);
+        assert_eq!(receipts[1].reason, "smoke probe passed");
 
         Ok(())
     }
