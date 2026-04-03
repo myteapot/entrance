@@ -7078,6 +7078,10 @@ mod tests {
         })
     }
 
+    fn store_with_forge_migrations() -> Result<DataStore> {
+        DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))
+    }
+
     #[test]
     fn forge_task_logs_round_trip() -> Result<()> {
         let store = DataStore::in_memory(MigrationPlan::new(&[
@@ -7218,7 +7222,7 @@ mod tests {
 
     #[test]
     fn evidence_insert_and_list_round_trip() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let store = store_with_forge_migrations()?;
         let allocation = insert_test_allocation(&store)?;
 
         let evidence = store.insert_gate_evidence(
@@ -7242,7 +7246,7 @@ mod tests {
 
     #[test]
     fn verdict_update_changes_status() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let store = store_with_forge_migrations()?;
         let allocation = insert_test_allocation(&store)?;
 
         let evidence = store.insert_gate_evidence(
@@ -7263,7 +7267,7 @@ mod tests {
 
     #[test]
     fn attempt_receipt_records_pass_and_fail() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let store = store_with_forge_migrations()?;
         let allocation = insert_test_allocation(&store)?;
         let evidence = store.insert_gate_evidence(
             allocation.id,
