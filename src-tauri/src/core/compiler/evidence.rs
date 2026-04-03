@@ -38,6 +38,31 @@ impl EvidenceVerdict {
             Self::Expired => "expired",
         }
     }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "accepted" => Some(Self::Accepted),
+            "rejected" => Some(Self::Rejected),
+            "expired" => Some(Self::Expired),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateEvidenceRef {
+    pub evidence_id: i64,
+    pub evidence_kind: String,
+}
+
+impl From<&StoredGateEvidence> for GateEvidenceRef {
+    fn from(value: &StoredGateEvidence) -> Self {
+        Self {
+            evidence_id: value.id,
+            evidence_kind: value.evidence_kind.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
