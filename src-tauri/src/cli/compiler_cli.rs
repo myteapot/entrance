@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::core::compiler::registry::RegistryEntry;
+use crate::core::compiler::{registry::RegistryEntry, semantics::EffectiveControlSemantics};
 
 use super::{bootstrap_cli_state, print_json};
 
@@ -14,12 +14,12 @@ pub(super) fn run_compiler_cli(args: &[String]) -> Result<()> {
             print_json(&startup.data_store().list_compiler_registry_snapshot()?)
         }
         [command, subcommand, rest @ ..] if command == "registry" && subcommand == "list" => {
-            let format = parse_registry_list_format(rest)?;
+            let options = parse_registry_list_options(rest)?;
             let entries = startup.data_store().list_compiler_registry_snapshot()?;
-            print_registry_entries(&entries, format)
+            print_registry_entries(&entries, options)
         }
         _ => bail!(
-            "unsupported compiler command, expected `entrance compiler registry list [--format <json|table>]`"
+            "unsupported compiler command, expected `entrance compiler registry list [--format <json|table>] [--include-semantics]`"
         ),
     }
 }
@@ -30,8 +30,31 @@ enum RegistryCliFormat {
     Table,
 }
 
-fn parse_registry_list_format(args: &[String]) -> Result<RegistryCliFormat> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RegistryListOptions {
+    format: RegistryCliFormat,
+    include_semantics: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RegistryEntryWithSemantics {
+    #[serde(flatten)]
+    entry: RegistryEntry,
+    effective_semantics: EffectiveControlSemantics,
+}
+
+impl RegistryEntryWithSemantics {
+    fn from_entry(entry: &RegistryEntry) -> Self {
+        Self {
+            entry: entry.clone(),
+            effective_semantics: entry.effective_semantics(),
+        }
+    }
+}
+
+fn parse_registry_list_options(args: &[String]) -> Result<RegistryListOptions> {
     let mut format = RegistryCliFormat::Json;
+    let mut include_semantics = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -49,41 +72,69 @@ fn parse_registry_list_format(args: &[String]) -> Result<RegistryCliFormat> {
                 };
                 index += 2;
             }
+            "--include-semantics" => {
+                include_semantics = true;
+                index += 1;
+            }
             other => bail!("unsupported compiler registry list argument `{other}`"),
         }
     }
 
-    Ok(format)
+    Ok(RegistryListOptions {
+        format,
+        include_semantics,
+    })
 }
 
-fn print_registry_entries(entries: &[RegistryEntry], format: RegistryCliFormat) -> Result<()> {
-    match format {
-        RegistryCliFormat::Json => print_json(entries),
-        RegistryCliFormat::Table => print_registry_table(entries),
+fn print_registry_entries(entries: &[RegistryEntry], options: RegistryListOptions) -> Result<()> {
+    match (options.format, options.include_semantics) {
+        (RegistryCliFormat::Json, true) => {
+            let entries = entries
+                .iter()
+                .map(RegistryEntryWithSemantics::from_entry)
+                .collect::<Vec<_>>();
+            print_json(&entries)
+        }
+        (RegistryCliFormat::Json, false) => print_json(entries),
+        (RegistryCliFormat::Table, include_semantics) => {
+            print_registry_table(entries, include_semantics)
+        }
     }
 }
 
-fn print_registry_table(entries: &[RegistryEntry]) -> Result<()> {
-    let headers = [
-        "primitive",
-        "object_kind",
-        "flow_phase",
-        "attention_state",
-        "integrity_overlay",
-        "control_policy",
-        "writer_policy",
-        "route_policy",
-        "gate_policy",
-        "sandbox_policy",
-        "effect_kind",
-        "supervision_scope",
-        "allowed_roles",
-        "allowed_rooms",
+fn print_registry_table(entries: &[RegistryEntry], include_semantics: bool) -> Result<()> {
+    let mut headers = vec![
+        "primitive".to_string(),
+        "object_kind".to_string(),
+        "flow_phase".to_string(),
+        "attention_state".to_string(),
+        "integrity_overlay".to_string(),
+        "control_policy".to_string(),
+        "writer_policy".to_string(),
+        "route_policy".to_string(),
+        "gate_policy".to_string(),
+        "sandbox_policy".to_string(),
+        "effect_kind".to_string(),
+        "supervision_scope".to_string(),
+        "allowed_roles".to_string(),
+        "allowed_rooms".to_string(),
     ];
+    if include_semantics {
+        headers.extend([
+            "requires_admission_gate".to_string(),
+            "writes_truth".to_string(),
+            "requires_supervision".to_string(),
+            "sandbox_requirement".to_string(),
+            "hot_projection_allowed".to_string(),
+            "requires_human_approval".to_string(),
+            "is_read_only".to_string(),
+            "routing_constraint".to_string(),
+        ]);
+    }
 
     let rows = entries
         .iter()
-        .map(registry_entry_table_row)
+        .map(|entry| registry_entry_table_row(entry, include_semantics))
         .collect::<Result<Vec<_>>>()?;
     let widths = column_widths(&headers, &rows);
 
@@ -96,8 +147,8 @@ fn print_registry_table(entries: &[RegistryEntry]) -> Result<()> {
     Ok(())
 }
 
-fn registry_entry_table_row(entry: &RegistryEntry) -> Result<Vec<String>> {
-    Ok(vec![
+fn registry_entry_table_row(entry: &RegistryEntry, include_semantics: bool) -> Result<Vec<String>> {
+    let mut row = vec![
         display_scalar(&entry.primitive)?,
         display_scalar(&entry.object_kind)?,
         display_scalar(&entry.flow_phase)?,
@@ -112,7 +163,23 @@ fn registry_entry_table_row(entry: &RegistryEntry) -> Result<Vec<String>> {
         display_scalar(&entry.supervision_scope)?,
         display_scalar(&entry.allowed_roles)?,
         display_scalar(&entry.allowed_rooms)?,
-    ])
+    ];
+
+    if include_semantics {
+        let semantics = entry.effective_semantics();
+        row.extend([
+            display_scalar(&semantics.requires_admission_gate)?,
+            display_scalar(&semantics.writes_truth)?,
+            display_scalar(&semantics.requires_supervision)?,
+            display_scalar(&semantics.sandbox_requirement)?,
+            display_scalar(&semantics.hot_projection_allowed)?,
+            display_scalar(&semantics.requires_human_approval)?,
+            display_scalar(&semantics.is_read_only)?,
+            display_scalar(&semantics.routing_constraint)?,
+        ]);
+    }
+
+    Ok(row)
 }
 
 fn display_scalar<T: Serialize>(value: &T) -> Result<String> {
@@ -125,7 +192,7 @@ fn display_scalar<T: Serialize>(value: &T) -> Result<String> {
     })
 }
 
-fn column_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
+fn column_widths(headers: &[impl AsRef<str>], rows: &[Vec<String>]) -> Vec<usize> {
     headers
         .iter()
         .enumerate()
@@ -133,7 +200,7 @@ fn column_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
             rows.iter()
                 .filter_map(|row| row.get(index))
                 .map(|value| value.len())
-                .fold(header.len(), usize::max)
+                .fold(header.as_ref().len(), usize::max)
         })
         .collect()
 }
