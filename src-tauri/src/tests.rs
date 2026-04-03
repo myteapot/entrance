@@ -1,0 +1,268 @@
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    fs,
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use anyhow::Result;
+
+use crate::core::config_store::{render_config, EntranceConfig};
+use crate::core::data_store::{DataStore, MigrationPlan};
+use crate::{
+    build_nota_runtime_status, cli_help_for_args, prepare_forge_dispatch_cli,
+    verify_forge_dispatch_cli, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
+};
+
+static CLI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct TestDir {
+    path: PathBuf,
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl TestDir {
+    fn new(label: &str) -> Self {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "entrance-lib-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("test temp directory should be created");
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = env::var_os(key);
+        env::set_var(key, value);
+        Self { key, original }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let original = env::var_os(key);
+        env::remove_var(key);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = &self.original {
+            env::set_var(self.key, value);
+        } else {
+            env::remove_var(self.key);
+        }
+    }
+}
+
+fn cli_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    CLI_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("CLI test lock should not be poisoned")
+}
+
+#[test]
+fn cli_help_is_available_without_falling_back_to_gui() {
+    let root = vec!["--help".to_string()];
+    assert_eq!(cli_help_for_args(&root), Some(ROOT_CLI_HELP));
+
+    let nota = vec!["nota".to_string(), "--help".to_string()];
+    assert_eq!(cli_help_for_args(&nota), Some(NOTA_CLI_HELP));
+
+    let mcp = vec!["mcp".to_string(), "--help".to_string()];
+    assert_eq!(cli_help_for_args(&mcp), Some(MCP_CLI_HELP));
+
+    let mcp_stdio = vec!["mcp".to_string(), "stdio".to_string(), "--help".to_string()];
+    assert_eq!(cli_help_for_args(&mcp_stdio), Some(MCP_CLI_HELP));
+
+    let forge = vec!["forge".to_string(), "--help".to_string()];
+    assert_eq!(cli_help_for_args(&forge), Some(FORGE_CLI_HELP));
+}
+
+#[test]
+fn nota_status_can_project_runtime_invariants_on_readonly_store() -> Result<()> {
+    let temp_dir = TestDir::new("nota-status-readonly");
+    let db_path = temp_dir.path().join("data").join("entrance.db");
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+    let writable_store = DataStore::open(&db_path, migration_plan)?;
+    drop(writable_store);
+
+    let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+    let readonly_store = DataStore::open_read_only(&db_path, migration_plan)?;
+    let status = build_nota_runtime_status(&readonly_store)?;
+
+    assert_eq!(status.invariants.failed_count, 1);
+    assert_eq!(status.repair_lane.open_count, 1);
+    assert!(status
+        .invariants
+        .invariants
+        .iter()
+        .any(|invariant| invariant.invariant_key == "runtime_host_snapshot"));
+
+    Ok(())
+}
+
+fn init_git_repo(path: &Path) {
+    let output = std::process::Command::new("git")
+        .arg("init")
+        .arg("--quiet")
+        .current_dir(path)
+        .output()
+        .expect("git init should run");
+    assert!(
+        output.status.success(),
+        "git init should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn prepare_forge_dispatch_cli_works_without_agents_runtime() -> Result<()> {
+    let _guard = cli_test_guard();
+
+    let temp_dir = TestDir::new("forge-cli-no-agents");
+    let app_data_dir = temp_dir.path().join("appdata");
+    let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+    let _linear_api_key_guard = EnvVarGuard::remove("LINEAR_API_KEY");
+    let _linear_token_guard = EnvVarGuard::remove("LINEAR_TOKEN");
+
+    fs::create_dir_all(&app_data_dir)?;
+    let mut config = EntranceConfig::default();
+    config.plugins.forge.enabled = true;
+    fs::write(app_data_dir.join("entrance.toml"), render_config(&config)?)?;
+
+    let project_root = temp_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    fs::create_dir_all(&bootstrap_skill)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree);
+
+    let dispatch = prepare_forge_dispatch_cli(Some(
+        project_root
+            .to_str()
+            .expect("project path should be valid UTF-8")
+            .to_string(),
+    ))?;
+
+    assert_eq!(dispatch.issue_id, "MYT-48");
+    assert_eq!(dispatch.issue_status, "Todo");
+    assert_eq!(dispatch.issue_status_source, "fallback");
+    assert!(dispatch.issue_title.is_none());
+    assert_eq!(
+        dispatch.prompt_source,
+        "Entrance-owned harness/bootstrap prompt"
+    );
+    assert_eq!(
+        dispatch.worktree_path,
+        managed_worktree.to_string_lossy().replace('\\', "/")
+    );
+    assert!(dispatch.prompt.contains("harness/bootstrap/duet/SKILL.md"));
+    assert!(!dispatch.prompt.contains(".agents"));
+
+    Ok(())
+}
+
+#[test]
+fn prepare_forge_dispatch_cli_requires_enabled_forge_plugin() -> Result<()> {
+    let _guard = cli_test_guard();
+
+    let temp_dir = TestDir::new("forge-cli-disabled");
+    let app_data_dir = temp_dir.path().join("appdata");
+    let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+
+    fs::create_dir_all(&app_data_dir)?;
+    fs::write(
+        app_data_dir.join("entrance.toml"),
+        render_config(&EntranceConfig::default())?,
+    )?;
+
+    let error = prepare_forge_dispatch_cli(None).expect_err("forge-disabled CLI should fail");
+    assert!(error.to_string().contains("Forge is disabled"));
+
+    Ok(())
+}
+
+#[test]
+fn verify_forge_dispatch_cli_persists_task_without_agents_runtime() -> Result<()> {
+    let _guard = cli_test_guard();
+
+    let temp_dir = TestDir::new("forge-cli-verify-no-agents");
+    let app_data_dir = temp_dir.path().join("appdata");
+    let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
+    let _linear_api_key_guard = EnvVarGuard::remove("LINEAR_API_KEY");
+    let _linear_token_guard = EnvVarGuard::remove("LINEAR_TOKEN");
+
+    fs::create_dir_all(&app_data_dir)?;
+    let mut config = EntranceConfig::default();
+    config.plugins.forge.enabled = true;
+    fs::write(app_data_dir.join("entrance.toml"), render_config(&config)?)?;
+
+    let project_root = temp_dir.path().join("Entrance");
+    let bootstrap_skill = project_root.join("harness").join("bootstrap").join("duet");
+    fs::create_dir_all(&bootstrap_skill)?;
+    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+
+    let managed_worktree = app_data_dir
+        .join("worktrees")
+        .join("Entrance")
+        .join("feat-MYT-48");
+    fs::create_dir_all(&managed_worktree)?;
+    init_git_repo(&managed_worktree);
+
+    let report = verify_forge_dispatch_cli(Some(
+        project_root
+            .to_str()
+            .expect("project path should be valid UTF-8")
+            .to_string(),
+    ))?;
+
+    assert_eq!(report.dispatch.issue_id, "MYT-48");
+    assert_eq!(report.dispatch.issue_status, "Todo");
+    assert_eq!(
+        report.dispatch.worktree_path,
+        managed_worktree.to_string_lossy().replace('\\', "/")
+    );
+    assert!(!report.dispatch.prompt.contains(".agents"));
+    assert!(report.task_id > 0);
+    assert_eq!(report.task_status, "Pending");
+    assert_eq!(report.task_command, "codex");
+    assert_eq!(
+        report.task_working_dir.as_deref(),
+        Some(report.dispatch.worktree_path.as_str())
+    );
+    assert!(report.prompt_via_stdin);
+
+    Ok(())
+}

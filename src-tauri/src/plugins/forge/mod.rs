@@ -4,6 +4,7 @@ pub mod http;
 
 use std::{
     env,
+    ffi::OsStr,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     path::{Path, PathBuf},
     process::Command,
