@@ -1,4 +1,5 @@
 use super::{
+    evidence::{EvidenceVerdict, GateEvidenceRef, StoredGateEvidence},
     lowering::{
         DispatchLineage, DispatchRouting, LoweredDispatch, SandboxConfig, DISPATCH_SCOPE_PRIMITIVES,
     },
@@ -13,6 +14,7 @@ use crate::core::action::ActorRole;
 pub struct AdmittedDispatch {
     inner: LoweredDispatch,
     admitted_at: String,
+    gate_evidence: Option<GateEvidenceRef>,
 }
 
 impl AdmittedDispatch {
@@ -22,6 +24,10 @@ impl AdmittedDispatch {
 
     pub fn admitted_at(&self) -> &str {
         &self.admitted_at
+    }
+
+    pub fn gate_evidence(&self) -> Option<&GateEvidenceRef> {
+        self.gate_evidence.as_ref()
     }
 
     pub fn packet(&self) -> &TypedActionPacket {
@@ -44,6 +50,7 @@ impl AdmittedDispatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmissionRejectionReason {
     HumanApprovalRequired,
+    GateEvidenceNotAccepted,
     WriterNotAuthorized,
     NotDispatchScope,
 }
@@ -55,7 +62,10 @@ pub struct AdmissionRejection {
 }
 
 /// The transport admission gate.
-pub fn admit_dispatch(lowered: LoweredDispatch) -> Result<AdmittedDispatch, AdmissionRejection> {
+pub fn admit_dispatch(
+    lowered: LoweredDispatch,
+    gate_evidence: Option<&StoredGateEvidence>,
+) -> Result<AdmittedDispatch, AdmissionRejection> {
     let packet = &lowered.packet;
     let record = packet.record();
     let semantics = packet.semantics();
@@ -90,12 +100,37 @@ pub fn admit_dispatch(lowered: LoweredDispatch) -> Result<AdmittedDispatch, Admi
         });
     }
 
-    if semantics.requires_admission_gate {
-        // V0-min stub: gate enforcement is deferred to M7.2.
-    }
+    let gate_evidence = if semantics.requires_admission_gate {
+        match gate_evidence {
+            Some(gate_evidence) => {
+                match EvidenceVerdict::from_str(gate_evidence.verdict.as_str()) {
+                    Some(EvidenceVerdict::Accepted) => Some(GateEvidenceRef::from(gate_evidence)),
+                    Some(_) | None => {
+                        return Err(AdmissionRejection {
+                            reason: AdmissionRejectionReason::GateEvidenceNotAccepted,
+                            summary: format!(
+                                "gate evidence {} has verdict `{}`; only `accepted` satisfies the admission gate",
+                                gate_evidence.id, gate_evidence.verdict
+                            ),
+                        });
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    primitive = ?record.verb,
+                    "admission gate passed without evidence; using V0-min stub"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     Ok(AdmittedDispatch {
         admitted_at: packet.created_at().to_string(),
+        gate_evidence,
         inner: lowered,
     })
 }
@@ -109,6 +144,7 @@ mod tests {
     use crate::core::{
         action::{ActionPrimitive, ActionRecord, KnowledgeLayer},
         compiler::{
+            evidence::{EvidenceKind, EvidenceVerdict, GateEvidenceRef, StoredGateEvidence},
             lowering::{
                 lower_dispatch, DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext,
                 SandboxConfig, DISPATCH_SCOPE_PRIMITIVES,
@@ -194,7 +230,21 @@ mod tests {
     }
 
     fn admitted(primitive: ActionPrimitive) -> AdmittedDispatch {
-        admit_dispatch(lowered_dispatch(primitive)).expect("dispatch scope primitive should admit")
+        admit_dispatch(lowered_dispatch(primitive), None)
+            .expect("dispatch scope primitive should admit")
+    }
+
+    fn stored_gate_evidence(verdict: &str) -> StoredGateEvidence {
+        StoredGateEvidence {
+            id: 41,
+            allocation_id: 7,
+            evidence_kind: EvidenceKind::IntegrationProbe.as_str().to_string(),
+            verdict: verdict.to_string(),
+            summary: "synthetic integration probe".to_string(),
+            payload_json: json!({ "attempt_receipt": true, "artifact_manifest": true }).to_string(),
+            created_at: "2026-04-03T08:00:00Z".to_string(),
+            updated_at: "2026-04-03T08:00:00Z".to_string(),
+        }
     }
 
     #[test]
@@ -235,7 +285,7 @@ mod tests {
         let lowered = synthetic_lowered(compile_packet(ActionPrimitive::Chat));
 
         assert_eq!(
-            admit_dispatch(lowered).unwrap_err(),
+            admit_dispatch(lowered, None).unwrap_err(),
             AdmissionRejection {
                 reason: AdmissionRejectionReason::NotDispatchScope,
                 summary: "primitive Chat is outside the dispatch admission scope".to_string(),
@@ -251,7 +301,7 @@ mod tests {
             });
 
         assert_eq!(
-            admit_dispatch(lowered).unwrap_err(),
+            admit_dispatch(lowered, None).unwrap_err(),
             AdmissionRejection {
                 reason: AdmissionRejectionReason::HumanApprovalRequired,
                 summary:
@@ -269,7 +319,7 @@ mod tests {
             });
 
         assert_eq!(
-            admit_dispatch(lowered).unwrap_err(),
+            admit_dispatch(lowered, None).unwrap_err(),
             AdmissionRejection {
                 reason: AdmissionRejectionReason::WriterNotAuthorized,
                 summary: "actor role Dev is not authorized to admit truth-writing dispatches"
@@ -281,10 +331,71 @@ mod tests {
     #[test]
     fn admitted_dispatch_inner_matches_input() {
         let lowered = lowered_dispatch(ActionPrimitive::Dispatch);
-        let admitted = admit_dispatch(lowered.clone()).expect("dispatch should admit");
+        let admitted = admit_dispatch(lowered.clone(), None).expect("dispatch should admit");
 
         assert_eq!(admitted.inner(), &lowered);
         assert_eq!(admitted.packet().created_at(), lowered.packet.created_at());
         assert_eq!(admitted.admitted_at(), lowered.packet.created_at());
+        assert!(admitted.gate_evidence().is_none());
+    }
+
+    #[test]
+    fn gate_required_accepts_accepted_evidence_and_carries_reference() {
+        let lowered =
+            mutate_lowered_packet(&lowered_dispatch(ActionPrimitive::Dispatch), |value| {
+                value["packet"]["semantics"]["requires_admission_gate"] = json!(true);
+            });
+        let evidence = stored_gate_evidence(EvidenceVerdict::Accepted.as_str());
+
+        let admitted = admit_dispatch(lowered, Some(&evidence))
+            .expect("accepted evidence should satisfy the admission gate");
+
+        assert_eq!(
+            admitted.gate_evidence(),
+            Some(&GateEvidenceRef {
+                evidence_id: evidence.id,
+                evidence_kind: evidence.evidence_kind.clone(),
+            })
+        );
+    }
+
+    #[test]
+    fn gate_required_rejects_non_accepted_evidence_verdicts() {
+        let lowered =
+            mutate_lowered_packet(&lowered_dispatch(ActionPrimitive::Dispatch), |value| {
+                value["packet"]["semantics"]["requires_admission_gate"] = json!(true);
+            });
+
+        for verdict in [
+            EvidenceVerdict::Pending,
+            EvidenceVerdict::Rejected,
+            EvidenceVerdict::Expired,
+        ] {
+            let evidence = stored_gate_evidence(verdict.as_str());
+
+            assert_eq!(
+                admit_dispatch(lowered.clone(), Some(&evidence)).unwrap_err(),
+                AdmissionRejection {
+                    reason: AdmissionRejectionReason::GateEvidenceNotAccepted,
+                    summary: format!(
+                        "gate evidence {} has verdict `{}`; only `accepted` satisfies the admission gate",
+                        evidence.id, evidence.verdict
+                    ),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn gate_required_without_evidence_uses_v0_min_stub() {
+        let lowered =
+            mutate_lowered_packet(&lowered_dispatch(ActionPrimitive::Dispatch), |value| {
+                value["packet"]["semantics"]["requires_admission_gate"] = json!(true);
+            });
+
+        let admitted = admit_dispatch(lowered, None)
+            .expect("missing evidence should still use the V0-min stub");
+
+        assert!(admitted.gate_evidence().is_none());
     }
 }

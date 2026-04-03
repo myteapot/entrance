@@ -158,7 +158,7 @@ mod tests {
             },
         };
 
-        admit_dispatch(lowered).expect("synthetic lowered dispatch should admit")
+        admit_dispatch(lowered, None).expect("synthetic lowered dispatch should admit")
     }
 
     #[test]
