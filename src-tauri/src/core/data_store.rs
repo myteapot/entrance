@@ -77,7 +77,12 @@ const CORE_COMPILER_REGISTRY_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0016_create_compiler_registry_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 12] = [
+const CORE_SUPERVISION_BUDGET_LEDGER_MIGRATION: MigrationStep = MigrationStep {
+    name: "0017_create_supervision_budget_ledger",
+    sql: include_str!("../../migrations/0017_create_supervision_budget_ledger.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 13] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -90,6 +95,7 @@ const CORE_MIGRATIONS: [MigrationStep; 12] = [
     CORE_ANTI_ZENO_MIGRATION,
     CORE_RUNTIME_INVARIANT_MIGRATION,
     CORE_COMPILER_REGISTRY_MIGRATION,
+    CORE_SUPERVISION_BUDGET_LEDGER_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -386,6 +392,20 @@ pub struct StoredNotaRuntimeAllocation {
     pub payload_json: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BudgetLedgerEntry {
+    pub id: i64,
+    pub allocation_id: i64,
+    pub signal_family: String,
+    pub attempt_number: u8,
+    pub action_taken: String,
+    pub budget_max: u8,
+    pub budget_remaining: u8,
+    pub exhausted: bool,
+    pub signal_summary: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3425,6 +3445,91 @@ impl DataStore {
         })
     }
 
+    pub fn record_budget_consumption(
+        &self,
+        allocation_id: i64,
+        family: &str,
+        attempt: u8,
+        action: &str,
+        max: u8,
+        remaining: u8,
+        exhausted: bool,
+        summary: Option<&str>,
+    ) -> Result<i64> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO supervision_budget_ledger (
+                    allocation_id,
+                    signal_family,
+                    attempt_number,
+                    action_taken,
+                    budget_max,
+                    budget_remaining,
+                    exhausted,
+                    signal_summary,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                "#,
+                params![
+                    allocation_id,
+                    family,
+                    i64::from(attempt),
+                    action,
+                    i64::from(max),
+                    i64::from(remaining),
+                    i64::from(exhausted),
+                    summary,
+                    now,
+                ],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    pub fn get_budget_consumption_count(&self, allocation_id: i64, family: &str) -> Result<u8> {
+        self.with_connection(|conn| {
+            let count = conn.query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM supervision_budget_ledger
+                WHERE allocation_id = ?1 AND signal_family = ?2
+                "#,
+                params![allocation_id, family],
+                |row| row.get::<_, i64>(0),
+            )?;
+            u8::try_from(count)
+                .map_err(|_| anyhow!("budget consumption count exceeded u8 for allocation `{allocation_id}` family `{family}`"))
+        })
+    }
+
+    pub fn list_budget_ledger(&self, allocation_id: i64) -> Result<Vec<BudgetLedgerEntry>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    allocation_id,
+                    signal_family,
+                    attempt_number,
+                    action_taken,
+                    budget_max,
+                    budget_remaining,
+                    exhausted,
+                    signal_summary,
+                    created_at
+                FROM supervision_budget_ledger
+                WHERE allocation_id = ?1
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([allocation_id], map_budget_ledger_row)?;
+            let entries = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(entries)
+        })
+    }
+
     pub fn list_memory_fragment_records(&self) -> Result<Vec<StoredMemoryFragment>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
@@ -5522,6 +5627,33 @@ fn map_compiler_registry_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Resu
             .map_err(|error| registry_decode_error(error, 12))?,
         allowed_rooms: serde_json::from_str(&row.get::<_, String>(13)?)
             .map_err(|error| registry_decode_error(error, 13))?,
+    })
+}
+
+fn map_budget_ledger_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BudgetLedgerEntry> {
+    Ok(BudgetLedgerEntry {
+        id: row.get(0)?,
+        allocation_id: row.get(1)?,
+        signal_family: row.get(2)?,
+        attempt_number: {
+            let v: i64 = row.get(3)?;
+            u8::try_from(v).unwrap_or(u8::MAX)
+        },
+        action_taken: row.get(4)?,
+        budget_max: {
+            let v: i64 = row.get(5)?;
+            u8::try_from(v).unwrap_or(u8::MAX)
+        },
+        budget_remaining: {
+            let v: i64 = row.get(6)?;
+            u8::try_from(v).unwrap_or(u8::MAX)
+        },
+        exhausted: {
+            let v: i64 = row.get(7)?;
+            v != 0
+        },
+        signal_summary: row.get(8)?,
+        created_at: row.get(9)?,
     })
 }
 
