@@ -1124,6 +1124,7 @@ pub struct DataStore {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum DataStoreConnectionMode {
     ReadWriteFile,
     ReadOnlyFile,

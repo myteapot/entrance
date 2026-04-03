@@ -1216,7 +1216,7 @@ fn reconstruct_terminal_admitted_dispatch(
         },
     };
 
-    admit_dispatch(lowered_dispatch)
+    admit_dispatch(lowered_dispatch, None)
         .expect("stored nota runtime allocation should always reconstruct an admitted dispatch")
 }
 
@@ -6194,7 +6194,7 @@ mod tests {
                     allocation_kind: allocation.allocation_kind.clone(),
                 },
             };
-            let admitted = admit_dispatch(lowered_dispatch)
+            let admitted = admit_dispatch(lowered_dispatch, None)
                 .expect("synthetic allocation should reconstruct an admitted dispatch");
 
             resolve_return_route(&admitted, terminal_status)
