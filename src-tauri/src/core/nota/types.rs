@@ -20,7 +20,6 @@ use super::{
     build_do_checkpoint_landed_items, build_do_checkpoint_remaining_items,
 };
 
-
 #[derive(Debug, Clone, Serialize)]
 pub struct NotaCheckpointRequest {
     pub title: Option<String>,
@@ -725,7 +724,7 @@ pub struct NotaRuntimeAllocationsReport {
     pub allocation_count: usize,
     pub allocations: Vec<NotaRuntimeAllocationReadRecord>,
     #[serde(skip)]
-    stored_allocations: Vec<StoredNotaRuntimeAllocation>,
+    pub(crate) stored_allocations: Vec<StoredNotaRuntimeAllocation>,
 }
 
 impl NotaRuntimeAllocationsReport {
@@ -913,4 +912,3 @@ pub(super) enum RecommendedCheckpointCandidateKind {
     DevReturnAcceptance,
     DevReturnClosure,
 }
-

@@ -24,12 +24,11 @@ use helpers::*;
 use policy::*;
 pub use types::*;
 use types::{
-    AgentReturnAcceptedReceiptPayload, AllocationTerminalOutcomeReceiptPayload,
-    DevRepairOrigin, DevReturnAcceptedReceiptPayload,
-    DevReturnFinalizeRecordedReceiptPayload, DevReturnIntegrateRecordedReceiptPayload,
-    DevReturnReviewReadyReceiptPayload, DevReturnReviewRecordedReceiptPayload,
-    DoClarificationRecordedReceiptPayload, DoAskRecordedReceiptPayload,
-    HumanRoundCanonicalState, HumanRoundDetailState,
+    AgentReturnAcceptedReceiptPayload, AllocationTerminalOutcomeReceiptPayload, DevRepairOrigin,
+    DevReturnAcceptedReceiptPayload, DevReturnFinalizeRecordedReceiptPayload,
+    DevReturnIntegrateRecordedReceiptPayload, DevReturnReviewReadyReceiptPayload,
+    DevReturnReviewRecordedReceiptPayload, DoAskRecordedReceiptPayload,
+    DoClarificationRecordedReceiptPayload, HumanRoundCanonicalState, HumanRoundDetailState,
     NotaDispatchLane, RecommendedCheckpointCandidate, RecommendedCheckpointCandidateKind,
     RuntimeBoundaryLane,
 };
