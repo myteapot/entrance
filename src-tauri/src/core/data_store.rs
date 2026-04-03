@@ -9,9 +9,12 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 #[cfg(test)]
 use rusqlite::OpenFlags;
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use serde::Serialize;
+use rusqlite::{
+    params, types::Type, Connection, OptionalExtension, Transaction, TransactionBehavior,
+};
+use serde::{de::DeserializeOwned, Serialize};
 
+use crate::core::compiler::registry::RegistryEntry;
 use crate::plugins::launcher::scanner::DiscoveredApp;
 
 const CORE_MIGRATION: MigrationStep = MigrationStep {
@@ -69,7 +72,12 @@ const CORE_RUNTIME_INVARIANT_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0015_create_core_runtime_invariant_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 11] = [
+const CORE_COMPILER_REGISTRY_MIGRATION: MigrationStep = MigrationStep {
+    name: "0016_create_compiler_registry_tables",
+    sql: include_str!("../../migrations/0016_create_compiler_registry_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 12] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -81,6 +89,7 @@ const CORE_MIGRATIONS: [MigrationStep; 11] = [
     CORE_RUNTIME_ENVIRONMENT_MIGRATION,
     CORE_ANTI_ZENO_MIGRATION,
     CORE_RUNTIME_INVARIANT_MIGRATION,
+    CORE_COMPILER_REGISTRY_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -3976,6 +3985,103 @@ impl DataStore {
         })
     }
 
+    pub fn seed_compiler_registry_snapshot(&self, entries: &[RegistryEntry]) -> Result<usize> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+
+        let snapshot_at = Utc::now().to_rfc3339();
+        self.with_immediate_transaction(|transaction| {
+            let mut statement = transaction.connection().prepare(
+                r#"
+                INSERT INTO compiler_registry_snapshot (
+                    primitive,
+                    object_kind,
+                    flow_phase,
+                    attention_state,
+                    integrity_overlay,
+                    control_policy,
+                    writer_policy,
+                    route_policy,
+                    gate_policy,
+                    sandbox_policy,
+                    effect_kind,
+                    supervision_scope,
+                    allowed_roles,
+                    allowed_rooms,
+                    snapshot_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                ON CONFLICT(primitive) DO UPDATE SET
+                    object_kind = excluded.object_kind,
+                    flow_phase = excluded.flow_phase,
+                    attention_state = excluded.attention_state,
+                    integrity_overlay = excluded.integrity_overlay,
+                    control_policy = excluded.control_policy,
+                    writer_policy = excluded.writer_policy,
+                    route_policy = excluded.route_policy,
+                    gate_policy = excluded.gate_policy,
+                    sandbox_policy = excluded.sandbox_policy,
+                    effect_kind = excluded.effect_kind,
+                    supervision_scope = excluded.supervision_scope,
+                    allowed_roles = excluded.allowed_roles,
+                    allowed_rooms = excluded.allowed_rooms,
+                    snapshot_at = excluded.snapshot_at
+                "#,
+            )?;
+
+            for entry in entries {
+                statement.execute(params![
+                    encode_registry_scalar(&entry.primitive)?,
+                    encode_registry_scalar(&entry.object_kind)?,
+                    encode_registry_scalar(&entry.flow_phase)?,
+                    encode_registry_scalar(&entry.attention_state)?,
+                    encode_registry_scalar_option(entry.integrity_overlay)?,
+                    encode_registry_scalar(&entry.control_policy)?,
+                    encode_registry_scalar(&entry.writer_policy)?,
+                    encode_registry_scalar(&entry.route_policy)?,
+                    encode_registry_scalar(&entry.gate_policy)?,
+                    encode_registry_scalar(&entry.sandbox_policy)?,
+                    encode_registry_scalar(&entry.effect_kind)?,
+                    encode_registry_scalar_option(entry.supervision_scope)?,
+                    serde_json::to_string(&entry.allowed_roles)?,
+                    serde_json::to_string(&entry.allowed_rooms)?,
+                    snapshot_at,
+                ])?;
+            }
+
+            Ok(entries.len())
+        })
+    }
+
+    pub fn list_compiler_registry_snapshot(&self) -> Result<Vec<RegistryEntry>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    primitive,
+                    object_kind,
+                    flow_phase,
+                    attention_state,
+                    integrity_overlay,
+                    control_policy,
+                    writer_policy,
+                    route_policy,
+                    gate_policy,
+                    sandbox_policy,
+                    effect_kind,
+                    supervision_scope,
+                    allowed_roles,
+                    allowed_rooms
+                FROM compiler_registry_snapshot
+                ORDER BY id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_compiler_registry_snapshot_row)?;
+            let records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(records)
+        })
+    }
+
     pub fn upsert_repair_lane_item(
         &self,
         record: UpsertRepairLaneItem<'_>,
@@ -5398,6 +5504,27 @@ fn map_runtime_invariant_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored
     })
 }
 
+fn map_compiler_registry_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryEntry> {
+    Ok(RegistryEntry {
+        primitive: decode_registry_scalar(row.get(0)?, 0)?,
+        object_kind: decode_registry_scalar(row.get(1)?, 1)?,
+        flow_phase: decode_registry_scalar(row.get(2)?, 2)?,
+        attention_state: decode_registry_scalar(row.get(3)?, 3)?,
+        integrity_overlay: decode_registry_scalar_option(row.get(4)?, 4)?,
+        control_policy: decode_registry_scalar(row.get(5)?, 5)?,
+        writer_policy: decode_registry_scalar(row.get(6)?, 6)?,
+        route_policy: decode_registry_scalar(row.get(7)?, 7)?,
+        gate_policy: decode_registry_scalar(row.get(8)?, 8)?,
+        sandbox_policy: decode_registry_scalar(row.get(9)?, 9)?,
+        effect_kind: decode_registry_scalar(row.get(10)?, 10)?,
+        supervision_scope: decode_registry_scalar_option(row.get(11)?, 11)?,
+        allowed_roles: serde_json::from_str(&row.get::<_, String>(12)?)
+            .map_err(|error| registry_decode_error(error, 12))?,
+        allowed_rooms: serde_json::from_str(&row.get::<_, String>(13)?)
+            .map_err(|error| registry_decode_error(error, 13))?,
+    })
+}
+
 fn map_repair_lane_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRepairLaneItem> {
     Ok(StoredRepairLaneItem {
         id: row.get(0)?,
@@ -5961,6 +6088,48 @@ fn fetch_runtime_invariant_by_key(
         )
         .optional()
         .map_err(Into::into)
+}
+
+fn encode_registry_scalar<T>(value: &T) -> Result<String>
+where
+    T: Serialize,
+{
+    let encoded = serde_json::to_value(value)?;
+    encoded
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("compiler registry scalar did not serialize to a string"))
+}
+
+fn encode_registry_scalar_option<T>(value: Option<T>) -> Result<Option<String>>
+where
+    T: Serialize,
+{
+    value.as_ref().map(encode_registry_scalar).transpose()
+}
+
+fn decode_registry_scalar<T>(value: String, column_index: usize) -> rusqlite::Result<T>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(serde_json::Value::String(value))
+        .map_err(|error| registry_decode_error(error, column_index))
+}
+
+fn decode_registry_scalar_option<T>(
+    value: Option<String>,
+    column_index: usize,
+) -> rusqlite::Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    value
+        .map(|value| decode_registry_scalar(value, column_index))
+        .transpose()
+}
+
+fn registry_decode_error(error: serde_json::Error, column_index: usize) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(column_index, Type::Text, Box::new(error))
 }
 
 fn fetch_repair_lane_item_by_key(
