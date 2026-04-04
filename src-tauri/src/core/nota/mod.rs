@@ -29,7 +29,10 @@ use crate::core::data_store::{
 };
 use crate::core::invariant_runtime::refresh_runtime_invariants;
 use crate::core::supervision::{
-    build_runtime_supervision_incident_summary, derive_runtime_supervision_projection_with_budget,
+    build_runtime_supervision_incident_summary, classify_signal,
+    derive_runtime_supervision_projection_with_budget, resolve_supervisor_action,
+    supervision_policy_for_allocation, SupervisionEvent, SupervisionSignalFamily, SupervisorAction,
+    SupervisorActionResolution,
 };
 use crate::plugins::forge::ForgePlugin;
 
@@ -708,6 +711,7 @@ fn run_nota_dispatch(
                 NotaRuntimeAllocationUpdate {
                     status: transaction_status,
                     payload_json: None,
+                    child_execution_ref: None,
                 },
             )?;
             staged_receipts.push(tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
@@ -1076,6 +1080,40 @@ fn reconcile_terminal_allocation_outcomes(
             continue;
         }
 
+        if projected_allocation.child_execution_kind == "forge_task" {
+            let task_id = stored_allocation
+                .child_execution_ref
+                .parse::<i64>()
+                .with_context(|| {
+                    format!(
+                        "failed to parse forge task id `{}` for allocation {} during restart reconciliation",
+                        stored_allocation.child_execution_ref, stored_allocation.id
+                    )
+                })?;
+            if let Some(task) = data_store.get_forge_task(task_id)? {
+                let signal = classify_signal(SupervisionEvent::TaskStateChange {
+                    allocation: &stored_allocation,
+                    task: &task,
+                });
+                let consumed_attempts = data_store.get_budget_consumption_count(
+                    stored_allocation.id,
+                    SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+                )?;
+                let resolution = resolve_supervisor_action(
+                    &signal,
+                    &supervision_policy_for_allocation(&stored_allocation),
+                    consumed_attempts,
+                );
+
+                if resolution.action == SupervisorAction::RestartChild
+                    && !resolution.budget_exhausted
+                {
+                    execute_restart_child(data_store, &stored_allocation, &task, resolution)?;
+                    continue;
+                }
+            }
+        }
+
         data_store.with_immediate_transaction(|tx| {
             persist_terminal_allocation_projection(
                 tx,
@@ -1087,12 +1125,110 @@ fn reconcile_terminal_allocation_outcomes(
 
         // 1A: Collect gate evidence when a forge task reaches terminal state.
         if projected_allocation.child_execution_kind == "forge_task" {
-            collect_gate_evidence_for_allocation(
-                data_store,
-                &projected_allocation,
-            );
+            collect_gate_evidence_for_allocation(data_store, &projected_allocation);
         }
     }
+
+    Ok(())
+}
+
+fn execute_restart_child(
+    data_store: &DataStore,
+    allocation: &StoredNotaRuntimeAllocation,
+    failed_task: &StoredForgeTask,
+    resolution: SupervisorActionResolution,
+) -> Result<()> {
+    let source_transaction = data_store
+        .get_nota_runtime_transaction(allocation.source_transaction_id)?
+        .ok_or_else(|| {
+            anyhow!(
+                "source transaction {} disappeared during child restart for allocation {}",
+                allocation.source_transaction_id,
+                allocation.id
+            )
+        })?;
+    let mut payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
+        .with_context(|| {
+            format!(
+                "failed to parse allocation {} payload before child restart",
+                allocation.id
+            )
+        })?;
+    payload.terminal_outcome = None;
+    if payload.repair_of_allocation_id.is_none() {
+        payload.repair_of_allocation_id = Some(allocation.id);
+    }
+    let restarted_payload_json = serde_json::to_string(&payload).with_context(|| {
+        format!(
+            "failed to serialize allocation {} payload for child restart",
+            allocation.id
+        )
+    })?;
+    let policy = supervision_policy_for_allocation(allocation);
+    let remaining_budget = policy
+        .retry_budget
+        .max_restarts
+        .saturating_sub(resolution.attempt_number);
+
+    let new_task_id = data_store.with_immediate_transaction(|tx| {
+        let new_task_id = tx.insert_forge_task(
+            &failed_task.name,
+            &failed_task.command,
+            &failed_task.args,
+            failed_task.working_dir.as_deref(),
+            failed_task.stdin_text.as_deref(),
+            &failed_task.required_tokens,
+            &failed_task.metadata,
+        )?;
+        let cancellation_summary =
+            format!("Supervisor restart scheduled replacement task {new_task_id}");
+        tx.update_forge_task_status(
+            failed_task.id,
+            "Cancelled",
+            None,
+            Some(cancellation_summary.as_str()),
+        )?;
+
+        let new_task_ref = new_task_id.to_string();
+        tx.update_nota_runtime_allocation(
+            allocation.id,
+            NotaRuntimeAllocationUpdate {
+                status: "task_created",
+                payload_json: Some(&restarted_payload_json),
+                child_execution_ref: Some(new_task_ref.as_str()),
+            },
+        )?;
+        tx.update_nota_runtime_transaction(
+            source_transaction.id,
+            NotaRuntimeTransactionUpdate {
+                status: &source_transaction.status,
+                forge_task_id: Some(new_task_id),
+                cadence_checkpoint_id: source_transaction.cadence_checkpoint_id,
+            },
+        )?;
+
+        let budget_summary = format!("Restarting task {} -> {}", failed_task.id, new_task_id);
+        tx.record_budget_consumption(
+            allocation.id,
+            SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+            resolution.attempt_number,
+            SupervisorAction::RestartChild.ledger_key(),
+            policy.retry_budget.max_restarts,
+            remaining_budget,
+            false,
+            Some(budget_summary.as_str()),
+        )?;
+
+        Ok(new_task_id)
+    })?;
+
+    tracing::info!(
+        allocation_id = allocation.id,
+        old_task_id = failed_task.id,
+        new_task_id,
+        attempt = resolution.attempt_number,
+        "supervision: restarted child task"
+    );
 
     Ok(())
 }
@@ -1191,6 +1327,7 @@ fn persist_terminal_allocation_projection(
             NotaRuntimeAllocationUpdate {
                 status: &projected_allocation.status,
                 payload_json: Some(&projected_allocation.payload_json),
+                child_execution_ref: None,
             },
         )?;
     }
@@ -1269,7 +1406,10 @@ fn has_allocation_terminal_outcome_receipt(
     Ok(false)
 }
 
-fn sync_runtime_truth(data_store: &DataStore, transaction_id: Option<i64>) -> Result<()> {
+pub(crate) fn sync_runtime_truth(
+    data_store: &DataStore,
+    transaction_id: Option<i64>,
+) -> Result<()> {
     reconcile_terminal_allocation_outcomes(data_store, transaction_id)?;
     sync_runtime_closure_truth(data_store, transaction_id)?;
     materialize_current_runtime_human_round(data_store)?;
