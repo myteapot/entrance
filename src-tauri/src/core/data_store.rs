@@ -3581,6 +3581,41 @@ impl DataStore {
         })
     }
 
+    pub fn list_nota_runtime_allocations_by_transaction(
+        &self,
+        transaction_id: i64,
+    ) -> Result<Vec<StoredNotaRuntimeAllocation>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    id,
+                    allocator_role,
+                    allocator_surface,
+                    allocation_kind,
+                    source_transaction_id,
+                    lineage_ref,
+                    child_execution_kind,
+                    child_execution_ref,
+                    return_target_kind,
+                    return_target_ref,
+                    escalation_target_kind,
+                    escalation_target_ref,
+                    status,
+                    payload_json,
+                    created_at,
+                    updated_at
+                FROM nota_runtime_allocations
+                WHERE source_transaction_id = ?1
+                ORDER BY id DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([transaction_id], map_nota_runtime_allocation_row)?;
+            let allocations = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(allocations)
+        })
+    }
+
     /// Look up the allocation record that dispatched a specific Forge task.
     /// Matches on `child_execution_kind = 'forge_task'` and `child_execution_ref = task_id`.
     pub fn get_allocation_by_forge_task_id(

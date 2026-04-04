@@ -21,6 +21,12 @@ pub struct LoweringContext {
     pub dispatch_lane: String,
     pub allocator_surface: String,
     pub project_root: String,
+    /// Restart attempts already consumed for this allocation.
+    pub consumed_restart_attempts: u8,
+    /// Maximum restart attempts allowed by supervision policy.
+    pub max_restart_attempts: u8,
+    /// Whether this transaction already has an active allocation.
+    pub has_active_allocation: bool,
 }
 
 /// Resolved lineage for an allocation.
@@ -64,6 +70,8 @@ pub struct LoweredDispatch {
 pub enum LoweringError {
     NotDispatchable,
     MissingSupervision,
+    BudgetExhausted,
+    DuplicateDispatch,
 }
 
 pub fn lower_dispatch(
@@ -76,6 +84,14 @@ pub fn lower_dispatch(
 
     if packet.requires_supervision() && packet.plan().supervision_scope.is_none() {
         return Err(LoweringError::MissingSupervision);
+    }
+
+    if ctx.consumed_restart_attempts >= ctx.max_restart_attempts {
+        return Err(LoweringError::BudgetExhausted);
+    }
+
+    if ctx.has_active_allocation {
+        return Err(LoweringError::DuplicateDispatch);
     }
 
     Ok(LoweredDispatch {
@@ -203,6 +219,9 @@ mod tests {
             dispatch_lane: dispatch_lane.to_string(),
             allocator_surface: allocator_surface.to_string(),
             project_root: "A:/Publish/entrance".to_string(),
+            consumed_restart_attempts: 0,
+            max_restart_attempts: 3,
+            has_active_allocation: false,
         }
     }
 
@@ -218,6 +237,7 @@ mod tests {
 
     #[test]
     fn lower_dispatch_produces_valid_lineage() {
+        let _guard = crate::test_env_guard();
         let packet = compile_packet(ActionPrimitive::Dispatch);
         let lowered = lower_dispatch(
             &packet,
@@ -244,6 +264,7 @@ mod tests {
 
     #[test]
     fn lower_chat_is_not_dispatchable() {
+        let _guard = crate::test_env_guard();
         let packet = compile_packet(ActionPrimitive::Chat);
 
         assert_eq!(
@@ -254,6 +275,7 @@ mod tests {
 
     #[test]
     fn lower_dispatch_has_worktree_sandbox() {
+        let _guard = crate::test_env_guard();
         let packet = compile_packet(ActionPrimitive::Dispatch);
         let lowered = lower_dispatch(
             &packet,
@@ -273,6 +295,7 @@ mod tests {
 
     #[test]
     fn lower_make_has_worktree_sandbox() {
+        let _guard = crate::test_env_guard();
         let packet = compile_packet(ActionPrimitive::Make);
         let lowered = lower_dispatch(
             &packet,
@@ -293,6 +316,7 @@ mod tests {
 
     #[test]
     fn all_dispatch_scope_primitives_lower_successfully() {
+        let _guard = crate::test_env_guard();
         for primitive in DISPATCH_SCOPE_PRIMITIVES {
             let packet = compile_packet(primitive);
             let lowered = lower_dispatch(&packet, &lowering_context_for_primitive(primitive))
@@ -308,6 +332,7 @@ mod tests {
 
     #[test]
     fn non_dispatch_primitives_are_rejected() {
+        let _guard = crate::test_env_guard();
         for primitive in registry()
             .iter()
             .map(|entry| entry.primitive)
@@ -324,6 +349,7 @@ mod tests {
 
     #[test]
     fn missing_supervision_is_rejected() {
+        let _guard = crate::test_env_guard();
         let mut packet_value = serde_json::to_value(compile_packet(ActionPrimitive::Dispatch))
             .expect("packet should serialize for supervision mismatch test");
         packet_value["plan"]["supervisionScope"] = Value::Null;
@@ -337,5 +363,53 @@ mod tests {
             ),
             Err(LoweringError::MissingSupervision)
         );
+    }
+
+    #[test]
+    fn budget_exhausted_rejects_dispatch() {
+        let _guard = crate::test_env_guard();
+        let packet = compile_packet(ActionPrimitive::Dispatch);
+        let context = LoweringContext {
+            consumed_restart_attempts: 3,
+            max_restart_attempts: 3,
+            ..lowering_context_for_primitive(ActionPrimitive::Dispatch)
+        };
+
+        assert_eq!(
+            lower_dispatch(&packet, &context),
+            Err(LoweringError::BudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn duplicate_dispatch_rejected() {
+        let _guard = crate::test_env_guard();
+        let packet = compile_packet(ActionPrimitive::Dispatch);
+        let context = LoweringContext {
+            has_active_allocation: true,
+            ..lowering_context_for_primitive(ActionPrimitive::Dispatch)
+        };
+
+        assert_eq!(
+            lower_dispatch(&packet, &context),
+            Err(LoweringError::DuplicateDispatch)
+        );
+    }
+
+    #[test]
+    fn within_budget_admits_dispatch() {
+        let _guard = crate::test_env_guard();
+        let packet = compile_packet(ActionPrimitive::Dispatch);
+        let context = LoweringContext {
+            consumed_restart_attempts: 1,
+            max_restart_attempts: 3,
+            has_active_allocation: false,
+            ..lowering_context_for_primitive(ActionPrimitive::Dispatch)
+        };
+
+        let lowered =
+            lower_dispatch(&packet, &context).expect("dispatch should lower while budget remains");
+
+        assert_eq!(lowered.packet.record().verb, ActionPrimitive::Dispatch);
     }
 }

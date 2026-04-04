@@ -178,6 +178,9 @@ mod tests {
             dispatch_lane: dispatch_lane.to_string(),
             allocator_surface: allocator_surface.to_string(),
             project_root: "A:/Publish/entrance".to_string(),
+            consumed_restart_attempts: 0,
+            max_restart_attempts: 3,
+            has_active_allocation: false,
         }
     }
 
@@ -251,6 +254,7 @@ mod tests {
 
     #[test]
     fn admit_dispatch_primitive_succeeds() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted(ActionPrimitive::Dispatch);
 
         assert_eq!(admitted.packet().record().verb, ActionPrimitive::Dispatch);
@@ -259,6 +263,7 @@ mod tests {
 
     #[test]
     fn admit_make_primitive_succeeds() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted(ActionPrimitive::Make);
 
         assert_eq!(admitted.packet().record().verb, ActionPrimitive::Make);
@@ -267,6 +272,7 @@ mod tests {
 
     #[test]
     fn admit_all_dispatch_scope_primitives() {
+        let _guard = crate::test_env_guard();
         for primitive in DISPATCH_SCOPE_PRIMITIVES {
             let admitted = admitted(primitive);
 
@@ -277,6 +283,7 @@ mod tests {
 
     #[test]
     fn admitted_dispatch_has_rfc3339_timestamp() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted(ActionPrimitive::Dispatch);
 
         assert!(DateTime::parse_from_rfc3339(admitted.admitted_at()).is_ok());
@@ -284,6 +291,7 @@ mod tests {
 
     #[test]
     fn admission_rejects_non_dispatch_scope() {
+        let _guard = crate::test_env_guard();
         let lowered = synthetic_lowered(compile_packet(ActionPrimitive::Chat));
 
         assert_eq!(
@@ -297,6 +305,7 @@ mod tests {
 
     #[test]
     fn admission_rejects_human_approval_required() {
+        let _guard = crate::test_env_guard();
         let lowered =
             mutate_lowered_packet(&lowered_dispatch(ActionPrimitive::Dispatch), |value| {
                 value["packet"]["semantics"]["requires_human_approval"] = json!(true);
@@ -315,6 +324,7 @@ mod tests {
 
     #[test]
     fn admission_rejects_unauthorized_writer() {
+        let _guard = crate::test_env_guard();
         let lowered =
             mutate_lowered_packet(&lowered_dispatch(ActionPrimitive::Dispatch), |value| {
                 value["packet"]["semantics"]["writes_truth"] = json!(true);
@@ -332,6 +342,7 @@ mod tests {
 
     #[test]
     fn admitted_dispatch_inner_matches_input() {
+        let _guard = crate::test_env_guard();
         let lowered = lowered_dispatch(ActionPrimitive::Dispatch);
         let admitted = admit_dispatch(lowered.clone(), None).expect("dispatch should admit");
 
@@ -343,6 +354,7 @@ mod tests {
 
     #[test]
     fn gate_required_accepts_accepted_evidence_and_carries_reference() {
+        let _guard = crate::test_env_guard();
         let lowered =
             mutate_lowered_packet(&lowered_dispatch(ActionPrimitive::Dispatch), |value| {
                 value["packet"]["semantics"]["requires_admission_gate"] = json!(true);
@@ -363,6 +375,7 @@ mod tests {
 
     #[test]
     fn gate_required_rejects_non_accepted_evidence_verdicts() {
+        let _guard = crate::test_env_guard();
         let lowered =
             mutate_lowered_packet(&lowered_dispatch(ActionPrimitive::Dispatch), |value| {
                 value["packet"]["semantics"]["requires_admission_gate"] = json!(true);
@@ -390,18 +403,21 @@ mod tests {
 
     #[test]
     fn gate_required_without_evidence_is_rejected() {
+        let _guard = crate::test_env_guard();
         let lowered =
             mutate_lowered_packet(&lowered_dispatch(ActionPrimitive::Dispatch), |value| {
                 value["packet"]["semantics"]["requires_admission_gate"] = json!(true);
             });
 
-        let rejection = admit_dispatch(lowered, None)
-            .expect_err("missing evidence should be rejected");
+        let rejection =
+            admit_dispatch(lowered, None).expect_err("missing evidence should be rejected");
 
         assert_eq!(
             rejection.reason,
             AdmissionRejectionReason::GateEvidenceNotAccepted
         );
-        assert!(rejection.summary.contains("requires gate evidence but none was provided"));
+        assert!(rejection
+            .summary
+            .contains("requires gate evidence but none was provided"));
     }
 }

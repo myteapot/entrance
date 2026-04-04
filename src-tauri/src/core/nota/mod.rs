@@ -500,9 +500,6 @@ fn run_nota_dispatch(
     let task_request =
         lane.build_task_request(&dispatch, model.clone(), request.agent_command.clone())?;
     let task_id = forge.create_task(task_request)?;
-    let task = forge
-        .get_task(task_id)?
-        .ok_or_else(|| anyhow!("stored Forge task disappeared after nota do dispatch"))?;
     let allocation_payload = NotaDoAllocationPayload {
         issue_id: dispatch.issue_id.clone(),
         issue_status: dispatch.issue_status.clone(),
@@ -525,14 +522,22 @@ fn run_nota_dispatch(
     };
     let allocation_payload_json = serde_json::to_string(&allocation_payload)
         .context("failed to serialize nota allocation payload")?;
-    let child_execution_ref = task_id.to_string();
-    let return_target_ref = transaction.id.to_string();
-    let lineage_ref = lane.build_lineage_ref(transaction.id, task_id);
-    let lowering_context =
-        build_lowering_context(&transaction, task_id, &lane, &dispatch.project_root);
+    let lowering_context = build_lowering_context(
+        data_store,
+        &transaction,
+        task_id,
+        &lane,
+        &dispatch.project_root,
+    )?;
     let dispatch_packet = compile_nota_dispatch_packet();
     let lowered_dispatch = lower_dispatch(&dispatch_packet, &lowering_context)
         .expect("nota dispatch allocation lowering must succeed");
+    let task = forge
+        .get_task(task_id)?
+        .ok_or_else(|| anyhow!("stored Forge task disappeared after nota do dispatch"))?;
+    let child_execution_ref = task_id.to_string();
+    let return_target_ref = transaction.id.to_string();
+    let lineage_ref = lane.build_lineage_ref(transaction.id, task_id);
 
     debug_assert_eq!(lineage_ref, lowered_dispatch.lineage.lineage_ref);
     debug_assert_eq!(
@@ -794,18 +799,79 @@ fn run_nota_dispatch(
 }
 
 fn build_lowering_context(
+    data_store: &DataStore,
     transaction: &StoredNotaRuntimeTransaction,
     task_id: i64,
     lane: &NotaDispatchLane,
     project_root: &str,
-) -> LoweringContext {
-    LoweringContext {
+) -> Result<LoweringContext> {
+    let active_allocation = data_store
+        .list_nota_runtime_allocations_by_transaction(transaction.id)?
+        .into_iter()
+        .find(|allocation| !is_terminal_allocation_status(&allocation.status));
+    let consumed_restart_attempts = active_allocation
+        .as_ref()
+        .map(|allocation| {
+            data_store.get_budget_consumption_count(
+                allocation.id,
+                SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+            )
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let max_restart_attempts = active_allocation
+        .as_ref()
+        .map(|allocation| {
+            supervision_policy_for_allocation(allocation)
+                .retry_budget
+                .max_restarts
+        })
+        .unwrap_or_else(|| default_restart_budget_for_lane(*lane));
+
+    Ok(LoweringContext {
         transaction_id: transaction.id,
         task_id,
         dispatch_lane: lane.allocator_surface().to_string(),
         allocator_surface: lane.surface_action().to_string(),
         project_root: project_root.to_string(),
+        consumed_restart_attempts,
+        max_restart_attempts,
+        has_active_allocation: active_allocation.is_some(),
+    })
+}
+
+fn default_restart_budget_for_lane(lane: NotaDispatchLane) -> u8 {
+    supervision_policy_for_allocation(&synthetic_allocation_for_lane(lane))
+        .retry_budget
+        .max_restarts
+}
+
+fn synthetic_allocation_for_lane(lane: NotaDispatchLane) -> StoredNotaRuntimeAllocation {
+    StoredNotaRuntimeAllocation {
+        id: 0,
+        allocator_role: "nota".to_string(),
+        allocator_surface: lane.allocator_surface().to_string(),
+        allocation_kind: lane.transaction_kind().to_string(),
+        source_transaction_id: 0,
+        lineage_ref: String::new(),
+        child_execution_kind: "forge_task".to_string(),
+        child_execution_ref: String::new(),
+        return_target_kind: "nota_runtime_transaction".to_string(),
+        return_target_ref: String::new(),
+        escalation_target_kind: "nota_runtime_transaction".to_string(),
+        escalation_target_ref: String::new(),
+        status: "accepted".to_string(),
+        payload_json: "{}".to_string(),
+        created_at: String::new(),
+        updated_at: String::new(),
     }
+}
+
+fn is_terminal_allocation_status(status: &str) -> bool {
+    matches!(
+        status,
+        "return_ready" | "escalated_blocked" | "escalated_failed" | "escalated_cancelled"
+    )
 }
 
 fn compile_nota_dispatch_packet() -> TypedActionPacket {
@@ -5265,6 +5331,7 @@ mod tests {
             StoredNotaRuntimeAllocation,
         },
         event_bus::EventBus,
+        supervision::{SupervisionSignalFamily, SupervisorAction},
         AppPaths,
     };
     use crate::plugins::forge::ForgePlugin;
@@ -5465,6 +5532,7 @@ mod tests {
 
     #[test]
     fn build_lowering_context_populates_all_fields() -> Result<()> {
+        let _guard = crate::test_env_guard();
         let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
@@ -5478,11 +5546,12 @@ mod tests {
         })?;
 
         let context = build_lowering_context(
+            &store,
             &transaction,
             42,
             &NotaDispatchLane::Dev,
             "A:/Publish/entrance",
-        );
+        )?;
 
         assert_eq!(
             context,
@@ -5492,8 +5561,67 @@ mod tests {
                 dispatch_lane: "nota_dev".to_string(),
                 allocator_surface: "dev".to_string(),
                 project_root: "A:/Publish/entrance".to_string(),
+                consumed_restart_attempts: 0,
+                max_restart_attempts: 2,
+                has_active_allocation: false,
             }
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_lowering_context_uses_active_allocation_budget_and_dedup() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+        let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "dev",
+            transaction_kind: "forge_dev_dispatch",
+            title: "Dispatch seed",
+            payload_json: "{}",
+            status: "accepted",
+            forge_task_id: None,
+            cadence_checkpoint_id: None,
+        })?;
+        let return_target_ref = transaction.id.to_string();
+        let allocation = store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_dev",
+            allocation_kind: "forge_dev_dispatch",
+            source_transaction_id: transaction.id,
+            lineage_ref: "nota/dev/transaction/1/forge-task/2",
+            child_execution_kind: "forge_task",
+            child_execution_ref: "2",
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: return_target_ref.as_str(),
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: return_target_ref.as_str(),
+            status: "dispatched",
+            payload_json: "{}",
+        })?;
+        store.record_budget_consumption(
+            allocation.id,
+            SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+            1,
+            SupervisorAction::RestartChild.ledger_key(),
+            3,
+            2,
+            false,
+            Some("synthetic retry"),
+        )?;
+
+        let context = build_lowering_context(
+            &store,
+            &transaction,
+            42,
+            &NotaDispatchLane::Dev,
+            "A:/Publish/entrance",
+        )?;
+
+        assert_eq!(context.consumed_restart_attempts, 1);
+        assert_eq!(context.max_restart_attempts, 2);
+        assert!(context.has_active_allocation);
 
         Ok(())
     }
@@ -5563,11 +5691,12 @@ mod tests {
             .expect("test dispatch record should satisfy lowering constraints"),
         );
         let context = build_lowering_context(
+            &store,
             &report.transaction,
             report.task_id,
             &NotaDispatchLane::Dev,
             &report.dispatch.project_root,
-        );
+        )?;
         let lowered =
             lower_dispatch(&packet, &context).expect("nota dev dispatch should lower successfully");
 
