@@ -3455,6 +3455,76 @@ impl DataStore {
         })
     }
 
+    /// Look up the allocation record that dispatched a specific Forge task.
+    /// Matches on `child_execution_kind = 'forge_task'` and `child_execution_ref = task_id`.
+    pub fn get_allocation_by_forge_task_id(
+        &self,
+        task_id: i64,
+    ) -> Result<Option<StoredNotaRuntimeAllocation>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                r#"
+                SELECT
+                    id,
+                    allocator_role,
+                    allocator_surface,
+                    allocation_kind,
+                    source_transaction_id,
+                    lineage_ref,
+                    child_execution_kind,
+                    child_execution_ref,
+                    return_target_kind,
+                    return_target_ref,
+                    escalation_target_kind,
+                    escalation_target_ref,
+                    status,
+                    payload_json,
+                    created_at,
+                    updated_at
+                FROM nota_runtime_allocations
+                WHERE child_execution_kind = 'forge_task'
+                  AND child_execution_ref = ?1
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+                [task_id.to_string()],
+                map_nota_runtime_allocation_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    /// Get the most recent gate evidence for an allocation.
+    pub fn get_latest_gate_evidence(
+        &self,
+        allocation_id: i64,
+    ) -> Result<Option<StoredGateEvidence>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                r#"
+                SELECT
+                    id,
+                    allocation_id,
+                    evidence_kind,
+                    verdict,
+                    summary,
+                    payload_json,
+                    created_at,
+                    updated_at
+                FROM simulation_gate_evidence
+                WHERE allocation_id = ?1
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+                [allocation_id],
+                map_gate_evidence_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
     pub fn record_budget_consumption(
         &self,
         allocation_id: i64,
