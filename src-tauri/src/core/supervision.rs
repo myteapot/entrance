@@ -618,7 +618,7 @@ fn projected_last_supervisor_action(
     }
 }
 
-fn supervision_policy_for_allocation(
+pub(crate) fn supervision_policy_for_allocation(
     allocation: &StoredNotaRuntimeAllocation,
 ) -> SupervisionPolicy {
     match allocation.allocation_kind.as_str() {
@@ -641,6 +641,7 @@ mod tests {
         DataStore, MigrationPlan, NewNotaRuntimeAllocation, NewNotaRuntimeTransaction,
         StoredForgeTask, StoredNotaRuntimeAllocation,
     };
+    use crate::core::nota::{sync_runtime_truth, NotaDoAllocationPayload};
 
     #[test]
     fn default_agent_process_policy_matches_otp_style_intent() {
@@ -831,6 +832,141 @@ mod tests {
         assert_eq!(
             projection.last_supervisor_action,
             SupervisorAction::EscalateUp
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn restart_child_creates_new_task_and_consumes_budget() -> anyhow::Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+        let (transaction_id, allocation, failed_task_id) =
+            insert_terminal_runtime_allocation(&store, "Failed", Some("agent crashed"))?;
+
+        sync_runtime_truth(&store, Some(transaction_id))?;
+
+        let failed_task = store
+            .get_forge_task(failed_task_id)?
+            .expect("original failed task should remain addressable");
+        assert_eq!(failed_task.status, "Cancelled");
+
+        let tasks = store.list_forge_tasks()?;
+        assert_eq!(tasks.len(), 2);
+        let restarted_task = tasks
+            .into_iter()
+            .find(|task| task.id != failed_task_id)
+            .expect("restarted child task should exist");
+        assert_eq!(restarted_task.status, "Pending");
+        assert_eq!(restarted_task.command, failed_task.command);
+        assert_eq!(restarted_task.args, failed_task.args);
+        assert_eq!(restarted_task.working_dir, failed_task.working_dir);
+        assert_eq!(restarted_task.stdin_text, failed_task.stdin_text);
+        assert_eq!(restarted_task.required_tokens, failed_task.required_tokens);
+        assert_eq!(restarted_task.metadata, failed_task.metadata);
+
+        let stored_allocation = store
+            .list_nota_runtime_allocations()?
+            .into_iter()
+            .find(|candidate| candidate.id == allocation.id)
+            .expect("allocation should still exist after restart");
+        assert_eq!(stored_allocation.status, "task_created");
+        assert_eq!(
+            stored_allocation.child_execution_ref,
+            restarted_task.id.to_string()
+        );
+        let payload: NotaDoAllocationPayload =
+            serde_json::from_str(&stored_allocation.payload_json)?;
+        assert!(payload.terminal_outcome.is_none());
+        assert_eq!(payload.repair_of_allocation_id, Some(allocation.id));
+
+        let transaction = store
+            .get_nota_runtime_transaction(transaction_id)?
+            .expect("source transaction should still exist");
+        assert_eq!(transaction.forge_task_id, Some(restarted_task.id));
+
+        let ledger = store.list_budget_ledger(allocation.id)?;
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0].signal_family, "execution_failure");
+        assert_eq!(ledger[0].attempt_number, 1);
+        assert_eq!(ledger[0].action_taken, "restart_child");
+        assert_eq!(
+            ledger[0].budget_max,
+            DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts
+        );
+        assert_eq!(ledger[0].budget_remaining, 2);
+        assert!(!ledger[0].exhausted);
+
+        Ok(())
+    }
+
+    #[test]
+    fn restart_child_respects_budget_exhaustion() -> anyhow::Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))?;
+        let (transaction_id, allocation, failed_task_id) =
+            insert_terminal_runtime_allocation(&store, "Failed", Some("still failing"))?;
+        for attempt in 1..=DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts {
+            store.record_budget_consumption(
+                allocation.id,
+                SupervisionSignalFamily::ExecutionFailure.ledger_key(),
+                attempt,
+                SupervisorAction::RestartChild.ledger_key(),
+                DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts,
+                DEFAULT_AGENT_PROCESS_POLICY
+                    .retry_budget
+                    .max_restarts
+                    .saturating_sub(attempt),
+                false,
+                Some("retry consumed"),
+            )?;
+        }
+
+        sync_runtime_truth(&store, Some(transaction_id))?;
+
+        let tasks = store.list_forge_tasks()?;
+        assert_eq!(tasks.len(), 1);
+        let failed_task = store
+            .get_forge_task(failed_task_id)?
+            .expect("failed task should still exist");
+        assert_eq!(failed_task.status, "Failed");
+
+        let stored_allocation = store
+            .list_nota_runtime_allocations()?
+            .into_iter()
+            .find(|candidate| candidate.id == allocation.id)
+            .expect("allocation should still exist after escalation");
+        assert_eq!(stored_allocation.status, "escalated_failed");
+        assert_eq!(
+            stored_allocation.child_execution_ref,
+            failed_task_id.to_string()
+        );
+        let payload: NotaDoAllocationPayload =
+            serde_json::from_str(&stored_allocation.payload_json)?;
+        let outcome = payload
+            .terminal_outcome
+            .expect("terminal outcome should persist when budget is exhausted");
+        assert_eq!(outcome.child_execution_status, "Failed");
+        assert_eq!(
+            outcome.child_execution_status_message.as_deref(),
+            Some("still failing")
+        );
+
+        let projection = derive_runtime_supervision_projection_with_budget(
+            &stored_allocation,
+            Some(&failed_task),
+            &store,
+        );
+        assert!(projection.escalation_pending);
+        assert_eq!(
+            projection.last_supervisor_action,
+            SupervisorAction::EscalateUp
+        );
+
+        let ledger = store.list_budget_ledger(allocation.id)?;
+        assert_eq!(
+            ledger.len() as u8,
+            DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts
         );
 
         Ok(())
@@ -1031,5 +1167,76 @@ mod tests {
             status,
             payload_json: "{}",
         })
+    }
+
+    fn insert_terminal_runtime_allocation(
+        store: &DataStore,
+        task_status: &str,
+        task_message: Option<&str>,
+    ) -> anyhow::Result<(i64, StoredNotaRuntimeAllocation, i64)> {
+        let task_id = store.insert_forge_task(
+            "restartable child",
+            "cargo",
+            r#"["check"]"#,
+            Some("A:/Publish/entrance"),
+            Some("resume"),
+            r#"["openai"]"#,
+            r#"{"owner":"supervision"}"#,
+        )?;
+        store.update_forge_task_status(task_id, task_status, Some(1), task_message)?;
+
+        let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
+            actor_role: "nota",
+            surface_action: "do",
+            transaction_kind: "forge_agent_dispatch",
+            title: "runtime supervision restart",
+            payload_json: "{}",
+            status: "checkpointed",
+            forge_task_id: Some(task_id),
+            cadence_checkpoint_id: None,
+        })?;
+        let payload_json = serde_json::to_string(&runtime_allocation_payload())?;
+        let lineage_ref = format!(
+            "nota/do/transaction/{}/forge-task/{task_id}",
+            transaction.id
+        );
+        let allocation = store.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
+            allocator_role: "nota",
+            allocator_surface: "nota_do",
+            allocation_kind: "forge_agent_dispatch",
+            source_transaction_id: transaction.id,
+            lineage_ref: &lineage_ref,
+            child_execution_kind: "forge_task",
+            child_execution_ref: &task_id.to_string(),
+            return_target_kind: "nota_runtime_transaction",
+            return_target_ref: &transaction.id.to_string(),
+            escalation_target_kind: "nota_runtime_transaction",
+            escalation_target_ref: &transaction.id.to_string(),
+            status: "dispatched",
+            payload_json: &payload_json,
+        })?;
+
+        Ok((transaction.id, allocation, task_id))
+    }
+
+    fn runtime_allocation_payload() -> NotaDoAllocationPayload {
+        NotaDoAllocationPayload {
+            issue_id: "MYT-1C".to_string(),
+            issue_status: "Todo".to_string(),
+            issue_status_source: "test".to_string(),
+            issue_title: Some("supervision runtime restart".to_string()),
+            project_root: "A:/Publish/entrance".to_string(),
+            worktree_path: "A:/Publish/entrance/worktrees/feat-1c-supervision".to_string(),
+            prompt_source: "test".to_string(),
+            model: "codex".to_string(),
+            agent_command: None,
+            repair_of_allocation_id: None,
+            repair_of_transaction_id: None,
+            repair_of_lineage_ref: None,
+            execution_host: "in_process".to_string(),
+            child_dispatch_role: "agent".to_string(),
+            child_dispatch_tool_name: "forge_dispatch_agent".to_string(),
+            terminal_outcome: None,
+        }
     }
 }

@@ -1104,6 +1104,7 @@ pub struct NewNotaRuntimeAllocation<'a> {
 pub struct NotaRuntimeAllocationUpdate<'a> {
     pub status: &'a str,
     pub payload_json: Option<&'a str>,
+    pub child_execution_ref: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -1147,6 +1148,117 @@ impl<'conn> DataStoreTransaction<'conn> {
     fn commit(self) -> Result<()> {
         self.transaction.commit()?;
         Ok(())
+    }
+
+    pub fn insert_forge_task(
+        &self,
+        name: &str,
+        command: &str,
+        args: &str,
+        working_dir: Option<&str>,
+        stdin_text: Option<&str>,
+        required_tokens: &str,
+        metadata: &str,
+    ) -> Result<i64> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO plugin_forge_tasks (
+                name, command, args, working_dir, stdin_text, required_tokens, metadata, status, status_message, exit_code, created_at, heartbeat_at, finished_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Pending', NULL, NULL, ?8, NULL, NULL)
+            "#,
+            params![
+                name,
+                command,
+                args,
+                working_dir,
+                stdin_text,
+                required_tokens,
+                metadata,
+                now
+            ],
+        )?;
+        Ok(self.connection().last_insert_rowid())
+    }
+
+    pub fn update_forge_task_status(
+        &self,
+        id: i64,
+        status: &str,
+        exit_code: Option<i32>,
+        status_message: Option<&str>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        if status == "Running" {
+            self.connection().execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET status = ?2, exit_code = ?3, status_message = ?4, heartbeat_at = ?5, finished_at = NULL
+                WHERE id = ?1
+                "#,
+                params![id, status, exit_code, status_message, now],
+            )?;
+        } else if matches!(status, "Done" | "Failed" | "Cancelled" | "Blocked") {
+            self.connection().execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET status = ?2, exit_code = ?3, status_message = ?4, finished_at = ?5
+                WHERE id = ?1
+                "#,
+                params![id, status, exit_code, status_message, now],
+            )?;
+        } else {
+            self.connection().execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET status = ?2, exit_code = ?3, status_message = ?4
+                WHERE id = ?1
+                "#,
+                params![id, status, exit_code, status_message],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn record_budget_consumption(
+        &self,
+        allocation_id: i64,
+        family: &str,
+        attempt: u8,
+        action: &str,
+        max: u8,
+        remaining: u8,
+        exhausted: bool,
+        summary: Option<&str>,
+    ) -> Result<i64> {
+        let now = Utc::now().to_rfc3339();
+        self.connection().execute(
+            r#"
+            INSERT INTO supervision_budget_ledger (
+                allocation_id,
+                signal_family,
+                attempt_number,
+                action_taken,
+                budget_max,
+                budget_remaining,
+                exhausted,
+                signal_summary,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+            params![
+                allocation_id,
+                family,
+                i64::from(attempt),
+                action,
+                i64::from(max),
+                i64::from(remaining),
+                i64::from(exhausted),
+                summary,
+                now,
+            ],
+        )?;
+        Ok(self.connection().last_insert_rowid())
     }
 
     pub fn list_cadence_objects_by_kind(
@@ -1527,10 +1639,17 @@ impl<'conn> DataStoreTransaction<'conn> {
             UPDATE nota_runtime_allocations
             SET status = ?2,
                 payload_json = COALESCE(?3, payload_json),
-                updated_at = ?4
+                child_execution_ref = COALESCE(?4, child_execution_ref),
+                updated_at = ?5
             WHERE id = ?1
             "#,
-            params![id, update.status, update.payload_json, now],
+            params![
+                id,
+                update.status,
+                update.payload_json,
+                update.child_execution_ref,
+                now
+            ],
         )?;
 
         fetch_nota_runtime_allocation(self.connection(), id)?
@@ -3413,10 +3532,17 @@ impl DataStore {
                 UPDATE nota_runtime_allocations
                 SET status = ?2,
                     payload_json = COALESCE(?3, payload_json),
-                    updated_at = ?4
+                    child_execution_ref = COALESCE(?4, child_execution_ref),
+                    updated_at = ?5
                 WHERE id = ?1
                 "#,
-                params![id, update.status, update.payload_json, now],
+                params![
+                    id,
+                    update.status,
+                    update.payload_json,
+                    update.child_execution_ref,
+                    now
+                ],
             )?;
 
             fetch_nota_runtime_allocation(conn, id)?
