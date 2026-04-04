@@ -631,13 +631,6 @@ impl NotaDispatchLane {
         .map_err(anyhow::Error::msg)
     }
 
-    pub(super) fn build_lineage_ref(self, transaction_id: i64, task_id: i64) -> String {
-        match self {
-            Self::Agent => build_do_allocation_lineage_ref(transaction_id, task_id),
-            Self::Dev => build_dev_allocation_lineage_ref(transaction_id, task_id),
-        }
-    }
-
     pub(super) fn build_checkpoint_landed_items(
         self,
         transaction_id: i64,

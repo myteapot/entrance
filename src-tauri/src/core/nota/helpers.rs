@@ -9,22 +9,6 @@ pub(super) fn default_nota_dispatch_execution_host() -> String {
     NotaDispatchExecutionHost::InProcess.as_str().to_string()
 }
 
-pub(super) fn build_do_allocation_lineage_ref(transaction_id: i64, task_id: i64) -> String {
-    build_nota_allocation_lineage_ref("do", transaction_id, task_id)
-}
-
-pub(super) fn build_dev_allocation_lineage_ref(transaction_id: i64, task_id: i64) -> String {
-    build_nota_allocation_lineage_ref("dev", transaction_id, task_id)
-}
-
-fn build_nota_allocation_lineage_ref(
-    surface_action: &str,
-    transaction_id: i64,
-    task_id: i64,
-) -> String {
-    format!("nota/{surface_action}/transaction/{transaction_id}/forge-task/{task_id}")
-}
-
 pub(super) fn normalize_list(values: Vec<String>) -> Vec<String> {
     values
         .into_iter()
