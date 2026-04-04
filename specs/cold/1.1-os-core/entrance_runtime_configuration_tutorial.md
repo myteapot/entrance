@@ -16,8 +16,8 @@ This is the only canonical runtime ownership root. Runtime continuity, exported 
 
 Compatibility notes:
 
-- `ENTRANCE_HOME` may override the owner root when a test harness or a controlled runtime sandbox needs a different root.
-- `ENTRANCE_APP_DATA_DIR` is still accepted as a legacy compatibility override, but it now means the same thing: the Entrance owner root.
+- `ENTRANCE_APP_DATA_DIR` may override the owner root when a test harness or a controlled runtime sandbox needs a different root.
+- `ENTRANCE_HOME` was removed in `d42fbff` (2026-04-05). It is no longer recognized by the runtime.
 
 ## 2. Default Layout
 

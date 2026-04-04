@@ -1172,6 +1172,15 @@ fn reconcile_terminal_allocation_outcomes(
     Ok(())
 }
 
+/// Execute a supervisor-initiated child restart at the DB layer.
+///
+/// This creates a replacement Forge task (in `Pending` state), cancels the
+/// failed task, updates the allocation to point at the new task, and records
+/// budget consumption — all in a single IMMEDIATE transaction.
+///
+/// **Task launch is NOT done here.** The new `Pending` task is picked up by
+/// the Forge engine's reconciliation loop (`run_pending_tasks`), just like
+/// tasks created by the normal dispatch flow.
 fn execute_restart_child(
     data_store: &DataStore,
     allocation: &StoredNotaRuntimeAllocation,
@@ -1277,8 +1286,8 @@ fn execute_restart_child(
 ///
 /// When a Forge task completes, this builds a `StoredGateEvidence` record from
 /// the task's terminal state, inserts it, derives the verdict, and updates it.
-/// This is a best-effort operation — failures are logged but do not block
-/// reconciliation.
+/// This is an atomic operation — all evidence writes happen in a single
+/// IMMEDIATE transaction. Failures are logged but do not block reconciliation.
 fn collect_gate_evidence_for_allocation(
     data_store: &DataStore,
     allocation: &StoredNotaRuntimeAllocation,
@@ -1308,47 +1317,44 @@ fn collect_gate_evidence_for_allocation(
     );
     let verdict = derive_verdict(&task.status, task.exit_code);
 
-    let stored = match data_store.insert_gate_evidence(
-        evidence.allocation_id,
-        evidence.evidence_kind,
-        &evidence.summary,
-        &evidence.payload_json,
-    ) {
-        Ok(stored) => stored,
-        Err(error) => {
-            tracing::warn!(
-                allocation_id = allocation.id,
-                task_id = task_id,
-                %error,
-                "failed to insert gate evidence for terminal allocation"
-            );
-            return;
-        }
-    };
+    // Atomic: insert evidence + set verdict + record attempt receipt in one transaction.
+    if let Err(error) = data_store.with_immediate_transaction(|txn| {
+        let now = chrono::Utc::now().to_rfc3339();
 
-    if let Err(error) = data_store.update_gate_evidence_verdict(stored.id, verdict) {
-        tracing::warn!(
-            evidence_id = stored.id,
-            allocation_id = allocation.id,
-            %error,
-            "failed to update gate evidence verdict"
-        );
-        return;
-    }
+        txn.execute(
+            r#"
+            INSERT INTO simulation_gate_evidence (
+                allocation_id, evidence_kind, verdict, summary, payload_json, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+            "#,
+            rusqlite::params![
+                evidence.allocation_id,
+                evidence.evidence_kind.as_str(),
+                verdict.as_str(),
+                evidence.summary,
+                evidence.payload_json,
+                now,
+            ],
+        )?;
+        let evidence_id = txn.last_insert_rowid();
 
-    // Record the attempt receipt
-    let passed = verdict == crate::core::compiler::evidence::EvidenceVerdict::Accepted;
-    if let Err(error) = data_store.insert_attempt_receipt(
-        stored.id,
-        1, // first attempt
-        passed,
-        &evidence.summary,
-    ) {
+        let passed = verdict == crate::core::compiler::evidence::EvidenceVerdict::Accepted;
+        txn.execute(
+            r#"
+            INSERT INTO simulation_gate_attempt_receipts (
+                evidence_id, attempt_number, passed, summary, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            rusqlite::params![evidence_id, 1_i64, passed, evidence.summary, now],
+        )?;
+
+        Ok(())
+    }) {
         tracing::warn!(
-            evidence_id = stored.id,
             allocation_id = allocation.id,
+            task_id = task_id,
             %error,
-            "failed to insert attempt receipt for gate evidence"
+            "failed to atomically persist gate evidence for terminal allocation"
         );
     }
 }

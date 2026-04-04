@@ -1150,6 +1150,14 @@ impl<'conn> DataStoreTransaction<'conn> {
         Ok(())
     }
 
+    pub fn execute(&self, sql: &str, params: &[&dyn rusqlite::types::ToSql]) -> Result<usize> {
+        Ok(self.connection().execute(sql, params)?)
+    }
+
+    pub fn last_insert_rowid(&self) -> i64 {
+        self.connection().last_insert_rowid()
+    }
+
     pub fn insert_forge_task(
         &self,
         name: &str,
