@@ -1,0 +1,10 @@
+# Entrance — line ending normalization
+# All text files: LF in repo, native on checkout
+* text=auto eol=lf
+
+# Explicitly binary
+*.png binary
+*.ico binary
+*.webp binary
+*.woff2 binary
+*.key binary
