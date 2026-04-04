@@ -117,11 +117,13 @@ pub fn admit_dispatch(
                 }
             }
             None => {
-                tracing::warn!(
-                    primitive = ?record.verb,
-                    "admission gate passed without evidence; using V0-min stub"
-                );
-                None
+                return Err(AdmissionRejection {
+                    reason: AdmissionRejectionReason::GateEvidenceNotAccepted,
+                    summary: format!(
+                        "primitive {:?} requires gate evidence but none was provided",
+                        record.verb
+                    ),
+                });
             }
         }
     } else {
@@ -387,15 +389,19 @@ mod tests {
     }
 
     #[test]
-    fn gate_required_without_evidence_uses_v0_min_stub() {
+    fn gate_required_without_evidence_is_rejected() {
         let lowered =
             mutate_lowered_packet(&lowered_dispatch(ActionPrimitive::Dispatch), |value| {
                 value["packet"]["semantics"]["requires_admission_gate"] = json!(true);
             });
 
-        let admitted = admit_dispatch(lowered, None)
-            .expect("missing evidence should still use the V0-min stub");
+        let rejection = admit_dispatch(lowered, None)
+            .expect_err("missing evidence should be rejected");
 
-        assert!(admitted.gate_evidence().is_none());
+        assert_eq!(
+            rejection.reason,
+            AdmissionRejectionReason::GateEvidenceNotAccepted
+        );
+        assert!(rejection.summary.contains("requires gate evidence but none was provided"));
     }
 }

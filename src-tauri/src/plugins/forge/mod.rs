@@ -1650,7 +1650,8 @@ mod tests {
     use super::{
         allocate_agent_slot_worktree, build_agent_task_request, build_dev_task_request,
         build_prepared_agent_dispatch, build_prepared_dev_dispatch, generate_agent_prompt,
-        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
+        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, normalize_display_path,
+        parse_issue_id_from_branch,
         prepare_agent_dispatch, prepare_agent_dispatch_for_worktree, prepare_dev_dispatch,
         resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
     };

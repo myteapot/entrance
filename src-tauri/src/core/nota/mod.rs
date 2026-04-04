@@ -13,6 +13,7 @@ use serde_json::json;
 use crate::core::action::{ActionPrimitive, ActionRecord, ActionRoom, ActorRole, KnowledgeLayer};
 use crate::core::compiler::{
     admission::{admit_dispatch, AdmittedDispatch},
+    evidence::{collect_task_evidence, derive_verdict},
     lowering::{
         lower_dispatch, DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext,
         SandboxConfig,
@@ -1083,9 +1084,97 @@ fn reconcile_terminal_allocation_outcomes(
                 outcome,
             )
         })?;
+
+        // 1A: Collect gate evidence when a forge task reaches terminal state.
+        if projected_allocation.child_execution_kind == "forge_task" {
+            collect_gate_evidence_for_allocation(
+                data_store,
+                &projected_allocation,
+            );
+        }
     }
 
     Ok(())
+}
+
+/// 1A: Collect gate evidence for a terminal allocation.
+///
+/// When a Forge task completes, this builds a `StoredGateEvidence` record from
+/// the task's terminal state, inserts it, derives the verdict, and updates it.
+/// This is a best-effort operation — failures are logged but do not block
+/// reconciliation.
+fn collect_gate_evidence_for_allocation(
+    data_store: &DataStore,
+    allocation: &StoredNotaRuntimeAllocation,
+) {
+    let task_id = match allocation.child_execution_ref.parse::<i64>() {
+        Ok(id) => id,
+        Err(_) => return,
+    };
+    let task = match data_store.get_forge_task(task_id) {
+        Ok(Some(task)) => task,
+        _ => return,
+    };
+
+    // Check if evidence already exists for this allocation to avoid duplicates.
+    match data_store.get_latest_gate_evidence(allocation.id) {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(_) => return,
+    }
+
+    let evidence = collect_task_evidence(
+        allocation.id,
+        &task.name,
+        &task.status,
+        task.exit_code,
+        task.status_message.as_deref(),
+    );
+    let verdict = derive_verdict(&task.status, task.exit_code);
+
+    let stored = match data_store.insert_gate_evidence(
+        evidence.allocation_id,
+        evidence.evidence_kind,
+        &evidence.summary,
+        &evidence.payload_json,
+    ) {
+        Ok(stored) => stored,
+        Err(error) => {
+            tracing::warn!(
+                allocation_id = allocation.id,
+                task_id = task_id,
+                %error,
+                "failed to insert gate evidence for terminal allocation"
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = data_store.update_gate_evidence_verdict(stored.id, verdict) {
+        tracing::warn!(
+            evidence_id = stored.id,
+            allocation_id = allocation.id,
+            %error,
+            "failed to update gate evidence verdict"
+        );
+        return;
+    }
+
+    // Record the attempt receipt
+    let passed = verdict == crate::core::compiler::evidence::EvidenceVerdict::Accepted;
+    if let Err(error) = data_store.insert_attempt_receipt(
+        stored.id,
+        1, // first attempt
+        passed,
+        &evidence.summary,
+    ) {
+        tracing::warn!(
+            evidence_id = stored.id,
+            allocation_id = allocation.id,
+            %error,
+            "failed to insert attempt receipt for gate evidence"
+        );
+    }
 }
 
 fn persist_terminal_allocation_projection(
