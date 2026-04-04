@@ -16,7 +16,7 @@ use crate::core::compiler::{
     evidence::{collect_task_evidence, derive_verdict},
     lowering::{
         lower_dispatch, DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext,
-        SandboxConfig,
+        LoweringError, SandboxConfig,
     },
     packet::TypedActionPacket,
     routing::{resolve_return_route, ReturnBoundary, TerminalStatus},
@@ -522,53 +522,16 @@ fn run_nota_dispatch(
     };
     let allocation_payload_json = serde_json::to_string(&allocation_payload)
         .context("failed to serialize nota allocation payload")?;
-    let lowering_context = build_lowering_context(
+    let admitted_dispatch = admit_nota_dispatch(build_lowering_context(
         data_store,
         &transaction,
         task_id,
         &lane,
         &dispatch.project_root,
-    )?;
-    let dispatch_packet = compile_nota_dispatch_packet();
-    let lowered_dispatch = lower_dispatch(&dispatch_packet, &lowering_context)
-        .expect("nota dispatch allocation lowering must succeed");
+    )?)?;
     let task = forge
         .get_task(task_id)?
         .ok_or_else(|| anyhow!("stored Forge task disappeared after nota do dispatch"))?;
-    let child_execution_ref = task_id.to_string();
-    let return_target_ref = transaction.id.to_string();
-    let lineage_ref = lane.build_lineage_ref(transaction.id, task_id);
-
-    debug_assert_eq!(lineage_ref, lowered_dispatch.lineage.lineage_ref);
-    debug_assert_eq!(
-        lane.transaction_kind(),
-        lowered_dispatch.routing.allocation_kind
-    );
-    debug_assert_eq!("nota", lowered_dispatch.routing.allocator_role);
-    debug_assert_eq!(
-        "forge_task",
-        lowered_dispatch.lineage.child_execution_kind.as_str()
-    );
-    debug_assert_eq!(
-        child_execution_ref,
-        lowered_dispatch.lineage.child_execution_ref
-    );
-    debug_assert_eq!(
-        "nota_runtime_transaction",
-        lowered_dispatch.lineage.return_target_kind.as_str()
-    );
-    debug_assert_eq!(
-        return_target_ref,
-        lowered_dispatch.lineage.return_target_ref
-    );
-    debug_assert_eq!(
-        "nota_runtime_transaction",
-        lowered_dispatch.lineage.escalation_target_kind.as_str()
-    );
-    debug_assert_eq!(
-        return_target_ref,
-        lowered_dispatch.lineage.escalation_target_ref
-    );
 
     let spawn_error = launch_forge_task(forge, task_id, request.execution_host)
         .err()
@@ -622,41 +585,20 @@ fn run_nota_dispatch(
             )?;
             let mut staged_receipts = Vec::new();
             let mut allocation = tx.insert_nota_runtime_allocation(NewNotaRuntimeAllocation {
-                allocator_role: lowered_dispatch.routing.allocator_role.as_str(),
+                allocator_role: admitted_dispatch.routing().allocator_role.as_str(),
                 allocator_surface: lane.allocator_surface(),
-                allocation_kind: lowered_dispatch.routing.allocation_kind.as_str(),
+                allocation_kind: admitted_dispatch.routing().allocation_kind.as_str(),
                 source_transaction_id: transaction.id,
-                lineage_ref: lowered_dispatch.lineage.lineage_ref.as_str(),
-                child_execution_kind: lowered_dispatch.lineage.child_execution_kind.as_str(),
-                child_execution_ref: lowered_dispatch.lineage.child_execution_ref.as_str(),
-                return_target_kind: lowered_dispatch.lineage.return_target_kind.as_str(),
-                return_target_ref: lowered_dispatch.lineage.return_target_ref.as_str(),
-                escalation_target_kind: lowered_dispatch.lineage.escalation_target_kind.as_str(),
-                escalation_target_ref: lowered_dispatch.lineage.escalation_target_ref.as_str(),
+                lineage_ref: admitted_dispatch.lineage().lineage_ref.as_str(),
+                child_execution_kind: admitted_dispatch.lineage().child_execution_kind.as_str(),
+                child_execution_ref: admitted_dispatch.lineage().child_execution_ref.as_str(),
+                return_target_kind: admitted_dispatch.lineage().return_target_kind.as_str(),
+                return_target_ref: admitted_dispatch.lineage().return_target_ref.as_str(),
+                escalation_target_kind: admitted_dispatch.lineage().escalation_target_kind.as_str(),
+                escalation_target_ref: admitted_dispatch.lineage().escalation_target_ref.as_str(),
                 status: "task_created",
                 payload_json: &allocation_payload_json,
             })?;
-            debug_assert_eq!(allocation.lineage_ref, lowered_dispatch.lineage.lineage_ref);
-            debug_assert_eq!(
-                allocation.child_execution_ref,
-                lowered_dispatch.lineage.child_execution_ref
-            );
-            debug_assert_eq!(
-                allocation.return_target_ref,
-                lowered_dispatch.lineage.return_target_ref
-            );
-            debug_assert_eq!(
-                allocation.escalation_target_ref,
-                lowered_dispatch.lineage.escalation_target_ref
-            );
-            debug_assert_eq!(
-                allocation.allocation_kind,
-                lowered_dispatch.routing.allocation_kind
-            );
-            debug_assert_eq!(
-                allocation.allocator_role,
-                lowered_dispatch.routing.allocator_role
-            );
             staged_receipts.push(tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
                 transaction_id: transaction.id,
                 receipt_kind: "FORGE_TASK_CREATED",
@@ -838,6 +780,38 @@ fn build_lowering_context(
         max_restart_attempts,
         has_active_allocation: active_allocation.is_some(),
     })
+}
+
+fn admit_nota_dispatch(lowering_context: LoweringContext) -> Result<AdmittedDispatch> {
+    project_nota_dispatch(compile_nota_dispatch_packet(), lowering_context)
+}
+
+fn project_nota_dispatch(
+    packet: TypedActionPacket,
+    lowering_context: LoweringContext,
+) -> Result<AdmittedDispatch> {
+    let lowered_dispatch = lower_dispatch(&packet, &lowering_context).map_err(|error| {
+        anyhow!(
+            "nota dispatch rejected during lowering: {}",
+            lowering_error_summary(error)
+        )
+    })?;
+
+    admit_dispatch(lowered_dispatch, None).map_err(|rejection| {
+        anyhow!(
+            "nota dispatch rejected during admission: {}",
+            rejection.summary
+        )
+    })
+}
+
+fn lowering_error_summary(error: LoweringError) -> &'static str {
+    match error {
+        LoweringError::NotDispatchable => "action is outside the dispatch lowering scope",
+        LoweringError::MissingSupervision => "dispatch packet is missing supervision metadata",
+        LoweringError::BudgetExhausted => "dispatch restart budget is exhausted",
+        LoweringError::DuplicateDispatch => "dispatch transaction already has an active allocation",
+    }
 }
 
 fn default_restart_budget_for_lane(lane: NotaDispatchLane) -> u8 {
@@ -5313,15 +5287,10 @@ mod tests {
     use serde_json::Value;
 
     use crate::core::{
-        action::{ActionPrimitive, ActionRecord, ActionRoom, ActorRole, KnowledgeLayer},
         bootstrap_for_paths,
         compiler::{
             admission::admit_dispatch,
-            lowering::{
-                lower_dispatch, DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext,
-                SandboxConfig,
-            },
-            packet::TypedActionPacket,
+            lowering::{DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext, SandboxConfig},
             routing::{resolve_return_route, ReturnBoundary, TerminalStatus},
         },
         config_store::{render_config, EntranceConfig},
@@ -5337,24 +5306,24 @@ mod tests {
     use crate::plugins::forge::ForgePlugin;
 
     use super::{
-        accept_current_runtime_round, active_checkpoint_scope_ids, boundary_kind,
-        build_lowering_context, build_terminal_allocation_outcome, compile_nota_dispatch_packet,
-        default_nota_dispatch_execution_host, derive_anti_zeno_projection,
-        derive_current_runtime_acceptance_bundle, derive_current_runtime_handout,
-        derive_current_runtime_wake_request, derive_nota_runtime_finalize,
-        derive_nota_runtime_integrate, derive_nota_runtime_next_step, derive_nota_runtime_review,
-        derive_runtime_round_state_projection, list_nota_runtime_allocations,
-        list_nota_runtime_receipts, list_nota_runtime_transactions,
+        accept_current_runtime_round, active_checkpoint_scope_ids, admit_nota_dispatch,
+        boundary_kind, build_lowering_context, build_terminal_allocation_outcome,
+        compile_nota_dispatch_packet, default_nota_dispatch_execution_host,
+        derive_anti_zeno_projection, derive_current_runtime_acceptance_bundle,
+        derive_current_runtime_handout, derive_current_runtime_wake_request,
+        derive_nota_runtime_finalize, derive_nota_runtime_integrate, derive_nota_runtime_next_step,
+        derive_nota_runtime_review, derive_runtime_round_state_projection,
+        list_nota_runtime_allocations, list_nota_runtime_receipts, list_nota_runtime_transactions,
         list_runtime_acceptance_bundles, list_runtime_checkpoints, list_runtime_human_rounds,
-        materialize_runtime_closure_checkpoint, recommend_runtime_closure_checkpoint,
-        record_dev_return_finalize, record_dev_return_integration, record_dev_return_review,
-        record_nota_boundary_ask, record_nota_boundary_clarification, resolve_dev_repair_origin,
-        run_nota_dev_dispatch, sync_runtime_truth, write_runtime_checkpoint,
-        AllocationTerminalOutcomeReceiptPayload, NotaBoundaryAskRequest,
-        NotaBoundaryClarificationRequest, NotaCheckpointRequest, NotaCurrentRoundAcceptanceRequest,
-        NotaDevDispatchRequest, NotaDevReturnFinalizeRequest, NotaDevReturnIntegrateRequest,
-        NotaDevReturnReviewRequest, NotaDispatchExecutionHost, NotaDispatchLane,
-        NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
+        materialize_runtime_closure_checkpoint, project_nota_dispatch,
+        recommend_runtime_closure_checkpoint, record_dev_return_finalize,
+        record_dev_return_integration, record_dev_return_review, record_nota_boundary_ask,
+        record_nota_boundary_clarification, resolve_dev_repair_origin, run_nota_dev_dispatch,
+        sync_runtime_truth, write_runtime_checkpoint, AllocationTerminalOutcomeReceiptPayload,
+        NotaBoundaryAskRequest, NotaBoundaryClarificationRequest, NotaCheckpointRequest,
+        NotaCurrentRoundAcceptanceRequest, NotaDevDispatchRequest, NotaDevReturnFinalizeRequest,
+        NotaDevReturnIntegrateRequest, NotaDevReturnReviewRequest, NotaDispatchExecutionHost,
+        NotaDispatchLane, NotaDoAllocationPayload, NotaDoAllocationTerminalOutcome,
         AGENT_RETURN_ACCEPTED_RECEIPT_KIND, ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
         ASK_OPEN_TRANSACTION_STATUS, BOUNDARY_INTAKE_SUPERSEDED_TRANSACTION_STATUS,
         CADENCE_ACCEPTANCE_BUNDLE_KIND, CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
@@ -5627,7 +5596,31 @@ mod tests {
     }
 
     #[test]
-    fn lowering_matches_hand_coded_allocation() -> Result<()> {
+    fn lowering_error_rejects_dispatch() {
+        let _guard = crate::test_env_guard();
+
+        let error = project_nota_dispatch(
+            compile_nota_dispatch_packet(),
+            LoweringContext {
+                transaction_id: 11,
+                task_id: 7,
+                dispatch_lane: "nota_dev".to_string(),
+                allocator_surface: "dev".to_string(),
+                project_root: "A:/Publish/entrance".to_string(),
+                consumed_restart_attempts: 0,
+                max_restart_attempts: 2,
+                has_active_allocation: true,
+            },
+        )
+        .expect_err("duplicate dispatch should be rejected during lowering");
+
+        assert!(error
+            .to_string()
+            .contains("dispatch transaction already has an active allocation"));
+    }
+
+    #[test]
+    fn dispatch_allocation_matches_admitted_dispatch_projection() -> Result<()> {
         let _guard = nota_dispatch_test_guard();
 
         let temp_dir = TestDir::new("lowering-enforcement");
@@ -5681,57 +5674,49 @@ mod tests {
             },
         )?;
 
-        let packet = TypedActionPacket::compile(
-            ActionRecord::new(
-                ActorRole::Dev,
-                ActionPrimitive::Dispatch,
-                ActionRoom::Prep,
-                KnowledgeLayer::Cold,
-            )
-            .expect("test dispatch record should satisfy lowering constraints"),
-        );
-        let context = build_lowering_context(
+        let admitted = admit_nota_dispatch(build_lowering_context(
             &store,
             &report.transaction,
             report.task_id,
             &NotaDispatchLane::Dev,
             &report.dispatch.project_root,
-        )?;
-        let lowered =
-            lower_dispatch(&packet, &context).expect("nota dev dispatch should lower successfully");
+        )?)?;
 
-        assert_eq!(report.allocation.lineage_ref, lowered.lineage.lineage_ref);
+        assert_eq!(
+            report.allocation.lineage_ref,
+            admitted.lineage().lineage_ref
+        );
         assert_eq!(
             report.allocation.child_execution_kind,
-            lowered.lineage.child_execution_kind
+            admitted.lineage().child_execution_kind
         );
         assert_eq!(
             report.allocation.child_execution_ref,
-            lowered.lineage.child_execution_ref
+            admitted.lineage().child_execution_ref
         );
         assert_eq!(
             report.allocation.return_target_kind,
-            lowered.lineage.return_target_kind
+            admitted.lineage().return_target_kind
         );
         assert_eq!(
             report.allocation.return_target_ref,
-            lowered.lineage.return_target_ref
+            admitted.lineage().return_target_ref
         );
         assert_eq!(
             report.allocation.escalation_target_kind,
-            lowered.lineage.escalation_target_kind
+            admitted.lineage().escalation_target_kind
         );
         assert_eq!(
             report.allocation.escalation_target_ref,
-            lowered.lineage.escalation_target_ref
+            admitted.lineage().escalation_target_ref
         );
         assert_eq!(
             report.allocation.allocator_role,
-            lowered.routing.allocator_role
+            admitted.routing().allocator_role
         );
         assert_eq!(
             report.allocation.allocation_kind,
-            lowered.routing.allocation_kind
+            admitted.routing().allocation_kind
         );
 
         Ok(())
@@ -6743,6 +6728,21 @@ mod tests {
             store.list_nota_runtime_allocations()?[0].status,
             "task_created"
         );
+
+        // Pre-exhaust the retry budget so the supervisor escalates instead of
+        // restarting. DEFAULT_DISPATCH_PIPELINE_POLICY has max_restarts: 2.
+        for attempt in 1..=2 {
+            store.record_budget_consumption(
+                allocation.id,
+                "execution_failure",
+                attempt,
+                "restart_child",
+                2,
+                2u8.saturating_sub(attempt),
+                attempt >= 2,
+                Some("exhaust budget for test"),
+            )?;
+        }
 
         sync_runtime_truth(&store, Some(transaction.id))?;
 
