@@ -1321,37 +1321,22 @@ fn build_terminal_allocation_outcome<'a>(
     task: &'a StoredForgeTask,
 ) -> Option<(&'static str, NotaDoAllocationTerminalOutcome)> {
     let terminal_status = TerminalStatus::from_task_status(task.status.as_str())?;
-    let (status, target_kind, target_ref) = match terminal_status {
-        TerminalStatus::Done => (
-            "return_ready",
-            allocation.return_target_kind.as_str(),
-            allocation.return_target_ref.as_str(),
-        ),
-        TerminalStatus::Blocked => (
-            "escalated_blocked",
-            allocation.escalation_target_kind.as_str(),
-            allocation.escalation_target_ref.as_str(),
-        ),
-        TerminalStatus::Failed => (
-            "escalated_failed",
-            allocation.escalation_target_kind.as_str(),
-            allocation.escalation_target_ref.as_str(),
-        ),
-        TerminalStatus::Cancelled => (
-            "escalated_cancelled",
-            allocation.escalation_target_kind.as_str(),
-            allocation.escalation_target_ref.as_str(),
-        ),
-    };
     let admitted = reconstruct_terminal_admitted_dispatch(allocation);
     let route = resolve_return_route(&admitted, terminal_status)
         .expect("stored nota runtime allocation should always resolve a terminal return route");
 
-    debug_assert_eq!(target_kind, route.target_kind.as_str());
-    debug_assert_eq!(target_ref, route.target_ref.as_str());
+    let allocation_status = match route.boundary {
+        ReturnBoundary::Return => "return_ready",
+        ReturnBoundary::Escalation => match terminal_status {
+            TerminalStatus::Blocked => "escalated_blocked",
+            TerminalStatus::Failed => "escalated_failed",
+            TerminalStatus::Cancelled => "escalated_cancelled",
+            TerminalStatus::Done => unreachable!("Done should never escalate"),
+        },
+    };
 
     Some((
-        status,
+        allocation_status,
         NotaDoAllocationTerminalOutcome {
             boundary_kind: boundary_kind(route.boundary).to_string(),
             child_execution_status: task.status.clone(),
@@ -6206,6 +6191,8 @@ mod tests {
 
     #[test]
     fn build_terminal_allocation_outcome_matches_resolved_return_route() -> Result<()> {
+        let _guard = nota_dispatch_test_guard();
+
         let allocation_payload = NotaDoAllocationPayload {
             issue_id: "MYT-visibility".to_string(),
             issue_status: "Todo".to_string(),
@@ -6289,48 +6276,56 @@ mod tests {
             resolve_return_route(&admitted, terminal_status)
                 .expect("synthetic allocation should resolve a return route")
         };
+        let assert_terminal_outcome =
+            |terminal_status: TerminalStatus,
+             task_status: &str,
+             message: Option<&str>,
+             expected_allocation_status: &str,
+             expected_boundary: ReturnBoundary| {
+                let (allocation_status, outcome) = build_terminal_allocation_outcome(
+                    &allocation,
+                    &task_with_status(task_status, message),
+                )
+                .expect("terminal task should produce a terminal outcome");
+                let route = expected_route(terminal_status);
 
-        let (done_status, done_outcome) = build_terminal_allocation_outcome(
-            &allocation,
-            &task_with_status("Done", Some("Merged cleanly")),
-        )
-        .expect("done task should produce a terminal outcome");
-        let done_route = expected_route(TerminalStatus::Done);
-        assert_eq!(done_status, "return_ready");
-        assert_eq!(done_route.boundary, ReturnBoundary::Return);
-        assert_eq!(
-            done_outcome.boundary_kind,
-            boundary_kind(done_route.boundary)
-        );
-        assert_eq!(done_outcome.child_execution_status, "Done");
-        assert_eq!(
-            done_outcome.child_execution_status_message.as_deref(),
-            Some("Merged cleanly")
-        );
-        assert_eq!(done_outcome.target_kind, done_route.target_kind);
-        assert_eq!(done_outcome.target_ref, done_route.target_ref);
+                assert_eq!(allocation_status, expected_allocation_status);
+                assert_eq!(route.boundary, expected_boundary);
+                assert_eq!(outcome.boundary_kind, boundary_kind(route.boundary));
+                assert_eq!(outcome.child_execution_status, task_status);
+                assert_eq!(outcome.child_execution_status_message.as_deref(), message);
+                assert_eq!(outcome.target_kind, route.target_kind);
+                assert_eq!(outcome.target_ref, route.target_ref);
+            };
 
-        let (blocked_status, blocked_outcome) = build_terminal_allocation_outcome(
-            &allocation,
-            &task_with_status("Blocked", Some("Needs human review")),
-        )
-        .expect("blocked task should produce a terminal outcome");
-        let blocked_route = expected_route(TerminalStatus::Blocked);
-        assert_eq!(blocked_status, "escalated_blocked");
-        assert_eq!(blocked_route.boundary, ReturnBoundary::Escalation);
-        assert_eq!(
-            blocked_outcome.boundary_kind,
-            boundary_kind(blocked_route.boundary)
+        assert_terminal_outcome(
+            TerminalStatus::Done,
+            "Done",
+            Some("Merged cleanly"),
+            "return_ready",
+            ReturnBoundary::Return,
         );
-        assert_eq!(blocked_outcome.child_execution_status, "Blocked");
-        assert_eq!(
-            blocked_outcome.child_execution_status_message.as_deref(),
-            Some("Needs human review")
+        assert_terminal_outcome(
+            TerminalStatus::Blocked,
+            "Blocked",
+            Some("Needs human review"),
+            "escalated_blocked",
+            ReturnBoundary::Escalation,
         );
-        assert_eq!(blocked_outcome.target_kind, blocked_route.target_kind);
-        assert_eq!(blocked_outcome.target_ref, blocked_route.target_ref);
-        assert_eq!(blocked_outcome.target_kind, "human");
-        assert_eq!(blocked_outcome.target_ref, "review");
+        assert_terminal_outcome(
+            TerminalStatus::Failed,
+            "Failed",
+            Some("Execution crashed"),
+            "escalated_failed",
+            ReturnBoundary::Escalation,
+        );
+        assert_terminal_outcome(
+            TerminalStatus::Cancelled,
+            "Cancelled",
+            Some("Cancelled by human"),
+            "escalated_cancelled",
+            ReturnBoundary::Escalation,
+        );
 
         Ok(())
     }
