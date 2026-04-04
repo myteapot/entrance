@@ -5674,13 +5674,17 @@ mod tests {
             },
         )?;
 
-        let admitted = admit_nota_dispatch(build_lowering_context(
+        let mut lowering_ctx = build_lowering_context(
             &store,
             &report.transaction,
             report.task_id,
             &NotaDispatchLane::Dev,
             &report.dispatch.project_root,
-        )?)?;
+        )?;
+        // Override: we already dispatched, so dedup would reject. We're only
+        // verifying the projection matches the stored allocation, not re-dispatching.
+        lowering_ctx.has_active_allocation = false;
+        let admitted = admit_nota_dispatch(lowering_ctx)?;
 
         assert_eq!(
             report.allocation.lineage_ref,

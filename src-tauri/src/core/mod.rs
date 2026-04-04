@@ -156,10 +156,6 @@ impl AppPaths {
 }
 
 pub fn resolve_app_data_dir() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("ENTRANCE_HOME") {
-        return Ok(PathBuf::from(path));
-    }
-
     if let Some(path) = std::env::var_os("ENTRANCE_APP_DATA_DIR") {
         return Ok(PathBuf::from(path));
     }

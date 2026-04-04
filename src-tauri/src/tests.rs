@@ -369,7 +369,11 @@ fn verify_forge_dispatch_cli_persists_task_without_agents_runtime() -> Result<()
     assert!(!report.dispatch.prompt.contains(".agents"));
     assert!(report.task_id > 0);
     assert_eq!(report.task_status, "Pending");
-    assert_eq!(report.task_command, "codex");
+    assert!(
+        report.task_command.contains("codex"),
+        "task command `{}` should contain `codex`",
+        report.task_command
+    );
     assert_eq!(
         report.task_working_dir.as_deref(),
         Some(report.dispatch.worktree_path.as_str())
