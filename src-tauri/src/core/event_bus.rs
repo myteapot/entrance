@@ -1,3 +1,5 @@
+use std::sync::{Arc, OnceLock};
+
 use anyhow::Result;
 use serde_json;
 use tauri::{AppHandle, Emitter, Runtime};
@@ -22,6 +24,12 @@ impl Default for EventBus {
         Self { sender }
     }
 }
+
+type GraphEmitter = Arc<dyn Fn(&GraphUpdateEvent) + Send + Sync>;
+type DialogEmitter = Arc<dyn Fn(&NotaDialogEvent) + Send + Sync>;
+
+static GRAPH_EMITTER: OnceLock<GraphEmitter> = OnceLock::new();
+static DIALOG_EMITTER: OnceLock<DialogEmitter> = OnceLock::new();
 
 impl EventBus {
     pub fn new() -> Self {
@@ -65,6 +73,36 @@ impl EventBus {
         let json = serde_json::to_string(event)?;
         app.emit("nota:dialog", json)?;
         Ok(())
+    }
+}
+
+pub fn install_runtime_emitters<R: Runtime + 'static>(event_bus: EventBus, app: AppHandle<R>) {
+    let graph_bus = event_bus.clone();
+    let graph_app = app.clone();
+    let _ = GRAPH_EMITTER.set(Arc::new(move |event: &GraphUpdateEvent| {
+        if let Err(error) = graph_bus.emit_graph_update(&graph_app, event) {
+            tracing::warn!(?error, "failed to emit graph update");
+        }
+    }));
+
+    let dialog_bus = event_bus;
+    let dialog_app = app;
+    let _ = DIALOG_EMITTER.set(Arc::new(move |event: &NotaDialogEvent| {
+        if let Err(error) = dialog_bus.emit_nota_dialog(&dialog_app, event) {
+            tracing::warn!(?error, "failed to emit nota dialog");
+        }
+    }));
+}
+
+pub fn emit_graph_update_runtime(event: &GraphUpdateEvent) {
+    if let Some(emitter) = GRAPH_EMITTER.get() {
+        emitter(event);
+    }
+}
+
+pub fn emit_nota_dialog_runtime(event: &NotaDialogEvent) {
+    if let Some(emitter) = DIALOG_EMITTER.get() {
+        emitter(event);
     }
 }
 

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { For, Show } from "solid-js";
 
 import type { NotaDialogStore } from "../features/dashboard/notaDialogStore";
@@ -13,10 +14,13 @@ const NotaDialog = (props: NotaDialogProps) => {
     actionKey: string,
     allocationId: number | null,
   ) => {
-    // G1-SKELETON-TODO: wire IPC calls (nota_approve_prayer / nota_reject_prayer) once commands are registered.
-    console.log(
-      `NOTA dialog action: ${actionKey} for dialog ${dialogId}, allocation ${allocationId}`,
-    );
+    if (allocationId != null) {
+      if (actionKey === "approve") {
+        await invoke("nota_approve_prayer", { allocationId });
+      } else if (actionKey === "reject") {
+        await invoke("nota_reject_prayer", { allocationId, reason: actionKey });
+      }
+    }
     props.store.dismiss(dialogId);
   };
 

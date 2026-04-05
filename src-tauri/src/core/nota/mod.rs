@@ -27,6 +27,8 @@ use crate::core::data_store::{
     NotaRuntimeTransactionUpdate, StoredCadenceObject, StoredForgeTask,
     StoredNotaRuntimeAllocation, StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
 };
+use crate::core::event_bus::emit_graph_update_runtime;
+use crate::core::graph_events::{GraphNodeKind, GraphUpdateEvent};
 use crate::core::invariant_runtime::refresh_runtime_invariants;
 use crate::core::supervision::{
     build_runtime_supervision_incident_summary, classify_signal,
@@ -88,6 +90,147 @@ const BOUNDARY_INTAKE_SUPERSEDED_TRANSACTION_STATUS: &str = "superseded";
 
 // All struct/enum/impl type definitions moved to types.rs
 
+fn emit_checkpoint_graph_update(checkpoint: &NotaCheckpointRecord) {
+    emit_graph_update_runtime(&GraphUpdateEvent::NodeCreated {
+        id: format!("checkpoint-{}", checkpoint.cadence_object.id),
+        node_kind: GraphNodeKind::Checkpoint,
+        label: checkpoint.cadence_object.title.clone(),
+        parent_id: Some("nota".to_string()),
+        detail: format!("stable_level={}", checkpoint.payload.stable_level),
+        tone: "steady".to_string(),
+    });
+}
+
+fn emit_allocation_graph_fallback(allocation_id: i64) {
+    let allocation_node_id = format!("alloc-{allocation_id}");
+    emit_graph_update_runtime(&GraphUpdateEvent::NodeCreated {
+        id: allocation_node_id.clone(),
+        node_kind: GraphNodeKind::Allocation,
+        label: format!("allocation #{allocation_id}"),
+        parent_id: Some("nota".to_string()),
+        detail: "runtime allocation".to_string(),
+        tone: "active".to_string(),
+    });
+    emit_graph_update_runtime(&GraphUpdateEvent::EdgeCreated {
+        source_id: "nota".to_string(),
+        target_id: allocation_node_id,
+        edge_kind: "spawn".to_string(),
+    });
+}
+
+fn emit_allocation_graph_update(
+    allocation: &StoredNotaRuntimeAllocation,
+    detail_override: Option<&str>,
+) {
+    let payload = serde_json::from_str::<NotaDoAllocationPayload>(&allocation.payload_json).ok();
+    let label = payload
+        .as_ref()
+        .map(|payload| format!("{} #{}", payload.child_dispatch_role, allocation.id))
+        .unwrap_or_else(|| format!("allocation #{}", allocation.id));
+    let detail = detail_override
+        .map(str::to_string)
+        .or_else(|| {
+            payload
+                .as_ref()
+                .and_then(|payload| payload.issue_title.clone())
+        })
+        .unwrap_or_else(|| allocation.status.clone());
+    let tone = if allocation.status.contains("failed")
+        || allocation.status.contains("blocked")
+        || allocation.status.contains("cancelled")
+    {
+        "caution"
+    } else {
+        "active"
+    };
+    let allocation_node_id = format!("alloc-{}", allocation.id);
+
+    emit_graph_update_runtime(&GraphUpdateEvent::NodeCreated {
+        id: allocation_node_id.clone(),
+        node_kind: GraphNodeKind::Allocation,
+        label,
+        parent_id: Some("nota".to_string()),
+        detail,
+        tone: tone.to_string(),
+    });
+    emit_graph_update_runtime(&GraphUpdateEvent::EdgeCreated {
+        source_id: "nota".to_string(),
+        target_id: allocation_node_id,
+        edge_kind: "spawn".to_string(),
+    });
+}
+
+fn emit_receipt_graph_update(receipt: &StoredNotaRuntimeReceipt, parent_id: &str) {
+    let receipt_node_id = format!("receipt-{}", receipt.id);
+    emit_graph_update_runtime(&GraphUpdateEvent::NodeCreated {
+        id: receipt_node_id.clone(),
+        node_kind: GraphNodeKind::Receipt,
+        label: format!("Receipt #{}", receipt.id),
+        parent_id: Some(parent_id.to_string()),
+        detail: receipt.receipt_kind.clone(),
+        tone: "steady".to_string(),
+    });
+    emit_graph_update_runtime(&GraphUpdateEvent::EdgeCreated {
+        source_id: parent_id.to_string(),
+        target_id: receipt_node_id,
+        edge_kind: "receipt".to_string(),
+    });
+}
+
+fn emit_receipts_for_allocation(
+    allocation: &StoredNotaRuntimeAllocation,
+    receipts: &[StoredNotaRuntimeReceipt],
+) {
+    if receipts.is_empty() {
+        return;
+    }
+
+    emit_allocation_graph_update(allocation, None);
+    let parent_id = format!("alloc-{}", allocation.id);
+    for receipt in receipts {
+        emit_receipt_graph_update(receipt, &parent_id);
+    }
+}
+
+fn emit_receipts_for_allocation_id(
+    data_store: &DataStore,
+    allocation_id: i64,
+    receipts: &[StoredNotaRuntimeReceipt],
+) {
+    if receipts.is_empty() {
+        return;
+    }
+
+    match data_store.list_nota_runtime_allocations() {
+        Ok(allocations) => {
+            if let Some(allocation) = allocations
+                .into_iter()
+                .find(|allocation| allocation.id == allocation_id)
+            {
+                emit_receipts_for_allocation(&allocation, receipts);
+            } else {
+                emit_allocation_graph_fallback(allocation_id);
+                let parent_id = format!("alloc-{allocation_id}");
+                for receipt in receipts {
+                    emit_receipt_graph_update(receipt, &parent_id);
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                allocation_id,
+                %error,
+                "failed to load allocation for graph receipt emission"
+            );
+            emit_allocation_graph_fallback(allocation_id);
+            let parent_id = format!("alloc-{allocation_id}");
+            for receipt in receipts {
+                emit_receipt_graph_update(receipt, &parent_id);
+            }
+        }
+    }
+}
+
 pub fn write_runtime_checkpoint(
     data_store: &DataStore,
     request: NotaCheckpointRequest,
@@ -96,6 +239,7 @@ pub fn write_runtime_checkpoint(
         write_runtime_checkpoint_in_transaction(transaction, request)
     })?;
     sync_runtime_truth(data_store, None)?;
+    emit_checkpoint_graph_update(&report.checkpoint);
     Ok(report)
 }
 
@@ -166,8 +310,6 @@ fn write_runtime_checkpoint_in_transaction(
         status: "active",
         is_current: true,
     })?;
-    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Checkpoint) once EventBus/AppHandle
-    // wiring is available on this runtime path.
 
     let supersession_link = if let Some(previous) = superseded_checkpoint.as_ref() {
         Some(transaction.insert_cadence_link(NewCadenceLink {
@@ -477,7 +619,7 @@ fn run_nota_dispatch(
         });
 
     let mut receipts = Vec::new();
-    let transaction = data_store.with_immediate_transaction(|tx| {
+    let (mut transaction, accepted_receipt) = data_store.with_immediate_transaction(|tx| {
         let transaction = tx.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
             surface_action: lane.surface_action(),
@@ -494,12 +636,9 @@ fn run_nota_dispatch(
             payload_json: &payload_json,
             status: "recorded",
         })?;
-        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated here once EventBus/AppHandle
-        // wiring is available on this runtime path.
         Ok((transaction, accepted_receipt))
     })?;
-    receipts.push(transaction.1.clone());
-    let mut transaction = transaction.0;
+    receipts.push(accepted_receipt.clone());
 
     let task_request =
         lane.build_task_request(&dispatch, model.clone(), request.agent_command.clone())?;
@@ -603,18 +742,12 @@ fn run_nota_dispatch(
                 status: "task_created",
                 payload_json: &allocation_payload_json,
             })?;
-            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Allocation) and
-            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-            // runtime path.
             staged_receipts.push(tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
                 transaction_id: transaction.id,
                 receipt_kind: "FORGE_TASK_CREATED",
                 payload_json: &forge_task_created_payload,
                 status: "recorded",
             })?);
-            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-            // runtime path.
             staged_receipts.push(
                 tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
                     transaction_id: transaction.id,
@@ -638,9 +771,6 @@ fn run_nota_dispatch(
                     status: "recorded",
                 })?,
             );
-            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-            // runtime path.
             if let Some(repair_origin) = repair_origin.as_ref() {
                 staged_receipts.push(
                     tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
@@ -656,9 +786,6 @@ fn run_nota_dispatch(
                         status: "recorded",
                     })?,
                 );
-                // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-                // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on
-                // this runtime path.
             }
 
             transaction = tx.update_nota_runtime_transaction(
@@ -683,9 +810,6 @@ fn run_nota_dispatch(
                 payload_json: &forge_launch_payload,
                 status: "recorded",
             })?);
-            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-            // runtime path.
 
             let checkpoint_report = write_runtime_checkpoint_in_transaction(
                 tx,
@@ -715,8 +839,6 @@ fn run_nota_dispatch(
                     project_dir: checkpoint_project_dir.clone(),
                 },
             )?;
-            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Checkpoint) once EventBus/AppHandle
-            // wiring is available on this runtime path.
             transaction = tx.update_nota_runtime_transaction(
                 transaction.id,
                 NotaRuntimeTransactionUpdate {
@@ -741,16 +863,17 @@ fn run_nota_dispatch(
                     status: "recorded",
                 })?,
             );
-            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-            // runtime path.
 
             Ok((transaction, allocation, staged_receipts, checkpoint_report))
         })?;
 
     transaction = updated_transaction;
-    receipts.extend(staged_receipts);
     sync_runtime_truth(data_store, Some(transaction.id))?;
+    emit_receipt_graph_update(&accepted_receipt, "nota");
+    emit_allocation_graph_update(&allocation, Some(&title));
+    emit_receipts_for_allocation(&allocation, &staged_receipts);
+    emit_checkpoint_graph_update(&checkpoint_report.checkpoint);
+    receipts.extend(staged_receipts);
 
     Ok(NotaDoDispatchReport {
         transaction,
@@ -1178,7 +1301,7 @@ fn reconcile_terminal_allocation_outcomes(
             }
         }
 
-        data_store.with_immediate_transaction(|tx| {
+        let emitted_receipt = data_store.with_immediate_transaction(|tx| {
             persist_terminal_allocation_projection(
                 tx,
                 &stored_allocation,
@@ -1186,6 +1309,9 @@ fn reconcile_terminal_allocation_outcomes(
                 outcome,
             )
         })?;
+        if let Some(receipt) = emitted_receipt {
+            emit_receipts_for_allocation(&projected_allocation, &[receipt]);
+        }
 
         // 1A: Collect gate evidence when a forge task reaches terminal state.
         if projected_allocation.child_execution_kind == "forge_task" {
@@ -1388,7 +1514,7 @@ fn persist_terminal_allocation_projection(
     stored_allocation: &StoredNotaRuntimeAllocation,
     projected_allocation: &StoredNotaRuntimeAllocation,
     outcome: &NotaDoAllocationTerminalOutcome,
-) -> Result<()> {
+) -> Result<Option<StoredNotaRuntimeReceipt>> {
     if stored_allocation.status != projected_allocation.status
         || stored_allocation.payload_json != projected_allocation.payload_json
     {
@@ -1423,18 +1549,16 @@ fn persist_terminal_allocation_projection(
                 stored_allocation.id
             )
         })?;
-        transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+        let receipt = transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
             transaction_id: stored_allocation.source_transaction_id,
             receipt_kind: ALLOCATION_TERMINAL_OUTCOME_RECORDED_RECEIPT_KIND,
             payload_json: &receipt_payload_json,
             status: "recorded",
         })?;
-        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-        // runtime path.
+        return Ok(Some(receipt));
     }
 
-    Ok(())
+    Ok(None)
 }
 
 fn build_allocation_terminal_outcome_receipt_payload(
@@ -1773,10 +1897,11 @@ pub fn materialize_runtime_closure_checkpoint(
 
     if checkpoint_request_matches_current(current_checkpoint.as_ref(), &candidate.request) {
         if let Some(current_checkpoint) = current_checkpoint.as_ref() {
-            data_store.with_immediate_transaction(|tx| {
+            let emitted_receipts = data_store.with_immediate_transaction(|tx| {
                 sync_runtime_closure_checkpoint_to_transaction(tx, &candidate, current_checkpoint)
             })?;
             sync_runtime_truth(data_store, Some(candidate.source_transaction_id))?;
+            emit_receipts_for_allocation_id(data_store, candidate.allocation_id, &emitted_receipts);
         }
         return Ok(NotaRuntimeClosureCheckpointMaterializationReport {
             status: "already_current".to_string(),
@@ -1790,7 +1915,7 @@ pub fn materialize_runtime_closure_checkpoint(
     let source_recommendation = candidate.request.clone();
     let source_transaction_id = candidate.source_transaction_id;
     let write_report = write_runtime_checkpoint(data_store, candidate.request)?;
-    data_store.with_immediate_transaction(|tx| {
+    let emitted_receipts = data_store.with_immediate_transaction(|tx| {
         sync_runtime_closure_checkpoint_to_transaction(
             tx,
             &RecommendedCheckpointCandidate {
@@ -1803,6 +1928,7 @@ pub fn materialize_runtime_closure_checkpoint(
         )
     })?;
     sync_runtime_truth(data_store, Some(source_transaction_id))?;
+    emit_receipts_for_allocation_id(data_store, candidate.allocation_id, &emitted_receipts);
     Ok(NotaRuntimeClosureCheckpointMaterializationReport {
         status: "applied".to_string(),
         checkpoint: Some(write_report.checkpoint),
@@ -1851,12 +1977,13 @@ fn sync_runtime_closure_checkpoint_to_transaction(
     transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
-) -> Result<()> {
+) -> Result<Vec<StoredNotaRuntimeReceipt>> {
     let Some(runtime_transaction) =
         transaction.get_nota_runtime_transaction(candidate.source_transaction_id)?
     else {
-        return Ok(());
+        return Ok(Vec::new());
     };
+    let mut emitted_receipts = Vec::new();
 
     if runtime_transaction.cadence_checkpoint_id != Some(checkpoint.cadence_object.id) {
         transaction.update_nota_runtime_transaction(
@@ -1869,16 +1996,25 @@ fn sync_runtime_closure_checkpoint_to_transaction(
         )?;
     }
 
-    ensure_checkpoint_written_receipt(transaction, runtime_transaction.id, checkpoint)?;
-    ensure_runtime_closure_acceptance_receipt(transaction, candidate, checkpoint)?;
-    ensure_runtime_acceptance_bundle(transaction, candidate, checkpoint)
+    if let Some(receipt) =
+        ensure_checkpoint_written_receipt(transaction, runtime_transaction.id, checkpoint)?
+    {
+        emitted_receipts.push(receipt);
+    }
+    emitted_receipts.extend(ensure_runtime_closure_acceptance_receipt(
+        transaction,
+        candidate,
+        checkpoint,
+    )?);
+    ensure_runtime_acceptance_bundle(transaction, candidate, checkpoint)?;
+    Ok(emitted_receipts)
 }
 
 fn ensure_checkpoint_written_receipt(
     transaction: &DataStoreTransaction<'_>,
     transaction_id: i64,
     checkpoint: &NotaCheckpointRecord,
-) -> Result<()> {
+) -> Result<Option<StoredNotaRuntimeReceipt>> {
     let receipts = transaction.list_nota_runtime_receipts(Some(transaction_id))?;
     let has_receipt = receipts.into_iter().any(|receipt| {
         if receipt.receipt_kind != CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND {
@@ -1894,10 +2030,10 @@ fn ensure_checkpoint_written_receipt(
             == Some(checkpoint.cadence_object.id)
     });
     if has_receipt {
-        return Ok(());
+        return Ok(None);
     }
 
-    transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+    let receipt = transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
         transaction_id,
         receipt_kind: CADENCE_CHECKPOINT_WRITTEN_RECEIPT_KIND,
         payload_json: &serde_json::to_string(&json!({
@@ -1907,29 +2043,37 @@ fn ensure_checkpoint_written_receipt(
         .context("failed to serialize checkpoint receipt payload")?,
         status: "recorded",
     })?;
-    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-    // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this runtime
-    // path.
-
-    Ok(())
+    Ok(Some(receipt))
 }
 
 fn ensure_runtime_closure_acceptance_receipt(
     transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
-) -> Result<()> {
+) -> Result<Vec<StoredNotaRuntimeReceipt>> {
     match candidate.kind {
-        RecommendedCheckpointCandidateKind::AgentEscalationContinuity => Ok(()),
-        RecommendedCheckpointCandidateKind::AgentReturnAcceptance => {
-            ensure_agent_return_accepted_receipt(transaction, candidate, checkpoint)
-        }
-        RecommendedCheckpointCandidateKind::AgentReturnClosure => Ok(()),
+        RecommendedCheckpointCandidateKind::AgentEscalationContinuity => Ok(Vec::new()),
+        RecommendedCheckpointCandidateKind::AgentReturnAcceptance => Ok(
+            ensure_agent_return_accepted_receipt(transaction, candidate, checkpoint)?
+                .into_iter()
+                .collect(),
+        ),
+        RecommendedCheckpointCandidateKind::AgentReturnClosure => Ok(Vec::new()),
         RecommendedCheckpointCandidateKind::DevReturnAcceptance => {
-            ensure_dev_return_accepted_receipt(transaction, candidate, checkpoint)?;
-            ensure_dev_return_review_ready_receipt(transaction, candidate, checkpoint)
+            let mut receipts = Vec::new();
+            if let Some(receipt) =
+                ensure_dev_return_accepted_receipt(transaction, candidate, checkpoint)?
+            {
+                receipts.push(receipt);
+            }
+            if let Some(receipt) =
+                ensure_dev_return_review_ready_receipt(transaction, candidate, checkpoint)?
+            {
+                receipts.push(receipt);
+            }
+            Ok(receipts)
         }
-        RecommendedCheckpointCandidateKind::DevReturnClosure => Ok(()),
+        RecommendedCheckpointCandidateKind::DevReturnClosure => Ok(Vec::new()),
     }
 }
 
@@ -2146,16 +2290,16 @@ fn ensure_agent_return_accepted_receipt(
     transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
-) -> Result<()> {
+) -> Result<Option<StoredNotaRuntimeReceipt>> {
     let Some(allocation) = transaction
         .list_nota_runtime_allocations()?
         .into_iter()
         .find(|allocation| allocation.id == candidate.allocation_id)
     else {
-        return Ok(());
+        return Ok(None);
     };
     if allocation.allocation_kind != "forge_agent_dispatch" {
-        return Ok(());
+        return Ok(None);
     }
 
     let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
@@ -2166,10 +2310,10 @@ fn ensure_agent_return_accepted_receipt(
             )
         })?;
     let Some(outcome) = payload.terminal_outcome.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
     if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
-        return Ok(());
+        return Ok(None);
     }
 
     let receipt_payload = AgentReturnAcceptedReceiptPayload {
@@ -2197,34 +2341,30 @@ fn ensure_agent_return_accepted_receipt(
             payload == receipt_payload
         });
     if has_receipt {
-        return Ok(());
+        return Ok(None);
     }
 
-    transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+    let receipt = transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
         transaction_id: candidate.source_transaction_id,
         receipt_kind: AGENT_RETURN_ACCEPTED_RECEIPT_KIND,
         payload_json: &serde_json::to_string(&receipt_payload)
             .context("failed to serialize agent return accepted receipt payload")?,
         status: "recorded",
     })?;
-    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-    // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this runtime
-    // path.
-
-    Ok(())
+    Ok(Some(receipt))
 }
 
 fn ensure_dev_return_accepted_receipt(
     transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
-) -> Result<()> {
+) -> Result<Option<StoredNotaRuntimeReceipt>> {
     let Some(allocation) = transaction
         .list_nota_runtime_allocations()?
         .into_iter()
         .find(|allocation| allocation.id == candidate.allocation_id)
     else {
-        return Ok(());
+        return Ok(None);
     };
 
     let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
@@ -2235,10 +2375,10 @@ fn ensure_dev_return_accepted_receipt(
             )
         })?;
     let Some(outcome) = payload.terminal_outcome.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
     if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
-        return Ok(());
+        return Ok(None);
     }
 
     let receipt_payload = DevReturnAcceptedReceiptPayload {
@@ -2266,37 +2406,33 @@ fn ensure_dev_return_accepted_receipt(
             payload == receipt_payload
         });
     if has_receipt {
-        return Ok(());
+        return Ok(None);
     }
 
-    transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+    let receipt = transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
         transaction_id: candidate.source_transaction_id,
         receipt_kind: DEV_RETURN_ACCEPTED_RECEIPT_KIND,
         payload_json: &serde_json::to_string(&receipt_payload)
             .context("failed to serialize dev return accepted receipt payload")?,
         status: "recorded",
     })?;
-    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-    // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this runtime
-    // path.
-
-    Ok(())
+    Ok(Some(receipt))
 }
 
 fn ensure_dev_return_review_ready_receipt(
     transaction: &DataStoreTransaction<'_>,
     candidate: &RecommendedCheckpointCandidate,
     checkpoint: &NotaCheckpointRecord,
-) -> Result<()> {
+) -> Result<Option<StoredNotaRuntimeReceipt>> {
     let Some(allocation) = transaction
         .list_nota_runtime_allocations()?
         .into_iter()
         .find(|allocation| allocation.id == candidate.allocation_id)
     else {
-        return Ok(());
+        return Ok(None);
     };
     if allocation.allocation_kind != "forge_dev_dispatch" {
-        return Ok(());
+        return Ok(None);
     }
 
     let payload: NotaDoAllocationPayload = serde_json::from_str(&allocation.payload_json)
@@ -2307,10 +2443,10 @@ fn ensure_dev_return_review_ready_receipt(
             )
         })?;
     let Some(outcome) = payload.terminal_outcome.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
     if outcome.boundary_kind != "return" || outcome.child_execution_status != "Done" {
-        return Ok(());
+        return Ok(None);
     }
 
     let receipt_payload = DevReturnReviewReadyReceiptPayload {
@@ -2338,21 +2474,17 @@ fn ensure_dev_return_review_ready_receipt(
             payload == receipt_payload
         });
     if has_receipt {
-        return Ok(());
+        return Ok(None);
     }
 
-    transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
+    let receipt = transaction.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
         transaction_id: candidate.source_transaction_id,
         receipt_kind: DEV_RETURN_REVIEW_READY_RECEIPT_KIND,
         payload_json: &serde_json::to_string(&receipt_payload)
             .context("failed to serialize dev review-ready receipt payload")?,
         status: "recorded",
     })?;
-    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-    // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this runtime
-    // path.
-
-    Ok(())
+    Ok(Some(receipt))
 }
 
 fn normalize_boundary_ask_code(raw: &str) -> Result<String> {
@@ -2599,13 +2731,11 @@ pub fn record_nota_boundary_clarification(
                 .context("failed to serialize clarification receipt payload")?,
             status: "recorded",
         })?;
-        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-        // runtime path.
 
         Ok((transaction, next_step, receipt))
     })?;
     sync_runtime_truth(data_store, Some(transaction.id))?;
+    emit_receipt_graph_update(&receipt, "nota");
 
     Ok(NotaBoundaryClarificationReport {
         status: "recorded".to_string(),
@@ -2676,13 +2806,11 @@ pub fn record_nota_boundary_ask(
                 .context("failed to serialize ask receipt payload")?,
             status: "recorded",
         })?;
-        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-        // runtime path.
 
         Ok((transaction, next_step, receipt))
     })?;
     sync_runtime_truth(data_store, Some(transaction.id))?;
+    emit_receipt_graph_update(&receipt, "nota");
 
     Ok(NotaBoundaryAskReport {
         status: "recorded".to_string(),
@@ -2966,9 +3094,6 @@ pub fn record_dev_return_review(
             payload_json: &receipt_payload_json,
             status: "recorded",
         })?;
-        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-        // runtime path.
 
         if let Some(repair_summary) = repair_summary.as_deref() {
             tx.insert_anti_zeno_event(crate::core::data_store::NewAntiZenoEvent {
@@ -2996,6 +3121,7 @@ pub fn record_dev_return_review(
             .context("dev review recorded receipt should be readable after append")
     })?;
     sync_runtime_truth(data_store, Some(request.transaction_id))?;
+    emit_receipts_for_allocation(&allocation, &[receipt.clone()]);
 
     Ok(NotaDevReturnReviewReport {
         status: "recorded".to_string(),
@@ -3191,9 +3317,6 @@ pub fn record_dev_return_integration(
             payload_json: &receipt_payload_json,
             status: "recorded",
         })?;
-        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-        // runtime path.
 
         if let Some(repair_summary) = repair_summary.as_deref() {
             tx.insert_anti_zeno_event(crate::core::data_store::NewAntiZenoEvent {
@@ -3221,6 +3344,7 @@ pub fn record_dev_return_integration(
             .context("dev integrate recorded receipt should be readable after append")
     })?;
     sync_runtime_truth(data_store, Some(request.transaction_id))?;
+    emit_receipts_for_allocation(&allocation, &[receipt.clone()]);
 
     Ok(NotaDevReturnIntegrateReport {
         status: "recorded".to_string(),
@@ -3388,9 +3512,6 @@ pub fn record_dev_return_finalize(
             payload_json: &receipt_payload_json,
             status: "recorded",
         })?;
-        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
-        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
-        // runtime path.
 
         tx.list_nota_runtime_receipts(Some(request.transaction_id))?
             .into_iter()
@@ -3406,6 +3527,7 @@ pub fn record_dev_return_finalize(
             .context("dev finalize recorded receipt should be readable after append")
     })?;
     sync_runtime_truth(data_store, Some(request.transaction_id))?;
+    emit_receipts_for_allocation(&allocation, &[receipt.clone()]);
 
     Ok(NotaDevReturnFinalizeReport {
         status: "recorded".to_string(),

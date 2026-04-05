@@ -11,8 +11,14 @@ use tauri::{Emitter, Manager};
 use crate::{
     commands::{DashboardUiState, LauncherUiState},
     core::{
-        bootstrap_for_paths, event_bus::EventBus, hotkey, logging::LoggingSystem,
-        plugin_manager::PluginManager, resolve_app_data_dir, theme::ThemeSystem, AppPaths,
+        bootstrap_for_paths,
+        event_bus::{install_runtime_emitters, EventBus},
+        hotkey,
+        logging::LoggingSystem,
+        plugin_manager::PluginManager,
+        resolve_app_data_dir,
+        theme::ThemeSystem,
+        AppPaths,
     },
     plugins::{launcher::LauncherPlugin, vault::VaultPlugin, AppContext},
 };
@@ -74,6 +80,7 @@ fn setup_application<R: tauri::Runtime>(
     .count();
 
     app.manage(event_bus.clone());
+    install_runtime_emitters(event_bus.clone(), app.handle().clone());
     app.manage(data_store.clone());
     app.manage(DashboardUiState {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -157,6 +164,8 @@ pub fn run_tauri_app() {
             commands::landing_list_planning_items,
             commands::landing_list_unreconciled_items,
             commands::hygiene_list_spec_v0,
+            commands::nota_prayer::nota_approve_prayer,
+            commands::nota_prayer::nota_reject_prayer,
             core::theme::get_theme,
             core::theme::set_theme,
             plugins::launcher::launcher_search,
