@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import "./Dashboard.css";
 import ComputeGraph from "../components/ComputeGraph";
+import type { GraphLayoutMode } from "../components/ComputeGraph";
 import NodeInspector from "../components/NodeInspector";
 import NotaDialog from "../components/NotaDialog";
 import {
@@ -138,6 +139,7 @@ const Dashboard = () => {
   const [lastRefreshedAt, setLastRefreshedAt] = createSignal<string | null>(null);
   const [visibleDepth, setVisibleDepth] = createSignal(4);
   const [selectedNodeId, setSelectedNodeId] = createSignal<string | null>(null);
+  const [graphLayout, setGraphLayout] = createSignal<GraphLayoutMode>("tree");
   const graphStore = createGraphStore();
   const dialogStore = createNotaDialogStore();
 
@@ -407,6 +409,23 @@ const Dashboard = () => {
 
           <div class="board-map__graph-shell">
             <div class="graph-filter-bar" aria-label="Instance depth filter">
+              <button
+                type="button"
+                class={`graph-filter-btn graph-filter-btn--mode ${graphLayout() === "tree" ? "is-active" : ""}`}
+                onClick={() => setGraphLayout("tree")}
+                title="Hierarchy view"
+              >
+                ⊤
+              </button>
+              <button
+                type="button"
+                class={`graph-filter-btn graph-filter-btn--mode ${graphLayout() === "force" ? "is-active" : ""}`}
+                onClick={() => setGraphLayout("force")}
+                title="Force view"
+              >
+                ◎
+              </button>
+              <span class="graph-filter-divider" />
               <span class="graph-filter-label">Depth</span>
               <For each={[1, 2, 3, 4]}>
                 {(depth) => (
@@ -425,6 +444,7 @@ const Dashboard = () => {
               onNodeSelect={handleNodeSelect}
               onNodeAction={handleNodeAction}
               selectedNodeId={selectedNodeId()}
+              layoutMode={graphLayout()}
             />
             <NodeInspector
               node={selectedGraphNode()}

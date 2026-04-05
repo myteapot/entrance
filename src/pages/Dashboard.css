@@ -93,9 +93,7 @@
   border-left: 2px solid #f87171;
 }
 
-.board-node--neutral {
-  /* flat */
-}
+
 
 .board-node__label,
 .board-detail-panel__label {
@@ -182,6 +180,18 @@
 .graph-filter-btn.is-active {
   background: rgba(255, 255, 255, 0.10);
   color: rgba(250, 250, 250, 0.85);
+}
+
+.graph-filter-btn--mode {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.graph-filter-divider {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 2px;
 }
 
 .board-rail {
