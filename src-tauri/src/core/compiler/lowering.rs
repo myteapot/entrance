@@ -39,6 +39,7 @@ pub struct DispatchLineage {
     pub return_target_ref: String,
     pub escalation_target_kind: String,
     pub escalation_target_ref: String,
+    pub target_instance_id: Option<String>,
 }
 
 /// Sandbox configuration derived from packet semantics.
@@ -78,6 +79,14 @@ pub fn lower_dispatch(
     packet: &TypedActionPacket,
     ctx: &LoweringContext,
 ) -> Result<LoweredDispatch, LoweringError> {
+    lower_dispatch_to_instance(packet, ctx, None)
+}
+
+pub fn lower_dispatch_to_instance(
+    packet: &TypedActionPacket,
+    ctx: &LoweringContext,
+    target_instance_id: Option<String>,
+) -> Result<LoweredDispatch, LoweringError> {
     if !is_dispatch_scope_primitive(packet.record().verb) {
         return Err(LoweringError::NotDispatchable);
     }
@@ -96,7 +105,7 @@ pub fn lower_dispatch(
 
     Ok(LoweredDispatch {
         packet: packet.clone(),
-        lineage: resolve_lineage(ctx),
+        lineage: resolve_lineage(ctx, target_instance_id),
         sandbox: resolve_sandbox(packet.semantics().sandbox_requirement, ctx),
         routing: resolve_routing(packet, ctx),
     })
@@ -106,7 +115,7 @@ fn is_dispatch_scope_primitive(primitive: ActionPrimitive) -> bool {
     DISPATCH_SCOPE_PRIMITIVES.contains(&primitive)
 }
 
-fn resolve_lineage(ctx: &LoweringContext) -> DispatchLineage {
+fn resolve_lineage(ctx: &LoweringContext, target_instance_id: Option<String>) -> DispatchLineage {
     let transaction_ref = ctx.transaction_id.to_string();
     let task_ref = ctx.task_id.to_string();
     let lineage_lane = resolve_lineage_lane(ctx);
@@ -119,6 +128,7 @@ fn resolve_lineage(ctx: &LoweringContext) -> DispatchLineage {
         return_target_ref: transaction_ref.clone(),
         escalation_target_kind: "nota_runtime_transaction".to_string(),
         escalation_target_ref: transaction_ref,
+        target_instance_id,
     }
 }
 
@@ -187,7 +197,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        lower_dispatch, DispatchRouting, LoweringContext, LoweringError, DISPATCH_SCOPE_PRIMITIVES,
+        lower_dispatch, lower_dispatch_to_instance, DispatchRouting, LoweringContext,
+        LoweringError, DISPATCH_SCOPE_PRIMITIVES,
     };
     use crate::core::{
         action::{ActionPrimitive, ActionRecord, KnowledgeLayer},
@@ -252,6 +263,7 @@ mod tests {
         assert_eq!(lowered.lineage.child_execution_kind, "forge_task");
         assert_eq!(lowered.lineage.return_target_ref, "11");
         assert_eq!(lowered.lineage.escalation_target_ref, "11");
+        assert_eq!(lowered.lineage.target_instance_id, None);
         assert_eq!(
             lowered.routing,
             DispatchRouting {
@@ -411,5 +423,22 @@ mod tests {
             lower_dispatch(&packet, &context).expect("dispatch should lower while budget remains");
 
         assert_eq!(lowered.packet.record().verb, ActionPrimitive::Dispatch);
+    }
+
+    #[test]
+    fn lower_dispatch_to_target_instance_carries_instance_id() {
+        let _guard = crate::test_env_guard();
+        let packet = compile_packet(ActionPrimitive::Dispatch);
+        let lowered = lower_dispatch_to_instance(
+            &packet,
+            &lowering_context_for_primitive(ActionPrimitive::Dispatch),
+            Some("slot-1".to_string()),
+        )
+        .expect("dispatch should lower successfully for an explicit target instance");
+
+        assert_eq!(
+            lowered.lineage.target_instance_id.as_deref(),
+            Some("slot-1")
+        );
     }
 }

@@ -47,12 +47,20 @@ impl AdmittedDispatch {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AdmissionContext {
+    pub budget_remaining: Option<u32>,
+    pub dedup_key: Option<String>,
+    pub available_instances: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmissionRejectionReason {
     HumanApprovalRequired,
     GateEvidenceNotAccepted,
     WriterNotAuthorized,
     NotDispatchScope,
+    TargetInstanceNotFound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +73,14 @@ pub struct AdmissionRejection {
 pub fn admit_dispatch(
     lowered: LoweredDispatch,
     gate_evidence: Option<&StoredGateEvidence>,
+) -> Result<AdmittedDispatch, AdmissionRejection> {
+    admit_dispatch_with_context(lowered, gate_evidence, None)
+}
+
+pub fn admit_dispatch_with_context(
+    lowered: LoweredDispatch,
+    gate_evidence: Option<&StoredGateEvidence>,
+    context: Option<&AdmissionContext>,
 ) -> Result<AdmittedDispatch, AdmissionRejection> {
     let packet = &lowered.packet;
     let record = packet.record();
@@ -98,6 +114,23 @@ pub fn admit_dispatch(
                 record.actor_role
             ),
         });
+    }
+
+    if let Some(target_instance_id) = lowered.lineage.target_instance_id.as_ref() {
+        if let Some(available_instances) = context.and_then(|ctx| ctx.available_instances.as_ref())
+        {
+            if !available_instances
+                .iter()
+                .any(|instance| instance == target_instance_id)
+            {
+                return Err(AdmissionRejection {
+                    reason: AdmissionRejectionReason::TargetInstanceNotFound,
+                    summary: format!(
+                        "target agent instance `{target_instance_id}` was not found in admission context"
+                    ),
+                });
+            }
+        }
     }
 
     let gate_evidence = if semantics.requires_admission_gate {
@@ -142,14 +175,17 @@ mod tests {
     use chrono::DateTime;
     use serde_json::{json, Value};
 
-    use super::{admit_dispatch, AdmissionRejection, AdmissionRejectionReason, AdmittedDispatch};
+    use super::{
+        admit_dispatch, admit_dispatch_with_context, AdmissionContext, AdmissionRejection,
+        AdmissionRejectionReason, AdmittedDispatch,
+    };
     use crate::core::{
         action::{ActionPrimitive, ActionRecord, KnowledgeLayer},
         compiler::{
             evidence::{EvidenceKind, EvidenceVerdict, GateEvidenceRef, StoredGateEvidence},
             lowering::{
-                lower_dispatch, DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext,
-                SandboxConfig, DISPATCH_SCOPE_PRIMITIVES,
+                lower_dispatch, lower_dispatch_to_instance, DispatchLineage, DispatchRouting,
+                LoweredDispatch, LoweringContext, SandboxConfig, DISPATCH_SCOPE_PRIMITIVES,
             },
             packet::TypedActionPacket,
             registry::lookup_primitive,
@@ -212,6 +248,7 @@ mod tests {
                 return_target_ref: "11".to_string(),
                 escalation_target_kind: "nota_runtime_transaction".to_string(),
                 escalation_target_ref: "11".to_string(),
+                target_instance_id: None,
             },
             sandbox: SandboxConfig {
                 requirement: SandboxRequirement::None,
@@ -419,5 +456,66 @@ mod tests {
         assert!(rejection
             .summary
             .contains("requires gate evidence but none was provided"));
+    }
+
+    #[test]
+    fn cross_agent_dispatch_with_valid_instance() {
+        let _guard = crate::test_env_guard();
+        let packet = compile_packet(ActionPrimitive::Dispatch);
+        let lowered = lower_dispatch_to_instance(
+            &packet,
+            &lowering_context_for_primitive(ActionPrimitive::Dispatch),
+            Some("slot-1".to_string()),
+        )
+        .expect("dispatch should lower for an explicit target instance");
+        let context = AdmissionContext {
+            budget_remaining: None,
+            dedup_key: None,
+            available_instances: Some(vec!["slot-1".to_string(), "slot-2".to_string()]),
+        };
+
+        let admitted = admit_dispatch_with_context(lowered, None, Some(&context))
+            .expect("listed target instance should admit successfully");
+
+        assert_eq!(
+            admitted.lineage().target_instance_id.as_deref(),
+            Some("slot-1")
+        );
+    }
+
+    #[test]
+    fn cross_agent_dispatch_with_invalid_instance() {
+        let _guard = crate::test_env_guard();
+        let packet = compile_packet(ActionPrimitive::Dispatch);
+        let lowered = lower_dispatch_to_instance(
+            &packet,
+            &lowering_context_for_primitive(ActionPrimitive::Dispatch),
+            Some("slot-3".to_string()),
+        )
+        .expect("dispatch should lower even before admission validation");
+        let context = AdmissionContext {
+            budget_remaining: None,
+            dedup_key: None,
+            available_instances: Some(vec!["slot-1".to_string(), "slot-2".to_string()]),
+        };
+
+        assert_eq!(
+            admit_dispatch_with_context(lowered, None, Some(&context)).unwrap_err(),
+            AdmissionRejection {
+                reason: AdmissionRejectionReason::TargetInstanceNotFound,
+                summary: "target agent instance `slot-3` was not found in admission context"
+                    .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn backward_compat_no_instance_id() {
+        let _guard = crate::test_env_guard();
+        let lowered = lowered_dispatch(ActionPrimitive::Dispatch);
+        let admitted = admit_dispatch_with_context(lowered, None, None)
+            .expect("dispatch without an explicit target instance should still admit");
+
+        assert_eq!(admitted.lineage().target_instance_id, None);
     }
 }

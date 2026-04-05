@@ -43,6 +43,7 @@ pub struct ReturnRoute {
     pub target_ref: String,
     pub source_lineage_ref: String,
     pub terminal_status: TerminalStatus,
+    pub source_instance_id: Option<String>,
 }
 
 /// Routing constraint violation.
@@ -76,6 +77,7 @@ pub fn resolve_return_route(
         target_ref: target_ref.clone(),
         source_lineage_ref: lineage.lineage_ref.clone(),
         terminal_status,
+        source_instance_id: lineage.target_instance_id.clone(),
     })
 }
 
@@ -107,7 +109,9 @@ mod tests {
     use crate::core::{
         action::{ActionPrimitive, ActionRecord, KnowledgeLayer},
         compiler::{
-            admission::{admit_dispatch, AdmittedDispatch},
+            admission::{
+                admit_dispatch, admit_dispatch_with_context, AdmissionContext, AdmittedDispatch,
+            },
             lowering::{DispatchLineage, DispatchRouting, LoweredDispatch, SandboxConfig},
             packet::TypedActionPacket,
             registry::lookup_primitive,
@@ -136,6 +140,24 @@ mod tests {
         escalation_target_kind: &str,
         escalation_target_ref: &str,
     ) -> AdmittedDispatch {
+        admitted_dispatch_with_instance(
+            constraint,
+            return_target_kind,
+            return_target_ref,
+            escalation_target_kind,
+            escalation_target_ref,
+            None,
+        )
+    }
+
+    fn admitted_dispatch_with_instance(
+        constraint: RoutingConstraint,
+        return_target_kind: &str,
+        return_target_ref: &str,
+        escalation_target_kind: &str,
+        escalation_target_ref: &str,
+        target_instance_id: Option<&str>,
+    ) -> AdmittedDispatch {
         let lowered = LoweredDispatch {
             packet: compile_packet(ActionPrimitive::Dispatch),
             lineage: DispatchLineage {
@@ -146,6 +168,7 @@ mod tests {
                 return_target_ref: return_target_ref.to_string(),
                 escalation_target_kind: escalation_target_kind.to_string(),
                 escalation_target_ref: escalation_target_ref.to_string(),
+                target_instance_id: target_instance_id.map(str::to_string),
             },
             sandbox: SandboxConfig {
                 requirement: SandboxRequirement::None,
@@ -158,11 +181,24 @@ mod tests {
             },
         };
 
-        admit_dispatch(lowered, None).expect("synthetic lowered dispatch should admit")
+        match target_instance_id {
+            Some(target_instance_id) => {
+                let context = AdmissionContext {
+                    budget_remaining: None,
+                    dedup_key: None,
+                    available_instances: Some(vec![target_instance_id.to_string()]),
+                };
+
+                admit_dispatch_with_context(lowered, None, Some(&context))
+                    .expect("synthetic lowered dispatch should admit for a known instance")
+            }
+            None => admit_dispatch(lowered, None).expect("synthetic lowered dispatch should admit"),
+        }
     }
 
     #[test]
     fn done_routes_to_return_target() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted_dispatch(
             RoutingConstraint::UpwardOnly,
             "nota_runtime_transaction",
@@ -178,10 +214,12 @@ mod tests {
         assert_eq!(route.target_kind, "nota_runtime_transaction");
         assert_eq!(route.target_ref, "11");
         assert_eq!(route.terminal_status, TerminalStatus::Done);
+        assert_eq!(route.source_instance_id, None);
     }
 
     #[test]
     fn blocked_routes_to_escalation_target() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted_dispatch(
             RoutingConstraint::UpwardOnly,
             "nota_runtime_transaction",
@@ -201,6 +239,7 @@ mod tests {
 
     #[test]
     fn failed_routes_to_escalation_target() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted_dispatch(
             RoutingConstraint::UpwardOnly,
             "nota_runtime_transaction",
@@ -220,6 +259,7 @@ mod tests {
 
     #[test]
     fn cancelled_routes_to_escalation_target() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted_dispatch(
             RoutingConstraint::UpwardOnly,
             "nota_runtime_transaction",
@@ -239,6 +279,7 @@ mod tests {
 
     #[test]
     fn return_route_preserves_lineage_ref() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted_dispatch(
             RoutingConstraint::UpwardOnly,
             "nota_runtime_transaction",
@@ -255,6 +296,7 @@ mod tests {
 
     #[test]
     fn local_constraint_blocks_escalation() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted_dispatch(
             RoutingConstraint::Local,
             "nota_runtime_transaction",
@@ -271,6 +313,7 @@ mod tests {
 
     #[test]
     fn upward_only_allows_both_return_and_escalation() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted_dispatch(
             RoutingConstraint::UpwardOnly,
             "nota_runtime_transaction",
@@ -290,6 +333,7 @@ mod tests {
 
     #[test]
     fn terminal_status_from_task_status_parsing() {
+        let _guard = crate::test_env_guard();
         assert_eq!(
             TerminalStatus::from_task_status("Done"),
             Some(TerminalStatus::Done)
@@ -312,6 +356,7 @@ mod tests {
 
     #[test]
     fn upward_only_return_to_local_target_is_rejected() {
+        let _guard = crate::test_env_guard();
         let admitted = admitted_dispatch(
             RoutingConstraint::UpwardOnly,
             "forge_task",
@@ -324,5 +369,23 @@ mod tests {
             .expect_err("upward-only should reject local return targets");
 
         assert_eq!(violation, RoutingViolation::UpwardReturnToLocal);
+    }
+
+    #[test]
+    fn cross_agent_dispatch_route_carries_source_instance_id() {
+        let _guard = crate::test_env_guard();
+        let admitted = admitted_dispatch_with_instance(
+            RoutingConstraint::UpwardOnly,
+            "nota_runtime_transaction",
+            "11",
+            "human",
+            "review",
+            Some("slot-1"),
+        );
+
+        let route = resolve_return_route(&admitted, TerminalStatus::Done)
+            .expect("done routes should resolve for an explicit target instance");
+
+        assert_eq!(route.source_instance_id.as_deref(), Some("slot-1"));
     }
 }

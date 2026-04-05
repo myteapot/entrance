@@ -1506,6 +1506,7 @@ fn reconstruct_terminal_admitted_dispatch(
             return_target_ref: allocation.return_target_ref.clone(),
             escalation_target_kind: allocation.escalation_target_kind.clone(),
             escalation_target_ref: allocation.escalation_target_ref.clone(),
+            target_instance_id: None,
         },
         sandbox: SandboxConfig {
             requirement: sandbox_requirement,
@@ -5350,7 +5351,9 @@ mod tests {
         bootstrap_for_paths,
         compiler::{
             admission::admit_dispatch,
-            lowering::{DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext, SandboxConfig},
+            lowering::{
+                DispatchLineage, DispatchRouting, LoweredDispatch, LoweringContext, SandboxConfig,
+            },
             routing::{resolve_return_route, ReturnBoundary, TerminalStatus},
         },
         config_store::{render_config, EntranceConfig},
@@ -6577,6 +6580,7 @@ mod tests {
                     return_target_ref: allocation.return_target_ref.clone(),
                     escalation_target_kind: allocation.escalation_target_kind.clone(),
                     escalation_target_ref: allocation.escalation_target_ref.clone(),
+                    target_instance_id: None,
                 },
                 sandbox: SandboxConfig {
                     requirement: sandbox_requirement,
