@@ -100,7 +100,7 @@
 
 .chat-feed__item {
   padding: 16px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.03);
   display: grid;
@@ -171,8 +171,8 @@
 
 .front-door-bubble,
 .front-door-import-receipt {
-  padding: 18px;
-  border-radius: var(--radius-2xl);
+  padding: 14px;
+  border-radius: var(--radius-lg);
   border: 1px solid rgba(255, 255, 255, 0.06);
   display: grid;
   gap: 8px;
@@ -311,7 +311,7 @@
 }
 
 .front-door-progress__bar {
-  height: 10px;
+  height: 6px;
   border-radius: 999px;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.06);
