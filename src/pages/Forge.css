@@ -1,5 +1,5 @@
 .forge-page {
-  padding: var(--space-6) var(--space-8);
+  padding: var(--space-4) var(--space-5);
   height: 100vh;
   box-sizing: border-box;
   display: flex;
@@ -10,12 +10,12 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: var(--space-6);
+  margin-bottom: var(--space-3);
   flex-shrink: 0;
 }
 
 .forge-title {
-  font-size: var(--text-2xl);
+  font-size: var(--text-xl);
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: var(--space-1);
@@ -29,13 +29,13 @@
 .forge-layout {
   display: flex;
   flex: 1;
-  gap: var(--space-6);
+  gap: var(--space-4);
   min-height: 0;
 }
 
 .auto-dispatch-card {
-  margin-bottom: var(--space-6);
-  padding: var(--space-5);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(129, 140, 248, 0.18);
   background:
@@ -108,7 +108,7 @@
 }
 
 .forge-sidebar {
-  width: 320px;
+  width: 280px;
   background-color: var(--surface-2);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
@@ -127,9 +127,9 @@
 }
 
 .task-item {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   background-color: transparent;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background-color 0.2s ease;
   display: flex;

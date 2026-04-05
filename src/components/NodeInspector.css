@@ -8,19 +8,19 @@
   right: 0;
   top: 0;
   bottom: 0;
-  width: 320px;
+  width: 260px;
   max-width: 100%;
   background: rgba(17, 17, 21, 0.96);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-left: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 20px;
+  padding: 14px;
   overflow-y: auto;
   z-index: 10;
-  animation: inspector-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: inspector-enter 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 @keyframes inspector-enter {

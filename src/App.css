@@ -242,9 +242,9 @@
 .page__hero--dashboard::after {
   content: "";
   position: absolute;
-  inset: auto -12% -36% 22%;
-  height: 220px;
-  background: radial-gradient(circle, rgba(129, 140, 248, 0.10), transparent 68%);
+  inset: auto -8% -20% 28%;
+  height: 120px;
+  background: radial-gradient(circle, rgba(129, 140, 248, 0.06), transparent 68%);
   pointer-events: none;
 }
 
