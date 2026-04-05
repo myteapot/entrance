@@ -12,7 +12,7 @@ use rusqlite::OpenFlags;
 use rusqlite::{
     params, types::Type, Connection, OptionalExtension, Transaction, TransactionBehavior,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::core::compiler::{
     evidence::{EvidenceKind, EvidenceVerdict, StoredAttemptReceipt, StoredGateEvidence},
@@ -678,7 +678,7 @@ pub struct StoredRepairLaneItem {
     pub resolved_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StoredAgentInstance {
     pub id: i64,
     pub role: String,

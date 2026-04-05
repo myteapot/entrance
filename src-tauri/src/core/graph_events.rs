@@ -29,6 +29,9 @@ pub enum GraphUpdateEvent {
 #[derive(Debug, Clone, Serialize)]
 pub enum GraphNodeKind {
     Nota,
+    Arch,
+    Dev,
+    Agent,
     Allocation,
     Receipt,
     Checkpoint,

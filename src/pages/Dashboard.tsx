@@ -1,9 +1,15 @@
 import { A } from "@solidjs/router";
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import "./Dashboard.css";
 import ComputeGraph from "../components/ComputeGraph";
 import NotaDialog from "../components/NotaDialog";
-import { listenToGraphUpdates, listenToNotaDialogs } from "../features/dashboard/graphEvents";
+import {
+  listenToGraphUpdates,
+  listenToNotaDialogs,
+  listenToSystemPulse,
+  type SystemPulseEvent,
+} from "../features/dashboard/graphEvents";
 import { createGraphStore } from "../features/dashboard/graphStore";
 import { createNotaDialogStore } from "../features/dashboard/notaDialogStore";
 import { listenToForgeTaskStatus } from "../features/forge/taskFeed";
@@ -19,6 +25,14 @@ import {
 } from "../features/nota/overview";
 
 const DASHBOARD_REFRESH_MS = 15_000;
+
+interface StoredAgentInstance {
+  id: number;
+  role: string;
+  parent_instance_id: number | null;
+  status: string;
+  display_name: string;
+}
 
 const formatTimestamp = (value: string) =>
   new Date(value).toLocaleString([], {
@@ -98,14 +112,46 @@ const transactionTone = (status: string) => {
   return "active";
 };
 
+const instanceStatusToTone = (status: string) => {
+  switch (status.trim().toLowerCase()) {
+    case "busy":
+      return "active";
+    case "idle":
+      return "steady";
+    case "stale":
+      return "caution";
+    case "stopped":
+      return "archived";
+    default:
+      return "steady";
+  }
+};
+
+const instanceNodeId = (id: number) => `instance-${id}`;
+
 const Dashboard = () => {
   const [overview, setOverview] = createSignal<NotaRuntimeOverview | null>(null);
   const [status, setStatus] = createSignal<NotaRuntimeStatus | null>(null);
   const [isLoading, setIsLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = createSignal<string | null>(null);
+  const [visibleDepth, setVisibleDepth] = createSignal(4);
   const graphStore = createGraphStore();
   const dialogStore = createNotaDialogStore();
+
+  const applySystemPulse = (pulse: SystemPulseEvent) => {
+    const notaTone =
+      pulse.health === "Green"
+        ? "nota"
+        : pulse.health === "Yellow"
+          ? "warming"
+          : "caution";
+    graphStore.updateNodeTone(
+      "nota",
+      notaTone,
+      `${pulse.active_instances} active, ${pulse.stale_instances} stale, ${pulse.stopped_instances} stopped`,
+    );
+  };
 
   const loadDashboard = async () => {
     try {
@@ -140,8 +186,45 @@ const Dashboard = () => {
     }
   };
 
+  const syncInstanceGraph = async () => {
+    try {
+      const instances =
+        (await invoke<StoredAgentInstance[] | null>("list_agent_instances")) ?? [];
+      for (const instance of instances) {
+        graphStore.addNode(
+          {
+            id: instanceNodeId(instance.id),
+            kind: instance.role,
+            label: instance.display_name,
+            detail: instance.status,
+            tone: instanceStatusToTone(instance.status),
+          },
+          instance.parent_instance_id !== null
+            ? instanceNodeId(instance.parent_instance_id)
+            : undefined,
+        );
+      }
+    } catch (loadError) {
+      console.warn("Failed to fetch agent instances for compute graph", loadError);
+    }
+  };
+
+  const syncSystemPulse = async () => {
+    try {
+      const pulse = await invoke<SystemPulseEvent | null>("get_system_pulse");
+      if (pulse) {
+        applySystemPulse(pulse);
+      }
+    } catch (loadError) {
+      console.warn("Failed to fetch initial system pulse", loadError);
+    }
+  };
+
   onMount(() => {
+    graphStore.setVisibleDepth(visibleDepth());
     void loadDashboard();
+    void syncInstanceGraph();
+    void syncSystemPulse();
 
     const timer = window.setInterval(() => {
       void loadDashboard();
@@ -151,6 +234,7 @@ const Dashboard = () => {
 
     let unlistenGraph: (() => void) | undefined;
     let unlistenDialog: (() => void) | undefined;
+    let unlistenPulse: (() => void) | undefined;
 
     void listenToGraphUpdates((event) => {
       graphStore.handleGraphEvent(event);
@@ -162,6 +246,12 @@ const Dashboard = () => {
       dialogStore.push(event);
     }).then((unlisten) => {
       unlistenDialog = unlisten;
+    });
+
+    void listenToSystemPulse((pulse) => {
+      applySystemPulse(pulse);
+    }).then((unlisten) => {
+      unlistenPulse = unlisten;
     });
 
     void (async () => {
@@ -177,7 +267,12 @@ const Dashboard = () => {
     onCleanup(() => {
       unlistenGraph?.();
       unlistenDialog?.();
+      unlistenPulse?.();
     });
+  });
+
+  createEffect(() => {
+    graphStore.setVisibleDepth(visibleDepth());
   });
 
   const currentCheckpoint = createMemo(
@@ -289,7 +384,23 @@ const Dashboard = () => {
             </div>
           </div>
 
-          <ComputeGraph store={graphStore} />
+          <div class="board-map__graph-shell">
+            <div class="graph-filter-bar" aria-label="Instance depth filter">
+              <span class="graph-filter-label">Depth</span>
+              <For each={[1, 2, 3, 4]}>
+                {(depth) => (
+                  <button
+                    type="button"
+                    class={`graph-filter-btn ${visibleDepth() >= depth ? "is-active" : ""}`}
+                    onClick={() => setVisibleDepth(depth)}
+                  >
+                    {depth}
+                  </button>
+                )}
+              </For>
+            </div>
+            <ComputeGraph store={graphStore} />
+          </div>
 
           <div class="board-map__footer">
             <p>{frontDoor()?.next_action_detail ?? "Waiting for runtime guidance..."}</p>

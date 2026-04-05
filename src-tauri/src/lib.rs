@@ -166,6 +166,8 @@ pub fn run_tauri_app() {
         .invoke_handler(tauri::generate_handler![
             commands::launcher_hotkey,
             commands::dashboard_summary,
+            commands::list_agent_instances,
+            commands::get_system_pulse,
             commands::nota_runtime_overview,
             commands::nota_runtime_status,
             commands::landing_import_snapshot,

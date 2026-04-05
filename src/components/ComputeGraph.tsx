@@ -41,10 +41,23 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     y: (screenY - height / 2 - panY) / zoom,
   });
 
+  const nodeRadius = (kind: string) => {
+    if (kind === "nota") return 22;
+    if (kind === "arch") return 18;
+    if (kind === "dev") return 14;
+    if (kind === "agent") return 10;
+    if (kind === "allocation") return 12;
+    if (kind === "receipt") return 8;
+    if (kind === "checkpoint") return 14;
+    if (kind === "supervision") return 10;
+    if (kind === "dialog") return 12;
+    return 14;
+  };
+
   const findNodeAt = (graphX: number, graphY: number): SimNode | null => {
     for (let index = currentNodes.length - 1; index >= 0; index -= 1) {
       const node = currentNodes[index];
-      const radius = node.kind === "nota" ? 24 : 14;
+      const radius = nodeRadius(node.kind);
       const dx = (node.x ?? 0) - graphX;
       const dy = (node.y ?? 0) - graphY;
       if (dx * dx + dy * dy <= radius * radius) {
@@ -120,13 +133,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     }
 
     for (const node of currentNodes) {
-      let radius = 14;
-      if (node.kind === "nota") radius = 22;
-      else if (node.kind === "allocation") radius = 12;
-      else if (node.kind === "receipt") radius = 8;
-      else if (node.kind === "checkpoint") radius = 14;
-      else if (node.kind === "supervision") radius = 10;
-      else if (node.kind === "dialog") radius = 12;
+      let radius = nodeRadius(node.kind);
 
       const isHovered = hoveredNodeId === node.id;
       if (isHovered) {
@@ -329,8 +336,11 @@ const ComputeGraph = (props: ComputeGraphProps) => {
   });
 
   createEffect(() => {
-    const nodes = props.store.state.nodes.slice();
-    const edges = props.store.state.edges.slice();
+    const nodes = props.store.state.nodes.filter((node) => !node.hiddenByFilter);
+    const visibleNodeIds = new Set(nodes.map((node) => node.id));
+    const edges = props.store.state.edges.filter(
+      (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+    );
     simulation.update(nodes, edges);
   });
 

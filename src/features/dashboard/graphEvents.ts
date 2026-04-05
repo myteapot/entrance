@@ -41,3 +41,27 @@ export const listenToNotaDialogs = (callback: (event: NotaDialogEvent) => void) 
       // Ignore malformed event payloads until backend emitters are fully wired.
     }
   });
+
+export interface SystemPulseEvent {
+  health: "Green" | "Yellow" | "Red";
+  agent_tier: string;
+  active_instances: number;
+  stale_instances: number;
+  stopped_instances: number;
+  active_tasks: number;
+  stale_tasks: number;
+  pending_approvals?: number;
+  pending_work?: number;
+  total_instances?: number;
+  tick_interval_secs?: number;
+  stale_threshold_multiplier?: number;
+}
+
+export const listenToSystemPulse = (callback: (event: SystemPulseEvent) => void) =>
+  listen<string>("system:pulse", (event) => {
+    try {
+      callback(JSON.parse(event.payload) as SystemPulseEvent);
+    } catch {
+      // Ignore malformed event payloads until backend emitters are fully wired.
+    }
+  });

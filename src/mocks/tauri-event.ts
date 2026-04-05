@@ -65,6 +65,41 @@ const MOCK_GRAPH_NODES = [
 
 let graphEmitIndex = 0;
 let graphInterval: ReturnType<typeof setInterval> | null = null;
+let systemPulseIndex = 0;
+let systemPulseInterval: ReturnType<typeof setInterval> | null = null;
+
+const MOCK_SYSTEM_PULSES = [
+  {
+    timestamp: new Date().toISOString(),
+    agent_tier: "FullNota",
+    active_instances: 3,
+    stale_instances: 0,
+    stopped_instances: 0,
+    active_tasks: 1,
+    stale_tasks: 0,
+    health: "Green",
+  },
+  {
+    timestamp: new Date().toISOString(),
+    agent_tier: "FullNota",
+    active_instances: 3,
+    stale_instances: 1,
+    stopped_instances: 0,
+    active_tasks: 1,
+    stale_tasks: 0,
+    health: "Yellow",
+  },
+  {
+    timestamp: new Date().toISOString(),
+    agent_tier: "FullNota",
+    active_instances: 2,
+    stale_instances: 1,
+    stopped_instances: 1,
+    active_tasks: 0,
+    stale_tasks: 1,
+    health: "Red",
+  },
+];
 
 function startGraphEmitter() {
   if (graphInterval) return;
@@ -82,6 +117,24 @@ function startGraphEmitter() {
   }, 5000);
 }
 
+function startSystemPulseEmitter() {
+  if (systemPulseInterval) return;
+  systemPulseInterval = setInterval(() => {
+    const eventSet = listeners.get("system:pulse");
+    if (!eventSet || eventSet.size === 0) return;
+
+    const pulse = {
+      ...MOCK_SYSTEM_PULSES[systemPulseIndex % MOCK_SYSTEM_PULSES.length]!,
+      timestamp: new Date().toISOString(),
+    };
+    const payload = JSON.stringify(pulse);
+    for (const cb of eventSet) {
+      cb({ payload, event: "system:pulse", id: nextEventId++ });
+    }
+    systemPulseIndex++;
+  }, 8000);
+}
+
 export async function listen<T>(
   event: string,
   handler: EventCallback<T>,
@@ -95,6 +148,9 @@ export async function listen<T>(
   // Start graph emitter when someone listens to graph:update
   if (event === "graph:update") {
     startGraphEmitter();
+  }
+  if (event === "system:pulse") {
+    startSystemPulseEmitter();
   }
 
   console.debug(`[mock] listen("${event}") registered`);

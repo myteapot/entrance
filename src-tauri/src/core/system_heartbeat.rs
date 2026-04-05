@@ -167,7 +167,7 @@ fn should_notify_human(pulse: &SystemPulse, config: &HeartbeatConfig) -> bool {
     }
 }
 
-fn compute_pulse(data_store: &DataStore, config: &HeartbeatConfig) -> Result<SystemPulse> {
+pub fn compute_pulse(data_store: &DataStore, config: &HeartbeatConfig) -> Result<SystemPulse> {
     let now = Utc::now();
     let stale_cutoff = (now - ChronoDuration::from_std(config.stale_duration())?).to_rfc3339();
 

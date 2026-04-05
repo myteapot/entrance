@@ -8,12 +8,17 @@ export interface GraphNode {
   label: string;
   detail: string;
   tone: string;
+  baseTone: string;
   x: number;
   y: number;
   vx: number;
   vy: number;
   createdAt: number;
   archivedAt: number | null;
+  parentId: string | null;
+  instanceDepth: number | null;
+  hiddenByFilter: boolean;
+  isArchived: boolean;
   fx?: number | null;
   fy?: number | null;
 }
@@ -31,6 +36,24 @@ export interface GraphState {
 
 const normalizeNodeKind = (kind: string) => kind.trim().toLowerCase();
 
+const instanceDepthForKind = (kind: string): number | null => {
+  switch (normalizeNodeKind(kind)) {
+    case "nota":
+      return 1;
+    case "arch":
+      return 2;
+    case "dev":
+      return 3;
+    case "agent":
+      return 4;
+    default:
+      return null;
+  }
+};
+
+const resolveVisibleTone = (node: Pick<GraphNode, "baseTone" | "hiddenByFilter" | "isArchived">) =>
+  node.hiddenByFilter || node.isArchived ? "archived" : node.baseTone;
+
 const hasEdge = (edges: GraphEdge[], edge: GraphEdge) =>
   edges.some(
     (candidate) =>
@@ -40,6 +63,7 @@ const hasEdge = (edges: GraphEdge[], edge: GraphEdge) =>
   );
 
 export function createGraphStore() {
+  let visibleDepth = 4;
   const [state, setState] = createStore<GraphState>({
     nodes: [
       {
@@ -48,12 +72,17 @@ export function createGraphStore() {
         label: "NOTA",
         detail: "Core runtime",
         tone: "nota",
+        baseTone: "nota",
         x: 0,
         y: 0,
         vx: 0,
         vy: 0,
         createdAt: Date.now(),
         archivedAt: null,
+        parentId: null,
+        instanceDepth: null,
+        hiddenByFilter: false,
+        isArchived: false,
         fx: 0,
         fy: 0,
       },
@@ -62,18 +91,42 @@ export function createGraphStore() {
   });
 
   const addNode = (
-    node: Omit<GraphNode, "x" | "y" | "vx" | "vy" | "createdAt" | "archivedAt">,
+    node: Omit<
+      GraphNode,
+      | "x"
+      | "y"
+      | "vx"
+      | "vy"
+      | "createdAt"
+      | "archivedAt"
+      | "baseTone"
+      | "parentId"
+      | "instanceDepth"
+      | "hiddenByFilter"
+      | "isArchived"
+    >,
     parentId?: string,
   ) => {
     setState(
       produce((graph) => {
         const normalizedKind = normalizeNodeKind(node.kind);
+        const nextInstanceDepth = instanceDepthForKind(normalizedKind);
+        const hiddenByFilter =
+          nextInstanceDepth !== null && nextInstanceDepth > visibleDepth;
         const existingNode = graph.nodes.find((candidate) => candidate.id === node.id);
         if (existingNode) {
           existingNode.kind = normalizedKind;
           existingNode.label = node.label;
           existingNode.detail = node.detail;
-          existingNode.tone = node.tone;
+          existingNode.baseTone = node.tone;
+          existingNode.parentId = parentId ?? existingNode.parentId;
+          existingNode.instanceDepth = nextInstanceDepth;
+          existingNode.hiddenByFilter = hiddenByFilter;
+          if (node.tone !== "archived") {
+            existingNode.isArchived = false;
+            existingNode.archivedAt = null;
+          }
+          existingNode.tone = resolveVisibleTone(existingNode);
         } else {
           const parent = parentId
             ? graph.nodes.find((candidate) => candidate.id === parentId)
@@ -83,12 +136,18 @@ export function createGraphStore() {
           graph.nodes.push({
             ...node,
             kind: normalizedKind,
+            tone: hiddenByFilter ? "archived" : node.tone,
+            baseTone: node.tone,
             x: (parent?.x ?? 0) + Math.cos(angle) * distance,
             y: (parent?.y ?? 0) + Math.sin(angle) * distance,
             vx: 0,
             vy: 0,
             createdAt: Date.now(),
             archivedAt: null,
+            parentId: parentId ?? null,
+            instanceDepth: nextInstanceDepth,
+            hiddenByFilter,
+            isArchived: false,
           });
         }
 
@@ -110,7 +169,8 @@ export function createGraphStore() {
           return;
         }
 
-        node.tone = tone;
+        node.baseTone = tone;
+        node.tone = resolveVisibleTone(node);
         if (detail !== undefined) {
           node.detail = detail;
         }
@@ -126,6 +186,7 @@ export function createGraphStore() {
           return;
         }
 
+        node.isArchived = true;
         node.tone = "archived";
         node.archivedAt = Date.now();
       }),
@@ -148,13 +209,38 @@ export function createGraphStore() {
       produce((graph) => {
         const deadIds = new Set(
           graph.nodes
-            .filter((node) => node.archivedAt !== null && node.archivedAt < cutoff)
+            .filter(
+              (node) =>
+                node.isArchived &&
+                !node.hiddenByFilter &&
+                node.archivedAt !== null &&
+                node.archivedAt < cutoff,
+            )
             .map((node) => node.id),
         );
         graph.nodes = graph.nodes.filter((node) => !deadIds.has(node.id));
         graph.edges = graph.edges.filter(
           (edge) => !deadIds.has(edge.source) && !deadIds.has(edge.target),
         );
+      }),
+    );
+  };
+
+  const setVisibleDepth = (nextVisibleDepth: number) => {
+    visibleDepth = nextVisibleDepth;
+    setState(
+      produce((graph) => {
+        for (const node of graph.nodes) {
+          if (node.instanceDepth === null) {
+            continue;
+          }
+
+          node.hiddenByFilter = node.instanceDepth > visibleDepth;
+          if (!node.hiddenByFilter && !node.isArchived) {
+            node.archivedAt = null;
+          }
+          node.tone = resolveVisibleTone(node);
+        }
       }),
     );
   };
@@ -204,6 +290,7 @@ export function createGraphStore() {
     archiveNode,
     addEdge,
     pruneArchived,
+    setVisibleDepth,
     handleGraphEvent,
   };
 }

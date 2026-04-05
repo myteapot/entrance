@@ -7,7 +7,7 @@ pub mod nota_prayer;
 
 use crate::core::{
     cold_docs_runtime::{export_cold_docs_to_repo, NotaColdDocExportReport},
-    data_store::{DataStore, StoredSourceIngestRun},
+    data_store::{DataStore, StoredAgentInstance, StoredSourceIngestRun},
     hygiene::{list_spec_hygiene_v0, SpecHygieneReport},
     invariant_runtime::refresh_runtime_invariants,
     landing::{
@@ -24,6 +24,7 @@ use crate::core::{
         ProjectionTruthRevision, HOT_ROOT_PROJECTION_CLASS, OPTIONAL_PROJECTION_POLICY,
         ORACLE_PROJECTION_CLASS, REQUIRED_PROJECTION_POLICY,
     },
+    system_heartbeat::{compute_pulse, HeartbeatConfig, SystemPulse},
     StartupState,
 };
 
@@ -140,6 +141,22 @@ pub(crate) fn dashboard_summary(
         mcp_config_count: mcp_configs.len(),
         enabled_mcp_count: mcp_configs.iter().filter(|config| config.enabled).count(),
     })
+}
+
+#[tauri::command]
+pub(crate) fn list_agent_instances(
+    data_store: tauri::State<'_, DataStore>,
+) -> Result<Vec<StoredAgentInstance>, String> {
+    data_store
+        .list_agent_instances()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn get_system_pulse(
+    data_store: tauri::State<'_, DataStore>,
+) -> Result<SystemPulse, String> {
+    compute_pulse(&data_store, &HeartbeatConfig::default()).map_err(|error| error.to_string())
 }
 
 pub(crate) fn write_hot_root_projection(

@@ -5,7 +5,10 @@ use serde_json;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::broadcast;
 
-use crate::core::graph_events::{GraphUpdateEvent, NotaDialogEvent};
+use crate::core::{
+    data_store::StoredAgentInstance,
+    graph_events::{GraphNodeKind, GraphUpdateEvent, NotaDialogEvent},
+};
 
 #[derive(Debug, Clone)]
 pub struct EventPayload {
@@ -41,9 +44,15 @@ impl EventBus {
     }
 
     pub fn publish(&self, topic: impl Into<String>, payload: impl Into<String>) -> Result<usize> {
+        let topic = topic.into();
+        let payload = payload.into();
+        if let Some(graph_event) = graph_update_for_instance_event(&topic, &payload) {
+            emit_graph_update_runtime(&graph_event);
+        }
+
         let event = EventPayload {
-            topic: topic.into(),
-            payload: payload.into(),
+            topic,
+            payload,
         };
         // ignore SendError if no receivers are currently active
         let count = self.sender.send(event).unwrap_or(0);
@@ -106,6 +115,66 @@ pub fn emit_nota_dialog_runtime(event: &NotaDialogEvent) {
     }
 }
 
+fn graph_update_for_instance_event(topic: &str, payload: &str) -> Option<GraphUpdateEvent> {
+    match topic {
+        "instance:created" => {
+            let instance = serde_json::from_str::<StoredAgentInstance>(payload).ok()?;
+            Some(GraphUpdateEvent::NodeCreated {
+                id: format!("instance-{}", instance.id),
+                node_kind: graph_node_kind_for_instance(&instance.role),
+                label: instance.display_name,
+                parent_id: instance
+                    .parent_instance_id
+                    .map(|parent_id| format!("instance-{parent_id}")),
+                detail: instance.status.clone(),
+                tone: graph_tone_for_instance_status(&instance.status).to_string(),
+            })
+        }
+        "instance:stopped" => {
+            let id = serde_json::from_str::<i64>(payload).ok()?;
+            Some(GraphUpdateEvent::NodeArchived {
+                id: format!("instance-{id}"),
+            })
+        }
+        "instance:busy" => {
+            let id = serde_json::from_str::<i64>(payload).ok()?;
+            Some(GraphUpdateEvent::NodeStateChanged {
+                id: format!("instance-{id}"),
+                tone: "active".to_string(),
+                detail: "Busy".to_string(),
+            })
+        }
+        "instance:idle" => {
+            let id = serde_json::from_str::<i64>(payload).ok()?;
+            Some(GraphUpdateEvent::NodeStateChanged {
+                id: format!("instance-{id}"),
+                tone: "steady".to_string(),
+                detail: "Idle".to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn graph_node_kind_for_instance(role: &str) -> GraphNodeKind {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "nota" => GraphNodeKind::Nota,
+        "arch" => GraphNodeKind::Arch,
+        "dev" => GraphNodeKind::Dev,
+        _ => GraphNodeKind::Agent,
+    }
+}
+
+fn graph_tone_for_instance_status(status: &str) -> &'static str {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "busy" => "active",
+        "idle" => "steady",
+        "stale" => "caution",
+        "stopped" => "archived",
+        _ => "steady",
+    }
+}
+
 /// Helper to match topics with wildcards (e.g., "forge:*")
 pub fn match_topic(pattern: &str, topic: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix('*') {
@@ -118,6 +187,7 @@ pub fn match_topic(pattern: &str, topic: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::data_store::StoredAgentInstance;
 
     #[test]
     fn test_match_topic() {
@@ -128,5 +198,58 @@ mod tests {
         assert!(!match_topic("forge:*", "vault:unlocked"));
         assert!(match_topic("system:ready", "system:ready"));
         assert!(!match_topic("system:ready", "system:ready:yes"));
+    }
+
+    #[test]
+    fn maps_instance_created_events_to_graph_nodes() {
+        let payload = serde_json::to_string(&StoredAgentInstance {
+            id: 7,
+            role: "arch".to_string(),
+            parent_instance_id: Some(3),
+            agent_tier: "ArchNota".to_string(),
+            status: "Busy".to_string(),
+            display_name: "arch-3-1".to_string(),
+            config_json: "{}".to_string(),
+            workspace_path: None,
+            last_heartbeat_at: None,
+            created_at: "2026-04-05T00:00:00Z".to_string(),
+            updated_at: "2026-04-05T00:00:00Z".to_string(),
+        })
+        .expect("instance payload should serialize");
+
+        let event = graph_update_for_instance_event("instance:created", &payload);
+
+        assert!(matches!(
+            event,
+            Some(GraphUpdateEvent::NodeCreated {
+                id,
+                node_kind: GraphNodeKind::Arch,
+                parent_id: Some(parent_id),
+                tone,
+                ..
+            }) if id == "instance-7" && parent_id == "instance-3" && tone == "active"
+        ));
+    }
+
+    #[test]
+    fn maps_instance_status_events_to_graph_state_changes() {
+        let busy = graph_update_for_instance_event("instance:busy", "7");
+        let idle = graph_update_for_instance_event("instance:idle", "7");
+        let stopped = graph_update_for_instance_event("instance:stopped", "7");
+
+        assert!(matches!(
+            busy,
+            Some(GraphUpdateEvent::NodeStateChanged { id, tone, detail })
+                if id == "instance-7" && tone == "active" && detail == "Busy"
+        ));
+        assert!(matches!(
+            idle,
+            Some(GraphUpdateEvent::NodeStateChanged { id, tone, detail })
+                if id == "instance-7" && tone == "steady" && detail == "Idle"
+        ));
+        assert!(matches!(
+            stopped,
+            Some(GraphUpdateEvent::NodeArchived { id }) if id == "instance-7"
+        ));
     }
 }

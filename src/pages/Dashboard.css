@@ -58,6 +58,10 @@
   min-height: 420px;
 }
 
+.board-map__graph-shell {
+  position: relative;
+}
+
 .board-node {
   min-height: 214px;
   padding: 18px;
@@ -148,6 +152,54 @@
 .board-map__footer {
   display: grid;
   gap: 10px;
+}
+
+.graph-filter-bar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 12;
+  background: hsla(225, 8%, 12%, 0.85);
+  backdrop-filter: blur(8px);
+  border-radius: 8px;
+  padding: 6px 10px;
+  border: 1px solid hsla(225, 5%, 20%, 0.4);
+}
+
+.graph-filter-label {
+  font-size: 11px;
+  color: hsl(225, 5%, 52%);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.graph-filter-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid hsla(225, 5%, 25%, 0.5);
+  background: hsla(225, 5%, 16%, 0.6);
+  color: hsl(225, 5%, 52%);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.graph-filter-btn:hover {
+  background: hsla(225, 5%, 22%, 0.8);
+  color: hsl(225, 5%, 70%);
+}
+
+.graph-filter-btn.is-active {
+  background: hsla(185, 15%, 25%, 0.6);
+  color: hsl(185, 20%, 65%);
+  border-color: hsla(185, 20%, 40%, 0.5);
 }
 
 .board-rail {
@@ -318,6 +370,10 @@
 }
 
 @media (max-width: 900px) {
+  .graph-filter-bar {
+    left: 12px;
+    right: auto;
+  }
 
   .board-progress-track__meta,
   .board-activity-item__topline {

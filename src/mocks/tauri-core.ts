@@ -314,6 +314,77 @@ const mockDashboardSummary = () => ({
   enabled_mcp_count: 1,
 });
 
+const mockAgentInstances = () => [
+  {
+    id: 1,
+    role: "nota",
+    parent_instance_id: null,
+    agent_tier: "FullNota",
+    status: "Busy",
+    display_name: "NOTA Root",
+    config_json: "{}",
+    workspace_path: "A:\\Publish\\entrance",
+    last_heartbeat_at: ago(1),
+    created_at: ago(180),
+    updated_at: ago(1),
+  },
+  {
+    id: 2,
+    role: "arch",
+    parent_instance_id: 1,
+    agent_tier: "FullNota",
+    status: "Idle",
+    display_name: "Arch Lead",
+    config_json: "{}",
+    workspace_path: "A:\\Publish\\entrance-g2",
+    last_heartbeat_at: ago(2),
+    created_at: ago(120),
+    updated_at: ago(2),
+  },
+  {
+    id: 3,
+    role: "dev",
+    parent_instance_id: 2,
+    agent_tier: "FullNota",
+    status: "Busy",
+    display_name: "Dev Worker",
+    config_json: "{}",
+    workspace_path: "A:\\Publish\\entrance-g2",
+    last_heartbeat_at: ago(3),
+    created_at: ago(90),
+    updated_at: ago(3),
+  },
+  {
+    id: 4,
+    role: "agent",
+    parent_instance_id: 3,
+    agent_tier: "FullNota",
+    status: "Stale",
+    display_name: "Agent Scout",
+    config_json: "{}",
+    workspace_path: "A:\\Publish\\entrance-g2",
+    last_heartbeat_at: ago(12),
+    created_at: ago(60),
+    updated_at: ago(12),
+  },
+];
+
+const mockSystemPulse = () => ({
+  timestamp: now(),
+  agent_tier: "FullNota",
+  active_tasks: 1,
+  stale_tasks: 0,
+  pending_approvals: 1,
+  pending_work: 0,
+  total_instances: 4,
+  active_instances: 3,
+  stale_instances: 1,
+  stopped_instances: 0,
+  health: "Yellow" as const,
+  tick_interval_secs: 30,
+  stale_threshold_multiplier: 3,
+});
+
 const mockForgeTasks = () => [
   {
     id: 42,
@@ -355,6 +426,8 @@ const handlers: Record<string, (args?: Record<string, unknown>) => unknown> = {
   nota_runtime_overview: () => mockNotaRuntimeOverview(),
   nota_runtime_status: () => mockNotaRuntimeStatus(),
   dashboard_summary: () => mockDashboardSummary(),
+  list_agent_instances: () => mockAgentInstances(),
+  get_system_pulse: () => mockSystemPulse(),
   forge_list_tasks: () => mockForgeTasks(),
   forge_get_task_details: (args) => {
     const tasks = mockForgeTasks();
