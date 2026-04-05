@@ -7,3 +7,7 @@ releases/*/package/
 releases/*/*.zip
 pnpm-debug.log*
 *.tsbuildinfo
+test-results/
+playwright-report/
+tests/native/bin/
+tests/native/obj/
