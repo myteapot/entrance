@@ -3,9 +3,7 @@
 }
 
 .page__hero--chat::after {
-  inset: auto -8% -32% 24%;
-  height: 260px;
-  background: radial-gradient(circle, rgba(74, 222, 128, 0.10), transparent 68%);
+  display: none;
 }
 
 .chat-grid {
@@ -182,11 +180,7 @@
 
 .front-door-bubble::after,
 .front-door-import-receipt::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 42%);
-  pointer-events: none;
+  display: none;
 }
 
 .front-door-bubble strong,
@@ -209,29 +203,24 @@
 }
 
 .front-door-bubble--runtime {
-  background:
-    radial-gradient(circle at top left, rgba(74, 222, 128, 0.10), transparent 42%),
-    rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid #34d399;
 }
 
 .front-door-bubble--assistant {
-  background:
-    radial-gradient(circle at top right, rgba(129, 140, 248, 0.10), transparent 40%),
-    rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid #818cf8;
   margin-left: 10%;
 }
 
 .front-door-bubble--decision {
-  background:
-    radial-gradient(circle at bottom left, rgba(251, 191, 36, 0.10), transparent 42%),
-    rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid #fbbf24;
 }
 
 .front-door-bubble--surface,
 .front-door-import-receipt {
-  background:
-    radial-gradient(circle at top right, rgba(129, 140, 248, 0.08), transparent 38%),
-    rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .front-door-actions {
@@ -256,9 +245,8 @@
 }
 
 .front-door-action:hover {
-  transform: translateY(-2px);
-  border-color: rgba(129, 140, 248, 0.28);
-  background: rgba(129, 140, 248, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .front-door-action:disabled {

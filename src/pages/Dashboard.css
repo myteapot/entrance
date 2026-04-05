@@ -1,7 +1,7 @@
 :root {
-  --bg-deep: #09090b;
-  --bg-surface: rgba(17, 17, 21, 0.82);
-  --bg-raised: rgba(24, 24, 30, 0.94);
+  --bg-deep: #0a0a0a;
+  --bg-surface: #161616;
+  --bg-raised: #1a1a1a;
   --text-primary: #fafafa;
   --text-secondary: rgba(250, 250, 250, 0.64);
   --text-muted: rgba(250, 250, 250, 0.35);
@@ -20,9 +20,7 @@
 }
 
 .page__hero--board::after {
-  inset: auto -6% -34% 18%;
-  height: 260px;
-  background: radial-gradient(circle, rgba(129, 140, 248, 0.10), transparent 68%);
+  display: none;
 }
 
 .board-callout {
@@ -76,39 +74,27 @@
 }
 
 .board-node::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 40%);
-  pointer-events: none;
+  display: none;
 }
 
 .board-node--steady {
-  background:
-    radial-gradient(circle at top left, rgba(74, 222, 128, 0.10), transparent 40%),
-    rgba(255, 255, 255, 0.03);
+  border-left: 2px solid #34d399;
 }
 
 .board-node--active {
-  background:
-    radial-gradient(circle at top left, rgba(129, 140, 248, 0.10), transparent 40%),
-    rgba(255, 255, 255, 0.03);
+  border-left: 2px solid #818cf8;
 }
 
 .board-node--warming {
-  background:
-    radial-gradient(circle at top left, rgba(251, 191, 36, 0.10), transparent 40%),
-    rgba(255, 255, 255, 0.03);
+  border-left: 2px solid #fbbf24;
 }
 
 .board-node--caution {
-  background:
-    radial-gradient(circle at top left, rgba(248, 113, 113, 0.10), transparent 40%),
-    rgba(255, 255, 255, 0.03);
+  border-left: 2px solid #f87171;
 }
 
 .board-node--neutral {
-  background: rgba(255, 255, 255, 0.025);
+  /* flat */
 }
 
 .board-node__label,

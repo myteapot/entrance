@@ -37,10 +37,8 @@
   margin-bottom: var(--space-4);
   padding: var(--space-3);
   border-radius: var(--radius-lg);
-  border: 1px solid rgba(129, 140, 248, 0.18);
-  background:
-    linear-gradient(135deg, rgba(129, 140, 248, 0.10), rgba(129, 140, 248, 0.02)),
-    var(--surface-1);
+  border: 1px solid rgba(129, 140, 248, 0.14);
+  background: var(--surface-panel);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);

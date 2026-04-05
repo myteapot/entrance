@@ -3,9 +3,7 @@
 }
 
 .page__hero--console::after {
-  inset: auto -6% -34% 16%;
-  height: 250px;
-  background: radial-gradient(circle, rgba(88, 214, 141, 0.14), transparent 70%);
+  display: none;
 }
 
 .console-page {
@@ -58,9 +56,7 @@
   padding: 12px;
   border-radius: var(--radius-lg);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 42%),
-    rgba(255, 255, 255, 0.025);
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .console-field {
@@ -300,20 +296,17 @@
 }
 
 .health-indicator.is-green {
-  background: rgba(74, 222, 128, 0.18);
-  box-shadow: 0 0 20px rgba(74, 222, 128, 0.15);
+  background: rgba(74, 222, 128, 0.14);
   color: #4ade80;
 }
 
 .health-indicator.is-yellow {
-  background: rgba(251, 191, 36, 0.18);
-  box-shadow: 0 0 20px rgba(251, 191, 36, 0.15);
+  background: rgba(251, 191, 36, 0.14);
   color: #fbbf24;
 }
 
 .health-indicator.is-red {
-  background: rgba(248, 113, 113, 0.18);
-  box-shadow: 0 0 20px rgba(248, 113, 113, 0.15);
+  background: rgba(248, 113, 113, 0.14);
   color: #f87171;
 }
 
@@ -359,9 +352,7 @@
   padding: 12px 14px;
   border-radius: var(--radius-lg);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  background:
-    radial-gradient(circle at right, rgba(129, 140, 248, 0.08), transparent 45%),
-    rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .console-budget-meter__meta {

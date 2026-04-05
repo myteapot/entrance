@@ -43,15 +43,13 @@
   --tracking-widest: 0.16em;
 
   /* ─ Colors — Background ────────────────────── */
-  --bg-base: #09090b;
-  --bg-body:
-    radial-gradient(ellipse at top, rgba(99, 102, 241, 0.08), transparent 50%),
-    #09090b;
+  --bg-base: #0a0a0a;
+  --bg-body: #0a0a0a;
 
   /* ─ Colors — Surface ───────────────────────── */
-  --surface:        rgba(17, 17, 21, 0.82);
-  --surface-strong: rgba(24, 24, 30, 0.94);
-  --surface-panel:  rgba(30, 30, 38, 0.90);
+  --surface:        #161616;
+  --surface-strong: #1a1a1a;
+  --surface-panel:  #1e1e1e;
   --surface-hover:  rgba(255, 255, 255, 0.04);
   --surface-inset:  rgba(255, 255, 255, 0.06);
 
@@ -59,17 +57,17 @@
   --text-primary: #fafafa;
   --text-secondary: rgba(250, 250, 250, 0.64);
   --text-tertiary: rgba(250, 250, 250, 0.40);
-  --text-inverse: #09090b;
+  --text-inverse: #0a0a0a;
 
   /* ─ Colors — Accent ────────────────────────── */
   --accent:          #818cf8;
   --accent-hover:    #a5b4fc;
   --accent-soft:     rgba(129, 140, 248, 0.12);
-  --accent-glow:     rgba(129, 140, 248, 0.08);
+  --accent-glow:     transparent;
   --accent-text:     #c7d2fe;
-  --accent-contrast: #09090b;
-  --accent-gradient: linear-gradient(180deg, rgba(129, 140, 248, 0.9), rgba(99, 102, 241, 0.95));
-  --accent-shadow:   0 12px 30px rgba(99, 102, 241, 0.28);
+  --accent-contrast: #0a0a0a;
+  --accent-gradient: #818cf8;
+  --accent-shadow:   none;
 
   /* ─ Colors — Border ────────────────────────── */
   --border-soft:   rgba(255, 255, 255, 0.08);
@@ -171,14 +169,12 @@
 
   /* ─ Background ─────────────────────────────── */
   --bg-base: #fafaf9;
-  --bg-body:
-    radial-gradient(ellipse at top, rgba(99, 102, 241, 0.04), transparent 50%),
-    #fafaf9;
+  --bg-body: #fafaf9;
 
   /* ─ Surface ────────────────────────────────── */
-  --surface:        rgba(255, 255, 255, 0.82);
-  --surface-strong: rgba(255, 255, 255, 0.94);
-  --surface-panel:  rgba(255, 255, 255, 0.88);
+  --surface:        #ffffff;
+  --surface-strong: #fafafa;
+  --surface-panel:  #f5f5f5;
   --surface-hover:  rgba(0, 0, 0, 0.03);
   --surface-inset:  rgba(0, 0, 0, 0.04);
 
@@ -192,11 +188,11 @@
   --accent:          #6366f1;
   --accent-hover:    #4f46e5;
   --accent-soft:     rgba(99, 102, 241, 0.08);
-  --accent-glow:     rgba(99, 102, 241, 0.06);
+  --accent-glow:     transparent;
   --accent-text:     #4338ca;
   --accent-contrast: #ffffff;
-  --accent-gradient: linear-gradient(180deg, #818cf8, #6366f1);
-  --accent-shadow:   0 8px 20px rgba(99, 102, 241, 0.15);
+  --accent-gradient: #6366f1;
+  --accent-shadow:   none;
 
   /* ─ Border ─────────────────────────────────── */
   --border-soft:   rgba(24, 24, 27, 0.08);

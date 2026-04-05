@@ -30,16 +30,11 @@
 }
 
 .vault-section--feature {
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 52%),
-    var(--surface-panel);
+  /* flat */
 }
 
 .vault-section--guide {
-  background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 16%, transparent), transparent 36%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-inset) 70%, transparent), transparent 28%),
-    var(--surface-panel);
+  /* flat */
 }
 
 .vault-section-header {
@@ -149,9 +144,7 @@
   border: 1px solid color-mix(in srgb, var(--border-soft) 85%, transparent);
   border-radius: var(--radius-md);
   padding: var(--space-5);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-panel) 85%, transparent), transparent),
-    var(--surface-inset);
+  background: var(--surface-inset);
 }
 
 .vault-mcp-guide__header {
