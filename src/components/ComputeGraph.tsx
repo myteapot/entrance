@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, onMount } from "solid-js";
+import { createEffect, onCleanup, onMount, createSignal } from "solid-js";
 
 import { createGraphSimulation, type SimEdge, type SimNode } from "../features/dashboard/graphEngine";
 import type { GraphStore } from "../features/dashboard/graphStore";
@@ -24,6 +24,12 @@ const ComputeGraph = (props: ComputeGraphProps) => {
   let isDragging = false;
   let lastMouseX = 0;
   let lastMouseY = 0;
+
+  const [tooltip, setTooltip] = createSignal<{ x: number; y: number; node: SimNode | null }>({
+    x: 0,
+    y: 0,
+    node: null,
+  });
 
   const simulation = createGraphSimulation((nodes, edges) => {
     currentNodes = nodes;
@@ -65,12 +71,30 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 
     // G1-SKIN-TODO: implement full Canvas rendering here.
-    context.fillStyle = "#111418";
+    context.fillStyle = "hsl(225, 8%, 10%)";
     context.fillRect(0, 0, width, height);
 
     context.save();
     context.translate(width / 2 + panX, height / 2 + panY);
     context.scale(zoom, zoom);
+
+    const left = (-width / 2 - panX) / zoom;
+    const right = (width / 2 - panX) / zoom;
+    const top = (-height / 2 - panY) / zoom;
+    const bottom = (height / 2 - panY) / zoom;
+
+    context.beginPath();
+    for (let x = Math.floor(left / 50) * 50; x < right; x += 50) {
+      context.moveTo(x, top);
+      context.lineTo(x, bottom);
+    }
+    for (let y = Math.floor(top / 50) * 50; y < bottom; y += 50) {
+      context.moveTo(left, y);
+      context.lineTo(right, y);
+    }
+    context.strokeStyle = "hsla(225, 5%, 16%, 0.5)";
+    context.lineWidth = 1 / zoom;
+    context.stroke();
 
     for (const edge of currentEdges) {
       const source =
@@ -85,33 +109,94 @@ const ComputeGraph = (props: ComputeGraphProps) => {
         continue;
       }
 
+      const isActive = source.tone === "active" || target.tone === "active" || source.kind === "nota" || target.kind === "nota";
+
       context.beginPath();
       context.moveTo(source.x ?? 0, source.y ?? 0);
       context.lineTo(target.x ?? 0, target.y ?? 0);
-      context.strokeStyle = "rgba(100,120,140,0.3)";
-      context.lineWidth = 1;
+      context.strokeStyle = isActive ? "hsla(185, 20%, 50%, 0.35)" : "hsla(225, 5%, 30%, 0.25)";
+      context.lineWidth = isActive ? 1.5 / zoom : 1 / zoom;
       context.stroke();
     }
 
     for (const node of currentNodes) {
-      const radius = node.kind === "nota" ? 24 : 14;
+      let radius = 14;
+      if (node.kind === "nota") radius = 22;
+      else if (node.kind === "allocation") radius = 12;
+      else if (node.kind === "receipt") radius = 8;
+      else if (node.kind === "checkpoint") radius = 14;
+      else if (node.kind === "supervision") radius = 10;
+      else if (node.kind === "dialog") radius = 12;
+
       const isHovered = hoveredNodeId === node.id;
+      if (isHovered) {
+        radius += 2;
+      }
+
+      let fillStyle = "hsl(225, 5%, 52%)";
+      let shadowColor = fillStyle;
+      let shadowBlur = 0;
+      let opacity = 1;
+
+      switch(node.tone) {
+        case "nota":
+          fillStyle = "hsl(42, 25%, 55%)";
+          shadowBlur = 8 + Math.sin(_timestamp * 0.002) * 4;
+          break;
+        case "active":
+          fillStyle = "hsl(185, 20%, 50%)";
+          shadowBlur = 6 + Math.sin(_timestamp * 0.004) * 3;
+          break;
+        case "steady":
+          fillStyle = "hsl(150, 18%, 48%)";
+          shadowBlur = 4;
+          break;
+        case "warming":
+          fillStyle = "hsl(35, 25%, 52%)";
+          shadowBlur = 5 + Math.sin(_timestamp * 0.0015) * 3;
+          break;
+        case "caution":
+          fillStyle = "hsl(0, 20%, 52%)";
+          shadowBlur = 6 + Math.sin(_timestamp * 0.006) * 4;
+          break;
+        case "archived":
+          fillStyle = "hsl(225, 5%, 32%)";
+          shadowColor = "transparent";
+          shadowBlur = 0;
+          opacity = 0.5;
+          break;
+      }
+
+      shadowColor = fillStyle;
+
+      if (isHovered) {
+        shadowBlur += 4;
+      }
+
+      context.save();
+      context.globalAlpha = opacity;
 
       context.beginPath();
       context.arc(node.x ?? 0, node.y ?? 0, radius, 0, Math.PI * 2);
-      context.fillStyle = node.kind === "nota" ? "#b8a060" : "#607080";
+      context.fillStyle = fillStyle;
+      context.shadowColor = shadowColor;
+      context.shadowBlur = Math.min(15, shadowBlur);
       context.fill();
 
+      context.shadowBlur = 0;
+
       if (isHovered) {
-        context.strokeStyle = "#e6edf3";
-        context.lineWidth = 2;
+        context.lineWidth = 1 / zoom;
+        context.strokeStyle = "hsl(225, 5%, 28%)";
         context.stroke();
       }
 
-      context.fillStyle = "#aaa";
-      context.font = "11px sans-serif";
+      context.font = node.kind === "nota" ? "bold 12px Inter, sans-serif" : "11px Inter, sans-serif";
+      context.fillStyle = node.kind === "nota" ? "hsl(225, 5%, 78%)" : "hsl(225, 5%, 52%)";
       context.textAlign = "center";
-      context.fillText(node.label, node.x ?? 0, (node.y ?? 0) + radius + 14);
+      context.fillText(node.label, node.x ?? 0, (node.y ?? 0) + radius + 12);
+
+      context.restore();
     }
 
     context.restore();
@@ -154,6 +239,12 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     const hitNode = findNodeAt(graphPoint.x, graphPoint.y);
     hoveredNodeId = hitNode?.id ?? null;
     canvasRef.style.cursor = hitNode ? "pointer" : "grab";
+
+    if (hitNode && !isDragging) {
+      setTooltip({ x: screenX, y: screenY, node: hitNode });
+    } else {
+      setTooltip((prev) => ({ ...prev, node: null }));
+    }
   };
 
   const handleMouseDown = (event: MouseEvent) => {
@@ -187,6 +278,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
 
     isDragging = false;
     draggedNodeId = null;
+    setTooltip((prev) => ({ ...prev, node: null }));
   };
 
   const handleWheel = (event: WheelEvent) => {
@@ -250,6 +342,14 @@ const ComputeGraph = (props: ComputeGraphProps) => {
   return (
     <div class="compute-graph-container">
       <canvas ref={canvasRef} class="compute-graph-canvas" />
+      <div 
+        class={`compute-graph-tooltip ${tooltip().node ? 'is-visible' : ''}`}
+        style={{ left: `${tooltip().x + 16}px`, top: `${tooltip().y + 16}px` }}
+      >
+        <div class="compute-graph-tooltip__label">{tooltip().node?.label ?? ""}</div>
+        <div class="compute-graph-tooltip__detail">{tooltip().node?.detail ?? ""}</div>
+        <div class="compute-graph-tooltip__tone">{tooltip().node?.tone ?? ""}</div>
+      </div>
     </div>
   );
 };

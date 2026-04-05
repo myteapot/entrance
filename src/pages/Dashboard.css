@@ -1,3 +1,20 @@
+:root {
+  --bg-deep: hsl(225, 8%, 10%);
+  --bg-surface: hsl(225, 8%, 14%);
+  --bg-raised: hsl(225, 8%, 18%);
+  --text-primary: hsl(225, 5%, 78%);
+  --text-secondary: hsl(225, 5%, 52%);
+  --text-muted: hsl(225, 5%, 35%);
+  --border-subtle: hsl(225, 5%, 20%);
+  --border-accent: hsl(225, 5%, 28%);
+  --accent-gold: hsl(42, 25%, 55%);
+  --accent-teal: hsl(185, 20%, 50%);
+  --accent-sage: hsl(150, 18%, 48%);
+  --accent-amber: hsl(35, 25%, 52%);
+  --accent-rose: hsl(0, 20%, 52%);
+  --accent-ash: hsl(225, 5%, 32%);
+}
+
 .page--mission-board {
   gap: 20px;
 }
@@ -38,25 +55,7 @@
 }
 
 .board-map {
-  min-height: 100%;
-}
-
-.board-map__grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 14px;
-  position: relative;
-}
-
-.board-map__grid::before {
-  content: "";
-  position: absolute;
-  left: 8%;
-  right: 8%;
-  top: 68px;
-  height: 1px;
-  background: linear-gradient(90deg, rgba(247, 239, 230, 0.06), rgba(154, 210, 255, 0.34), rgba(247, 239, 230, 0.06));
-  pointer-events: none;
+  min-height: 420px;
 }
 
 .board-node {
@@ -310,13 +309,6 @@
 }
 
 @media (max-width: 1320px) {
-  .board-map__grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .board-map__grid::before {
-    display: none;
-  }
 }
 
 @media (max-width: 1180px) {
@@ -326,9 +318,6 @@
 }
 
 @media (max-width: 900px) {
-  .board-map__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 
   .board-progress-track__meta,
   .board-activity-item__topline {
@@ -338,9 +327,6 @@
 }
 
 @media (max-width: 720px) {
-  .board-map__grid {
-    grid-template-columns: 1fr;
-  }
 
   .board-node {
     min-height: auto;
