@@ -1,6 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════
    Entrance — Design Tokens (CSS Custom Properties)
    Dark theme = default   |   Light theme = [data-theme="light"]
+   Tech Noir aesthetic: Linear precision × Obsidian depth
    ═══════════════════════════════════════════════════════════════ */
 
 /* ── Dark Theme (Default) ────────────────────────────────────── */
@@ -20,7 +21,7 @@
   --text-xl:   1.35rem;
   --text-2xl:  1.5rem;
   --text-3xl:  2rem;
-  --text-hero: clamp(2.1rem, 4vw, 3.4rem);
+  --text-hero: clamp(1.6rem, 3vw, 2.2rem);
 
   /* Font weights */
   --weight-normal: 400;
@@ -42,40 +43,39 @@
   --tracking-widest: 0.16em;
 
   /* ─ Colors — Background ────────────────────── */
-  --bg-base: #0f161d;
+  --bg-base: #09090b;
   --bg-body:
-    radial-gradient(circle at top left, rgba(216, 127, 61, 0.18), transparent 30%),
-    radial-gradient(circle at bottom right, rgba(73, 110, 154, 0.22), transparent 28%),
-    linear-gradient(140deg, #0f161d 0%, #16212e 48%, #0c131a 100%);
+    radial-gradient(ellipse at top, rgba(99, 102, 241, 0.08), transparent 50%),
+    #09090b;
 
   /* ─ Colors — Surface ───────────────────────── */
-  --surface:        rgba(14, 22, 31, 0.74);
-  --surface-strong: rgba(19, 30, 43, 0.92);
-  --surface-panel:  rgba(24, 34, 46, 0.88);
-  --surface-hover:  rgba(255, 255, 255, 0.03);
-  --surface-inset:  rgba(255, 255, 255, 0.05);
+  --surface:        rgba(17, 17, 21, 0.82);
+  --surface-strong: rgba(24, 24, 30, 0.94);
+  --surface-panel:  rgba(30, 30, 38, 0.90);
+  --surface-hover:  rgba(255, 255, 255, 0.04);
+  --surface-inset:  rgba(255, 255, 255, 0.06);
 
   /* ─ Colors — Text ──────────────────────────── */
-  --text-primary: #f7efe6;
-  --text-secondary: rgba(247, 239, 230, 0.72);
-  --text-tertiary: rgba(247, 239, 230, 0.52);
-  --text-inverse: #140d08;
+  --text-primary: #fafafa;
+  --text-secondary: rgba(250, 250, 250, 0.64);
+  --text-tertiary: rgba(250, 250, 250, 0.40);
+  --text-inverse: #09090b;
 
   /* ─ Colors — Accent ────────────────────────── */
-  --accent:          #d87f3d;
-  --accent-hover:    #e58d4e;
-  --accent-soft:     rgba(216, 127, 61, 0.16);
-  --accent-glow:     rgba(216, 127, 61, 0.11);
-  --accent-text:     #f0b07f;
-  --accent-contrast: #140d08;
-  --accent-gradient: linear-gradient(180deg, rgba(216, 127, 61, 0.9), rgba(194, 90, 36, 0.95));
-  --accent-shadow:   0 12px 30px rgba(194, 90, 36, 0.28);
+  --accent:          #818cf8;
+  --accent-hover:    #a5b4fc;
+  --accent-soft:     rgba(129, 140, 248, 0.12);
+  --accent-glow:     rgba(129, 140, 248, 0.08);
+  --accent-text:     #c7d2fe;
+  --accent-contrast: #09090b;
+  --accent-gradient: linear-gradient(180deg, rgba(129, 140, 248, 0.9), rgba(99, 102, 241, 0.95));
+  --accent-shadow:   0 12px 30px rgba(99, 102, 241, 0.28);
 
   /* ─ Colors — Border ────────────────────────── */
-  --border-soft:   rgba(247, 239, 230, 0.12);
-  --border-strong: rgba(216, 127, 61, 0.32);
-  --border-subtle: rgba(247, 239, 230, 0.06);
-  --border-hover:  rgba(247, 239, 230, 0.1);
+  --border-soft:   rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(129, 140, 248, 0.28);
+  --border-subtle: rgba(255, 255, 255, 0.04);
+  --border-hover:  rgba(255, 255, 255, 0.10);
 
   /* ─ Colors — Semantic ──────────────────────── */
   --success:      #4ade80;
@@ -88,12 +88,12 @@
   --info-soft:    rgba(96, 165, 250, 0.14);
 
   /* ─ Colors — Code highlight ────────────────── */
-  --code-bg:   rgba(216, 127, 61, 0.16);
-  --code-text: #ffd5b7;
+  --code-bg:   rgba(129, 140, 248, 0.12);
+  --code-text: #c7d2fe;
 
   /* ─ Colors — Scrollbar ─────────────────────── */
-  --scrollbar-thumb:       rgba(247, 239, 230, 0.12);
-  --scrollbar-thumb-hover: rgba(247, 239, 230, 0.22);
+  --scrollbar-thumb:       rgba(250, 250, 250, 0.10);
+  --scrollbar-thumb-hover: rgba(250, 250, 250, 0.20);
 
   /* ─ Spacing  ───────────────────────────────── */
   --space-1:  4px;
@@ -108,12 +108,12 @@
   --space-16: 64px;
 
   /* ─ Radius ─────────────────────────────────── */
-  --radius-sm:   8px;
-  --radius-md:   12px;
-  --radius-lg:   16px;
-  --radius-xl:   20px;
-  --radius-2xl:  24px;
-  --radius-3xl:  28px;
+  --radius-sm:   6px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-xl:   14px;
+  --radius-2xl:  16px;
+  --radius-3xl:  20px;
   --radius-pill: 999px;
 
   /* ─ Shadows ────────────────────────────────── */
@@ -170,11 +170,10 @@
   color-scheme: light;
 
   /* ─ Background ─────────────────────────────── */
-  --bg-base: #f5f2ee;
+  --bg-base: #fafaf9;
   --bg-body:
-    radial-gradient(circle at top left, rgba(216, 127, 61, 0.08), transparent 30%),
-    radial-gradient(circle at bottom right, rgba(73, 110, 154, 0.1), transparent 28%),
-    linear-gradient(140deg, #f5f2ee 0%, #eae5df 48%, #f8f5f1 100%);
+    radial-gradient(ellipse at top, rgba(99, 102, 241, 0.04), transparent 50%),
+    #fafaf9;
 
   /* ─ Surface ────────────────────────────────── */
   --surface:        rgba(255, 255, 255, 0.82);
@@ -184,26 +183,26 @@
   --surface-inset:  rgba(0, 0, 0, 0.04);
 
   /* ─ Text ───────────────────────────────────── */
-  --text-primary: #1a1410;
-  --text-secondary: rgba(26, 20, 16, 0.68);
-  --text-tertiary: rgba(26, 20, 16, 0.46);
-  --text-inverse: #f7efe6;
+  --text-primary: #18181b;
+  --text-secondary: rgba(24, 24, 27, 0.64);
+  --text-tertiary: rgba(24, 24, 27, 0.40);
+  --text-inverse: #fafafa;
 
   /* ─ Accent ─────────────────────────────────── */
-  --accent:          #c26428;
-  --accent-hover:    #b05820;
-  --accent-soft:     rgba(194, 100, 40, 0.1);
-  --accent-glow:     rgba(194, 100, 40, 0.06);
-  --accent-text:     #8a4416;
+  --accent:          #6366f1;
+  --accent-hover:    #4f46e5;
+  --accent-soft:     rgba(99, 102, 241, 0.08);
+  --accent-glow:     rgba(99, 102, 241, 0.06);
+  --accent-text:     #4338ca;
   --accent-contrast: #ffffff;
-  --accent-gradient: linear-gradient(180deg, #d87f3d, #c26428);
-  --accent-shadow:   0 8px 20px rgba(194, 90, 36, 0.15);
+  --accent-gradient: linear-gradient(180deg, #818cf8, #6366f1);
+  --accent-shadow:   0 8px 20px rgba(99, 102, 241, 0.15);
 
   /* ─ Border ─────────────────────────────────── */
-  --border-soft:   rgba(26, 20, 16, 0.1);
-  --border-strong: rgba(194, 100, 40, 0.28);
-  --border-subtle: rgba(26, 20, 16, 0.06);
-  --border-hover:  rgba(26, 20, 16, 0.14);
+  --border-soft:   rgba(24, 24, 27, 0.08);
+  --border-strong: rgba(99, 102, 241, 0.24);
+  --border-subtle: rgba(24, 24, 27, 0.04);
+  --border-hover:  rgba(24, 24, 27, 0.12);
 
   /* ─ Semantic ───────────────────────────────── */
   --success:      #16a34a;
@@ -216,12 +215,12 @@
   --info-soft:    rgba(37, 99, 235, 0.1);
 
   /* ─ Code ───────────────────────────────────── */
-  --code-bg:   rgba(194, 100, 40, 0.08);
-  --code-text: #8a4416;
+  --code-bg:   rgba(99, 102, 241, 0.08);
+  --code-text: #4338ca;
 
   /* ─ Scrollbar ──────────────────────────────── */
-  --scrollbar-thumb:       rgba(26, 20, 16, 0.14);
-  --scrollbar-thumb-hover: rgba(26, 20, 16, 0.26);
+  --scrollbar-thumb:       rgba(24, 24, 27, 0.12);
+  --scrollbar-thumb-hover: rgba(24, 24, 27, 0.22);
 
   /* ─ Shadows ────────────────────────────────── */
   --shadow-sm:  0 2px 6px rgba(0, 0, 0, 0.06);
