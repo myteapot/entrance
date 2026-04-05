@@ -28,8 +28,8 @@
 .chat-status-pill {
   padding: 7px 12px;
   border-radius: 999px;
-  background: rgba(74, 222, 128, 0.14);
-  color: #86efac;
+  background: rgba(90, 158, 130, 0.14);
+  color: #7fbfa3;
   font-size: 0.78rem;
   font-weight: 600;
   white-space: nowrap;
@@ -130,15 +130,15 @@
 }
 
 .chat-callout--error {
-  border-color: rgba(248, 113, 113, 0.26);
-  background: rgba(248, 113, 113, 0.12);
-  color: #fca5a5;
+  border-color: rgba(158, 90, 90, 0.26);
+  background: rgba(158, 90, 90, 0.12);
+  color: #c08080;
 }
 
 .chat-callout--success {
-  border-color: rgba(74, 222, 128, 0.22);
-  background: rgba(74, 222, 128, 0.12);
-  color: #bbf7d0;
+  border-color: rgba(90, 158, 130, 0.22);
+  background: rgba(90, 158, 130, 0.12);
+  color: #7fbfa3;
 }
 
 .front-door-layout {
@@ -204,18 +204,17 @@
 
 .front-door-bubble--runtime {
   background: rgba(255, 255, 255, 0.03);
-  border-left: 2px solid #34d399;
+  border-left: 2px solid #5a9e82;
 }
 
 .front-door-bubble--assistant {
   background: rgba(255, 255, 255, 0.03);
-  border-left: 2px solid #818cf8;
-  margin-left: 10%;
+  border-left: 2px solid #7c83c9;
 }
 
 .front-door-bubble--decision {
   background: rgba(255, 255, 255, 0.03);
-  border-left: 2px solid #fbbf24;
+  border-left: 2px solid #9e8a4a;
 }
 
 .front-door-bubble--surface,
@@ -314,19 +313,19 @@
 }
 
 .front-door-progress__bar > .is-steady {
-  background: #4ade80;
+  background: #5a9e82;
 }
 
 .front-door-progress__bar > .is-active {
-  background: #818cf8;
+  background: #7c83c9;
 }
 
 .front-door-progress__bar > .is-warming {
-  background: #fbbf24;
+  background: #9e8a4a;
 }
 
 .front-door-progress__bar > .is-caution {
-  background: #f87171;
+  background: #9e5a5a;
 }
 
 .front-door-detail {
@@ -359,9 +358,7 @@
     grid-template-columns: 1fr;
   }
 
-  .front-door-bubble--assistant {
-    margin-left: 0;
-  }
+
 }
 
 @media (max-width: 900px) {

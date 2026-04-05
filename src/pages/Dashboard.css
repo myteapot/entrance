@@ -7,12 +7,12 @@
   --text-muted: rgba(250, 250, 250, 0.35);
   --border-subtle: rgba(255, 255, 255, 0.06);
   --border-accent: rgba(255, 255, 255, 0.10);
-  --accent-gold: #818cf8;
-  --accent-teal: #34d399;
-  --accent-sage: #a3e635;
-  --accent-amber: #fbbf24;
-  --accent-rose: #f87171;
-  --accent-ash: rgba(250, 250, 250, 0.15);
+  --accent-gold: #7c83c9;
+  --accent-teal: #5a9e82;
+  --accent-sage: #7a8a5e;
+  --accent-amber: #9e8a4a;
+  --accent-rose: #9e5a5a;
+  --accent-ash: rgba(250, 250, 250, 0.12);
 }
 
 .page--mission-board {
@@ -30,9 +30,9 @@
 }
 
 .board-callout--error {
-  border-color: rgba(248, 113, 113, 0.26);
-  background: rgba(248, 113, 113, 0.12);
-  color: #fca5a5;
+  border-color: rgba(158, 90, 90, 0.26);
+  background: rgba(158, 90, 90, 0.12);
+  color: #c08080;
 }
 
 .board-layout {
@@ -78,19 +78,19 @@
 }
 
 .board-node--steady {
-  border-left: 2px solid #34d399;
+  border-left: 2px solid #5a9e82;
 }
 
 .board-node--active {
-  border-left: 2px solid #818cf8;
+  border-left: 2px solid #7c83c9;
 }
 
 .board-node--warming {
-  border-left: 2px solid #fbbf24;
+  border-left: 2px solid #9e8a4a;
 }
 
 .board-node--caution {
-  border-left: 2px solid #f87171;
+  border-left: 2px solid #9e5a5a;
 }
 
 
@@ -281,19 +281,19 @@
 }
 
 .board-progress-bar > .is-steady {
-  background: #4ade80;
+  background: #5a9e82;
 }
 
 .board-progress-bar > .is-active {
-  background: #818cf8;
+  background: #7c83c9;
 }
 
 .board-progress-bar > .is-warming {
-  background: #fbbf24;
+  background: #9e8a4a;
 }
 
 .board-progress-bar > .is-caution {
-  background: #f87171;
+  background: #9e5a5a;
 }
 
 .board-checkpoint-detail {
