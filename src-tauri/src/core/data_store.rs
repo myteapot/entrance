@@ -90,7 +90,12 @@ const CORE_SIMULATION_GATE_EVIDENCE_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0018_create_simulation_gate_evidence.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 14] = [
+const CORE_NOTA_MEMORY_MIGRATION: MigrationStep = MigrationStep {
+    name: "0019_create_nota_memory_tables",
+    sql: include_str!("../../migrations/0019_create_nota_memory_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 15] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -105,6 +110,7 @@ const CORE_MIGRATIONS: [MigrationStep; 14] = [
     CORE_COMPILER_REGISTRY_MIGRATION,
     CORE_SUPERVISION_BUDGET_LEDGER_MIGRATION,
     CORE_SIMULATION_GATE_EVIDENCE_MIGRATION,
+    CORE_NOTA_MEMORY_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
