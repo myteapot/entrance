@@ -123,6 +123,8 @@ mod tests {
     fn test_match_topic() {
         assert!(match_topic("forge:*", "forge:started"));
         assert!(match_topic("forge:*", "forge:"));
+        assert!(match_topic("system:*", "system:pulse"));
+        assert!(match_topic("system:*", "system:attention"));
         assert!(!match_topic("forge:*", "vault:unlocked"));
         assert!(match_topic("system:ready", "system:ready"));
         assert!(!match_topic("system:ready", "system:ready:yes"));

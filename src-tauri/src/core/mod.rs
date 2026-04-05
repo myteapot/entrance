@@ -38,6 +38,7 @@ pub mod plugin_manager;
 pub mod projection_runtime;
 pub mod recovery;
 pub mod supervision;
+pub mod system_heartbeat;
 pub mod theme;
 pub mod updater;
 pub mod window;

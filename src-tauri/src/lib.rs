@@ -17,6 +17,7 @@ use crate::{
         logging::LoggingSystem,
         plugin_manager::PluginManager,
         resolve_app_data_dir,
+        system_heartbeat::{run_system_heartbeat, HeartbeatConfig},
         theme::ThemeSystem,
         AppPaths,
     },
@@ -82,6 +83,13 @@ fn setup_application<R: tauri::Runtime>(
     app.manage(event_bus.clone());
     install_runtime_emitters(event_bus.clone(), app.handle().clone());
     app.manage(data_store.clone());
+    tauri::async_runtime::spawn({
+        let data_store = data_store.clone();
+        let event_bus = event_bus.clone();
+        async move {
+            run_system_heartbeat(data_store, event_bus, HeartbeatConfig::default()).await;
+        }
+    });
     app.manage(DashboardUiState {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         launcher_hotkey: launcher_hotkey.clone(),
@@ -95,7 +103,9 @@ fn setup_application<R: tauri::Runtime>(
     let mut rx = event_bus.subscribe();
     tauri::async_runtime::spawn(async move {
         while let Ok(event) = rx.recv().await {
-            if core::event_bus::match_topic("forge:*", &event.topic) {
+            if core::event_bus::match_topic("forge:*", &event.topic)
+                || core::event_bus::match_topic("system:*", &event.topic)
+            {
                 let _ = app_handle_for_events.emit(&event.topic, event.payload);
             }
         }
