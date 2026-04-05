@@ -5,7 +5,7 @@ use super::{
     },
     packet::TypedActionPacket,
 };
-use crate::core::action::ActorRole;
+use crate::core::{action::ActorRole, parallel_budget::BudgetCheckResult};
 
 /// Marker type: a LoweredDispatch that has passed admission.
 /// Downstream routing (M6.2) and gate enforcement (M7.2)
@@ -52,10 +52,12 @@ pub struct AdmissionContext {
     pub budget_remaining: Option<u32>,
     pub dedup_key: Option<String>,
     pub available_instances: Option<Vec<String>>,
+    pub parallel_budget_check: Option<BudgetCheckResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmissionRejectionReason {
+    CapacityExhausted,
     HumanApprovalRequired,
     GateEvidenceNotAccepted,
     WriterNotAuthorized,
@@ -133,6 +135,21 @@ pub fn admit_dispatch_with_context(
         }
     }
 
+    if let Some(parallel_budget_check) = context.and_then(|ctx| ctx.parallel_budget_check.as_ref())
+    {
+        match parallel_budget_check {
+            BudgetCheckResult::Allowed | BudgetCheckResult::Queued { .. } => {}
+            BudgetCheckResult::Rejected { running, limit } => {
+                return Err(AdmissionRejection {
+                    reason: AdmissionRejectionReason::CapacityExhausted,
+                    summary: format!(
+                        "parallel capacity exhausted: {running}/{limit} agent tasks are already running"
+                    ),
+                });
+            }
+        }
+    }
+
     let gate_evidence = if semantics.requires_admission_gate {
         match gate_evidence {
             Some(gate_evidence) => {
@@ -191,6 +208,7 @@ mod tests {
             registry::lookup_primitive,
             semantics::{RoutingConstraint, SandboxRequirement},
         },
+        parallel_budget::BudgetCheckResult,
     };
 
     fn compile_packet(primitive: ActionPrimitive) -> TypedActionPacket {
@@ -472,6 +490,7 @@ mod tests {
             budget_remaining: None,
             dedup_key: None,
             available_instances: Some(vec!["slot-1".to_string(), "slot-2".to_string()]),
+            parallel_budget_check: None,
         };
 
         let admitted = admit_dispatch_with_context(lowered, None, Some(&context))
@@ -497,6 +516,7 @@ mod tests {
             budget_remaining: None,
             dedup_key: None,
             available_instances: Some(vec!["slot-1".to_string(), "slot-2".to_string()]),
+            parallel_budget_check: None,
         };
 
         assert_eq!(
@@ -517,5 +537,32 @@ mod tests {
             .expect("dispatch without an explicit target instance should still admit");
 
         assert_eq!(admitted.lineage().target_instance_id, None);
+    }
+
+    #[test]
+    fn admission_rejects_when_capacity_exhausted() {
+        let _guard = crate::test_env_guard();
+        let lowered = lowered_dispatch(ActionPrimitive::Dispatch);
+        let context = AdmissionContext {
+            budget_remaining: None,
+            dedup_key: None,
+            available_instances: None,
+            parallel_budget_check: Some(BudgetCheckResult::Rejected {
+                running: 3,
+                limit: 3,
+            }),
+        };
+
+        let rejection = admit_dispatch_with_context(lowered, None, Some(&context))
+            .expect_err("capacity exhaustion should reject dispatch admission");
+
+        assert_eq!(
+            rejection.reason,
+            AdmissionRejectionReason::CapacityExhausted
+        );
+        assert_eq!(
+            rejection.summary,
+            "parallel capacity exhausted: 3/3 agent tasks are already running"
+        );
     }
 }

@@ -187,6 +187,7 @@ mod tests {
                     budget_remaining: None,
                     dedup_key: None,
                     available_instances: Some(vec![target_instance_id.to_string()]),
+                    parallel_budget_check: None,
                 };
 
                 admit_dispatch_with_context(lowered, None, Some(&context))

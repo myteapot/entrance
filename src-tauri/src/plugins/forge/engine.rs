@@ -7,8 +7,11 @@ use tauri::async_runtime::JoinHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use crate::core::data_store::DataStore;
 use crate::core::event_bus::EventBus;
+use crate::core::{
+    data_store::DataStore,
+    parallel_budget::{BudgetCheckResult, ParallelBudgetConfig},
+};
 use crate::plugins::{
     forge::{ForgeTaskLogEvent, ForgeTaskStatusEvent},
     vault::VaultCipher,
@@ -22,16 +25,26 @@ pub struct TaskEngine {
     vault_cipher: Option<Arc<VaultCipher>>,
     active_tasks: Mutex<HashMap<i64, JoinHandle<()>>>,
     heartbeat_interval: Duration,
+    parallel_budget: ParallelBudgetConfig,
 }
 
 impl TaskEngine {
     pub fn new(data_store: DataStore, event_bus: EventBus) -> Self {
+        Self::new_with_parallel_budget(data_store, event_bus, ParallelBudgetConfig::default())
+    }
+
+    pub fn new_with_parallel_budget(
+        data_store: DataStore,
+        event_bus: EventBus,
+        parallel_budget: ParallelBudgetConfig,
+    ) -> Self {
         Self {
             data_store,
             event_bus,
             vault_cipher: VaultCipher::from_device().ok().map(Arc::new),
             active_tasks: Mutex::new(HashMap::new()),
             heartbeat_interval: TASK_HEARTBEAT_INTERVAL,
+            parallel_budget,
         }
     }
 
@@ -51,6 +64,24 @@ impl TaskEngine {
         let command = task_record.command.clone();
         let working_dir = task_record.working_dir.clone();
         let stdin_text = task_record.stdin_text.clone();
+        match self
+            .data_store
+            .reserve_forge_task_start(id, &self.parallel_budget)?
+        {
+            BudgetCheckResult::Allowed => {}
+            BudgetCheckResult::Queued { .. } => {
+                self.publish_task_status(id);
+                return Ok(());
+            }
+            BudgetCheckResult::Rejected { running, limit } => {
+                let message =
+                    format!("Parallel capacity exhausted ({running}/{limit} running tasks)");
+                self.append_system_log(id, &message);
+                self.publish_task_status(id);
+                return Err(anyhow!(message));
+            }
+        }
+
         let envs = match self.resolve_env_bindings(&required_tokens) {
             Ok(envs) => envs,
             Err(message) => {
@@ -58,12 +89,11 @@ impl TaskEngine {
                     .update_forge_task_status(id, "Blocked", None, Some(&message))?;
                 self.append_system_log(id, &message);
                 self.publish_task_status(id);
+                self.try_start_next_pending_task();
                 return Ok(());
             }
         };
 
-        self.data_store
-            .update_forge_task_status(id, "Running", None, None)?;
         self.publish_task_status(id);
 
         let engine_clone = self.clone();
@@ -79,14 +109,15 @@ impl TaskEngine {
         Ok(())
     }
 
-    pub fn cancel_task(&self, id: i64) -> Result<()> {
-        let mut tasks = self.active_tasks.lock().unwrap();
-        if let Some(handle) = tasks.remove(&id) {
+    pub fn cancel_task(self: &Arc<Self>, id: i64) -> Result<()> {
+        let handle = self.active_tasks.lock().unwrap().remove(&id);
+        if let Some(handle) = handle {
             handle.abort();
             self.data_store
                 .update_forge_task_status(id, "Cancelled", None, None)?;
             self.append_system_log(id, "Task cancelled by operator");
             self.publish_task_status(id);
+            self.try_start_next_pending_task();
             Ok(())
         } else {
             Err(anyhow!("Task {id} is not running or doesn't exist"))
@@ -94,7 +125,7 @@ impl TaskEngine {
     }
 
     async fn run_process(
-        &self,
+        self: Arc<Self>,
         id: i64,
         command: String,
         args: Vec<String>,
@@ -123,6 +154,7 @@ impl TaskEngine {
             Err(e) => {
                 let message = format!("Failed to spawn process: {e}");
                 self.record_terminal_failure(id, Some(-1), &message);
+                self.try_start_next_pending_task();
                 return;
             }
         };
@@ -218,6 +250,8 @@ impl TaskEngine {
                 self.record_terminal_failure(id, Some(-1), &message);
             }
         }
+
+        self.try_start_next_pending_task();
     }
 
     fn publish_task_status(&self, id: i64) {
@@ -246,6 +280,29 @@ impl TaskEngine {
         self.append_system_log(id, message);
         self.publish_task_status(id);
         self.active_tasks.lock().unwrap().remove(&id);
+    }
+
+    fn try_start_next_pending_task(self: &Arc<Self>) {
+        loop {
+            let Ok(running) = self.data_store.count_running_forge_tasks() else {
+                return;
+            };
+            if running >= self.parallel_budget.max_concurrent_agents {
+                return;
+            }
+
+            let Ok(Some(next_task_id)) = self.data_store.next_pending_forge_task_id() else {
+                return;
+            };
+
+            let _ = self.spawn_task(next_task_id);
+            let Ok(Some(task)) = self.data_store.get_forge_task(next_task_id) else {
+                return;
+            };
+            if task.status == "Pending" {
+                return;
+            }
+        }
     }
 
     fn resolve_env_bindings(
@@ -343,6 +400,7 @@ impl TaskEngine {
             vault_cipher: Some(Arc::new(vault_cipher)),
             active_tasks: Mutex::new(HashMap::new()),
             heartbeat_interval: TASK_HEARTBEAT_INTERVAL,
+            parallel_budget: ParallelBudgetConfig::default(),
         }
     }
 }
@@ -357,7 +415,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::core::data_store::{MigrationPlan, MigrationStep};
+    use crate::core::{
+        data_store::{MigrationPlan, MigrationStep},
+        parallel_budget::{CapacityMode, ParallelBudgetConfig},
+    };
 
     #[test]
     fn blocks_tasks_when_required_vault_token_is_missing() -> Result<()> {
@@ -641,6 +702,7 @@ mod tests {
             vault_cipher: None,
             active_tasks: Mutex::new(std::collections::HashMap::new()),
             heartbeat_interval: Duration::from_millis(50),
+            parallel_budget: ParallelBudgetConfig::default(),
         });
 
         let task_id = store.insert_forge_task(
@@ -671,6 +733,141 @@ mod tests {
             .expect("task should remain queryable");
         assert_eq!(task.status, "Cancelled");
         assert!(task.heartbeat_at.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn queues_tasks_until_a_slot_opens() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+        let engine = Arc::new(TaskEngine::new_with_parallel_budget(
+            store.clone(),
+            EventBus::new(),
+            ParallelBudgetConfig {
+                max_concurrent_agents: 1,
+                capacity_mode: CapacityMode::Queue,
+            },
+        ));
+        let first_task_id = store.insert_forge_task(
+            "First",
+            test_shell(),
+            &test_shell_args(quiet_wait_expression())?,
+            None,
+            None,
+            r#"[]"#,
+            "{}",
+        )?;
+        let second_task_id = store.insert_forge_task(
+            "Second",
+            test_shell(),
+            &test_shell_args("echo queued-ran")?,
+            None,
+            None,
+            r#"[]"#,
+            "{}",
+        )?;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            engine.spawn_task(first_task_id)?;
+            engine.spawn_task(second_task_id)?;
+
+            let queued_task = store
+                .get_forge_task(second_task_id)?
+                .expect("queued task should remain queryable");
+            assert_eq!(queued_task.status, "Pending");
+            assert_eq!(
+                queued_task.status_message.as_deref(),
+                Some("Queued for agent capacity (position 1)")
+            );
+
+            wait_for_terminal_status_async(&store, first_task_id).await?;
+            wait_for_terminal_status_async(&store, second_task_id).await
+        })?;
+
+        let second_task = store
+            .get_forge_task(second_task_id)?
+            .expect("queued task should still exist");
+        assert_eq!(second_task.status, "Done");
+        assert_eq!(second_task.status_message, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_tasks_when_capacity_mode_is_reject() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(&[
+            MigrationStep {
+                name: "0002_create_plugin_forge_tasks",
+                sql: include_str!("../../../migrations/0002_create_plugin_forge_tasks.sql"),
+            },
+            MigrationStep {
+                name: "0004_create_plugin_forge_task_logs",
+                sql: include_str!("../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+            },
+        ]))?;
+        let engine = Arc::new(TaskEngine::new_with_parallel_budget(
+            store.clone(),
+            EventBus::new(),
+            ParallelBudgetConfig {
+                max_concurrent_agents: 1,
+                capacity_mode: CapacityMode::Reject,
+            },
+        ));
+        let first_task_id = store.insert_forge_task(
+            "First",
+            test_shell(),
+            &test_shell_args(quiet_wait_expression())?,
+            None,
+            None,
+            r#"[]"#,
+            "{}",
+        )?;
+        let second_task_id = store.insert_forge_task(
+            "Second",
+            test_shell(),
+            &test_shell_args("echo should-not-run")?,
+            None,
+            None,
+            r#"[]"#,
+            "{}",
+        )?;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            engine.spawn_task(first_task_id)?;
+            let error = engine
+                .spawn_task(second_task_id)
+                .expect_err("reject mode should fail fast when capacity is exhausted");
+            assert!(error
+                .to_string()
+                .contains("Parallel capacity exhausted (1/1 running tasks)"));
+            wait_for_terminal_status_async(&store, first_task_id).await
+        })?;
+
+        let rejected_task = store
+            .get_forge_task(second_task_id)?
+            .expect("rejected task should still exist");
+        assert_eq!(rejected_task.status, "Blocked");
+        assert_eq!(
+            rejected_task.status_message.as_deref(),
+            Some("Parallel capacity exhausted (1/1 running tasks)")
+        );
 
         Ok(())
     }

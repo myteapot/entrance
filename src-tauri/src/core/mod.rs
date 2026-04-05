@@ -33,6 +33,7 @@ pub mod memory_import;
 pub mod nota;
 pub use nota as nota_runtime;
 pub mod overview;
+pub mod parallel_budget;
 pub mod permission;
 pub mod plugin_manager;
 pub mod projection_runtime;

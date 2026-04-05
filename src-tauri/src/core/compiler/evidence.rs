@@ -211,10 +211,7 @@ mod tests {
 
     #[test]
     fn derive_verdict_cancelled_is_rejected() {
-        assert_eq!(
-            derive_verdict("Cancelled", None),
-            EvidenceVerdict::Rejected
-        );
+        assert_eq!(derive_verdict("Cancelled", None), EvidenceVerdict::Rejected);
     }
 
     #[test]

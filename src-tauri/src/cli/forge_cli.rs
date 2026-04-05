@@ -193,12 +193,22 @@ fn bootstrap_forge_mcp_cycle_cli(
 fn run_forge_supervise_task_cli(task_id: i64) -> Result<()> {
     let startup = bootstrap_forge_cli_state()?;
     let forge_plugin = plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
-    forge_plugin.engine().spawn_task(task_id)?;
+    if let Err(error) = forge_plugin.engine().spawn_task(task_id) {
+        let task = forge_plugin.get_task(task_id)?.ok_or_else(|| {
+            anyhow::anyhow!("forge task `{task_id}` disappeared during supervision")
+        })?;
+        if task.status != "Blocked" {
+            return Err(error);
+        }
+    }
 
     loop {
         let task = forge_plugin.get_task(task_id)?.ok_or_else(|| {
             anyhow::anyhow!("forge task `{task_id}` disappeared during supervision")
         })?;
+        if task.status == "Pending" {
+            let _ = forge_plugin.engine().spawn_task(task_id);
+        }
         if matches!(
             task.status.as_str(),
             "Done" | "Failed" | "Cancelled" | "Blocked"

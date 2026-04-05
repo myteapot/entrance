@@ -18,6 +18,7 @@ use crate::core::compiler::{
     evidence::{EvidenceKind, EvidenceVerdict, StoredAttemptReceipt, StoredGateEvidence},
     registry::RegistryEntry,
 };
+use crate::core::parallel_budget::{BudgetCheckResult, CapacityMode, ParallelBudgetConfig};
 use crate::plugins::launcher::scanner::DiscoveredApp;
 
 const CORE_MIGRATION: MigrationStep = MigrationStep {
@@ -2159,6 +2160,143 @@ impl DataStore {
             )?;
             Ok(())
         })
+    }
+
+    pub fn count_running_forge_tasks(&self) -> Result<u32> {
+        self.with_connection(|conn| {
+            let count = conn.query_row(
+                "SELECT COUNT(*) FROM plugin_forge_tasks WHERE status = 'Running'",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
+    }
+
+    pub fn next_pending_forge_task_id(&self) -> Result<Option<i64>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                r#"
+                SELECT id
+                FROM plugin_forge_tasks
+                WHERE status = 'Pending'
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn reserve_forge_task_start(
+        &self,
+        id: i64,
+        config: &ParallelBudgetConfig,
+    ) -> Result<BudgetCheckResult> {
+        let now = Utc::now().to_rfc3339();
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some((status, created_at)) = transaction
+            .query_row(
+                "SELECT status, created_at FROM plugin_forge_tasks WHERE id = ?1",
+                [id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        else {
+            return Err(anyhow!("forge task `{id}` does not exist"));
+        };
+
+        if status != "Pending" {
+            return Err(anyhow!("forge task `{id}` is not Pending"));
+        }
+
+        let running: u32 = transaction.query_row(
+            "SELECT COUNT(*) FROM plugin_forge_tasks WHERE status = 'Running'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let result = if running < config.max_concurrent_agents {
+            let changed = transaction.execute(
+                r#"
+                UPDATE plugin_forge_tasks
+                SET status = 'Running',
+                    exit_code = NULL,
+                    status_message = NULL,
+                    heartbeat_at = ?2,
+                    finished_at = NULL
+                WHERE id = ?1
+                  AND status = 'Pending'
+                "#,
+                params![id, now],
+            )?;
+            if changed == 0 {
+                return Err(anyhow!("forge task `{id}` is no longer Pending"));
+            }
+            BudgetCheckResult::Allowed
+        } else {
+            match config.capacity_mode {
+                CapacityMode::Reject => {
+                    let message = format!(
+                        "Parallel capacity exhausted ({running}/{} running tasks)",
+                        config.max_concurrent_agents
+                    );
+                    let changed = transaction.execute(
+                        r#"
+                        UPDATE plugin_forge_tasks
+                        SET status = 'Blocked',
+                            exit_code = NULL,
+                            status_message = ?2,
+                            finished_at = ?3
+                        WHERE id = ?1
+                          AND status = 'Pending'
+                        "#,
+                        params![id, message, now],
+                    )?;
+                    if changed == 0 {
+                        return Err(anyhow!("forge task `{id}` is no longer Pending"));
+                    }
+                    BudgetCheckResult::Rejected {
+                        running,
+                        limit: config.max_concurrent_agents,
+                    }
+                }
+                CapacityMode::Queue => {
+                    let queued_ahead: i64 = transaction.query_row(
+                        r#"
+                        SELECT COUNT(*)
+                        FROM plugin_forge_tasks
+                        WHERE status = 'Pending'
+                          AND (created_at < ?1 OR (created_at = ?1 AND id < ?2))
+                        "#,
+                        params![created_at, id],
+                        |row| row.get(0),
+                    )?;
+                    let position = (queued_ahead as usize) + 1;
+                    let message = format!("Queued for agent capacity (position {position})");
+                    let changed = transaction.execute(
+                        r#"
+                        UPDATE plugin_forge_tasks
+                        SET status_message = ?2
+                        WHERE id = ?1
+                          AND status = 'Pending'
+                        "#,
+                        params![id, message],
+                    )?;
+                    if changed == 0 {
+                        return Err(anyhow!("forge task `{id}` is no longer Pending"));
+                    }
+                    BudgetCheckResult::Queued { position }
+                }
+            }
+        };
+
+        transaction.commit()?;
+        Ok(result)
     }
 
     pub fn update_pending_forge_task_request(
