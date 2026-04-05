@@ -83,8 +83,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 
-    // G1-SKIN-TODO: implement full Canvas rendering here.
-    context.fillStyle = "hsl(225, 8%, 10%)";
+    context.fillStyle = "#09090b";
     context.fillRect(0, 0, width, height);
 
     context.save();
@@ -105,7 +104,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
       context.moveTo(left, y);
       context.lineTo(right, y);
     }
-    context.strokeStyle = "hsla(225, 5%, 16%, 0.5)";
+    context.strokeStyle = "rgba(255,255,255,0.03)";
     context.lineWidth = 1 / zoom;
     context.stroke();
 
@@ -127,7 +126,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
       context.beginPath();
       context.moveTo(source.x ?? 0, source.y ?? 0);
       context.lineTo(target.x ?? 0, target.y ?? 0);
-      context.strokeStyle = isActive ? "hsla(185, 20%, 50%, 0.35)" : "hsla(225, 5%, 30%, 0.25)";
+      context.strokeStyle = isActive ? "rgba(129,140,248,0.25)" : "rgba(255,255,255,0.06)";
       context.lineWidth = isActive ? 1.5 / zoom : 1 / zoom;
       context.stroke();
     }
@@ -140,34 +139,34 @@ const ComputeGraph = (props: ComputeGraphProps) => {
         radius += 2;
       }
 
-      let fillStyle = "hsl(225, 5%, 52%)";
+      let fillStyle = "rgba(250,250,250,0.25)";
       let shadowColor = fillStyle;
       let shadowBlur = 0;
       let opacity = 1;
 
       switch(node.tone) {
         case "nota":
-          fillStyle = "hsl(42, 25%, 55%)";
+          fillStyle = "#818cf8";
           shadowBlur = 8 + Math.sin(_timestamp * 0.002) * 4;
           break;
         case "active":
-          fillStyle = "hsl(185, 20%, 50%)";
+          fillStyle = "#34d399";
           shadowBlur = 6 + Math.sin(_timestamp * 0.004) * 3;
           break;
         case "steady":
-          fillStyle = "hsl(150, 18%, 48%)";
+          fillStyle = "#a3e635";
           shadowBlur = 4;
           break;
         case "warming":
-          fillStyle = "hsl(35, 25%, 52%)";
+          fillStyle = "#fbbf24";
           shadowBlur = 5 + Math.sin(_timestamp * 0.0015) * 3;
           break;
         case "caution":
-          fillStyle = "hsl(0, 20%, 52%)";
+          fillStyle = "#f87171";
           shadowBlur = 6 + Math.sin(_timestamp * 0.006) * 4;
           break;
         case "archived":
-          fillStyle = "hsl(225, 5%, 32%)";
+          fillStyle = "rgba(250,250,250,0.15)";
           shadowColor = "transparent";
           shadowBlur = 0;
           opacity = 0.5;
@@ -194,12 +193,12 @@ const ComputeGraph = (props: ComputeGraphProps) => {
 
       if (isHovered) {
         context.lineWidth = 1 / zoom;
-        context.strokeStyle = "hsl(225, 5%, 28%)";
+        context.strokeStyle = "rgba(255,255,255,0.12)";
         context.stroke();
       }
 
       context.font = node.kind === "nota" ? "bold 12px Inter, sans-serif" : "11px Inter, sans-serif";
-      context.fillStyle = node.kind === "nota" ? "hsl(225, 5%, 78%)" : "hsl(225, 5%, 52%)";
+      context.fillStyle = node.kind === "nota" ? "#e0e7ff" : "rgba(250,250,250,0.50)";
       context.textAlign = "center";
       context.fillText(node.label, node.x ?? 0, (node.y ?? 0) + radius + 12);
 

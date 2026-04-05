@@ -34,20 +34,20 @@
 
 .console-callout {
   padding: 14px 16px;
-  border-radius: 18px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
 }
 
 .console-callout--error {
-  border-color: rgba(236, 112, 99, 0.26);
-  background: rgba(236, 112, 99, 0.12);
-  color: #ffb4ab;
+  border-color: rgba(248, 113, 113, 0.26);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
 }
 
 .console-callout--success {
-  border-color: rgba(88, 214, 141, 0.26);
-  background: rgba(88, 214, 141, 0.12);
-  color: #b9f7c8;
+  border-color: rgba(74, 222, 128, 0.26);
+  background: rgba(74, 222, 128, 0.12);
+  color: #bbf7d0;
 }
 
 .console-create-form {
@@ -56,8 +56,8 @@
   gap: 12px;
   align-items: end;
   padding: 18px;
-  border-radius: 22px;
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border-radius: var(--radius-2xl);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 42%),
     rgba(255, 255, 255, 0.025);
@@ -83,8 +83,8 @@
 .console-field select,
 .console-button {
   min-height: 46px;
-  border-radius: 14px;
-  border: 1px solid rgba(247, 239, 230, 0.1);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   font: inherit;
 }
 
@@ -92,7 +92,7 @@
 .console-field select {
   width: 100%;
   padding: 0 14px;
-  background: var(--bg-raised, rgba(255, 255, 255, 0.05));
+  background: rgba(255, 255, 255, 0.05);
   color: var(--text-primary);
   transition:
     border-color 0.15s ease,
@@ -107,9 +107,9 @@
 .console-field input:focus,
 .console-field select:focus {
   outline: none;
-  border-color: rgba(93, 173, 226, 0.45);
+  border-color: rgba(129, 140, 248, 0.40);
   background: rgba(255, 255, 255, 0.08);
-  box-shadow: 0 0 0 3px rgba(93, 173, 226, 0.12);
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.10);
 }
 
 .console-button {
@@ -134,24 +134,25 @@
 }
 
 .console-button--primary {
-  border-color: rgba(216, 127, 61, 0.26);
-  background: linear-gradient(180deg, rgba(216, 127, 61, 0.92), rgba(194, 90, 36, 0.95));
-  color: #140d08;
+  border-color: rgba(129, 140, 248, 0.28);
+  background: var(--accent);
+  color: var(--accent-contrast);
 }
 
 .console-button--secondary:hover:not(:disabled) {
-  border-color: rgba(93, 173, 226, 0.34);
-  background: rgba(93, 173, 226, 0.08);
+  border-color: rgba(129, 140, 248, 0.30);
+  background: rgba(129, 140, 248, 0.08);
 }
 
 .console-button--danger {
-  border-color: rgba(248, 113, 113, 0.24);
-  background: rgba(248, 113, 113, 0.12);
-  color: #ffb4ab;
+  background: transparent;
+  border: 1px solid rgba(248, 113, 113, 0.20);
+  color: #f87171;
 }
 
 .console-button--danger:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.18);
+  background: rgba(248, 113, 113, 0.08);
+  border-color: rgba(248, 113, 113, 0.35);
 }
 
 .console-tree {
@@ -172,8 +173,8 @@
 .instance-node {
   padding: 12px 16px;
   margin-left: calc(var(--depth, 0) * 24px);
-  border-radius: 14px;
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.03);
   display: flex;
   align-items: center;
@@ -242,8 +243,8 @@
 }
 
 .instance-role-badge {
-  background: rgba(93, 173, 226, 0.16);
-  color: #9ad2ff;
+  background: rgba(129, 140, 248, 0.14);
+  color: #c7d2fe;
 }
 
 .console-status-chip {
@@ -259,19 +260,19 @@
 }
 
 .instance-status-dot.is-idle {
-  background: var(--accent-sage);
+  background: #a3e635;
 }
 
 .instance-status-dot.is-busy {
-  background: var(--accent-teal);
+  background: #34d399;
 }
 
 .instance-status-dot.is-stale {
-  background: var(--accent-amber);
+  background: #fbbf24;
 }
 
 .instance-status-dot.is-stopped {
-  background: var(--accent-ash);
+  background: rgba(250, 250, 250, 0.20);
 }
 
 .console-health-header {
@@ -299,21 +300,21 @@
 }
 
 .health-indicator.is-green {
-  background: hsla(150, 18%, 48%, 0.25);
-  box-shadow: 0 0 20px hsla(150, 18%, 48%, 0.2);
-  color: var(--accent-sage);
+  background: rgba(74, 222, 128, 0.18);
+  box-shadow: 0 0 20px rgba(74, 222, 128, 0.15);
+  color: #4ade80;
 }
 
 .health-indicator.is-yellow {
-  background: hsla(35, 25%, 52%, 0.25);
-  box-shadow: 0 0 20px hsla(35, 25%, 52%, 0.2);
-  color: var(--accent-amber);
+  background: rgba(251, 191, 36, 0.18);
+  box-shadow: 0 0 20px rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
 }
 
 .health-indicator.is-red {
-  background: hsla(0, 20%, 52%, 0.25);
-  box-shadow: 0 0 20px hsla(0, 20%, 52%, 0.2);
-  color: var(--accent-rose);
+  background: rgba(248, 113, 113, 0.18);
+  box-shadow: 0 0 20px rgba(248, 113, 113, 0.15);
+  color: #f87171;
 }
 
 .console-metric-grid {
@@ -324,8 +325,8 @@
 
 .console-metric {
   padding: 14px 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.03);
   display: grid;
   gap: 6px;
@@ -333,14 +334,15 @@
 
 .console-metric span {
   color: var(--text-tertiary);
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .console-metric strong {
   color: var(--text-primary);
-  font-size: 1.12rem;
+  font-size: var(--text-2xl);
+  font-variant-numeric: tabular-nums;
 }
 
 .console-footer-note {
@@ -355,10 +357,10 @@
   display: grid;
   gap: 10px;
   padding: 16px 18px;
-  border-radius: 20px;
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border-radius: var(--radius-2xl);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   background:
-    radial-gradient(circle at right, rgba(93, 173, 226, 0.12), transparent 45%),
+    radial-gradient(circle at right, rgba(129, 140, 248, 0.08), transparent 45%),
     rgba(255, 255, 255, 0.03);
 }
 
@@ -378,7 +380,7 @@
 }
 
 .console-budget-meter__track {
-  height: 12px;
+  height: 4px;
   border-radius: 999px;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.06);
@@ -388,8 +390,7 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background:
-    linear-gradient(90deg, rgba(93, 173, 226, 0.82), rgba(88, 214, 141, 0.78));
+  background: #818cf8;
 }
 
 .console-empty {

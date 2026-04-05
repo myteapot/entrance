@@ -5,7 +5,7 @@
 .page__hero--chat::after {
   inset: auto -8% -32% 24%;
   height: 260px;
-  background: radial-gradient(circle, rgba(88, 214, 141, 0.16), transparent 68%);
+  background: radial-gradient(circle, rgba(74, 222, 128, 0.10), transparent 68%);
 }
 
 .chat-grid {
@@ -30,8 +30,8 @@
 .chat-status-pill {
   padding: 7px 12px;
   border-radius: 999px;
-  background: rgba(88, 214, 141, 0.14);
-  color: #8ce8ae;
+  background: rgba(74, 222, 128, 0.14);
+  color: #86efac;
   font-size: 0.78rem;
   font-weight: 600;
   white-space: nowrap;
@@ -39,8 +39,8 @@
 
 .chat-detail-panel {
   padding: 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.035);
   display: grid;
   gap: 10px;
@@ -85,7 +85,7 @@
   padding: 7px 11px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   color: var(--text-secondary);
   font-size: 0.78rem;
 }
@@ -100,8 +100,8 @@
 
 .chat-feed__item {
   padding: 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.03);
   display: grid;
   gap: 8px;
@@ -127,20 +127,20 @@
 
 .chat-callout {
   padding: 14px 16px;
-  border-radius: 18px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
 }
 
 .chat-callout--error {
-  border-color: rgba(236, 112, 99, 0.26);
-  background: rgba(236, 112, 99, 0.12);
-  color: #ffb4ab;
+  border-color: rgba(248, 113, 113, 0.26);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
 }
 
 .chat-callout--success {
-  border-color: rgba(88, 214, 141, 0.22);
-  background: rgba(88, 214, 141, 0.12);
-  color: #a7f3bf;
+  border-color: rgba(74, 222, 128, 0.22);
+  background: rgba(74, 222, 128, 0.12);
+  color: #bbf7d0;
 }
 
 .front-door-layout {
@@ -172,8 +172,8 @@
 .front-door-bubble,
 .front-door-import-receipt {
   padding: 18px;
-  border-radius: 22px;
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border-radius: var(--radius-2xl);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   display: grid;
   gap: 8px;
   position: relative;
@@ -185,7 +185,7 @@
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06), transparent 42%);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 42%);
   pointer-events: none;
 }
 
@@ -210,27 +210,27 @@
 
 .front-door-bubble--runtime {
   background:
-    radial-gradient(circle at top left, rgba(88, 214, 141, 0.16), transparent 42%),
+    radial-gradient(circle at top left, rgba(74, 222, 128, 0.10), transparent 42%),
     rgba(255, 255, 255, 0.03);
 }
 
 .front-door-bubble--assistant {
   background:
-    radial-gradient(circle at top right, rgba(93, 173, 226, 0.16), transparent 40%),
+    radial-gradient(circle at top right, rgba(129, 140, 248, 0.10), transparent 40%),
     rgba(255, 255, 255, 0.03);
   margin-left: 10%;
 }
 
 .front-door-bubble--decision {
   background:
-    radial-gradient(circle at bottom left, rgba(216, 127, 61, 0.18), transparent 42%),
+    radial-gradient(circle at bottom left, rgba(251, 191, 36, 0.10), transparent 42%),
     rgba(255, 255, 255, 0.03);
 }
 
 .front-door-bubble--surface,
 .front-door-import-receipt {
   background:
-    radial-gradient(circle at top right, rgba(154, 210, 255, 0.16), transparent 38%),
+    radial-gradient(circle at top right, rgba(129, 140, 248, 0.08), transparent 38%),
     rgba(255, 255, 255, 0.03);
 }
 
@@ -242,8 +242,8 @@
 
 .front-door-action {
   padding: 12px 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-primary);
   text-decoration: none;
@@ -257,8 +257,8 @@
 
 .front-door-action:hover {
   transform: translateY(-2px);
-  border-color: rgba(154, 210, 255, 0.34);
-  background: rgba(93, 173, 226, 0.08);
+  border-color: rgba(129, 140, 248, 0.28);
+  background: rgba(129, 140, 248, 0.06);
 }
 
 .front-door-action:disabled {
@@ -268,17 +268,13 @@
 }
 
 .front-door-action--primary {
-  background:
-    linear-gradient(180deg, rgba(216, 127, 61, 0.9), rgba(194, 90, 36, 0.95)),
-    #d87f3d;
-  border-color: rgba(216, 127, 61, 0.4);
-  color: #140d08;
+  background: var(--accent);
+  border-color: rgba(129, 140, 248, 0.35);
+  color: var(--accent-contrast);
 }
 
 .front-door-action--primary:hover {
-  background:
-    linear-gradient(180deg, rgba(226, 140, 79, 0.92), rgba(204, 101, 48, 0.96)),
-    #e28c4f;
+  background: var(--accent-hover);
 }
 
 .front-door-rail {
@@ -319,7 +315,7 @@
   border-radius: 999px;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(247, 239, 230, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .front-door-progress__bar > span {
@@ -330,24 +326,24 @@
 }
 
 .front-door-progress__bar > .is-steady {
-  background: linear-gradient(90deg, rgba(88, 214, 141, 0.25), rgba(88, 214, 141, 0.95));
+  background: #4ade80;
 }
 
 .front-door-progress__bar > .is-active {
-  background: linear-gradient(90deg, rgba(216, 127, 61, 0.24), rgba(216, 127, 61, 0.94));
+  background: #818cf8;
 }
 
 .front-door-progress__bar > .is-warming {
-  background: linear-gradient(90deg, rgba(93, 173, 226, 0.24), rgba(154, 210, 255, 0.94));
+  background: #fbbf24;
 }
 
 .front-door-progress__bar > .is-caution {
-  background: linear-gradient(90deg, rgba(245, 176, 65, 0.24), rgba(245, 176, 65, 0.92));
+  background: #f87171;
 }
 
 .front-door-detail {
-  border-radius: 22px;
-  border: 1px solid rgba(247, 239, 230, 0.08);
+  border-radius: var(--radius-2xl);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.03);
   overflow: hidden;
 }
