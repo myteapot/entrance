@@ -186,13 +186,7 @@ const Chat = () => {
   return (
     <section class="page page--chat">
       <header class="page__hero page__hero--dashboard page__hero--chat">
-        <p class="page__eyebrow">Native Front Door</p>
-        <h2>Chat-first Entrance, grounded in live NOTA runtime truth.</h2>
-        <p class="page__summary">
-          This front door opens with the active checkpoint, the next honest runtime move, and a
-          compact mission rail. It is reading the same NOTA truth plane as `status` and
-          `overview`, not a second GUI scheduler.
-        </p>
+        <p class="page__eyebrow">Chat</p>
         <div class="dashboard-hero__meta" aria-label="Chat runtime status">
           <span class="dashboard-pill">
             Archive {status()?.chat_policy.setting.archive_policy ?? "off"}
@@ -530,11 +524,7 @@ const Chat = () => {
               {overview()?.decisions.link_count ?? 0} links
             </span>
           </div>
-          <h3>Accepted decisions keep the front door honest</h3>
-          <p>
-            The shell reads the same decision plane that governs ChatUI, dashboard separation, and
-            anti-Zeno progress expectations.
-          </p>
+          <h3>Decisions</h3>
           <Show
             when={latestDecisions().length > 0}
             fallback={<p class="chat-detail-panel__empty">No canonical design decisions yet.</p>}

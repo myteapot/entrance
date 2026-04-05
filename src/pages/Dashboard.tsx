@@ -365,12 +365,7 @@ const Dashboard = () => {
   return (
     <section class="page page--dashboard page--mission-board">
       <header class="page__hero page__hero--dashboard page__hero--board">
-        <p class="page__eyebrow">Mission Dashboard</p>
-        <h2>Layered progress for the active continuity boundary.</h2>
-        <p class="page__summary">
-          The board reads the same NOTA runtime truth as Chat: checkpoint continuity, boundary
-          state, human relay pressure, and layered progress, without inventing a second scheduler.
-        </p>
+        <p class="page__eyebrow">Board</p>
         <div class="dashboard-hero__meta" aria-label="Dashboard runtime summary">
           <span class="dashboard-pill">Checkpoint {status()?.current_checkpoint_id ?? "none"}</span>
           <span class="dashboard-pill">{frontDoor()?.posture ?? "Loading board"}</span>

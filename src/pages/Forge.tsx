@@ -384,7 +384,6 @@ export default function Forge() {
       <div class="forge-header">
         <div>
           <h1 class="forge-title">Do</h1>
-          <p class="forge-subtitle">Automatic runtime transaction, receipt stream, and execution follow-through.</p>
         </div>
         <div style={{ display: "flex", gap: "0.75rem" }}>
           <button
@@ -451,11 +450,6 @@ export default function Forge() {
         >
           {(context) => (
             <>
-              <p class="auto-dispatch-card__body">
-                Do derives the issue, worktree, and agent prompt automatically from the current
-                `feat-*` branch. Running it creates a runtime transaction, appends receipts, and
-                writes a cadence checkpoint before handing execution to the runner.
-              </p>
               <div class="token-chip-list">
                 <span class="token-chip">{context().issue_id}</span>
                 <span class="token-chip">{context().issue_status}</span>

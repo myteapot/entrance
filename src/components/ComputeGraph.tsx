@@ -11,18 +11,18 @@ interface ComputeGraphProps {
   selectedNodeId?: string | null;
 }
 
-/* ── Color palette (Tech Noir) ─────────────────────────── */
+/* ── Color palette (Carbon — desaturated) ─────────────── */
 const TONE_COLORS: Record<string, string> = {
-  nota:     "#818cf8",
-  active:   "#34d399",
-  steady:   "#a3e635",
-  warming:  "#fbbf24",
-  caution:  "#f87171",
-  archived: "rgba(250,250,250,0.15)",
+  nota:     "#7c83c9",
+  active:   "#5a9e82",
+  steady:   "#7a8a5e",
+  warming:  "#9e8a4a",
+  caution:  "#9e5a5a",
+  archived: "rgba(250,250,250,0.12)",
 };
-const DEFAULT_NODE_COLOR = "rgba(250,250,250,0.25)";
-const LABEL_COLOR_PRIMARY = "#e0e7ff";
-const LABEL_COLOR_SECONDARY = "rgba(250,250,250,0.50)";
+const DEFAULT_NODE_COLOR = "rgba(250,250,250,0.18)";
+const LABEL_COLOR_PRIMARY = "#c8ccd4";
+const LABEL_COLOR_SECONDARY = "rgba(250,250,250,0.40)";
 
 /* ── Node initials for in-circle rendering ─────────────── */
 const NODE_INITIALS: Record<string, string> = {
@@ -177,56 +177,40 @@ const ComputeGraph = (props: ComputeGraphProps) => {
       }
 
       let fillStyle = DEFAULT_NODE_COLOR;
-      let shadowColor = fillStyle;
-      let shadowBlur = 0;
       let opacity = 1;
 
       switch(node.tone) {
         case "nota":
           fillStyle = TONE_COLORS.nota;
-          shadowBlur = 8 + Math.sin(_timestamp * 0.002) * 4;
           break;
         case "active":
           fillStyle = TONE_COLORS.active;
-          shadowBlur = 6 + Math.sin(_timestamp * 0.004) * 3;
           break;
         case "steady":
           fillStyle = TONE_COLORS.steady;
-          shadowBlur = 4;
           break;
         case "warming":
           fillStyle = TONE_COLORS.warming;
-          shadowBlur = 5 + Math.sin(_timestamp * 0.0015) * 3;
           break;
         case "caution":
           fillStyle = TONE_COLORS.caution;
-          shadowBlur = 6 + Math.sin(_timestamp * 0.006) * 4;
           break;
         case "archived":
           fillStyle = TONE_COLORS.archived;
-          shadowColor = "transparent";
-          shadowBlur = 0;
           opacity = 0.5;
           break;
-      }
-
-      shadowColor = fillStyle;
-
-      if (isHovered) {
-        shadowBlur += 4;
       }
 
       context.save();
       context.globalAlpha = opacity;
 
-      /* ── Selected ring (pulse glow) ──────────────── */
+      /* ── Selected ring (static) ─────────────────── */
       if (isSelected) {
-        const pulseRadius = radius + 6 + Math.sin(_timestamp * 0.003) * 2;
         context.beginPath();
-        context.arc(node.x ?? 0, node.y ?? 0, pulseRadius, 0, Math.PI * 2);
+        context.arc(node.x ?? 0, node.y ?? 0, radius + 5, 0, Math.PI * 2);
         context.strokeStyle = fillStyle;
-        context.lineWidth = 2 / zoom;
-        context.globalAlpha = 0.4 + Math.sin(_timestamp * 0.003) * 0.15;
+        context.lineWidth = 1.5 / zoom;
+        context.globalAlpha = 0.5;
         context.stroke();
         context.globalAlpha = opacity;
       }
@@ -235,11 +219,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
       context.beginPath();
       context.arc(node.x ?? 0, node.y ?? 0, radius, 0, Math.PI * 2);
       context.fillStyle = fillStyle;
-      context.shadowColor = shadowColor;
-      context.shadowBlur = Math.min(15, shadowBlur);
       context.fill();
-
-      context.shadowBlur = 0;
 
       if (isHovered) {
         context.lineWidth = 1 / zoom;

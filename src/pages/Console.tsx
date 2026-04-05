@@ -365,12 +365,7 @@ export default function Console() {
   return (
     <section class="page page--dashboard page--console console-page">
       <header class="page__hero page__hero--dashboard page__hero--console">
-        <p class="page__eyebrow">Operations Console</p>
-        <h2>Direct instance control, health pulse, and budget visibility.</h2>
-        <p class="page__summary">
-          Console exposes the runtime operating surface for humans: instance hierarchy, pulse
-          health, and capacity pressure, all from the same Tauri truth plane that drives Board.
-        </p>
+        <p class="page__eyebrow">Console</p>
         <div class="dashboard-hero__meta" aria-label="Console runtime summary">
           <span class="dashboard-pill">Tier {humanizeToken(pulse()?.agent_tier)}</span>
           <span class="dashboard-pill">Health {pulse()?.health ?? "Syncing"}</span>

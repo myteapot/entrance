@@ -13,27 +13,13 @@ const Sidebar = () => {
   return (
     <aside class="sidebar">
       <div class="sidebar__brand">
-        <div class="sidebar__brand-mark">EN</div>
-        <div>
-          <p class="sidebar__eyebrow">Entrance</p>
-          <h1 class="sidebar__title">Native NOTA front door</h1>
-          <p class="sidebar__summary">
-            Chat opens on live runtime truth, Board visualizes the active mission boundary, and
-            Do plus Console keep dispatch and direct operations visible from one shell.
-          </p>
-        </div>
+        <h1 class="sidebar__title">Entrance</h1>
       </div>
 
       <nav class="sidebar__nav" aria-label="Primary navigation">
         {primaryRoutes.map((route) => (
           <A href={route.path} class="sidebar__link" activeClass="is-active" end>
-            <span class="sidebar__glyph" aria-hidden="true">
-              {route.glyph}
-            </span>
-            <span class="sidebar__copy">
-              <span class="sidebar__label">{route.label}</span>
-              <span class="sidebar__detail">{route.description}</span>
-            </span>
+            <span class="sidebar__label">{route.label}</span>
             <span class="sidebar__hotkey">{route.hotkey}</span>
           </A>
         ))}
@@ -41,13 +27,7 @@ const Sidebar = () => {
 
       <div class="sidebar__footer">
         <A href={settingsRoute.path} class="sidebar__link sidebar__link--settings" activeClass="is-active" end>
-          <span class="sidebar__glyph" aria-hidden="true">
-            {settingsRoute.glyph}
-          </span>
-          <span class="sidebar__copy">
-            <span class="sidebar__label">{settingsRoute.label}</span>
-            <span class="sidebar__detail">{settingsRoute.description}</span>
-          </span>
+          <span class="sidebar__label">{settingsRoute.label}</span>
         </A>
         <p class="sidebar__hint">{hotkeyHint}</p>
       </div>
