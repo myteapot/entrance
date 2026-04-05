@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,31 @@ pub enum AgentTier {
 impl Default for AgentTier {
     fn default() -> Self {
         Self::ArchNota
+    }
+}
+
+impl AgentTier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Solo => "Solo",
+            Self::DevNota => "DevNota",
+            Self::ArchNota => "ArchNota",
+            Self::FullNota => "FullNota",
+        }
+    }
+}
+
+impl FromStr for AgentTier {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match normalize_enum_key(value).as_str() {
+            "solo" => Ok(Self::Solo),
+            "devnota" => Ok(Self::DevNota),
+            "archnota" => Ok(Self::ArchNota),
+            "fullnota" => Ok(Self::FullNota),
+            _ => Err(anyhow!("unknown agent tier `{value}`")),
+        }
     }
 }
 
@@ -73,6 +98,10 @@ pub struct SystemPulse {
     pub stale_tasks: u32,
     pub pending_approvals: u32,
     pub pending_work: u32,
+    pub total_instances: u32,
+    pub active_instances: u32,
+    pub stale_instances: u32,
+    pub stopped_instances: u32,
     pub health: SystemHealth,
     pub tick_interval_secs: u64,
     pub stale_threshold_multiplier: u32,
@@ -126,8 +155,10 @@ fn publish_pulse(event_bus: &EventBus, topic: &str, pulse: &SystemPulse) {
 fn should_notify_human(pulse: &SystemPulse, config: &HeartbeatConfig) -> bool {
     match config.agent_tier {
         AgentTier::Solo => false,
-        AgentTier::DevNota => pulse.stale_tasks > 0,
-        AgentTier::ArchNota => pulse.stale_tasks > 0 || pulse.pending_approvals > 0,
+        AgentTier::DevNota => pulse.stale_tasks > 0 || pulse.stale_instances > 0,
+        AgentTier::ArchNota => {
+            pulse.stale_tasks > 0 || pulse.stale_instances > 0 || pulse.pending_approvals > 0
+        }
         AgentTier::FullNota => {
             !matches!(pulse.health, SystemHealth::Green)
                 || pulse.pending_approvals > 0
@@ -159,10 +190,32 @@ fn compute_pulse(data_store: &DataStore, config: &HeartbeatConfig) -> Result<Sys
         .into_iter()
         .filter(|allocation| allocation.status == "pending_approval")
         .count() as u32;
+    let instances = data_store.list_agent_instances()?;
+    let total_instances = instances.len() as u32;
+    let active_instances = instances
+        .iter()
+        .filter(|instance| matches!(instance.status.as_str(), "Idle" | "Busy"))
+        .count() as u32;
+    let stale_instances = instances
+        .iter()
+        .filter(|instance| {
+            instance.status == "Stale"
+                || (matches!(instance.status.as_str(), "Idle" | "Busy")
+                    && match &instance.last_heartbeat_at {
+                        Some(heartbeat_at) => heartbeat_at.as_str() < stale_cutoff.as_str(),
+                        None => false,
+                    })
+        })
+        .count() as u32;
+    let stopped_instances = instances
+        .iter()
+        .filter(|instance| instance.status == "Stopped")
+        .count() as u32;
 
-    let health = if stale_tasks > 0 && failed_unhandled > 0 {
+    let has_stale_instances = stale_instances > 0;
+    let health = if (stale_tasks > 0 || has_stale_instances) && failed_unhandled > 0 {
         SystemHealth::Red
-    } else if stale_tasks > 0 || failed_unhandled > 0 {
+    } else if stale_tasks > 0 || has_stale_instances || failed_unhandled > 0 {
         SystemHealth::Yellow
     } else {
         SystemHealth::Green
@@ -175,10 +228,22 @@ fn compute_pulse(data_store: &DataStore, config: &HeartbeatConfig) -> Result<Sys
         stale_tasks,
         pending_approvals,
         pending_work,
+        total_instances,
+        active_instances,
+        stale_instances,
+        stopped_instances,
         health,
         tick_interval_secs: config.tick_interval_secs,
         stale_threshold_multiplier: config.stale_threshold_multiplier,
     })
+}
+
+fn normalize_enum_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
 }
 
 #[cfg(test)]
@@ -191,7 +256,7 @@ mod tests {
 
     use super::*;
     use crate::core::data_store::{
-        MigrationPlan, NewNotaRuntimeAllocation, NewNotaRuntimeTransaction,
+        MigrationPlan, NewAgentInstance, NewNotaRuntimeAllocation, NewNotaRuntimeTransaction,
     };
 
     #[test]
@@ -297,6 +362,52 @@ mod tests {
     }
 
     #[test]
+    fn compute_pulse_includes_instance_counts() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = test_store()?;
+        insert_instance(&store, "Idle")?;
+        let busy = insert_instance(&store, "Busy")?;
+        insert_instance(&store, "Stopped")?;
+        set_instance_heartbeat_at(
+            &store,
+            busy,
+            (Utc::now() - ChronoDuration::seconds(180))
+                .to_rfc3339()
+                .as_str(),
+        )?;
+
+        let pulse = compute_pulse(&store, &HeartbeatConfig::default())?;
+
+        assert_eq!(pulse.total_instances, 3);
+        assert_eq!(pulse.active_instances, 2);
+        assert_eq!(pulse.stale_instances, 1);
+        assert_eq!(pulse.stopped_instances, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn stale_instances_affect_health() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = test_store()?;
+        let busy = insert_instance(&store, "Busy")?;
+        set_instance_heartbeat_at(
+            &store,
+            busy,
+            (Utc::now() - ChronoDuration::seconds(180))
+                .to_rfc3339()
+                .as_str(),
+        )?;
+
+        let pulse = compute_pulse(&store, &HeartbeatConfig::default())?;
+
+        assert_eq!(pulse.stale_instances, 1);
+        assert_eq!(pulse.health, SystemHealth::Yellow);
+
+        Ok(())
+    }
+
+    #[test]
     fn notify_dev_nota_only_on_stale() {
         let _guard = crate::test_env_guard();
 
@@ -313,6 +424,23 @@ mod tests {
 
         assert!(!should_notify_human(&healthy, &config));
         assert!(should_notify_human(&stale, &config));
+    }
+
+    #[test]
+    fn notify_dev_nota_on_stale_instance() {
+        let _guard = crate::test_env_guard();
+
+        let config = HeartbeatConfig {
+            agent_tier: AgentTier::DevNota,
+            ..Default::default()
+        };
+        let stale_instance = SystemPulse {
+            stale_instances: 1,
+            health: SystemHealth::Yellow,
+            ..sample_pulse(SystemHealth::Yellow)
+        };
+
+        assert!(should_notify_human(&stale_instance, &config));
     }
 
     #[test]
@@ -389,6 +517,10 @@ mod tests {
             stale_tasks: 0,
             pending_approvals: 0,
             pending_work: 0,
+            total_instances: 0,
+            active_instances: 0,
+            stale_instances: 0,
+            stopped_instances: 0,
             health,
             tick_interval_secs: 30,
             stale_threshold_multiplier: 3,
@@ -424,6 +556,34 @@ mod tests {
         connection.execute(
             "UPDATE plugin_forge_tasks SET heartbeat_at = ?2 WHERE id = ?1",
             params![task_id, heartbeat_at],
+        )?;
+        Ok(())
+    }
+
+    fn insert_instance(store: &DataStore, status: &str) -> Result<i64> {
+        let instance = store.insert_agent_instance(NewAgentInstance {
+            role: "agent",
+            parent_instance_id: None,
+            agent_tier: "ArchNota",
+            display_name: "heartbeat-agent",
+            config_json: "{}",
+            workspace_path: None,
+        })?;
+        if status != "Idle" {
+            store.update_agent_instance_status(instance.id, status)?;
+        }
+        Ok(instance.id)
+    }
+
+    fn set_instance_heartbeat_at(
+        store: &DataStore,
+        instance_id: i64,
+        heartbeat_at: &str,
+    ) -> Result<()> {
+        let connection = rusqlite::Connection::open(store.path())?;
+        connection.execute(
+            "UPDATE agent_instances SET last_heartbeat_at = ?2 WHERE id = ?1",
+            params![instance_id, heartbeat_at],
         )?;
         Ok(())
     }

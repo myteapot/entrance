@@ -96,7 +96,12 @@ const CORE_NOTA_MEMORY_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0019_create_nota_memory_tables.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 15] = [
+const CORE_AGENT_INSTANCES_MIGRATION: MigrationStep = MigrationStep {
+    name: "0020_create_agent_instances",
+    sql: include_str!("../../migrations/0020_create_agent_instances.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 16] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -112,6 +117,7 @@ const CORE_MIGRATIONS: [MigrationStep; 15] = [
     CORE_SUPERVISION_BUDGET_LEDGER_MIGRATION,
     CORE_SIMULATION_GATE_EVIDENCE_MIGRATION,
     CORE_NOTA_MEMORY_MIGRATION,
+    CORE_AGENT_INSTANCES_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -672,6 +678,21 @@ pub struct StoredRepairLaneItem {
     pub resolved_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredAgentInstance {
+    pub id: i64,
+    pub role: String,
+    pub parent_instance_id: Option<i64>,
+    pub agent_tier: String,
+    pub status: String,
+    pub display_name: String,
+    pub config_json: String,
+    pub workspace_path: Option<String>,
+    pub last_heartbeat_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertDocumentRecord<'a> {
     pub id: i64,
@@ -1122,6 +1143,16 @@ pub struct NewForgeDispatchReceipt<'a> {
     pub child_dispatch_role: &'a str,
     pub child_dispatch_tool_name: &'a str,
     pub child_slot: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewAgentInstance<'a> {
+    pub role: &'a str,
+    pub parent_instance_id: Option<i64>,
+    pub agent_tier: &'a str,
+    pub display_name: &'a str,
+    pub config_json: &'a str,
+    pub workspace_path: Option<&'a str>,
 }
 
 #[derive(Clone)]
@@ -2162,6 +2193,186 @@ impl DataStore {
         })
     }
 
+    pub fn insert_agent_instance(
+        &self,
+        instance: NewAgentInstance<'_>,
+    ) -> Result<StoredAgentInstance> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO agent_instances (
+                    role,
+                    parent_instance_id,
+                    agent_tier,
+                    status,
+                    display_name,
+                    config_json,
+                    workspace_path,
+                    last_heartbeat_at,
+                    created_at,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, 'Idle', ?4, ?5, ?6, NULL, ?7, ?7)
+                "#,
+                params![
+                    instance.role,
+                    instance.parent_instance_id,
+                    instance.agent_tier,
+                    instance.display_name,
+                    instance.config_json,
+                    instance.workspace_path,
+                    now,
+                ],
+            )?;
+
+            Ok(StoredAgentInstance {
+                id: conn.last_insert_rowid(),
+                role: instance.role.to_string(),
+                parent_instance_id: instance.parent_instance_id,
+                agent_tier: instance.agent_tier.to_string(),
+                status: "Idle".to_string(),
+                display_name: instance.display_name.to_string(),
+                config_json: instance.config_json.to_string(),
+                workspace_path: instance.workspace_path.map(str::to_string),
+                last_heartbeat_at: None,
+                created_at: now.clone(),
+                updated_at: now,
+            })
+        })
+    }
+
+    pub fn get_agent_instance(&self, id: i64) -> Result<Option<StoredAgentInstance>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                r#"
+                SELECT id, role, parent_instance_id, agent_tier, status, display_name,
+                       config_json, workspace_path, last_heartbeat_at, created_at, updated_at
+                FROM agent_instances
+                WHERE id = ?1
+                "#,
+                [id],
+                map_agent_instance_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn list_agent_instances(&self) -> Result<Vec<StoredAgentInstance>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, role, parent_instance_id, agent_tier, status, display_name,
+                       config_json, workspace_path, last_heartbeat_at, created_at, updated_at
+                FROM agent_instances
+                ORDER BY created_at ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], map_agent_instance_row)?;
+            let instances = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(instances)
+        })
+    }
+
+    pub fn list_agent_instances_by_status(&self, status: &str) -> Result<Vec<StoredAgentInstance>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, role, parent_instance_id, agent_tier, status, display_name,
+                       config_json, workspace_path, last_heartbeat_at, created_at, updated_at
+                FROM agent_instances
+                WHERE status = ?1
+                ORDER BY created_at ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([status], map_agent_instance_row)?;
+            let instances = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(instances)
+        })
+    }
+
+    pub fn list_child_instances(&self, parent_id: i64) -> Result<Vec<StoredAgentInstance>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, role, parent_instance_id, agent_tier, status, display_name,
+                       config_json, workspace_path, last_heartbeat_at, created_at, updated_at
+                FROM agent_instances
+                WHERE parent_instance_id = ?1
+                ORDER BY created_at ASC, id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([parent_id], map_agent_instance_row)?;
+            let instances = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(instances)
+        })
+    }
+
+    pub fn update_agent_instance_status(&self, id: i64, status: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let changed = self.with_connection(|conn| {
+            Ok(conn.execute(
+                r#"
+                UPDATE agent_instances
+                SET status = ?2,
+                    updated_at = ?3
+                WHERE id = ?1
+                "#,
+                params![id, status, now],
+            )?)
+        })?;
+
+        if changed == 0 {
+            return Err(anyhow!("agent instance `{id}` does not exist"));
+        }
+
+        Ok(())
+    }
+
+    pub fn update_agent_instance_heartbeat(&self, id: i64) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let changed = self.with_connection(|conn| {
+            Ok(conn.execute(
+                r#"
+                UPDATE agent_instances
+                SET last_heartbeat_at = ?2,
+                    updated_at = ?2
+                WHERE id = ?1
+                "#,
+                params![id, now],
+            )?)
+        })?;
+
+        if changed == 0 {
+            return Err(anyhow!("agent instance `{id}` does not exist"));
+        }
+
+        Ok(())
+    }
+
+    pub fn delete_agent_instance(&self, id: i64) -> Result<()> {
+        let changed = self.with_connection(|conn| {
+            Ok(conn.execute("DELETE FROM agent_instances WHERE id = ?1", [id])?)
+        })?;
+
+        if changed == 0 {
+            return Err(anyhow!("agent instance `{id}` does not exist"));
+        }
+
+        Ok(())
+    }
+
+    pub fn count_active_instances(&self) -> Result<u32> {
+        self.with_connection(|conn| {
+            let count = conn.query_row(
+                "SELECT COUNT(*) FROM agent_instances WHERE status IN ('Idle', 'Busy')",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
+    }
+
     pub fn count_running_forge_tasks(&self) -> Result<u32> {
         self.with_connection(|conn| {
             let count = conn.query_row(
@@ -2215,7 +2426,7 @@ impl DataStore {
         }
 
         let running: u32 = transaction.query_row(
-            "SELECT COUNT(*) FROM plugin_forge_tasks WHERE status = 'Running'",
+            "SELECT COUNT(*) FROM agent_instances WHERE status IN ('Idle', 'Busy')",
             [],
             |row| row.get(0),
         )?;
@@ -2242,7 +2453,7 @@ impl DataStore {
             match config.capacity_mode {
                 CapacityMode::Reject => {
                     let message = format!(
-                        "Parallel capacity exhausted ({running}/{} running tasks)",
+                        "Parallel capacity exhausted ({running}/{} active instances)",
                         config.max_concurrent_agents
                     );
                     let changed = transaction.execute(
@@ -5647,6 +5858,22 @@ fn map_forge_log_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredForgeTas
     })
 }
 
+fn map_agent_instance_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAgentInstance> {
+    Ok(StoredAgentInstance {
+        id: row.get(0)?,
+        role: row.get(1)?,
+        parent_instance_id: row.get(2)?,
+        agent_tier: row.get(3)?,
+        status: row.get(4)?,
+        display_name: row.get(5)?,
+        config_json: row.get(6)?,
+        workspace_path: row.get(7)?,
+        last_heartbeat_at: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
 fn map_forge_dispatch_receipt_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<StoredForgeDispatchReceipt> {
@@ -7466,6 +7693,29 @@ mod tests {
         DataStore::in_memory(MigrationPlan::new(crate::plugins::forge::migrations()))
     }
 
+    fn insert_test_instance(
+        store: &DataStore,
+        role: &str,
+        parent_instance_id: Option<i64>,
+        display_name: &str,
+        status: &str,
+    ) -> Result<StoredAgentInstance> {
+        let instance = store.insert_agent_instance(NewAgentInstance {
+            role,
+            parent_instance_id,
+            agent_tier: "ArchNota",
+            display_name,
+            config_json: r#"{"test":true}"#,
+            workspace_path: Some("/tmp/instance"),
+        })?;
+        if status != "Idle" {
+            store.update_agent_instance_status(instance.id, status)?;
+        }
+        store
+            .get_agent_instance(instance.id)?
+            .ok_or_else(|| anyhow!("instance `{}` missing after insert", instance.id))
+    }
+
     #[test]
     fn forge_task_logs_round_trip() -> Result<()> {
         let store = DataStore::in_memory(MigrationPlan::new(&[
@@ -7543,6 +7793,117 @@ mod tests {
             .get_forge_task(task_id)?
             .expect("task should remain queryable");
         assert_eq!(done.heartbeat_at.as_deref(), Some(last_heartbeat.as_str()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn insert_and_get_agent_instance() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        let inserted = store.insert_agent_instance(NewAgentInstance {
+            role: "arch",
+            parent_instance_id: None,
+            agent_tier: "ArchNota",
+            display_name: "arch-root",
+            config_json: r#"{"scope":"root"}"#,
+            workspace_path: Some("/tmp/arch-root"),
+        })?;
+        let fetched = store
+            .get_agent_instance(inserted.id)?
+            .expect("inserted instance should be queryable");
+
+        assert_eq!(fetched.id, inserted.id);
+        assert_eq!(fetched.role, "arch");
+        assert_eq!(fetched.parent_instance_id, None);
+        assert_eq!(fetched.agent_tier, "ArchNota");
+        assert_eq!(fetched.status, "Idle");
+        assert_eq!(fetched.display_name, "arch-root");
+        assert_eq!(fetched.config_json, r#"{"scope":"root"}"#);
+        assert_eq!(fetched.workspace_path.as_deref(), Some("/tmp/arch-root"));
+        assert!(fetched.last_heartbeat_at.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn list_child_instances_returns_only_direct_children() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        let parent = insert_test_instance(&store, "arch", None, "arch-root", "Idle")?;
+        let child_one = insert_test_instance(&store, "dev", Some(parent.id), "dev-1", "Idle")?;
+        let child_two = insert_test_instance(&store, "dev", Some(parent.id), "dev-2", "Busy")?;
+        insert_test_instance(&store, "agent", Some(child_one.id), "agent-1", "Idle")?;
+
+        let children = store.list_child_instances(parent.id)?;
+
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].id, child_one.id);
+        assert_eq!(children[1].id, child_two.id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn count_active_instances_only_counts_idle_and_busy() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+
+        insert_test_instance(&store, "arch", None, "idle", "Idle")?;
+        insert_test_instance(&store, "dev", None, "busy", "Busy")?;
+        insert_test_instance(&store, "agent", None, "stopped", "Stopped")?;
+        insert_test_instance(&store, "agent", None, "stale", "Stale")?;
+
+        assert_eq!(store.count_active_instances()?, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_instance_status() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let instance = insert_test_instance(&store, "dev", None, "dev-1", "Idle")?;
+
+        store.update_agent_instance_status(instance.id, "Busy")?;
+        let updated = store
+            .get_agent_instance(instance.id)?
+            .expect("updated instance should remain queryable");
+
+        assert_eq!(updated.status, "Busy");
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_instance_heartbeat_sets_timestamp() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let instance = insert_test_instance(&store, "agent", None, "agent-1", "Idle")?;
+
+        thread::sleep(Duration::from_millis(2));
+        store.update_agent_instance_heartbeat(instance.id)?;
+        let updated = store
+            .get_agent_instance(instance.id)?
+            .expect("heartbeated instance should remain queryable");
+
+        assert!(updated.last_heartbeat_at.is_some());
+        assert_ne!(updated.updated_at, updated.created_at);
+
+        Ok(())
+    }
+
+    #[test]
+    fn delete_instance() -> Result<()> {
+        let _guard = crate::test_env_guard();
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let instance = insert_test_instance(&store, "agent", None, "agent-1", "Idle")?;
+
+        store.delete_agent_instance(instance.id)?;
+
+        assert!(store.get_agent_instance(instance.id)?.is_none());
 
         Ok(())
     }

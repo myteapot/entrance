@@ -24,6 +24,7 @@ pub mod front_door;
 pub mod graph_events;
 pub mod hotkey;
 pub mod hygiene;
+pub mod instance_manager;
 pub mod invariant_runtime;
 pub mod landing;
 pub mod logging;

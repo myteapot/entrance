@@ -75,7 +75,7 @@ impl TaskEngine {
             }
             BudgetCheckResult::Rejected { running, limit } => {
                 let message =
-                    format!("Parallel capacity exhausted ({running}/{limit} running tasks)");
+                    format!("Parallel capacity exhausted ({running}/{limit} active instances)");
                 self.append_system_log(id, &message);
                 self.publish_task_status(id);
                 return Err(anyhow!(message));
@@ -284,7 +284,7 @@ impl TaskEngine {
 
     fn try_start_next_pending_task(self: &Arc<Self>) {
         loop {
-            let Ok(running) = self.data_store.count_running_forge_tasks() else {
+            let Ok(running) = self.data_store.count_active_instances() else {
                 return;
             };
             if running >= self.parallel_budget.max_concurrent_agents {
@@ -416,9 +416,22 @@ mod tests {
 
     use super::*;
     use crate::core::{
-        data_store::{MigrationPlan, MigrationStep},
+        data_store::{MigrationPlan, MigrationStep, NewAgentInstance},
         parallel_budget::{CapacityMode, ParallelBudgetConfig},
     };
+
+    fn insert_busy_instance(store: &DataStore, name: &str) -> Result<i64> {
+        let instance = store.insert_agent_instance(NewAgentInstance {
+            role: "agent",
+            parent_instance_id: None,
+            agent_tier: "ArchNota",
+            display_name: name,
+            config_json: "{}",
+            workspace_path: None,
+        })?;
+        store.update_agent_instance_status(instance.id, "Busy")?;
+        Ok(instance.id)
+    }
 
     #[test]
     fn blocks_tasks_when_required_vault_token_is_missing() -> Result<()> {
@@ -758,15 +771,7 @@ mod tests {
                 capacity_mode: CapacityMode::Queue,
             },
         ));
-        let first_task_id = store.insert_forge_task(
-            "First",
-            test_shell(),
-            &test_shell_args(quiet_wait_expression())?,
-            None,
-            None,
-            r#"[]"#,
-            "{}",
-        )?;
+        let busy_instance_id = insert_busy_instance(&store, "busy-instance")?;
         let second_task_id = store.insert_forge_task(
             "Second",
             test_shell(),
@@ -781,7 +786,6 @@ mod tests {
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            engine.spawn_task(first_task_id)?;
             engine.spawn_task(second_task_id)?;
 
             let queued_task = store
@@ -793,7 +797,8 @@ mod tests {
                 Some("Queued for agent capacity (position 1)")
             );
 
-            wait_for_terminal_status_async(&store, first_task_id).await?;
+            store.update_agent_instance_status(busy_instance_id, "Stopped")?;
+            engine.try_start_next_pending_task();
             wait_for_terminal_status_async(&store, second_task_id).await
         })?;
 
@@ -827,15 +832,7 @@ mod tests {
                 capacity_mode: CapacityMode::Reject,
             },
         ));
-        let first_task_id = store.insert_forge_task(
-            "First",
-            test_shell(),
-            &test_shell_args(quiet_wait_expression())?,
-            None,
-            None,
-            r#"[]"#,
-            "{}",
-        )?;
+        insert_busy_instance(&store, "busy-instance")?;
         let second_task_id = store.insert_forge_task(
             "Second",
             test_shell(),
@@ -850,14 +847,13 @@ mod tests {
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            engine.spawn_task(first_task_id)?;
             let error = engine
                 .spawn_task(second_task_id)
                 .expect_err("reject mode should fail fast when capacity is exhausted");
             assert!(error
                 .to_string()
-                .contains("Parallel capacity exhausted (1/1 running tasks)"));
-            wait_for_terminal_status_async(&store, first_task_id).await
+                .contains("Parallel capacity exhausted (1/1 active instances)"));
+            Ok::<(), anyhow::Error>(())
         })?;
 
         let rejected_task = store
@@ -866,7 +862,7 @@ mod tests {
         assert_eq!(rejected_task.status, "Blocked");
         assert_eq!(
             rejected_task.status_message.as_deref(),
-            Some("Parallel capacity exhausted (1/1 running tasks)")
+            Some("Parallel capacity exhausted (1/1 active instances)")
         );
 
         Ok(())
