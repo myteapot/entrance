@@ -166,6 +166,8 @@ fn write_runtime_checkpoint_in_transaction(
         status: "active",
         is_current: true,
     })?;
+    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Checkpoint) once EventBus/AppHandle
+    // wiring is available on this runtime path.
 
     let supersession_link = if let Some(previous) = superseded_checkpoint.as_ref() {
         Some(transaction.insert_cadence_link(NewCadenceLink {
@@ -492,6 +494,8 @@ fn run_nota_dispatch(
             payload_json: &payload_json,
             status: "recorded",
         })?;
+        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated here once EventBus/AppHandle
+        // wiring is available on this runtime path.
         Ok((transaction, accepted_receipt))
     })?;
     receipts.push(transaction.1.clone());
@@ -599,12 +603,18 @@ fn run_nota_dispatch(
                 status: "task_created",
                 payload_json: &allocation_payload_json,
             })?;
+            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Allocation) and
+            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+            // runtime path.
             staged_receipts.push(tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
                 transaction_id: transaction.id,
                 receipt_kind: "FORGE_TASK_CREATED",
                 payload_json: &forge_task_created_payload,
                 status: "recorded",
             })?);
+            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+            // runtime path.
             staged_receipts.push(
                 tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
                     transaction_id: transaction.id,
@@ -628,6 +638,9 @@ fn run_nota_dispatch(
                     status: "recorded",
                 })?,
             );
+            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+            // runtime path.
             if let Some(repair_origin) = repair_origin.as_ref() {
                 staged_receipts.push(
                     tx.append_nota_runtime_receipt(NewNotaRuntimeReceipt {
@@ -643,6 +656,9 @@ fn run_nota_dispatch(
                         status: "recorded",
                     })?,
                 );
+                // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+                // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on
+                // this runtime path.
             }
 
             transaction = tx.update_nota_runtime_transaction(
@@ -667,6 +683,9 @@ fn run_nota_dispatch(
                 payload_json: &forge_launch_payload,
                 status: "recorded",
             })?);
+            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+            // runtime path.
 
             let checkpoint_report = write_runtime_checkpoint_in_transaction(
                 tx,
@@ -696,6 +715,8 @@ fn run_nota_dispatch(
                     project_dir: checkpoint_project_dir.clone(),
                 },
             )?;
+            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Checkpoint) once EventBus/AppHandle
+            // wiring is available on this runtime path.
             transaction = tx.update_nota_runtime_transaction(
                 transaction.id,
                 NotaRuntimeTransactionUpdate {
@@ -720,6 +741,9 @@ fn run_nota_dispatch(
                     status: "recorded",
                 })?,
             );
+            // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+            // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+            // runtime path.
 
             Ok((transaction, allocation, staged_receipts, checkpoint_report))
         })?;
@@ -1405,6 +1429,9 @@ fn persist_terminal_allocation_projection(
             payload_json: &receipt_payload_json,
             status: "recorded",
         })?;
+        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+        // runtime path.
     }
 
     Ok(())
@@ -1879,6 +1906,9 @@ fn ensure_checkpoint_written_receipt(
         .context("failed to serialize checkpoint receipt payload")?,
         status: "recorded",
     })?;
+    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+    // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this runtime
+    // path.
 
     Ok(())
 }
@@ -2176,6 +2206,9 @@ fn ensure_agent_return_accepted_receipt(
             .context("failed to serialize agent return accepted receipt payload")?,
         status: "recorded",
     })?;
+    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+    // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this runtime
+    // path.
 
     Ok(())
 }
@@ -2242,6 +2275,9 @@ fn ensure_dev_return_accepted_receipt(
             .context("failed to serialize dev return accepted receipt payload")?,
         status: "recorded",
     })?;
+    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+    // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this runtime
+    // path.
 
     Ok(())
 }
@@ -2311,6 +2347,9 @@ fn ensure_dev_return_review_ready_receipt(
             .context("failed to serialize dev review-ready receipt payload")?,
         status: "recorded",
     })?;
+    // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+    // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this runtime
+    // path.
 
     Ok(())
 }
@@ -2559,6 +2598,9 @@ pub fn record_nota_boundary_clarification(
                 .context("failed to serialize clarification receipt payload")?,
             status: "recorded",
         })?;
+        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+        // runtime path.
 
         Ok((transaction, next_step, receipt))
     })?;
@@ -2633,6 +2675,9 @@ pub fn record_nota_boundary_ask(
                 .context("failed to serialize ask receipt payload")?,
             status: "recorded",
         })?;
+        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+        // runtime path.
 
         Ok((transaction, next_step, receipt))
     })?;
@@ -2920,6 +2965,9 @@ pub fn record_dev_return_review(
             payload_json: &receipt_payload_json,
             status: "recorded",
         })?;
+        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+        // runtime path.
 
         if let Some(repair_summary) = repair_summary.as_deref() {
             tx.insert_anti_zeno_event(crate::core::data_store::NewAntiZenoEvent {
@@ -3142,6 +3190,9 @@ pub fn record_dev_return_integration(
             payload_json: &receipt_payload_json,
             status: "recorded",
         })?;
+        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+        // runtime path.
 
         if let Some(repair_summary) = repair_summary.as_deref() {
             tx.insert_anti_zeno_event(crate::core::data_store::NewAntiZenoEvent {
@@ -3336,6 +3387,9 @@ pub fn record_dev_return_finalize(
             payload_json: &receipt_payload_json,
             status: "recorded",
         })?;
+        // G1-SKELETON-TODO: emit GraphUpdateEvent::NodeCreated(Receipt) and
+        // GraphUpdateEvent::EdgeCreated once EventBus/AppHandle wiring is available on this
+        // runtime path.
 
         tx.list_nota_runtime_receipts(Some(request.transaction_id))?
             .into_iter()

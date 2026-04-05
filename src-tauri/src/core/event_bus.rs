@@ -1,6 +1,9 @@
 use anyhow::Result;
+use serde_json;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::broadcast;
+
+use crate::core::graph_events::{GraphUpdateEvent, NotaDialogEvent};
 
 #[derive(Debug, Clone)]
 pub struct EventPayload {
@@ -41,6 +44,26 @@ impl EventBus {
 
     pub fn emit_launcher_toggle<R: Runtime>(&self, app: &AppHandle<R>) -> Result<()> {
         app.emit("launcher:toggle", ())?;
+        Ok(())
+    }
+
+    pub fn emit_graph_update<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        event: &GraphUpdateEvent,
+    ) -> Result<()> {
+        let json = serde_json::to_string(event)?;
+        app.emit("graph:update", json)?;
+        Ok(())
+    }
+
+    pub fn emit_nota_dialog<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        event: &NotaDialogEvent,
+    ) -> Result<()> {
+        let json = serde_json::to_string(event)?;
+        app.emit("nota:dialog", json)?;
         Ok(())
     }
 }

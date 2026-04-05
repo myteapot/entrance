@@ -21,6 +21,7 @@ pub mod design_governance;
 pub mod environment_runtime;
 pub mod event_bus;
 pub mod front_door;
+pub mod graph_events;
 pub mod hotkey;
 pub mod hygiene;
 pub mod invariant_runtime;

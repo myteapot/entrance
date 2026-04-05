@@ -3,6 +3,8 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+pub mod nota_prayer;
+
 use crate::core::{
     cold_docs_runtime::{export_cold_docs_to_repo, NotaColdDocExportReport},
     data_store::{DataStore, StoredSourceIngestRun},

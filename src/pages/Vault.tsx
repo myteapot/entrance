@@ -36,6 +36,10 @@ type McpGuide = {
 const MCP_STDIO_COMMAND = "entrance mcp stdio";
 const MCP_HTTP_COMMAND = "entrance mcp http --port 9720 --endpoint /mcp";
 const MCP_HTTP_URL = "http://127.0.0.1:9720/mcp";
+const readNotaDialogPreference = () =>
+  typeof window === "undefined"
+    ? true
+    : window.localStorage.getItem("nota_dialog_enabled") !== "false";
 
 const renderJson = (value: unknown) => JSON.stringify(value, null, 2);
 
@@ -170,6 +174,7 @@ export default function Vault() {
   const [gitlabPreviewValue, setGitlabPreviewValue] = createSignal<string | null>(null);
   const [showGitlabPreview, setShowGitlabPreview] = createSignal(false);
   const [showCopyToast, setShowCopyToast] = createSignal(false);
+  const [notaDialogEnabled, setNotaDialogEnabled] = createSignal(readNotaDialogPreference());
 
   const [newMcpName, setNewMcpName] = createSignal("");
   const [newMcpEndpoint, setNewMcpEndpoint] = createSignal("");
@@ -182,6 +187,13 @@ export default function Vault() {
   };
 
   const formatTimestamp = (value: string) => new Date(value).toLocaleString();
+
+  const toggleNotaDialog = (value: boolean) => {
+    setNotaDialogEnabled(value);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("nota_dialog_enabled", String(value));
+    }
+  };
 
   const maskTokenValue = (value: string) => {
     if (!value) {
@@ -636,6 +648,45 @@ export default function Vault() {
             >
               {isSavingGitlabToken() ? "Saving..." : gitlabToken() ? "Replace Token" : "Save Token"}
             </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="vault-section vault-section--feature">
+        <div class="vault-section-header vault-section-header--stack">
+          <div>
+            <h2 class="vault-section-title">NOTA Dialog Preferences</h2>
+            <p class="vault-section-copy">
+              Control whether proactive NOTA approval and escalation dialogs can surface on the
+              Dashboard.
+            </p>
+          </div>
+          <span class={`vault-status-pill ${notaDialogEnabled() ? "is-configured" : "is-missing"}`}>
+            {notaDialogEnabled() ? "Enabled" : "Muted"}
+          </span>
+        </div>
+
+        <div class="vault-updater-card">
+          <div class="vault-updater-meta">
+            <div>
+              <span class="vault-label">Dashboard dialogs</span>
+              <strong>{notaDialogEnabled() ? "Allowed" : "Disabled"}</strong>
+            </div>
+            <div>
+              <span class="vault-label">Stored preference</span>
+              <strong>nota_dialog_enabled</strong>
+            </div>
+          </div>
+
+          <div class="modal-actions vault-actions">
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={notaDialogEnabled()}
+                onChange={(event) => toggleNotaDialog(event.currentTarget.checked)}
+              />
+              <span class="slider"></span>
+            </label>
           </div>
         </div>
       </section>

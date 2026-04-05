@@ -1,0 +1,72 @@
+/* G1-SKIN-TODO: full visual implementation */
+.nota-dialog-overlay {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 1000;
+  max-width: 380px;
+  padding: 16px;
+  background: #1a1d22;
+  border: 1px solid #2a2d32;
+  border-radius: 12px;
+}
+
+.nota-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nota-dialog-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.nota-dialog-title {
+  margin: 8px 0 4px;
+  font-size: 14px;
+}
+
+.nota-dialog-body {
+  font-size: 13px;
+  color: #999;
+}
+
+.nota-dialog-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.nota-dialog-action {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: #222;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.nota-dialog-badge {
+  font-size: 11px;
+  color: #777;
+}
+
+.nota-dialog-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b8a060;
+}
+
+.nota-dialog-kind {
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}

@@ -9,7 +9,9 @@
     "build": "pnpm check && vite build",
     "preview": "vite preview",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:e2e": "npx playwright test",
+    "test:e2e:headed": "npx playwright test --headed"
   },
   "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
@@ -19,9 +21,12 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "~2.3.1",
     "@tauri-apps/plugin-updater": "~2.10.0",
+    "d3-force": "^3.0.0",
+    "d3-timer": "^3.0.1",
     "solid-js": "^1.9.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@tauri-apps/cli": "^2",
     "@types/node": "^24.0.0",
     "typescript": "~5.6.2",

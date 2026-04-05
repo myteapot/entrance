@@ -1,0 +1,14 @@
+/* G1-SKIN-TODO: full visual implementation */
+.compute-graph-container {
+  position: relative;
+  width: 100%;
+  height: 420px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #111418;
+}
+
+.compute-graph-canvas {
+  width: 100%;
+  height: 100%;
+}

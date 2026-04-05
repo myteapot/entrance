@@ -1,6 +1,11 @@
 import { A } from "@solidjs/router";
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import "./Dashboard.css";
+import ComputeGraph from "../components/ComputeGraph";
+import NotaDialog from "../components/NotaDialog";
+import { listenToGraphUpdates, listenToNotaDialogs } from "../features/dashboard/graphEvents";
+import { createGraphStore } from "../features/dashboard/graphStore";
+import { createNotaDialogStore } from "../features/dashboard/notaDialogStore";
 import { listenToForgeTaskStatus } from "../features/forge/taskFeed";
 import {
   fetchNotaRuntimeOverview,
@@ -14,17 +19,6 @@ import {
 } from "../features/nota/overview";
 
 const DASHBOARD_REFRESH_MS = 15_000;
-
-type MissionNodeTone = "steady" | "active" | "warming" | "caution" | "neutral";
-
-type MissionNode = {
-  id: string;
-  label: string;
-  state: string;
-  detail: string;
-  tone: MissionNodeTone;
-  meta: string[];
-};
 
 const formatTimestamp = (value: string) =>
   new Date(value).toLocaleString([], {
@@ -93,12 +87,25 @@ const renderCheckpointTitle = (checkpoint: NotaCheckpointRecord | null) => {
   return `Checkpoint ${checkpoint.cadence_object.id}: ${checkpoint.cadence_object.title}`;
 };
 
+const transactionTone = (status: string) => {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "accepted" || normalized === "closed" || normalized === "integrated") {
+    return "steady";
+  }
+  if (normalized.includes("failed") || normalized.includes("repair")) {
+    return "caution";
+  }
+  return "active";
+};
+
 const Dashboard = () => {
   const [overview, setOverview] = createSignal<NotaRuntimeOverview | null>(null);
   const [status, setStatus] = createSignal<NotaRuntimeStatus | null>(null);
   const [isLoading, setIsLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = createSignal<string | null>(null);
+  const graphStore = createGraphStore();
+  const dialogStore = createNotaDialogStore();
 
   const loadDashboard = async () => {
     try {
@@ -109,6 +116,21 @@ const Dashboard = () => {
       ]);
       setOverview(nextOverview);
       setStatus(nextStatus);
+
+      const transactions = nextOverview.transactions.transactions.slice(0, 10);
+      for (const transaction of transactions) {
+        graphStore.addNode(
+          {
+            id: `tx-${transaction.id}`,
+            kind: "allocation",
+            label: transaction.title,
+            detail: transaction.status,
+            tone: transactionTone(transaction.status),
+          },
+          "nota",
+        );
+      }
+
       setLastRefreshedAt(new Date().toISOString());
     } catch (loadError) {
       console.error("Failed to fetch NOTA runtime dashboard truth", loadError);
@@ -127,6 +149,21 @@ const Dashboard = () => {
 
     onCleanup(() => window.clearInterval(timer));
 
+    let unlistenGraph: (() => void) | undefined;
+    let unlistenDialog: (() => void) | undefined;
+
+    void listenToGraphUpdates((event) => {
+      graphStore.handleGraphEvent(event);
+    }).then((unlisten) => {
+      unlistenGraph = unlisten;
+    });
+
+    void listenToNotaDialogs((event) => {
+      dialogStore.push(event);
+    }).then((unlisten) => {
+      unlistenDialog = unlisten;
+    });
+
     void (async () => {
       const unlistenStatus = await listenToForgeTaskStatus(() => {
         void loadDashboard();
@@ -136,6 +173,11 @@ const Dashboard = () => {
         unlistenStatus();
       });
     })();
+
+    onCleanup(() => {
+      unlistenGraph?.();
+      unlistenDialog?.();
+    });
   });
 
   const currentCheckpoint = createMemo(
@@ -199,116 +241,6 @@ const Dashboard = () => {
     return closureTrack ? [...tracks, closureTrack] : tracks;
   });
 
-  const missionNodes = createMemo<MissionNode[]>(() => {
-    const checkpoint = currentCheckpoint();
-    const reviewState = review();
-    const integrateState = integrate();
-    const finalizeState = finalize();
-    const handoff = nextStep();
-
-    return [
-      {
-        id: "checkpoint",
-        label: "Checkpoint",
-        state: checkpoint ? `#${checkpoint.cadence_object.id}` : "Missing",
-        detail: checkpoint
-          ? checkpoint.payload.selected_trunk ?? checkpoint.cadence_object.summary
-          : "The board needs an active checkpoint before continuity can feel stable.",
-        tone: checkpoint ? "steady" : "caution",
-        meta: [
-          checkpoint?.cadence_object.title,
-          checkpoint?.payload.repo_context?.git_branch
-            ? `Branch ${checkpoint.payload.repo_context.git_branch}`
-            : null,
-        ].filter((value): value is string => Boolean(value)),
-      },
-      {
-        id: "review",
-        label: "Review",
-        state: reviewState
-          ? humanizeState(reviewState.verdict ?? reviewState.state)
-          : "Pending",
-        detail:
-          reviewState?.summary ??
-          "Review truth has not been recorded on the active dev-return boundary yet.",
-        tone:
-          reviewState?.verdict === "approved"
-            ? "steady"
-            : reviewState?.verdict === "changes_requested"
-              ? "caution"
-              : reviewState
-                ? "active"
-                : "neutral",
-        meta: reviewState
-          ? [
-              `Allocation ${reviewState.allocation_id}`,
-              reviewState.lineage_ref,
-              reviewState.execution_host,
-            ]
-          : [],
-      },
-      {
-        id: "integrate",
-        label: "Integrate",
-        state: integrateState
-          ? humanizeState(integrateState.outcome ?? integrateState.state)
-          : "Waiting",
-        detail:
-          integrateState?.summary ??
-          "Integration will appear once the runtime records an integrate-side state.",
-        tone:
-          integrateState?.outcome === "integrated"
-            ? "steady"
-            : integrateState?.outcome === "repair_requested"
-              ? "caution"
-              : integrateState
-                ? "active"
-                : "neutral",
-        meta: integrateState
-          ? [
-              `Allocation ${integrateState.allocation_id}`,
-              integrateState.child_dispatch_role,
-              integrateState.target_ref,
-            ]
-          : [],
-      },
-      {
-        id: "finalize",
-        label: "Finalize",
-        state: finalizeState ? humanizeState(finalizeState.state) : "Open",
-        detail:
-          finalizeState?.summary ??
-          "Finalize truth will close the active boundary once the runtime records it.",
-        tone: finalizeState?.state === "closed" ? "steady" : finalizeState ? "active" : "neutral",
-        meta: finalizeState
-          ? [
-              `Allocation ${finalizeState.allocation_id}`,
-              finalizeState.lineage_ref,
-              finalizeState.execution_host,
-            ]
-          : [],
-      },
-      {
-        id: "next",
-        label: "Next",
-        state: handoff
-          ? humanizeState(handoff.step)
-          : finalizeState?.state === "closed"
-            ? "Boundary closed"
-            : "Awaiting handoff",
-        detail: handoff
-          ? `${handoff.child_dispatch_role} on ${handoff.execution_host} will move ${handoff.target_kind} ${handoff.target_ref}.`
-          : finalizeState?.state === "closed"
-            ? "No further runtime step is exposed because the active boundary is already closed."
-            : "The next runtime move will appear here once the boundary advances.",
-        tone: handoff ? "active" : finalizeState?.state === "closed" ? "steady" : "warming",
-        meta: handoff
-          ? [handoff.lineage_ref, handoff.target_ref, handoff.execution_host]
-          : [],
-      },
-    ];
-  });
-
   return (
     <section class="page page--dashboard page--mission-board">
       <header class="page__hero page__hero--dashboard page__hero--board">
@@ -357,22 +289,7 @@ const Dashboard = () => {
             </div>
           </div>
 
-          <div class="board-map__grid" aria-label="Active continuity graph">
-            <For each={missionNodes()}>
-              {(node) => (
-                <article class={`board-node board-node--${node.tone}`}>
-                  <span class="board-node__label">{node.label}</span>
-                  <strong class="board-node__state">{node.state}</strong>
-                  <p class="board-node__detail">{node.detail}</p>
-                  <Show when={node.meta.length > 0}>
-                    <div class="board-node__meta">
-                      <For each={node.meta}>{(meta) => <span>{meta}</span>}</For>
-                    </div>
-                  </Show>
-                </article>
-              )}
-            </For>
-          </div>
+          <ComputeGraph store={graphStore} />
 
           <div class="board-map__footer">
             <p>{frontDoor()?.next_action_detail ?? "Waiting for runtime guidance..."}</p>
@@ -603,6 +520,8 @@ const Dashboard = () => {
           </Show>
         </article>
       </section>
+
+      <NotaDialog store={dialogStore} />
     </section>
   );
 };
