@@ -1,0 +1,437 @@
+.page--console {
+  gap: 20px;
+}
+
+.page__hero--console::after {
+  inset: auto -6% -34% 16%;
+  height: 250px;
+  background: radial-gradient(circle, rgba(88, 214, 141, 0.14), transparent 70%);
+}
+
+.console-page {
+  padding: 8px 0;
+  min-height: 100%;
+  color: var(--text-primary);
+}
+
+.console-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.console-rail {
+  display: grid;
+  gap: 18px;
+}
+
+.console-tree-card,
+.console-health-card,
+.console-budget-card {
+  gap: 16px;
+}
+
+.console-callout {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid transparent;
+}
+
+.console-callout--error {
+  border-color: rgba(236, 112, 99, 0.26);
+  background: rgba(236, 112, 99, 0.12);
+  color: #ffb4ab;
+}
+
+.console-callout--success {
+  border-color: rgba(88, 214, 141, 0.26);
+  background: rgba(88, 214, 141, 0.12);
+  color: #b9f7c8;
+}
+
+.console-create-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) minmax(0, 1fr) minmax(180px, 240px) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(247, 239, 230, 0.08);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 42%),
+    rgba(255, 255, 255, 0.025);
+}
+
+.console-field {
+  display: grid;
+  gap: 8px;
+}
+
+.console-field span {
+  color: var(--text-tertiary);
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.console-field--wide {
+  min-width: 0;
+}
+
+.console-field input,
+.console-field select,
+.console-button {
+  min-height: 46px;
+  border-radius: 14px;
+  border: 1px solid rgba(247, 239, 230, 0.1);
+  font: inherit;
+}
+
+.console-field input,
+.console-field select {
+  width: 100%;
+  padding: 0 14px;
+  background: var(--bg-raised, rgba(255, 255, 255, 0.05));
+  color: var(--text-primary);
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.console-field input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.console-field input:focus,
+.console-field select:focus {
+  outline: none;
+  border-color: rgba(93, 173, 226, 0.45);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 0 3px rgba(93, 173, 226, 0.12);
+}
+
+.console-button {
+  padding: 0 16px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-weight: 600;
+  transition:
+    transform 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.console-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.console-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.console-button--primary {
+  border-color: rgba(216, 127, 61, 0.26);
+  background: linear-gradient(180deg, rgba(216, 127, 61, 0.92), rgba(194, 90, 36, 0.95));
+  color: #140d08;
+}
+
+.console-button--secondary:hover:not(:disabled) {
+  border-color: rgba(93, 173, 226, 0.34);
+  background: rgba(93, 173, 226, 0.08);
+}
+
+.console-button--danger {
+  border-color: rgba(248, 113, 113, 0.24);
+  background: rgba(248, 113, 113, 0.12);
+  color: #ffb4ab;
+}
+
+.console-button--danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.18);
+}
+
+.console-tree {
+  display: grid;
+  gap: 12px;
+}
+
+.instance-branch {
+  display: grid;
+  gap: 10px;
+}
+
+.instance-children {
+  display: grid;
+  gap: 10px;
+}
+
+.instance-node {
+  padding: 12px 16px;
+  margin-left: calc(var(--depth, 0) * 24px);
+  border-radius: 14px;
+  border: 1px solid rgba(247, 239, 230, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  transition: background 0.15s ease;
+}
+
+.instance-node:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.instance-node__main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.instance-node__identity {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.instance-node__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.instance-node__title-row strong {
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.instance-node__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+}
+
+.instance-node__workspace {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.instance-node__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.instance-role-badge,
+.console-status-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.instance-role-badge {
+  background: rgba(93, 173, 226, 0.16);
+  color: #9ad2ff;
+}
+
+.console-status-chip {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+
+.instance-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.instance-status-dot.is-idle {
+  background: var(--accent-sage);
+}
+
+.instance-status-dot.is-busy {
+  background: var(--accent-teal);
+}
+
+.instance-status-dot.is-stale {
+  background: var(--accent-amber);
+}
+
+.instance-status-dot.is-stopped {
+  background: var(--accent-ash);
+}
+
+.console-health-header {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 18px;
+  align-items: center;
+}
+
+.console-health-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.health-indicator {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+
+.health-indicator.is-green {
+  background: hsla(150, 18%, 48%, 0.25);
+  box-shadow: 0 0 20px hsla(150, 18%, 48%, 0.2);
+  color: var(--accent-sage);
+}
+
+.health-indicator.is-yellow {
+  background: hsla(35, 25%, 52%, 0.25);
+  box-shadow: 0 0 20px hsla(35, 25%, 52%, 0.2);
+  color: var(--accent-amber);
+}
+
+.health-indicator.is-red {
+  background: hsla(0, 20%, 52%, 0.25);
+  box-shadow: 0 0 20px hsla(0, 20%, 52%, 0.2);
+  color: var(--accent-rose);
+}
+
+.console-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.console-metric {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(247, 239, 230, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  display: grid;
+  gap: 6px;
+}
+
+.console-metric span {
+  color: var(--text-tertiary);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.console-metric strong {
+  color: var(--text-primary);
+  font-size: 1.12rem;
+}
+
+.console-footer-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+}
+
+.console-budget-meter {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(247, 239, 230, 0.08);
+  background:
+    radial-gradient(circle at right, rgba(93, 173, 226, 0.12), transparent 45%),
+    rgba(255, 255, 255, 0.03);
+}
+
+.console-budget-meter__meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.console-budget-meter__meta strong {
+  font-size: 1.2rem;
+}
+
+.console-budget-meter__meta span {
+  color: var(--text-secondary);
+}
+
+.console-budget-meter__track {
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.console-budget-meter__track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, rgba(93, 173, 226, 0.82), rgba(88, 214, 141, 0.78));
+}
+
+.console-empty {
+  min-height: 220px;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 1180px) {
+  .console-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .console-create-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .console-field--wide {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 720px) {
+  .console-create-form,
+  .console-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .console-field--wide {
+    grid-column: span 1;
+  }
+
+  .instance-node {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .instance-node__actions,
+  .console-budget-meter__meta {
+    width: 100%;
+  }
+
+  .console-health-header {
+    grid-template-columns: 1fr;
+  }
+}

@@ -9,6 +9,7 @@ use crate::core::{
     cold_docs_runtime::{export_cold_docs_to_repo, NotaColdDocExportReport},
     data_store::{DataStore, StoredAgentInstance, StoredSourceIngestRun},
     hygiene::{list_spec_hygiene_v0, SpecHygieneReport},
+    instance_manager::{InstanceManager, InstanceRole},
     invariant_runtime::refresh_runtime_invariants,
     landing::{
         import_linear_entrance_snapshot, list_landing_ingest_runs, list_landing_mirror_items,
@@ -19,12 +20,13 @@ use crate::core::{
         build_nota_runtime_overview, build_nota_runtime_status, build_projection_truth_revision,
         NotaRuntimeOverview, NotaRuntimeStatus,
     },
+    parallel_budget::ParallelBudgetConfig,
     projection_runtime::{
         record_projection_failure, record_projection_success, ProjectionTargetSpec,
         ProjectionTruthRevision, HOT_ROOT_PROJECTION_CLASS, OPTIONAL_PROJECTION_POLICY,
         ORACLE_PROJECTION_CLASS, REQUIRED_PROJECTION_POLICY,
     },
-    system_heartbeat::{compute_pulse, HeartbeatConfig, SystemPulse},
+    system_heartbeat::{compute_pulse, AgentTier, HeartbeatConfig, SystemPulse},
     StartupState,
 };
 
@@ -157,6 +159,56 @@ pub(crate) fn get_system_pulse(
     data_store: tauri::State<'_, DataStore>,
 ) -> Result<SystemPulse, String> {
     compute_pulse(&data_store, &HeartbeatConfig::default()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn get_parallel_budget_config() -> ParallelBudgetConfig {
+    ParallelBudgetConfig::default()
+}
+
+#[tauri::command]
+pub(crate) fn create_agent_instance(
+    instance_manager: tauri::State<'_, InstanceManager>,
+    role: String,
+    parent_instance_id: Option<i64>,
+    display_name: String,
+    config_json: String,
+) -> Result<StoredAgentInstance, String> {
+    let role: InstanceRole = role
+        .parse()
+        .map_err(|error: anyhow::Error| error.to_string())?;
+    let tier = AgentTier::ArchNota;
+    instance_manager
+        .create_instance(
+            role,
+            parent_instance_id,
+            &display_name,
+            &config_json,
+            None,
+            tier,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn stop_agent_instance(
+    instance_manager: tauri::State<'_, InstanceManager>,
+    id: i64,
+) -> Result<(), String> {
+    instance_manager
+        .stop_instance(id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn spawn_child_instances(
+    instance_manager: tauri::State<'_, InstanceManager>,
+    parent_id: i64,
+    count: usize,
+) -> Result<Vec<StoredAgentInstance>, String> {
+    instance_manager
+        .spawn_children(parent_id, count)
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn write_hot_root_projection(

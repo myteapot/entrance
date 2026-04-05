@@ -314,7 +314,21 @@ const mockDashboardSummary = () => ({
   enabled_mcp_count: 1,
 });
 
-const mockAgentInstances = () => [
+type MockAgentInstance = {
+  id: number;
+  role: string;
+  parent_instance_id: number | null;
+  agent_tier: string;
+  status: string;
+  display_name: string;
+  config_json: string;
+  workspace_path: string | null;
+  last_heartbeat_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+const mockAgentInstances = (): MockAgentInstance[] => [
   {
     id: 1,
     role: "nota",
@@ -369,21 +383,126 @@ const mockAgentInstances = () => [
   },
 ];
 
-const mockSystemPulse = () => ({
-  timestamp: now(),
-  agent_tier: "FullNota",
-  active_tasks: 1,
-  stale_tasks: 0,
-  pending_approvals: 1,
-  pending_work: 0,
-  total_instances: 4,
-  active_instances: 3,
-  stale_instances: 1,
-  stopped_instances: 0,
-  health: "Yellow" as const,
-  tick_interval_secs: 30,
-  stale_threshold_multiplier: 3,
+const mockBudgetConfig = () => ({
+  max_concurrent_agents: 3,
+  capacity_mode: "Queue" as const,
 });
+
+const mockInstanceState = mockAgentInstances();
+let nextMockInstanceId =
+  mockInstanceState.reduce((maxId, instance) => Math.max(maxId, instance.id), 0) + 1;
+
+const snapshotMockInstances = () => mockInstanceState.map((instance) => ({ ...instance }));
+
+const childRoleFor = (role: string) => {
+  switch (role.trim().toLowerCase()) {
+    case "nota":
+      return "arch";
+    case "arch":
+      return "dev";
+    case "dev":
+      return "agent";
+    default:
+      return null;
+  }
+};
+
+const createMockInstanceRecord = (
+  role: string,
+  displayName: string,
+  parentInstanceId: number | null,
+  configJson: string,
+): MockAgentInstance => {
+  const parent = parentInstanceId === null
+    ? null
+    : mockInstanceState.find((instance) => instance.id === parentInstanceId) ?? null;
+  const timestamp = now();
+  const created = {
+    id: nextMockInstanceId++,
+    role,
+    parent_instance_id: parentInstanceId,
+    agent_tier: parent?.agent_tier ?? "ArchNota",
+    status: "Idle",
+    display_name: displayName,
+    config_json: configJson,
+    workspace_path: parent?.workspace_path ?? null,
+    last_heartbeat_at: timestamp,
+    created_at: timestamp,
+    updated_at: timestamp,
+  };
+  mockInstanceState.push(created);
+  return { ...created };
+};
+
+const markStoppedRecursively = (id: number) => {
+  for (const child of mockInstanceState.filter((instance) => instance.parent_instance_id === id)) {
+    markStoppedRecursively(child.id);
+  }
+
+  const target = mockInstanceState.find((instance) => instance.id === id);
+  if (target) {
+    target.status = "Stopped";
+    target.updated_at = now();
+  }
+};
+
+const spawnMockChildren = (parentId: number, count: number) => {
+  const parent = mockInstanceState.find((instance) => instance.id === parentId);
+  if (!parent) {
+    throw new Error(`Instance ${parentId} not found`);
+  }
+
+  const childRole = childRoleFor(parent.role);
+  if (!childRole) {
+    throw new Error(`${parent.role} instances cannot spawn children`);
+  }
+
+  const existingSiblingCount = mockInstanceState.filter(
+    (instance) => instance.parent_instance_id === parentId,
+  ).length;
+
+  return Array.from({ length: count }, (_, index) =>
+    createMockInstanceRecord(
+      childRole,
+      `${childRole}-${parentId}-${existingSiblingCount + index + 1}`,
+      parentId,
+      "{}",
+    ),
+  );
+};
+
+const mockSystemPulse = () => {
+  const totalInstances = mockInstanceState.length;
+  const activeInstances = mockInstanceState.filter((instance) =>
+    instance.status === "Idle" || instance.status === "Busy"
+  ).length;
+  const staleInstances = mockInstanceState.filter((instance) => instance.status === "Stale").length;
+  const stoppedInstances = mockInstanceState.filter((instance) => instance.status === "Stopped").length;
+  const staleTasks = 0;
+  const failedUnhandled = 0;
+  const health =
+    (staleTasks > 0 || staleInstances > 0) && failedUnhandled > 0
+      ? ("Red" as const)
+      : staleTasks > 0 || staleInstances > 0 || failedUnhandled > 0
+        ? ("Yellow" as const)
+        : ("Green" as const);
+
+  return {
+    timestamp: now(),
+    agent_tier: mockInstanceState[0]?.agent_tier ?? "ArchNota",
+    active_tasks: 1,
+    stale_tasks: staleTasks,
+    pending_approvals: 1,
+    pending_work: 0,
+    total_instances: totalInstances,
+    active_instances: activeInstances,
+    stale_instances: staleInstances,
+    stopped_instances: stoppedInstances,
+    health,
+    tick_interval_secs: 30,
+    stale_threshold_multiplier: 3,
+  };
+};
 
 const mockForgeTasks = () => [
   {
@@ -426,8 +545,27 @@ const handlers: Record<string, (args?: Record<string, unknown>) => unknown> = {
   nota_runtime_overview: () => mockNotaRuntimeOverview(),
   nota_runtime_status: () => mockNotaRuntimeStatus(),
   dashboard_summary: () => mockDashboardSummary(),
-  list_agent_instances: () => mockAgentInstances(),
+  list_agent_instances: () => snapshotMockInstances(),
   get_system_pulse: () => mockSystemPulse(),
+  get_parallel_budget_config: () => mockBudgetConfig(),
+  create_agent_instance: (args) =>
+    createMockInstanceRecord(
+      String(args?.role ?? "arch").toLowerCase(),
+      String(args?.displayName ?? "New Instance"),
+      typeof args?.parentInstanceId === "number" ? args.parentInstanceId : null,
+      String(args?.configJson ?? "{}"),
+    ),
+  stop_agent_instance: (args) => {
+    if (typeof args?.id === "number") {
+      markStoppedRecursively(args.id);
+    }
+    return null;
+  },
+  spawn_child_instances: (args) =>
+    spawnMockChildren(
+      typeof args?.parentId === "number" ? args.parentId : 0,
+      typeof args?.count === "number" ? args.count : 1,
+    ),
   forge_list_tasks: () => mockForgeTasks(),
   forge_get_task_details: (args) => {
     const tasks = mockForgeTasks();

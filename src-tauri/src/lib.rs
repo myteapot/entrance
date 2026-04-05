@@ -14,6 +14,7 @@ use crate::{
         bootstrap_for_paths,
         event_bus::{install_runtime_emitters, EventBus},
         hotkey,
+        instance_manager::InstanceManager,
         logging::LoggingSystem,
         plugin_manager::PluginManager,
         resolve_app_data_dir,
@@ -83,6 +84,7 @@ fn setup_application<R: tauri::Runtime>(
     app.manage(event_bus.clone());
     install_runtime_emitters(event_bus.clone(), app.handle().clone());
     app.manage(data_store.clone());
+    app.manage(InstanceManager::new(data_store.clone(), event_bus.clone()));
     tauri::async_runtime::spawn({
         let data_store = data_store.clone();
         let event_bus = event_bus.clone();
@@ -168,6 +170,10 @@ pub fn run_tauri_app() {
             commands::dashboard_summary,
             commands::list_agent_instances,
             commands::get_system_pulse,
+            commands::get_parallel_budget_config,
+            commands::create_agent_instance,
+            commands::stop_agent_instance,
+            commands::spawn_child_instances,
             commands::nota_runtime_overview,
             commands::nota_runtime_status,
             commands::landing_import_snapshot,

@@ -1,6 +1,7 @@
 import type { Component } from "solid-js";
 import Chat from "./pages/Chat";
 import Dashboard from "./pages/Dashboard";
+import Console from "./pages/Console";
 import RoutePlaceholder from "./pages/RoutePlaceholder";
 import Vault from "./pages/Vault";
 import Forge from "./pages/Forge";
@@ -49,6 +50,14 @@ export const primaryRoutes: AppRoute[] = [
     description: "Mission dashboard and layered progress",
     hotkey: "Ctrl+3",
     component: Dashboard,
+  },
+  {
+    path: "/console",
+    label: "Console",
+    glyph: "CS",
+    description: "Instance management and system health",
+    hotkey: "Ctrl+4",
+    component: Console,
   },
 ];
 

@@ -19,7 +19,7 @@ const Sidebar = () => {
           <h1 class="sidebar__title">Native NOTA front door</h1>
           <p class="sidebar__summary">
             Chat opens on live runtime truth, Board visualizes the active mission boundary, and
-            Do remains the bounded action lane for automatic transactions.
+            Do plus Console keep dispatch and direct operations visible from one shell.
           </p>
         </div>
       </div>
