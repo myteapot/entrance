@@ -1,6 +1,7 @@
 mod compiler_cli;
 mod forge_cli;
 mod mcp_cli;
+mod memory_cli;
 mod nota_cli;
 
 use anyhow::{bail, Context, Result};
@@ -30,6 +31,7 @@ use self::{
     compiler_cli::run_compiler_cli,
     forge_cli::run_forge_cli,
     mcp_cli::{run_mcp_http, run_mcp_stdio},
+    memory_cli::run_memory_cli,
     nota_cli::run_nota_cli,
 };
 
@@ -45,6 +47,7 @@ Commands:
   nota       Read or write NOTA runtime continuity surfaces
   mcp        Serve Entrance as an MCP server over stdio or HTTP
   forge      Run Forge dispatch and bootstrap helpers
+  memory     Import NOTA memory store snapshots
   landing    Import and inspect landing snapshots
   recovery   Inspect import-only recovery seed data
   hygiene    Run runtime and spec hygiene checks
@@ -78,6 +81,11 @@ pub(crate) const HYGIENE_CLI_HELP: &str = r#"Usage:
 
 pub(crate) const COMPILER_CLI_HELP: &str = r#"Usage:
   entrance compiler registry list [--format <json|table>] [--include-semantics]
+"#;
+
+pub(crate) const MEMORY_CLI_HELP: &str = r#"Usage:
+  entrance memory import --source <path>
+  entrance memory import <path>
 "#;
 
 pub(crate) const FORGE_CLI_HELP: &str = r#"Usage:
@@ -145,6 +153,7 @@ pub(crate) fn cli_help_for_args(args: &[String]) -> Option<&'static str> {
         [command, flag] if command == "recovery" && is_help_flag(flag) => Some(RECOVERY_CLI_HELP),
         [command, flag] if command == "hygiene" && is_help_flag(flag) => Some(HYGIENE_CLI_HELP),
         [command, flag] if command == "compiler" && is_help_flag(flag) => Some(COMPILER_CLI_HELP),
+        [command, flag] if command == "memory" && is_help_flag(flag) => Some(MEMORY_CLI_HELP),
         [command, subcommand, flag]
             if command == "compiler" && subcommand == "registry" && is_help_flag(flag) =>
         {
@@ -180,6 +189,7 @@ pub fn dispatch_cli_or_run() -> Result<()> {
         [command, rest @ ..] if command == "recovery" => run_recovery_cli(rest),
         [command, rest @ ..] if command == "hygiene" => run_hygiene_cli(rest),
         [command, rest @ ..] if command == "compiler" => run_compiler_cli(rest),
+        [command, rest @ ..] if command == "memory" => run_memory_cli(rest),
         [command, rest @ ..] if command == "nota" => run_nota_cli(rest),
         [command, rest @ ..] if command == "forge" => run_forge_cli(rest),
         [command, transport, rest @ ..] if command == "mcp" && transport == "stdio" => {

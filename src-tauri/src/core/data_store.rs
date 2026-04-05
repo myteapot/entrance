@@ -5447,7 +5447,7 @@ impl DataStore {
         })
     }
 
-    fn with_connection<T, F>(&self, callback: F) -> Result<T>
+    pub(crate) fn with_connection<T, F>(&self, callback: F) -> Result<T>
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
