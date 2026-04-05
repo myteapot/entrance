@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import "./Dashboard.css";
 import ComputeGraph from "../components/ComputeGraph";
+import NodeInspector from "../components/NodeInspector";
 import NotaDialog from "../components/NotaDialog";
 import {
   listenToGraphUpdates,
@@ -136,8 +137,33 @@ const Dashboard = () => {
   const [error, setError] = createSignal<string | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = createSignal<string | null>(null);
   const [visibleDepth, setVisibleDepth] = createSignal(4);
+  const [selectedNodeId, setSelectedNodeId] = createSignal<string | null>(null);
   const graphStore = createGraphStore();
   const dialogStore = createNotaDialogStore();
+
+  const selectedGraphNode = () => {
+    const id = selectedNodeId();
+    if (!id) return null;
+    return graphStore.state.nodes.find((n) => n.id === id) ?? null;
+  };
+
+  const handleNodeSelect = (nodeId: string) => {
+    setSelectedNodeId(nodeId || null);
+  };
+
+  const handleNodeAction = (nodeId: string, kind: string) => {
+    if (kind === "nota") {
+      /* Double-clicking NOTA node — surface the dialog queue */
+      const current = dialogStore.current();
+      if (!current) {
+        /* No pending dialog; just select */
+        setSelectedNodeId(nodeId);
+      }
+      /* If there is a pending dialog, it's already visible via NotaDialog */
+    } else {
+      setSelectedNodeId(nodeId);
+    }
+  };
 
   const applySystemPulse = (pulse: SystemPulseEvent) => {
     const notaTone =
@@ -399,7 +425,19 @@ const Dashboard = () => {
                 )}
               </For>
             </div>
-            <ComputeGraph store={graphStore} />
+            <ComputeGraph
+              store={graphStore}
+              onNodeSelect={handleNodeSelect}
+              onNodeAction={handleNodeAction}
+              selectedNodeId={selectedNodeId()}
+            />
+            <NodeInspector
+              node={selectedGraphNode()}
+              onClose={() => setSelectedNodeId(null)}
+              onOpenDialog={() => {
+                /* If NOTA dialog is pending, it's already shown; otherwise no-op */
+              }}
+            />
           </div>
 
           <div class="board-map__footer">

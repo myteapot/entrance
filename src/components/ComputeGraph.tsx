@@ -6,7 +6,31 @@ import "./ComputeGraph.css";
 
 interface ComputeGraphProps {
   store: GraphStore;
+  onNodeSelect?: (nodeId: string) => void;
+  onNodeAction?: (nodeId: string, kind: string) => void;
+  selectedNodeId?: string | null;
 }
+
+/* ── Color palette (Tech Noir) ─────────────────────────── */
+const TONE_COLORS: Record<string, string> = {
+  nota:     "#818cf8",
+  active:   "#34d399",
+  steady:   "#a3e635",
+  warming:  "#fbbf24",
+  caution:  "#f87171",
+  archived: "rgba(250,250,250,0.15)",
+};
+const DEFAULT_NODE_COLOR = "rgba(250,250,250,0.25)";
+const LABEL_COLOR_PRIMARY = "#e0e7ff";
+const LABEL_COLOR_SECONDARY = "rgba(250,250,250,0.50)";
+
+/* ── Node initials for in-circle rendering ─────────────── */
+const NODE_INITIALS: Record<string, string> = {
+  nota: "N",
+  arch: "A",
+  dev:  "D",
+  agent: "Ag",
+};
 
 const ComputeGraph = (props: ComputeGraphProps) => {
   let canvasRef: HTMLCanvasElement | undefined;
@@ -24,6 +48,12 @@ const ComputeGraph = (props: ComputeGraphProps) => {
   let isDragging = false;
   let lastMouseX = 0;
   let lastMouseY = 0;
+  let didDrag = false;
+
+  /* ── Click detection state ───────────────────────────── */
+  let lastClickNodeId: string | null = null;
+  let lastClickTime = 0;
+  const DOUBLE_CLICK_MS = 300;
 
   const [tooltip, setTooltip] = createSignal<{ x: number; y: number; node: SimNode | null }>({
     x: 0,
@@ -83,8 +113,8 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 
-    // G1-SKIN-TODO: implement full Canvas rendering here.
-    context.fillStyle = "hsl(225, 8%, 10%)";
+    /* ── Background ──────────────────────────────────── */
+    context.fillStyle = "#09090b";
     context.fillRect(0, 0, width, height);
 
     context.save();
@@ -96,6 +126,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     const top = (-height / 2 - panY) / zoom;
     const bottom = (height / 2 - panY) / zoom;
 
+    /* ── Grid ────────────────────────────────────────── */
     context.beginPath();
     for (let x = Math.floor(left / 50) * 50; x < right; x += 50) {
       context.moveTo(x, top);
@@ -105,10 +136,11 @@ const ComputeGraph = (props: ComputeGraphProps) => {
       context.moveTo(left, y);
       context.lineTo(right, y);
     }
-    context.strokeStyle = "hsla(225, 5%, 16%, 0.5)";
+    context.strokeStyle = "rgba(255,255,255,0.03)";
     context.lineWidth = 1 / zoom;
     context.stroke();
 
+    /* ── Edges ───────────────────────────────────────── */
     for (const edge of currentEdges) {
       const source =
         typeof edge.source === "object"
@@ -127,47 +159,51 @@ const ComputeGraph = (props: ComputeGraphProps) => {
       context.beginPath();
       context.moveTo(source.x ?? 0, source.y ?? 0);
       context.lineTo(target.x ?? 0, target.y ?? 0);
-      context.strokeStyle = isActive ? "hsla(185, 20%, 50%, 0.35)" : "hsla(225, 5%, 30%, 0.25)";
+      context.strokeStyle = isActive ? "rgba(129,140,248,0.25)" : "rgba(255,255,255,0.06)";
       context.lineWidth = isActive ? 1.5 / zoom : 1 / zoom;
       context.stroke();
     }
+
+    /* ── Nodes ───────────────────────────────────────── */
+    const selectedId = props.selectedNodeId;
 
     for (const node of currentNodes) {
       let radius = nodeRadius(node.kind);
 
       const isHovered = hoveredNodeId === node.id;
+      const isSelected = selectedId === node.id;
       if (isHovered) {
         radius += 2;
       }
 
-      let fillStyle = "hsl(225, 5%, 52%)";
+      let fillStyle = DEFAULT_NODE_COLOR;
       let shadowColor = fillStyle;
       let shadowBlur = 0;
       let opacity = 1;
 
       switch(node.tone) {
         case "nota":
-          fillStyle = "hsl(42, 25%, 55%)";
+          fillStyle = TONE_COLORS.nota;
           shadowBlur = 8 + Math.sin(_timestamp * 0.002) * 4;
           break;
         case "active":
-          fillStyle = "hsl(185, 20%, 50%)";
+          fillStyle = TONE_COLORS.active;
           shadowBlur = 6 + Math.sin(_timestamp * 0.004) * 3;
           break;
         case "steady":
-          fillStyle = "hsl(150, 18%, 48%)";
+          fillStyle = TONE_COLORS.steady;
           shadowBlur = 4;
           break;
         case "warming":
-          fillStyle = "hsl(35, 25%, 52%)";
+          fillStyle = TONE_COLORS.warming;
           shadowBlur = 5 + Math.sin(_timestamp * 0.0015) * 3;
           break;
         case "caution":
-          fillStyle = "hsl(0, 20%, 52%)";
+          fillStyle = TONE_COLORS.caution;
           shadowBlur = 6 + Math.sin(_timestamp * 0.006) * 4;
           break;
         case "archived":
-          fillStyle = "hsl(225, 5%, 32%)";
+          fillStyle = TONE_COLORS.archived;
           shadowColor = "transparent";
           shadowBlur = 0;
           opacity = 0.5;
@@ -183,6 +219,19 @@ const ComputeGraph = (props: ComputeGraphProps) => {
       context.save();
       context.globalAlpha = opacity;
 
+      /* ── Selected ring (pulse glow) ──────────────── */
+      if (isSelected) {
+        const pulseRadius = radius + 6 + Math.sin(_timestamp * 0.003) * 2;
+        context.beginPath();
+        context.arc(node.x ?? 0, node.y ?? 0, pulseRadius, 0, Math.PI * 2);
+        context.strokeStyle = fillStyle;
+        context.lineWidth = 2 / zoom;
+        context.globalAlpha = 0.4 + Math.sin(_timestamp * 0.003) * 0.15;
+        context.stroke();
+        context.globalAlpha = opacity;
+      }
+
+      /* ── Node circle ─────────────────────────────── */
       context.beginPath();
       context.arc(node.x ?? 0, node.y ?? 0, radius, 0, Math.PI * 2);
       context.fillStyle = fillStyle;
@@ -194,14 +243,27 @@ const ComputeGraph = (props: ComputeGraphProps) => {
 
       if (isHovered) {
         context.lineWidth = 1 / zoom;
-        context.strokeStyle = "hsl(225, 5%, 28%)";
+        context.strokeStyle = "rgba(255,255,255,0.12)";
         context.stroke();
       }
 
+      /* ── Node initials (inside circle) ───────────── */
+      const initials = NODE_INITIALS[node.kind];
+      if (initials && radius >= 12) {
+        const fontSize = Math.max(8, Math.round(radius * 0.65));
+        context.font = `600 ${fontSize}px Inter, sans-serif`;
+        context.fillStyle = "#09090b";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillText(initials, node.x ?? 0, node.y ?? 0);
+      }
+
+      /* ── Node label (below circle) ───────────────── */
       context.font = node.kind === "nota" ? "bold 12px Inter, sans-serif" : "11px Inter, sans-serif";
-      context.fillStyle = node.kind === "nota" ? "hsl(225, 5%, 78%)" : "hsl(225, 5%, 52%)";
+      context.fillStyle = node.kind === "nota" ? LABEL_COLOR_PRIMARY : LABEL_COLOR_SECONDARY;
       context.textAlign = "center";
-      context.fillText(node.label, node.x ?? 0, (node.y ?? 0) + radius + 12);
+      context.textBaseline = "top";
+      context.fillText(node.label, node.x ?? 0, (node.y ?? 0) + radius + 6);
 
       context.restore();
     }
@@ -224,6 +286,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     const screenY = event.clientY - rect.top;
 
     if (isDragging && draggedNodeId) {
+      didDrag = true;
       const graphPoint = screenToGraph(screenX, screenY);
       const node = currentNodes.find((candidate) => candidate.id === draggedNodeId);
       if (node) {
@@ -235,6 +298,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     }
 
     if (isDragging && !draggedNodeId) {
+      didDrag = true;
       panX += event.clientX - lastMouseX;
       panY += event.clientY - lastMouseY;
       lastMouseX = event.clientX;
@@ -264,6 +328,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     const hitNode = findNodeAt(graphPoint.x, graphPoint.y);
 
     isDragging = true;
+    didDrag = false;
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
 
@@ -274,7 +339,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (event: MouseEvent) => {
     if (draggedNodeId) {
       const node = currentNodes.find((candidate) => candidate.id === draggedNodeId);
       if (node) {
@@ -283,8 +348,36 @@ const ComputeGraph = (props: ComputeGraphProps) => {
       }
     }
 
+    /* ── Click / double-click detection ──────────── */
+    if (!didDrag && canvasRef) {
+      const rect = canvasRef.getBoundingClientRect();
+      const graphPoint = screenToGraph(event.clientX - rect.left, event.clientY - rect.top);
+      const hitNode = findNodeAt(graphPoint.x, graphPoint.y);
+
+      if (hitNode) {
+        const now = Date.now();
+        if (hitNode.id === lastClickNodeId && now - lastClickTime < DOUBLE_CLICK_MS) {
+          // Double-click → action
+          props.onNodeAction?.(hitNode.id, hitNode.kind);
+          lastClickNodeId = null;
+          lastClickTime = 0;
+        } else {
+          // Single click → select
+          lastClickNodeId = hitNode.id;
+          lastClickTime = now;
+          props.onNodeSelect?.(hitNode.id);
+        }
+      } else {
+        // Clicked empty space → deselect
+        lastClickNodeId = null;
+        lastClickTime = 0;
+        props.onNodeSelect?.("");
+      }
+    }
+
     isDragging = false;
     draggedNodeId = null;
+    didDrag = false;
     setTooltip((prev) => ({ ...prev, node: null }));
   };
 
@@ -317,7 +410,16 @@ const ComputeGraph = (props: ComputeGraphProps) => {
     canvasRef.addEventListener("mousemove", handleMouseMove);
     canvasRef.addEventListener("mousedown", handleMouseDown);
     canvasRef.addEventListener("mouseup", handleMouseUp);
-    canvasRef.addEventListener("mouseleave", handleMouseUp);
+    canvasRef.addEventListener("mouseleave", () => {
+      if (draggedNodeId) {
+        const node = currentNodes.find((c) => c.id === draggedNodeId);
+        if (node) { node.fx = null; node.fy = null; }
+      }
+      isDragging = false;
+      draggedNodeId = null;
+      didDrag = false;
+      setTooltip((prev) => ({ ...prev, node: null }));
+    });
     canvasRef.addEventListener("wheel", handleWheel, { passive: false });
     animationFrameId = requestAnimationFrame(loop);
 
@@ -327,11 +429,6 @@ const ComputeGraph = (props: ComputeGraphProps) => {
         cancelAnimationFrame(animationFrameId);
       }
       simulation.stop();
-      canvasRef?.removeEventListener("mousemove", handleMouseMove);
-      canvasRef?.removeEventListener("mousedown", handleMouseDown);
-      canvasRef?.removeEventListener("mouseup", handleMouseUp);
-      canvasRef?.removeEventListener("mouseleave", handleMouseUp);
-      canvasRef?.removeEventListener("wheel", handleWheel);
     });
   });
 
@@ -352,7 +449,7 @@ const ComputeGraph = (props: ComputeGraphProps) => {
   return (
     <div class="compute-graph-container">
       <canvas ref={canvasRef} class="compute-graph-canvas" />
-      <div 
+      <div
         class={`compute-graph-tooltip ${tooltip().node ? 'is-visible' : ''}`}
         style={{ left: `${tooltip().x + 16}px`, top: `${tooltip().y + 16}px` }}
       >

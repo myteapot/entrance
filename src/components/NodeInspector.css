@@ -1,0 +1,251 @@
+/* ═══════════════════════════════════════════════════════════════
+   NodeInspector — floating side panel for graph node details
+   No gradients. Solid dark surface + subtle border + blur.
+   ═══════════════════════════════════════════════════════════════ */
+
+.node-inspector {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 320px;
+  max-width: 100%;
+  background: rgba(17, 17, 21, 0.96);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 20px;
+  overflow-y: auto;
+  z-index: 10;
+  animation: inspector-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+@keyframes inspector-enter {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* ── Header ──────────────────────────────────────────────── */
+.node-inspector__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.node-inspector__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.node-inspector__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgba(250, 250, 250, 0.25);
+}
+
+.node-inspector__dot.tone-nota     { background: #818cf8; }
+.node-inspector__dot.tone-active   { background: #34d399; }
+.node-inspector__dot.tone-steady   { background: #a3e635; }
+.node-inspector__dot.tone-warming  { background: #fbbf24; }
+.node-inspector__dot.tone-caution  { background: #f87171; }
+.node-inspector__dot.tone-archived { background: rgba(250, 250, 250, 0.15); }
+
+.node-inspector__name {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #fafafa;
+}
+
+.node-inspector__tone-badge {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(250, 250, 250, 0.50);
+}
+
+.node-inspector__tone-badge.tone-nota     { color: #818cf8; background: rgba(129, 140, 248, 0.10); }
+.node-inspector__tone-badge.tone-active   { color: #34d399; background: rgba(52, 211, 153, 0.10); }
+.node-inspector__tone-badge.tone-steady   { color: #a3e635; background: rgba(163, 230, 53, 0.10); }
+.node-inspector__tone-badge.tone-warming  { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
+.node-inspector__tone-badge.tone-caution  { color: #f87171; background: rgba(248, 113, 113, 0.10); }
+.node-inspector__tone-badge.tone-archived { color: rgba(250, 250, 250, 0.30); }
+
+.node-inspector__close {
+  background: none;
+  border: none;
+  color: rgba(250, 250, 250, 0.35);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.12s, background 0.12s;
+}
+
+.node-inspector__close:hover {
+  color: #fafafa;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ── Body sections ───────────────────────────────────────── */
+.node-inspector__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.node-inspector__section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.node-inspector__label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(250, 250, 250, 0.35);
+}
+
+.node-inspector__value {
+  font-size: 0.88rem;
+  color: rgba(250, 250, 250, 0.80);
+}
+
+.node-inspector__code {
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 0.78rem;
+  color: rgba(250, 250, 250, 0.60);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+/* ── Instance list ───────────────────────────────────────── */
+.node-inspector__instances {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  padding-top: 12px;
+}
+
+.node-inspector__instance-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.node-inspector__instance-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 0.8rem;
+}
+
+.node-inspector__instance-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgba(250, 250, 250, 0.25);
+}
+
+.node-inspector__instance-dot.is-busy    { background: #34d399; }
+.node-inspector__instance-dot.is-idle    { background: rgba(250, 250, 250, 0.30); }
+.node-inspector__instance-dot.is-stale   { background: #fbbf24; }
+.node-inspector__instance-dot.is-stopped { background: #f87171; }
+
+.node-inspector__instance-name {
+  color: rgba(250, 250, 250, 0.80);
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-inspector__instance-status {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(250, 250, 250, 0.40);
+}
+
+.node-inspector__instance-heartbeat {
+  font-size: 0.68rem;
+  color: rgba(250, 250, 250, 0.30);
+}
+
+/* ── Error ───────────────────────────────────────────────── */
+.node-inspector__error {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #f87171;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.06);
+}
+
+/* ── Actions ─────────────────────────────────────────────── */
+.node-inspector__actions {
+  margin-top: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.node-inspector__btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: rgba(250, 250, 250, 0.64);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.node-inspector__btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #fafafa;
+}
+
+.node-inspector__btn--primary {
+  background: rgba(129, 140, 248, 0.12);
+  border-color: rgba(129, 140, 248, 0.20);
+  color: #818cf8;
+}
+
+.node-inspector__btn--primary:hover {
+  background: rgba(129, 140, 248, 0.18);
+  border-color: rgba(129, 140, 248, 0.35);
+  color: #a5b4fc;
+}
