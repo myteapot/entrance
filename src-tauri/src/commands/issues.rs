@@ -77,10 +77,7 @@ pub fn issue_update(
 }
 
 #[tauri::command]
-pub fn issue_delete(
-    issue_key: String,
-    data_store: State<'_, DataStore>,
-) -> Result<(), String> {
+pub fn issue_delete(issue_key: String, data_store: State<'_, DataStore>) -> Result<(), String> {
     data_store
         .delete_issue(&issue_key)
         .map_err(|e| e.to_string())

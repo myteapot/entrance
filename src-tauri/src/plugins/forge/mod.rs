@@ -4,7 +4,6 @@ pub mod http;
 
 use std::{
     env,
-    ffi::OsStr,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     path::{Path, PathBuf},
     process::Command,
@@ -21,13 +20,11 @@ use crate::{
         event_bus::EventBus,
         supervision::SupervisionStrategy,
     },
-    plugins::vault::VaultCipher,
     plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
 };
 use anyhow::Result;
 use engine::TaskEngine;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tauri::async_runtime::JoinHandle;
 
 const MANIFEST: Manifest = Manifest {
@@ -196,50 +193,14 @@ struct IssueSummary {
 #[derive(Debug, Clone)]
 enum IssueSummarySource {
     Local,
-    Linear,
-    Fallback,
 }
 
 impl IssueSummarySource {
     fn as_str(&self) -> &'static str {
         match self {
             IssueSummarySource::Local => "local",
-            IssueSummarySource::Linear => "linear",
-            IssueSummarySource::Fallback => "fallback",
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearIssueEnvelope {
-    data: Option<LinearIssueData>,
-    errors: Option<Vec<LinearGraphQlError>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearIssueData {
-    issues: LinearIssueConnection,
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearIssueConnection {
-    nodes: Vec<LinearIssueNode>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearIssueNode {
-    title: String,
-    state: LinearIssueState,
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearIssueState {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearGraphQlError {
-    message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -583,7 +544,10 @@ async fn build_prepared_agent_dispatch(
     issue_summary: Option<IssueSummary>,
 ) -> Result<PreparedAgentDispatch, String> {
     let (issue_status, issue_status_source) = match issue_summary.as_ref() {
-        Some(summary) => (summary.issue_status.clone(), summary.source.as_str().to_string()),
+        Some(summary) => (
+            summary.issue_status.clone(),
+            summary.source.as_str().to_string(),
+        ),
         None => ("Todo".to_string(), "fallback".to_string()),
     };
     let task = build_agent_task_text(&paths.issue_id, issue_summary.as_ref());
@@ -622,7 +586,10 @@ async fn build_prepared_dev_dispatch(
     issue_summary: Option<IssueSummary>,
 ) -> Result<PreparedDevDispatch, String> {
     let (issue_status, issue_status_source) = match issue_summary.as_ref() {
-        Some(summary) => (summary.issue_status.clone(), summary.source.as_str().to_string()),
+        Some(summary) => (
+            summary.issue_status.clone(),
+            summary.source.as_str().to_string(),
+        ),
         None => ("Todo".to_string(), "fallback".to_string()),
     };
     let task = build_dev_task_text(&paths.issue_id, issue_summary.as_ref());
@@ -1353,92 +1320,18 @@ async fn fetch_issue_summary(
     data_store: DataStore,
     issue_id: &str,
 ) -> Result<Option<IssueSummary>, String> {
-    // ── Local DB lookup (ENT-* keys) ──
-    if issue_id.starts_with("ENT-") {
-        if let Some(issue) = data_store
-            .get_issue_by_key(issue_id)
-            .map_err(|e| e.to_string())?
-        {
-            return Ok(Some(IssueSummary {
-                issue_status: issue.status.clone(),
-                issue_title: issue.title.clone(),
-                source: IssueSummarySource::Local,
-            }));
-        }
-    }
-
-    // ── Linear fallback (non-ENT keys or ENT key not found locally) ──
-    let Some(token) = resolve_linear_token(&data_store)? else {
-        return Ok(None);
-    };
-
-    let response = reqwest::Client::new()
-        .post("https://api.linear.app/graphql")
-        .header("Authorization", token)
-        .json(&json!({
-            "query": "query AutoDispatchIssue($identifier: String!) { issues(filter: { identifier: { eq: $identifier } }, first: 1) { nodes { title state { name } } } }",
-            "variables": {
-                "identifier": issue_id,
-            },
-        }))
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let payload = response
-        .json::<LinearIssueEnvelope>()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    if let Some(errors) = payload.errors {
-        let summary = errors
-            .into_iter()
-            .map(|error| error.message)
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(format!("Linear issue lookup failed: {summary}"));
-    }
-
-    let issue = payload
-        .data
-        .and_then(|data| data.issues.nodes.into_iter().next())
-        .map(|issue| IssueSummary {
-            issue_status: issue.state.name,
-            issue_title: issue.title,
-            source: IssueSummarySource::Linear,
-        });
-
-    Ok(issue)
-}
-
-fn resolve_linear_token(data_store: &DataStore) -> Result<Option<String>, String> {
-    for key in ["LINEAR_API_KEY", "LINEAR_TOKEN"] {
-        if let Ok(value) = env::var(key) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Ok(Some(trimmed.to_string()));
-            }
-        }
-    }
-
-    let Some(token) = data_store
-        .get_vault_token_by_provider("linear")
+    if let Some(issue) = data_store
+        .get_issue_by_key(issue_id)
         .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-
-    let cipher = VaultCipher::from_device().map_err(|error| error.to_string())?;
-    let value = cipher
-        .decrypt(&token.encrypted_value)
-        .map_err(|error| error.to_string())?;
-    let trimmed = value.trim();
-
-    if trimmed.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(trimmed.to_string()))
+    {
+        return Ok(Some(IssueSummary {
+            issue_status: issue.status.clone(),
+            issue_title: issue.title.clone(),
+            source: IssueSummarySource::Local,
+        }));
     }
+
+    Ok(None)
 }
 
 fn build_agent_task_text(issue_id: &str, issue_summary: Option<&IssueSummary>) -> String {
@@ -1684,9 +1577,9 @@ mod tests {
     use super::{
         allocate_agent_slot_worktree, build_agent_task_request, build_dev_task_request,
         build_prepared_agent_dispatch, build_prepared_dev_dispatch, generate_agent_prompt,
-        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, normalize_display_path,
-        parse_issue_id_from_branch, prepare_agent_dispatch, prepare_agent_dispatch_for_worktree,
-        prepare_dev_dispatch, resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
+        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
+        prepare_agent_dispatch, prepare_agent_dispatch_for_worktree, prepare_dev_dispatch,
+        resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
     };
 
     struct TestDir {
@@ -2264,13 +2157,8 @@ mod tests {
             Some("forge_dispatch_agent")
         );
 
-        let store =
+        let _store =
             crate::core::data_store::DataStore::in_memory(MigrationPlan::new(vault::migrations()))?;
-        assert!(
-            store.get_vault_token_by_provider("linear")?.is_none(),
-            "test store should not require a legacy `.agents` token source"
-        );
-
         Ok(())
     }
 
