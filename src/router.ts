@@ -5,6 +5,7 @@ import Console from "./pages/Console";
 import RoutePlaceholder from "./pages/RoutePlaceholder";
 import Vault from "./pages/Vault";
 import Forge from "./pages/Forge";
+import Issues from "./pages/Issues";
 
 type AppRoute = {
   path: string;
@@ -58,6 +59,14 @@ export const primaryRoutes: AppRoute[] = [
     description: "Instance management and system health",
     hotkey: "Ctrl+4",
     component: Console,
+  },
+  {
+    path: "/issues",
+    label: "Issues",
+    glyph: "IS",
+    description: "Built-in issue tracker and Kanban board",
+    hotkey: "Ctrl+5",
+    component: Issues,
   },
 ];
 

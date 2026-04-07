@@ -101,7 +101,12 @@ const CORE_AGENT_INSTANCES_MIGRATION: MigrationStep = MigrationStep {
     sql: include_str!("../../migrations/0020_create_agent_instances.sql"),
 };
 
-const CORE_MIGRATIONS: [MigrationStep; 16] = [
+const CORE_ISSUES_MIGRATION: MigrationStep = MigrationStep {
+    name: "0021_create_issues_tables",
+    sql: include_str!("../../migrations/0021_create_issues_tables.sql"),
+};
+
+const CORE_MIGRATIONS: [MigrationStep; 17] = [
     CORE_MIGRATION,
     CORE_LANDING_MIGRATION,
     CORE_NOTA_RUNTIME_MIGRATION,
@@ -118,6 +123,7 @@ const CORE_MIGRATIONS: [MigrationStep; 16] = [
     CORE_SIMULATION_GATE_EVIDENCE_MIGRATION,
     CORE_NOTA_MEMORY_MIGRATION,
     CORE_AGENT_INSTANCES_MIGRATION,
+    CORE_ISSUES_MIGRATION,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -240,6 +246,39 @@ pub struct StoredVaultMcpConfig {
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredIssue {
+    pub id: i64,
+    pub issue_key: String,
+    pub title: String,
+    pub description: String,
+    pub status: String,
+    pub priority: String,
+    pub labels: String,
+    pub assignee: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub closed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredIssueComment {
+    pub id: i64,
+    pub issue_id: i64,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+}
+
+pub struct NewIssue<'a> {
+    pub title: &'a str,
+    pub description: &'a str,
+    pub status: &'a str,
+    pub priority: &'a str,
+    pub labels: &'a str,
+    pub assignee: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2821,6 +2860,233 @@ impl DataStore {
         }
 
         Ok(())
+    }
+
+    // ── Issue Tracker CRUD ──────────────────────────────────────────
+
+    pub fn create_issue(&self, new: NewIssue<'_>) -> Result<StoredIssue> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            let next_num: i64 = conn
+                .query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM issues", [], |r| {
+                    r.get(0)
+                })?;
+            let issue_key = format!("ENT-{next_num}");
+
+            conn.execute(
+                r#"
+                INSERT INTO issues (
+                    issue_key, title, description, status, priority, labels, assignee,
+                    created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                "#,
+                params![
+                    issue_key,
+                    new.title,
+                    new.description,
+                    new.status,
+                    new.priority,
+                    new.labels,
+                    new.assignee,
+                    now,
+                ],
+            )?;
+
+            let id = conn.last_insert_rowid();
+            conn.query_row(
+                "SELECT id, issue_key, title, description, status, priority, labels, assignee, created_at, updated_at, closed_at FROM issues WHERE id = ?1",
+                [id],
+                map_issue_row,
+            )
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn list_issues(&self, status_filter: Option<&str>) -> Result<Vec<StoredIssue>> {
+        self.with_connection(|conn| {
+            if let Some(status) = status_filter {
+                let mut stmt = conn.prepare(
+                    "SELECT id, issue_key, title, description, status, priority, labels, assignee, created_at, updated_at, closed_at FROM issues WHERE status = ?1 ORDER BY id DESC",
+                )?;
+                let rows = stmt.query_map([status], map_issue_row)?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT id, issue_key, title, description, status, priority, labels, assignee, created_at, updated_at, closed_at FROM issues ORDER BY id DESC",
+                )?;
+                let rows = stmt.query_map([], map_issue_row)?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            }
+        })
+    }
+
+    pub fn get_issue_by_key(&self, issue_key: &str) -> Result<Option<StoredIssue>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT id, issue_key, title, description, status, priority, labels, assignee, created_at, updated_at, closed_at FROM issues WHERE issue_key = ?1",
+                [issue_key],
+                map_issue_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn get_issue(&self, id: i64) -> Result<Option<StoredIssue>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT id, issue_key, title, description, status, priority, labels, assignee, created_at, updated_at, closed_at FROM issues WHERE id = ?1",
+                [id],
+                map_issue_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn update_issue_status(&self, issue_key: &str, new_status: &str) -> Result<StoredIssue> {
+        let now = Utc::now().to_rfc3339();
+        let closed_at = if new_status == "done" || new_status == "cancelled" {
+            Some(now.clone())
+        } else {
+            None
+        };
+
+        let changed = self.with_connection(|conn| {
+            Ok(conn.execute(
+                r#"
+                UPDATE issues
+                SET status = ?2,
+                    updated_at = ?3,
+                    closed_at = ?4
+                WHERE issue_key = ?1
+                "#,
+                params![issue_key, new_status, now, closed_at],
+            )?)
+        })?;
+
+        if changed == 0 {
+            return Err(anyhow!("issue `{issue_key}` does not exist"));
+        }
+
+        self.get_issue_by_key(issue_key)?
+            .ok_or_else(|| anyhow!("issue `{issue_key}` disappeared after update"))
+    }
+
+    pub fn update_issue(
+        &self,
+        issue_key: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        priority: Option<&str>,
+        labels: Option<&str>,
+        assignee: Option<&str>,
+    ) -> Result<StoredIssue> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            if let Some(t) = title {
+                conn.execute(
+                    "UPDATE issues SET title = ?2, updated_at = ?3 WHERE issue_key = ?1",
+                    params![issue_key, t, now],
+                )?;
+            }
+            if let Some(d) = description {
+                conn.execute(
+                    "UPDATE issues SET description = ?2, updated_at = ?3 WHERE issue_key = ?1",
+                    params![issue_key, d, now],
+                )?;
+            }
+            if let Some(p) = priority {
+                conn.execute(
+                    "UPDATE issues SET priority = ?2, updated_at = ?3 WHERE issue_key = ?1",
+                    params![issue_key, p, now],
+                )?;
+            }
+            if let Some(l) = labels {
+                conn.execute(
+                    "UPDATE issues SET labels = ?2, updated_at = ?3 WHERE issue_key = ?1",
+                    params![issue_key, l, now],
+                )?;
+            }
+            if let Some(a) = assignee {
+                conn.execute(
+                    "UPDATE issues SET assignee = ?2, updated_at = ?3 WHERE issue_key = ?1",
+                    params![issue_key, a, now],
+                )?;
+            }
+            conn.query_row(
+                "SELECT id, issue_key, title, description, status, priority, labels, assignee, created_at, updated_at, closed_at FROM issues WHERE issue_key = ?1",
+                [issue_key],
+                map_issue_row,
+            )
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn delete_issue(&self, issue_key: &str) -> Result<()> {
+        let changed = self.with_connection(|conn| {
+            conn.execute(
+                "DELETE FROM issue_comments WHERE issue_id IN (SELECT id FROM issues WHERE issue_key = ?1)",
+                [issue_key],
+            )?;
+            Ok(conn.execute("DELETE FROM issues WHERE issue_key = ?1", [issue_key])?)
+        })?;
+
+        if changed == 0 {
+            return Err(anyhow!("issue `{issue_key}` does not exist"));
+        }
+
+        Ok(())
+    }
+
+    pub fn add_issue_comment(
+        &self,
+        issue_key: &str,
+        author: &str,
+        body: &str,
+    ) -> Result<StoredIssueComment> {
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            let issue_id: i64 = conn
+                .query_row(
+                    "SELECT id FROM issues WHERE issue_key = ?1",
+                    [issue_key],
+                    |r| r.get(0),
+                )
+                .map_err(|_| anyhow!("issue `{issue_key}` does not exist"))?;
+
+            conn.execute(
+                r#"
+                INSERT INTO issue_comments (issue_id, author, body, created_at)
+                VALUES (?1, ?2, ?3, ?4)
+                "#,
+                params![issue_id, author, body, now],
+            )?;
+
+            let id = conn.last_insert_rowid();
+            conn.query_row(
+                "SELECT id, issue_id, author, body, created_at FROM issue_comments WHERE id = ?1",
+                [id],
+                map_issue_comment_row,
+            )
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn list_issue_comments(&self, issue_key: &str) -> Result<Vec<StoredIssueComment>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT c.id, c.issue_id, c.author, c.body, c.created_at
+                FROM issue_comments c
+                JOIN issues i ON c.issue_id = i.id
+                WHERE i.issue_key = ?1
+                ORDER BY c.id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([issue_key], map_issue_comment_row)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
     }
 
     pub fn list_vault_mcp_configs(&self) -> Result<Vec<StoredVaultMcpConfig>> {
@@ -5920,6 +6186,32 @@ fn map_vault_mcp_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVaultMcp
         enabled: row.get::<_, i64>(4)? != 0,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
+    })
+}
+
+fn map_issue_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredIssue> {
+    Ok(StoredIssue {
+        id: row.get(0)?,
+        issue_key: row.get(1)?,
+        title: row.get(2)?,
+        description: row.get(3)?,
+        status: row.get(4)?,
+        priority: row.get(5)?,
+        labels: row.get(6)?,
+        assignee: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        closed_at: row.get(10)?,
+    })
+}
+
+fn map_issue_comment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredIssueComment> {
+    Ok(StoredIssueComment {
+        id: row.get(0)?,
+        issue_id: row.get(1)?,
+        author: row.get(2)?,
+        body: row.get(3)?,
+        created_at: row.get(4)?,
     })
 }
 

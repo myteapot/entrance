@@ -203,7 +203,15 @@ pub fn run_tauri_app() {
             plugins::vault::commands::vault_get_token,
             plugins::vault::commands::vault_get_token_by_provider,
             plugins::vault::commands::vault_list_mcp,
-            plugins::vault::commands::vault_update_mcp
+            plugins::vault::commands::vault_update_mcp,
+            commands::issues::issue_list,
+            commands::issues::issue_get,
+            commands::issues::issue_create,
+            commands::issues::issue_update_status,
+            commands::issues::issue_update,
+            commands::issues::issue_delete,
+            commands::issues::issue_add_comment,
+            commands::issues::issue_list_comments
         ])
         .run(tauri::generate_context!())
         .expect("error while running Entrance application");
