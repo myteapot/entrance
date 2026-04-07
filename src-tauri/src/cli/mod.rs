@@ -37,7 +37,7 @@ use self::{
     nota_cli::run_nota_cli,
 };
 
-pub(crate) const ROOT_CLI_HELP: &str = r#"Entrance V0 headless alpha runtime shell
+pub(crate) const ROOT_CLI_HELP: &str = r#"Entrance V1 release candidate runtime shell
 
 Usage:
   entrance
