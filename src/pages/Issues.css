@@ -27,27 +27,38 @@
   margin: 0;
 }
 
-/* ── Board Strip (Kanban columns) ──────────────────────────────── */
+/* ── Board Layout (board + detail side-by-side) ───────────────── */
+
+.board-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
 
 .board-strip {
   display: flex;
-  gap: var(--space-3);
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow-x: auto;
-  padding-bottom: var(--space-2);
 }
 
 .board-column {
   flex: 1;
-  min-width: 200px;
-  max-width: 320px;
+  min-width: 160px;
   display: flex;
   flex-direction: column;
-  background: var(--surface-1);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
+  background: transparent;
+  border-right: 1px solid var(--border-color);
   overflow: hidden;
+}
+
+.board-column:last-child {
+  border-right: none;
 }
 
 .board-column-header {
@@ -155,22 +166,15 @@
 
 /* ── Issue Detail Panel ── */
 
-.issue-detail-overlay {
-  position: fixed;
-  top: 0; right: 0; bottom: 0;
-  width: 440px;
+.issue-detail-panel {
+  width: 400px;
+  min-width: 400px;
   background: var(--surface-1);
   border-left: 1px solid var(--border-color);
-  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.4);
-  z-index: 50;
   display: flex;
   flex-direction: column;
-  animation: slide-in 0.2s ease;
-}
-
-@keyframes slide-in {
-  from { transform: translateX(100%); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
+  position: relative;
+  flex-shrink: 0;
 }
 
 .issue-detail-header {
@@ -353,7 +357,11 @@
     max-height: 280px;
   }
 
-  .issue-detail-overlay {
+  .issue-detail-panel {
     width: 100%;
+    min-width: 0;
+    border-left: none;
+    border-top: 1px solid var(--border-color);
+    max-height: 50vh;
   }
 }
