@@ -13,12 +13,10 @@ pub(crate) fn run_issues_cli(args: &[String]) -> Result<()> {
             let issues = ds.list_issues(None)?;
             print_json(&issues)
         }
-        [command, key] if command == "get" => {
-            match ds.get_issue_by_key(key)? {
-                Some(issue) => print_json(&issue),
-                None => bail!("issue `{key}` not found"),
-            }
-        }
+        [command, key] if command == "get" => match ds.get_issue_by_key(key)? {
+            Some(issue) => print_json(&issue),
+            None => bail!("issue `{key}` not found"),
+        },
         [command, key, flag, new_status] if command == "status" && flag == "--set" => {
             let updated = ds.update_issue_status(key, new_status)?;
             print_json(&updated)
@@ -49,9 +47,7 @@ pub(crate) fn run_issues_cli(args: &[String]) -> Result<()> {
             println!("Deleted issue {key}");
             Ok(())
         }
-        _ => bail!(
-            "unsupported issues command; run `entrance issues --help` for usage"
-        ),
+        _ => bail!("unsupported issues command; run `entrance issues --help` for usage"),
     }
 }
 
@@ -121,7 +117,8 @@ fn parse_comment_args(args: &[String]) -> Result<(String, String)> {
     }
 
     let author = author.unwrap_or_else(|| "cli".to_string());
-    let body = body.ok_or_else(|| anyhow::anyhow!("comment body is required; use `--body <text>`"))?;
+    let body =
+        body.ok_or_else(|| anyhow::anyhow!("comment body is required; use `--body <text>`"))?;
 
     Ok((author, body))
 }
