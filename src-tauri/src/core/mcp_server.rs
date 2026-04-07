@@ -20,7 +20,7 @@ use crate::core::{
     action::ActorRole,
     bootstrap_mcp_cycle::{run_forge_bootstrap_mcp_cycle, ForgeBootstrapMcpCycleOptions},
     compiler::registry::registry,
-    data_store::DataStore,
+    data_store::{DataStore, NewIssue},
     nota_runtime::{
         list_nota_runtime_allocations, list_nota_runtime_receipts,
         materialize_runtime_closure_checkpoint, record_dev_return_finalize,
@@ -309,6 +309,11 @@ impl McpServer {
             "recovery_list_seed_rows" => self.handle_recovery_list_seed_rows(arguments),
             "vault_get_token" => self.handle_vault_get_token(arguments),
             "vault_list_mcp" => self.handle_vault_list_mcp(),
+            "issues_list" => self.handle_issues_list(),
+            "issues_get" => self.handle_issues_get(arguments),
+            "issues_create" => self.handle_issues_create(arguments),
+            "issues_update_status" => self.handle_issues_update_status(arguments),
+            "issues_add_comment" => self.handle_issues_add_comment(arguments),
             "launcher_search" => self.handle_launcher_search(arguments),
             "launcher_launch" => self.handle_launcher_launch(arguments),
             _ => bail!("tool `{name}` is not registered"),
@@ -858,6 +863,80 @@ impl McpServer {
         }))
     }
 
+    // ── Issue Tracker MCP handlers ──────────────────────────────
+
+    fn handle_issues_list(&self) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let issues = data_store.list_issues(None)?;
+        Ok(json!({ "issues": issues }))
+    }
+
+    fn handle_issues_get(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let issue_key = require_string_any(arguments, &["issue_key", "issueKey"])?;
+        let issue = data_store
+            .get_issue_by_key(issue_key)?
+            .ok_or_else(|| anyhow!("issue `{issue_key}` not found"))?;
+        let comments = data_store.list_issue_comments(issue_key)?;
+        Ok(json!({ "issue": issue, "comments": comments }))
+    }
+
+    fn handle_issues_create(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let title = require_string(arguments, "title")?;
+        let description = optional_string(arguments, "description").unwrap_or("");
+        let priority = optional_string(arguments, "priority").unwrap_or("none");
+        let assignee = optional_string(arguments, "assignee").unwrap_or("");
+        let status = optional_string(arguments, "status").unwrap_or("todo");
+        let labels = optional_string(arguments, "labels").unwrap_or("");
+        let issue = data_store.create_issue(NewIssue {
+            title,
+            description,
+            status,
+            priority,
+            labels,
+            assignee,
+        })?;
+        Ok(json!({ "issue": issue }))
+    }
+
+    fn handle_issues_update_status(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let issue_key = require_string_any(arguments, &["issue_key", "issueKey"])?;
+        let new_status = require_string(arguments, "status")?;
+        let issue = data_store.update_issue_status(issue_key, new_status)?;
+        Ok(json!({ "issue": issue }))
+    }
+
+    fn handle_issues_add_comment(&self, arguments: &Value) -> Result<Value> {
+        let data_store = self
+            .plugins
+            .core_data_store
+            .as_ref()
+            .context("core data store is not available on the current MCP surface")?;
+        let issue_key = require_string_any(arguments, &["issue_key", "issueKey"])?;
+        let author = optional_string(arguments, "author").unwrap_or("mcp");
+        let body = require_string(arguments, "body")?;
+        let comment = data_store.add_issue_comment(issue_key, author, body)?;
+        Ok(json!({ "comment": comment }))
+    }
+
     fn serve_stdio_stream<R: BufRead, W: Write>(
         &self,
         reader: &mut R,
@@ -1380,6 +1459,80 @@ fn build_tool_descriptors(
             input_schema: json!({
                 "type": "object",
                 "properties": {}
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        // ── Issue Tracker tools ──────────────────────────────
+        tools.push(McpToolDescriptor {
+            name: "issues_list",
+            description: "List all issues in the built-in Entrance issue tracker. Returns issue key, title, status, priority, and assignee.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "issues_get",
+            description: "Get a single issue by key (e.g. ENT-1) from the built-in issue tracker, including its comments.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "issue_key": { "type": "string", "description": "Issue key such as ENT-1." },
+                    "issueKey": { "type": "string", "description": "CamelCase alias for issue_key." }
+                },
+                "required": ["issue_key"]
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "issues_create",
+            description: "Create a new issue in the built-in Entrance issue tracker. Returns the created issue with its auto-generated ENT-N key.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Issue title." },
+                    "description": { "type": "string", "description": "Optional description or body text." },
+                    "priority": { "type": "string", "description": "Priority: urgent, high, medium, low, or none. Defaults to none.", "enum": ["urgent", "high", "medium", "low", "none"] },
+                    "assignee": { "type": "string", "description": "Optional assignee name." },
+                    "status": { "type": "string", "description": "Initial status. Defaults to todo.", "enum": ["todo", "in_progress", "in_review", "done", "cancelled"] },
+                    "labels": { "type": "string", "description": "Optional comma-separated labels." }
+                },
+                "required": ["title"]
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "issues_update_status",
+            description: "Update the status of an existing issue in the built-in tracker.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "issue_key": { "type": "string", "description": "Issue key such as ENT-1." },
+                    "issueKey": { "type": "string", "description": "CamelCase alias for issue_key." },
+                    "status": { "type": "string", "description": "New status.", "enum": ["todo", "in_progress", "in_review", "done", "cancelled"] }
+                },
+                "required": ["issue_key", "status"]
+            }),
+            permission: None,
+            dispatch_role: None,
+        });
+        tools.push(McpToolDescriptor {
+            name: "issues_add_comment",
+            description: "Add a comment to an existing issue in the built-in tracker.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "issue_key": { "type": "string", "description": "Issue key such as ENT-1." },
+                    "issueKey": { "type": "string", "description": "CamelCase alias for issue_key." },
+                    "body": { "type": "string", "description": "Comment body text." },
+                    "author": { "type": "string", "description": "Comment author name. Defaults to mcp." }
+                },
+                "required": ["issue_key", "body"]
             }),
             permission: None,
             dispatch_role: None,
@@ -1911,6 +2064,11 @@ mod tests {
                 "nota_checkpoint_runtime_closure",
                 "vault_get_token",
                 "vault_list_mcp",
+                "issues_list",
+                "issues_get",
+                "issues_create",
+                "issues_update_status",
+                "issues_add_comment",
                 "launcher_search",
                 "launcher_launch",
             ]
@@ -2078,6 +2236,11 @@ mod tests {
                 "recovery_list_seed_rows",
                 "vault_get_token",
                 "vault_list_mcp",
+                "issues_list",
+                "issues_get",
+                "issues_create",
+                "issues_update_status",
+                "issues_add_comment",
                 "launcher_search",
                 "launcher_launch",
             ]
@@ -2129,6 +2292,11 @@ mod tests {
                 "nota_checkpoint_runtime_closure",
                 "vault_get_token",
                 "vault_list_mcp",
+                "issues_list",
+                "issues_get",
+                "issues_create",
+                "issues_update_status",
+                "issues_add_comment",
                 "launcher_search",
                 "launcher_launch",
             ]
@@ -2268,6 +2436,11 @@ mod tests {
                 "recovery_list_seed_rows",
                 "vault_get_token",
                 "vault_list_mcp",
+                "issues_list",
+                "issues_get",
+                "issues_create",
+                "issues_update_status",
+                "issues_add_comment",
                 "launcher_search",
                 "launcher_launch",
             ]
