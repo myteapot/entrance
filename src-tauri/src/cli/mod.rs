@@ -1,5 +1,6 @@
 mod compiler_cli;
 mod forge_cli;
+mod issues_cli;
 mod mcp_cli;
 mod memory_cli;
 mod nota_cli;
@@ -30,12 +31,13 @@ pub(crate) use forge_cli::{prepare_forge_dispatch_cli, verify_forge_dispatch_cli
 use self::{
     compiler_cli::run_compiler_cli,
     forge_cli::run_forge_cli,
+    issues_cli::run_issues_cli,
     mcp_cli::{run_mcp_http, run_mcp_stdio},
     memory_cli::run_memory_cli,
     nota_cli::run_nota_cli,
 };
 
-pub(crate) const ROOT_CLI_HELP: &str = r#"Entrance V0 headless alpha runtime shell
+pub(crate) const ROOT_CLI_HELP: &str = r#"Entrance V1 release candidate runtime shell
 
 Usage:
   entrance
@@ -47,6 +49,7 @@ Commands:
   nota       Read or write NOTA runtime continuity surfaces
   mcp        Serve Entrance as an MCP server over stdio or HTTP
   forge      Run Forge dispatch and bootstrap helpers
+  issues     Manage the built-in issue tracker (list, create, update)
   memory     Import NOTA memory store snapshots
   landing    Import and inspect landing snapshots
   recovery   Inspect import-only recovery seed data
@@ -96,6 +99,17 @@ pub(crate) const FORGE_CLI_HELP: &str = r#"Usage:
   entrance forge bootstrap-mcp-cycle [--project-dir <path>] [--model <runner>] [--agent-command <path>] [--agent-count <n>]
   entrance forge run-bootstrap-dev-plan
   entrance forge supervise-task --task-id <id>
+"#;
+
+pub(crate) const ISSUES_CLI_HELP: &str = r#"Usage:
+  entrance issues list
+  entrance issues get <key>
+  entrance issues create --title <text> [--desc <text>] [--priority <urgent|high|medium|low|none>] [--assignee <name>]
+  entrance issues create <title>
+  entrance issues status <key> --set <todo|in_progress|in_review|done|cancelled>
+  entrance issues comments <key>
+  entrance issues comment <key> --body <text> [--author <name>]
+  entrance issues delete <key>
 "#;
 
 pub(crate) const NOTA_CLI_HELP: &str = r#"Usage:
@@ -161,6 +175,7 @@ pub(crate) fn cli_help_for_args(args: &[String]) -> Option<&'static str> {
         }
         [command, flag] if command == "nota" && is_help_flag(flag) => Some(NOTA_CLI_HELP),
         [command, flag] if command == "forge" && is_help_flag(flag) => Some(FORGE_CLI_HELP),
+        [command, flag] if command == "issues" && is_help_flag(flag) => Some(ISSUES_CLI_HELP),
         [command, flag] if command == "mcp" && is_help_flag(flag) => Some(MCP_CLI_HELP),
         [command, transport, flag]
             if command == "mcp"
@@ -192,6 +207,7 @@ pub fn dispatch_cli_or_run() -> Result<()> {
         [command, rest @ ..] if command == "memory" => run_memory_cli(rest),
         [command, rest @ ..] if command == "nota" => run_nota_cli(rest),
         [command, rest @ ..] if command == "forge" => run_forge_cli(rest),
+        [command, rest @ ..] if command == "issues" => run_issues_cli(rest),
         [command, transport, rest @ ..] if command == "mcp" && transport == "stdio" => {
             run_mcp_stdio(rest)
         }

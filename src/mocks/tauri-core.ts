@@ -304,7 +304,7 @@ const mockNotaRuntimeOverview = () => {
 };
 
 const mockDashboardSummary = () => ({
-  app_version: "0.3.1-headless-alpha.1 (mock)",
+  app_version: "1.0.0-rc.1 (mock)",
   launcher_hotkey: "Ctrl+Space",
   enabled_plugin_count: 3,
   running_task_count: 1,
@@ -621,6 +621,89 @@ const handlers: Record<string, (args?: Record<string, unknown>) => unknown> = {
   nota_approve_prayer: () => undefined,
   nota_reject_prayer: () => undefined,
   nota_prayer_list: () => [],
+
+  // ── Issue Tracker ─────────────────────────────────────────────
+  issue_list: () => [
+    {
+      id: 1, issue_key: "ENT-1", title: "[S3-BUG] Roleplay 替代模式检验 + 验证模式优化",
+      description: "Issue tracked locally in Entrance.", status: "done",
+      priority: "high", labels: "[]", assignee: "agent",
+      created_at: ago(1440), updated_at: ago(120), closed_at: ago(120),
+    },
+    {
+      id: 2, issue_key: "ENT-2", title: "[S3-4b] Verify 前端 — 交互模式 UI (demo)",
+      description: "", status: "done", priority: "medium",
+      labels: "[]", assignee: "dev",
+      created_at: ago(1200), updated_at: ago(300), closed_at: ago(300),
+    },
+    {
+      id: 3, issue_key: "ENT-3", title: "[S3-4a] Verify 地基 — verify_document command (Codex)",
+      description: "Verify the document pipeline end-to-end.", status: "done",
+      priority: "medium", labels: "[]", assignee: "agent",
+      created_at: ago(960), updated_at: ago(400), closed_at: ago(400),
+    },
+    {
+      id: 4, issue_key: "ENT-4", title: "[S4] 去 Linear 化 — 内置 Issue Tracker MVP",
+      description: "Replace hardcoded Linear dependency with built-in issue tracking.\n\nPhase 1: DB + CRUD + MCP tools\nPhase 2: Board Strip UI\nPhase 3: Dispatch prompt refactor",
+      status: "in_progress", priority: "urgent", labels: '["p0","release-blocker"]',
+      assignee: "arch", created_at: ago(60), updated_at: ago(5), closed_at: null,
+    },
+    {
+      id: 5, issue_key: "ENT-5", title: "[S3-5] 自限控制单元 — Agent 输出限幅",
+      description: "", status: "todo", priority: "medium",
+      labels: "[]", assignee: "",
+      created_at: ago(720), updated_at: ago(720), closed_at: null,
+    },
+    {
+      id: 6, issue_key: "ENT-6", title: "[S3-3] Gallery 前端 — 卡片策略 + 迭代模式",
+      description: "", status: "cancelled", priority: "low",
+      labels: "[]", assignee: "",
+      created_at: ago(1440), updated_at: ago(600), closed_at: ago(600),
+    },
+    {
+      id: 7, issue_key: "ENT-7", title: "[S4-1] Verify 工具链自检 — DB 健康 + MCP Ready",
+      description: "Verify the toolchain health check works correctly.",
+      status: "todo", priority: "high", labels: "[]", assignee: "dev",
+      created_at: ago(30), updated_at: ago(30), closed_at: null,
+    },
+  ],
+  issue_get: (args: Record<string, unknown> | undefined) => {
+    const key = args?.issueKey as string;
+    return key ? {
+      id: 4, issue_key: key, title: "Mock issue " + key,
+      description: "Description for " + key, status: "todo",
+      priority: "medium", labels: "[]", assignee: "",
+      created_at: ago(60), updated_at: ago(5), closed_at: null,
+    } : null;
+  },
+  issue_create: (args: Record<string, unknown> | undefined) => ({
+    id: 99, issue_key: "ENT-99", title: (args?.title as string) || "New issue",
+    description: (args?.description as string) || "", status: "todo",
+    priority: (args?.priority as string) || "none", labels: "[]",
+    assignee: "", created_at: now(), updated_at: now(), closed_at: null,
+  }),
+  issue_update_status: (args: Record<string, unknown> | undefined) => ({
+    id: 1, issue_key: (args?.issueKey as string) || "ENT-1",
+    title: "Updated issue", description: "", status: (args?.status as string) || "todo",
+    priority: "none", labels: "[]", assignee: "",
+    created_at: ago(60), updated_at: now(),
+    closed_at: (args?.status === "done" || args?.status === "cancelled") ? now() : null,
+  }),
+  issue_update: (args: Record<string, unknown> | undefined) => ({
+    id: 1, issue_key: (args?.issueKey as string) || "ENT-1",
+    title: (args?.title as string) || "Updated", description: "",
+    status: "todo", priority: "none", labels: "[]", assignee: "",
+    created_at: ago(60), updated_at: now(), closed_at: null,
+  }),
+  issue_delete: () => undefined,
+  issue_add_comment: (args: Record<string, unknown> | undefined) => ({
+    id: 99, issue_id: 1, author: (args?.author as string) || "human",
+    body: (args?.body as string) || "", created_at: now(),
+  }),
+  issue_list_comments: () => [
+    { id: 1, issue_id: 4, author: "arch", body: "DB schema + CRUD done. Running cargo check.", created_at: ago(30) },
+    { id: 2, issue_id: 4, author: "human", body: "Looks good. Continue with frontend.", created_at: ago(15) },
+  ],
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

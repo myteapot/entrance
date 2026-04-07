@@ -4,7 +4,6 @@ pub mod http;
 
 use std::{
     env,
-    ffi::OsStr,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     path::{Path, PathBuf},
     process::Command,
@@ -21,13 +20,11 @@ use crate::{
         event_bus::EventBus,
         supervision::SupervisionStrategy,
     },
-    plugins::vault::VaultCipher,
     plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
 };
 use anyhow::Result;
 use engine::TaskEngine;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tauri::async_runtime::JoinHandle;
 
 const MANIFEST: Manifest = Manifest {
@@ -187,41 +184,23 @@ struct DispatchPaths {
 }
 
 #[derive(Debug, Clone)]
-struct LinearIssueSummary {
+struct IssueSummary {
     issue_status: String,
     issue_title: String,
+    source: IssueSummarySource,
 }
 
-#[derive(Debug, Deserialize)]
-struct LinearIssueEnvelope {
-    data: Option<LinearIssueData>,
-    errors: Option<Vec<LinearGraphQlError>>,
+#[derive(Debug, Clone)]
+enum IssueSummarySource {
+    Local,
 }
 
-#[derive(Debug, Deserialize)]
-struct LinearIssueData {
-    issues: LinearIssueConnection,
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearIssueConnection {
-    nodes: Vec<LinearIssueNode>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearIssueNode {
-    title: String,
-    state: LinearIssueState,
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearIssueState {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct LinearGraphQlError {
-    message: String,
+impl IssueSummarySource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            IssueSummarySource::Local => "local",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -415,7 +394,7 @@ pub async fn prepare_agent_dispatch(
     .await
     .map_err(|error| error.to_string())??;
 
-    let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
+    let issue_summary = fetch_issue_summary(data_store, &paths.issue_id).await?;
     build_prepared_agent_dispatch(paths, issue_summary).await
 }
 
@@ -437,7 +416,7 @@ pub async fn prepare_agent_dispatch_for_worktree(
     .await
     .map_err(|error| error.to_string())??;
 
-    let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
+    let issue_summary = fetch_issue_summary(data_store, &paths.issue_id).await?;
     build_prepared_agent_dispatch(paths, issue_summary).await
 }
 
@@ -512,7 +491,7 @@ pub async fn prepare_dev_dispatch(
     .await
     .map_err(|error| error.to_string())??;
 
-    let issue_summary = fetch_linear_issue_summary(data_store, &paths.issue_id).await?;
+    let issue_summary = fetch_issue_summary(data_store, &paths.issue_id).await?;
     build_prepared_dev_dispatch(paths, issue_summary).await
 }
 
@@ -562,10 +541,13 @@ pub fn verify_dev_dispatch(
 
 async fn build_prepared_agent_dispatch(
     paths: DispatchPaths,
-    issue_summary: Option<LinearIssueSummary>,
+    issue_summary: Option<IssueSummary>,
 ) -> Result<PreparedAgentDispatch, String> {
     let (issue_status, issue_status_source) = match issue_summary.as_ref() {
-        Some(summary) => (summary.issue_status.clone(), "linear".to_string()),
+        Some(summary) => (
+            summary.issue_status.clone(),
+            summary.source.as_str().to_string(),
+        ),
         None => ("Todo".to_string(), "fallback".to_string()),
     };
     let task = build_agent_task_text(&paths.issue_id, issue_summary.as_ref());
@@ -601,10 +583,13 @@ async fn build_prepared_agent_dispatch(
 
 async fn build_prepared_dev_dispatch(
     paths: DispatchPaths,
-    issue_summary: Option<LinearIssueSummary>,
+    issue_summary: Option<IssueSummary>,
 ) -> Result<PreparedDevDispatch, String> {
     let (issue_status, issue_status_source) = match issue_summary.as_ref() {
-        Some(summary) => (summary.issue_status.clone(), "linear".to_string()),
+        Some(summary) => (
+            summary.issue_status.clone(),
+            summary.source.as_str().to_string(),
+        ),
         None => ("Todo".to_string(), "fallback".to_string()),
     };
     let task = build_dev_task_text(&paths.issue_id, issue_summary.as_ref());
@@ -1331,111 +1316,53 @@ fn sanitize_child_slot(child_slot: &str) -> Result<String, String> {
     }
 }
 
-async fn fetch_linear_issue_summary(
+async fn fetch_issue_summary(
     data_store: DataStore,
     issue_id: &str,
-) -> Result<Option<LinearIssueSummary>, String> {
-    let Some(token) = resolve_linear_token(&data_store)? else {
-        return Ok(None);
-    };
-
-    let response = reqwest::Client::new()
-        .post("https://api.linear.app/graphql")
-        .header("Authorization", token)
-        .json(&json!({
-            "query": "query AutoDispatchIssue($identifier: String!) { issues(filter: { identifier: { eq: $identifier } }, first: 1) { nodes { title state { name } } } }",
-            "variables": {
-                "identifier": issue_id,
-            },
-        }))
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let payload = response
-        .json::<LinearIssueEnvelope>()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    if let Some(errors) = payload.errors {
-        let summary = errors
-            .into_iter()
-            .map(|error| error.message)
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(format!("Linear issue lookup failed: {summary}"));
-    }
-
-    let issue = payload
-        .data
-        .and_then(|data| data.issues.nodes.into_iter().next())
-        .map(|issue| LinearIssueSummary {
-            issue_status: issue.state.name,
-            issue_title: issue.title,
-        });
-
-    Ok(issue)
-}
-
-fn resolve_linear_token(data_store: &DataStore) -> Result<Option<String>, String> {
-    for key in ["LINEAR_API_KEY", "LINEAR_TOKEN"] {
-        if let Ok(value) = env::var(key) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Ok(Some(trimmed.to_string()));
-            }
-        }
-    }
-
-    let Some(token) = data_store
-        .get_vault_token_by_provider("linear")
+) -> Result<Option<IssueSummary>, String> {
+    if let Some(issue) = data_store
+        .get_issue_by_key(issue_id)
         .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-
-    let cipher = VaultCipher::from_device().map_err(|error| error.to_string())?;
-    let value = cipher
-        .decrypt(&token.encrypted_value)
-        .map_err(|error| error.to_string())?;
-    let trimmed = value.trim();
-
-    if trimmed.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(trimmed.to_string()))
+    {
+        return Ok(Some(IssueSummary {
+            issue_status: issue.status.clone(),
+            issue_title: issue.title.clone(),
+            source: IssueSummarySource::Local,
+        }));
     }
+
+    Ok(None)
 }
 
-fn build_agent_task_text(issue_id: &str, issue_summary: Option<&LinearIssueSummary>) -> String {
+fn build_agent_task_text(issue_id: &str, issue_summary: Option<&IssueSummary>) -> String {
     match issue_summary {
         Some(summary) if summary.issue_status.eq_ignore_ascii_case("Request") => format!(
-            "按 Dev 审核意见返工 Linear issue {issue_id}: {}",
+            "按 Dev 审核意见返工 issue {issue_id}: {}",
             summary.issue_title
         ),
-        Some(summary) => format!("完成 Linear issue {issue_id}: {}", summary.issue_title),
+        Some(summary) => format!("完成 issue {issue_id}: {}", summary.issue_title),
         None => {
-            format!("完成 Linear issue {issue_id}，以 issue description、验收标准和最新评论为准")
+            format!("完成 issue {issue_id}，以 issue description、验收标准和最新评论为准")
         }
     }
 }
 
-fn build_dev_task_text(issue_id: &str, issue_summary: Option<&LinearIssueSummary>) -> String {
+fn build_dev_task_text(issue_id: &str, issue_summary: Option<&IssueSummary>) -> String {
     match issue_summary {
         Some(summary) if summary.issue_status.eq_ignore_ascii_case("In Review") => format!(
-            "以 Dev 身份审核并整合 Linear issue {issue_id}: {}",
+            "以 Dev 身份审核并整合 issue {issue_id}: {}",
             summary.issue_title
         ),
         Some(summary) if summary.issue_status.eq_ignore_ascii_case("Request") => format!(
-            "以 Dev 身份处理返工并重新派发 Linear issue {issue_id}: {}",
+            "以 Dev 身份处理返工并重新派发 issue {issue_id}: {}",
             summary.issue_title
         ),
         Some(summary) => format!(
-            "以 Dev 身份为 Linear issue {issue_id} 执行 prepare / dispatch: {}",
+            "以 Dev 身份为 issue {issue_id} 执行 prepare / dispatch: {}",
             summary.issue_title
         ),
         None => {
-            format!("以 Dev 身份为 Linear issue {issue_id} 执行 prepare / dispatch，以 issue description、验收标准和最新评论为准")
+            format!("以 Dev 身份为 issue {issue_id} 执行 prepare / dispatch，以 issue description、验收标准和最新评论为准")
         }
     }
 }
@@ -1470,7 +1397,7 @@ fn generate_agent_prompt(
     let bootstrap_skill_path = normalize_display_path(&bootstrap_skill_path);
 
     Ok(format!(
-        "读 `{bootstrap_skill_path}`，以 Agent 身份启动。\n从 Linear 获取 `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/specs/`\n\n第一动作，在写任何代码前必须完成:\n1. 调用 Linear MCP，把 `{issue_id}` 标记为 `In Progress`\n2. 在 issue comment 留言:\n   `> Agent ({{当前模型名}}) 已领取，开始工作`\n\n这是硬约束:\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 Linear issue comment 中汇报结果。"
+        "读 `{bootstrap_skill_path}`，以 Agent 身份启动。\n获取 issue `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/specs/`\n\n第一动作，在写任何代码前必须完成:\n1. 调用 Entrance Forge MCP，把 `{issue_id}` 标记为 `In Progress`\n2. 在 issue comment 留言:\n   `> Agent ({{当前模型名}}) 已领取，开始工作`\n\n这是硬约束:\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 issue comment 中汇报结果。"
     ))
 }
 
@@ -1513,7 +1440,7 @@ fn generate_dev_prompt(
     let dev_role_path = normalize_display_path(&dev_role_path);
 
     Ok(format!(
-        "读 `{bootstrap_skill_path}` 和 `{dev_role_path}`，以 Dev 身份启动。\n从 Linear 获取 `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/specs/`\n\n这是当前 dev dispatch cut 的边界:\n- 这次只落 `prepare / dispatch` 启动面，不把它当成完整的 Dev 状态机\n- 如需派发 Agent，优先使用 Entrance-owned Forge runtime，不手写 agent prompt\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n\n当前任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 Linear issue comment 中汇报 Dev 侧结果。"
+        "读 `{bootstrap_skill_path}` 和 `{dev_role_path}`，以 Dev 身份启动。\n获取 issue `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/specs/`\n\n这是当前 dev dispatch cut 的边界:\n- 这次只落 `prepare / dispatch` 启动面，不把它当成完整的 Dev 状态机\n- 如需派发 Agent，优先使用 Entrance-owned Forge runtime，不手写 agent prompt\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n\n当前任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 issue comment 中汇报 Dev 侧结果。"
     ))
 }
 
@@ -1650,9 +1577,9 @@ mod tests {
     use super::{
         allocate_agent_slot_worktree, build_agent_task_request, build_dev_task_request,
         build_prepared_agent_dispatch, build_prepared_dev_dispatch, generate_agent_prompt,
-        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, normalize_display_path,
-        parse_issue_id_from_branch, prepare_agent_dispatch, prepare_agent_dispatch_for_worktree,
-        prepare_dev_dispatch, resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
+        generate_dev_prompt, managed_worktrees_root_for_app_data_dir, parse_issue_id_from_branch,
+        prepare_agent_dispatch, prepare_agent_dispatch_for_worktree, prepare_dev_dispatch,
+        resolve_dispatch_paths_for_project, ForgePlugin, ForgeTaskMetadata,
     };
 
     struct TestDir {
@@ -2230,13 +2157,8 @@ mod tests {
             Some("forge_dispatch_agent")
         );
 
-        let store =
+        let _store =
             crate::core::data_store::DataStore::in_memory(MigrationPlan::new(vault::migrations()))?;
-        assert!(
-            store.get_vault_token_by_provider("linear")?.is_none(),
-            "test store should not require a legacy `.agents` token source"
-        );
-
         Ok(())
     }
 

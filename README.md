@@ -1,8 +1,8 @@
 # Entrance
 
-`Entrance` 当前公开姿态是 `V0 HEADLESS ALPHA`。它是一个以数据库为真相源的连续性运行时，也是一个 headless `NOTA` 宿主。
+`Entrance` 当前公开姿态是 `V1 RELEASE CANDIDATE`。它是一个以数据库为真相源的连续性运行时，也是一个带原生 GUI 的 `NOTA` 宿主。
 
-> English: `Entrance` is currently published as a `V0 HEADLESS ALPHA`: a DB-first continuity runtime and headless `NOTA` host.
+> English: `Entrance` is currently published as a `V1 RELEASE CANDIDATE`: a DB-first continuity runtime and native `NOTA` host.
 
 ## 安装指南
 
@@ -10,7 +10,7 @@
 
 推荐优先使用发布页提供的 Windows zip。
 
-1. 从发布页下载 `v0.3.1-headless-alpha.1`。
+1. 从发布页下载 `v1.0.0-rc.1`。
 2. 解压后运行 `entrance.exe`。
 3. 在终端中先读取运行时状态：
 
@@ -56,7 +56,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 
 ## Runtime Operations
 
-推荐把以下命令当作当前 `V0` 收束期的主入口：
+推荐把以下命令当作当前 `V1` release-candidate cut 的主入口：
 
 ```powershell
 .\entrance.exe nota status
@@ -74,7 +74,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 - `rebuild-projections` 从运行时 DB 反向重建 hot-root 与 cold-doc 投影
 - `recovery status` 明确 recovery 现在只是 import-only 的吸收面，不再拥有 promotion authority
 
-> English: During the current `V0` sharpening hold, prefer `nota status`, `nota overview`, `nota invariants`, `nota repair`, `nota rebuild-projections`, and `recovery status` as the main operator surfaces.
+> English: During the current `V1` release-candidate cut, prefer `nota status`, `nota overview`, `nota invariants`, `nota repair`, `nota rebuild-projections`, and `recovery status` as the main operator surfaces.
 
 ## 版权与许可
 

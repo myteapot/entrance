@@ -1,37 +1,19 @@
 /* ═══════════════════════════════════════════════════════════════
-   NodeInspector — floating side panel for graph node details
-   No gradients. Solid dark surface + subtle border + blur.
+   NodeInspector — right-side panel for graph node details
+   Solid dark surface, no transparency. Flex sibling of graph.
    ═══════════════════════════════════════════════════════════════ */
 
 .node-inspector {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
   width: 260px;
-  max-width: 100%;
-  background: rgba(17, 17, 21, 0.96);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  min-width: 260px;
+  flex-shrink: 0;
+  background: var(--surface-1, #111115);
+  border-left: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
   padding: 14px;
   overflow-y: auto;
-  z-index: 10;
-  animation: inspector-enter 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-@keyframes inspector-enter {
-  from {
-    transform: translateX(24px);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
 }
 
 /* ── Header ──────────────────────────────────────────────── */

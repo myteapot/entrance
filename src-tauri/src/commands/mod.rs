@@ -3,6 +3,7 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+pub mod issues;
 pub mod nota_prayer;
 
 use crate::core::{

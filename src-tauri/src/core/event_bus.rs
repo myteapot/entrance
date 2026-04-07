@@ -50,10 +50,7 @@ impl EventBus {
             emit_graph_update_runtime(&graph_event);
         }
 
-        let event = EventPayload {
-            topic,
-            payload,
-        };
+        let event = EventPayload { topic, payload };
         // ignore SendError if no receivers are currently active
         let count = self.sender.send(event).unwrap_or(0);
         Ok(count)

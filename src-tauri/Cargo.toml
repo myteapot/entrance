@@ -1,7 +1,7 @@
 [package]
 name = "entrance"
-version = "0.3.1-headless-alpha.1"
-description = "Entrance V0 headless alpha runtime shell"
+version = "1.0.0-rc.1"
+description = "Entrance V1 release candidate runtime shell"
 authors = ["Entrance Contributors"]
 edition = "2021"
 license-file = "../LICENSE"

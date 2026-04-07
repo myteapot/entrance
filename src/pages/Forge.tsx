@@ -477,8 +477,8 @@ export default function Forge() {
               </div>
               <Show when={context().issue_status_source === "fallback"}>
                 <div class="task-callout callout-blocked">
-                  Linear issue status was unavailable, so Do used a generic `Todo` prompt
-                  fallback. Dispatch still works, but Request-specific auto-sync was skipped.
+                  No local issue summary was available, so Do used a generic `Todo` prompt
+                  fallback. Dispatch still works, but status-specific prompt shaping was skipped.
                 </div>
               </Show>
               <Show when={dispatchContextError()}>

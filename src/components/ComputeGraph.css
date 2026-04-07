@@ -1,6 +1,7 @@
 .compute-graph-container {
   position: relative;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 420px;
   overflow: hidden;
   border-radius: var(--radius-md, 8px);

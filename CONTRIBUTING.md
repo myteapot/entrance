@@ -2,7 +2,7 @@
 
 Thank you for wanting to help.
 
-During `V0 HEADLESS ALPHA`, this repository is still stabilizing its runtime,
+During the `V1 RELEASE CANDIDATE` cut, this repository is still stabilizing its runtime,
 licensing, and commercial boundaries. Because of that, unsolicited external code
 contributions are not being broadly accepted yet.
 
@@ -11,7 +11,7 @@ contributions are not being broadly accepted yet.
 - bug reports
 - reproducible issue notes
 - design feedback
-- release feedback from self-hosted alpha use
+- release feedback from self-hosted release-candidate use
 - licensing and packaging feedback
 
 ## What is intentionally limited right now

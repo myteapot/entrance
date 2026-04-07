@@ -48,7 +48,8 @@ $excludedPatterns = @(
     "releases\*.zip",
     "releases\*\*.zip",
     "releases\*SHA256SUMS.txt",
-    "releases\*\SHA256SUMS.txt"
+    "releases\*\SHA256SUMS.txt",
+    "releases\*\package\*"
 )
 
 function Test-ExcludedRelativePath {
