@@ -201,7 +201,7 @@ Treat these as migration inputs, not a second truth source:
 Deliverables:
 
 - naming frozen as `core / surfaces / hosts`
-- this wiki doc as the current migration truth source
+- this spec as the current migration truth source
 - explicit boundary for `publish`
 
 ### Phase 1: Introduce the desktop contract in place
