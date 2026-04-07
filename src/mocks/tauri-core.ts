@@ -304,7 +304,7 @@ const mockNotaRuntimeOverview = () => {
 };
 
 const mockDashboardSummary = () => ({
-  app_version: "0.3.1-headless-alpha.1 (mock)",
+  app_version: "1.0.0-rc.1 (mock)",
   launcher_hotkey: "Ctrl+Space",
   enabled_plugin_count: 3,
   running_task_count: 1,

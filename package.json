@@ -1,8 +1,8 @@
 {
   "name": "entrance",
-  "version": "0.3.1-headless-alpha.1",
+  "version": "1.0.0-rc.1",
   "private": true,
-  "description": "Entrance V0 headless alpha runtime shell powered by Tauri 2 and SolidJS",
+  "description": "Entrance V1 release candidate runtime shell powered by Tauri 2 and SolidJS",
   "type": "module",
   "scripts": {
     "dev": "vite",
