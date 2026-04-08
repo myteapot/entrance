@@ -99,6 +99,16 @@ const sweepRoute = async (window, label, expectedPath) => {
 };
 
 const runSmoke = async () => {
+  if (
+    process.platform !== "win32" &&
+    !process.env.DISPLAY &&
+    !process.env.WAYLAND_DISPLAY
+  ) {
+    throw new Error(
+      "No display server detected. Run with xvfb (for example: xvfb-run -a pnpm test:electron-smoke).",
+    );
+  }
+
   const vite = spawnChild("pnpm", ["exec", "vite", "--host", "127.0.0.1", "--port", "1420"]);
   attachLogs("vite", vite);
 
