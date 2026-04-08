@@ -122,14 +122,14 @@ Write-Host "[verify] running type + rust baselines"
 if (-not $SkipE2E.IsPresent) {
     Write-Host "[verify] running browser e2e"
     if ($IsLinux) {
-        & node -e "require.resolve('@rollup/rollup-linux-x64-gnu')"
+        & pnpm -C $repoRoot exec vite --version
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "rollup native optional dependency missing; reinstalling dependencies"
+            Write-Host "vite/rollup runtime probe failed; reinstalling dependencies"
             if (Test-Path (Join-Path $repoRoot "node_modules")) {
                 Remove-Item -Recurse -Force (Join-Path $repoRoot "node_modules")
             }
             & pnpm -C $repoRoot install --frozen-lockfile
-            & node -e "require.resolve('@rollup/rollup-linux-x64-gnu')"
+            & pnpm -C $repoRoot exec vite --version
         }
     }
     & pnpm -C $repoRoot test:e2e

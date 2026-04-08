@@ -145,14 +145,14 @@ ensure_rollup_native() {
     return 0
   fi
 
-  if node -e "require.resolve('@rollup/rollup-linux-x64-gnu')" >/dev/null 2>&1; then
+  if pnpm -C "$repo_root" exec vite --version >/dev/null 2>&1; then
     return 0
   fi
 
-  echo "rollup native optional dependency missing; reinstalling dependencies" >&2
+  echo "vite/rollup runtime probe failed; reinstalling dependencies" >&2
   rm -rf "$repo_root/node_modules"
   pnpm -C "$repo_root" install --frozen-lockfile
-  node -e "require.resolve('@rollup/rollup-linux-x64-gnu')" >/dev/null
+  pnpm -C "$repo_root" exec vite --version >/dev/null
 }
 
 echo "[verify] capturing runtime closure status"
