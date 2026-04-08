@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../platform/core";
 import { Show, createEffect, createSignal, onCleanup } from "solid-js";
 import type { GraphNode } from "../features/dashboard/graphStore";
 import "./NodeInspector.css";

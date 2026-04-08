@@ -1,5 +1,5 @@
 import { A } from "@solidjs/router";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../platform/core";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import "./Dashboard.css";
 import ComputeGraph from "../components/ComputeGraph";

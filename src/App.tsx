@@ -1,8 +1,8 @@
 import { For, onCleanup, onMount, type Component } from "solid-js";
 import { Route, Router, type RouteSectionProps, useNavigate } from "@solidjs/router";
-import { ask, message } from "@tauri-apps/plugin-dialog";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check } from "@tauri-apps/plugin-updater";
+import { ask, message } from "./platform/dialog";
+import { relaunch } from "./platform/process";
+import { check } from "./platform/updater";
 import "./App.css";
 import MainPanel from "./components/MainPanel";
 import {
