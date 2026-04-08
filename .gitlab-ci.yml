@@ -61,7 +61,7 @@ windows-native:
   script:
     - rustup default stable
     - cargo build --manifest-path src-tauri/Cargo.toml --locked --release
-    - .\scripts\release\run-windows-native-smoke.ps1 -Configuration Release -SkipBuild -EntranceExePath "$env:CI_PROJECT_DIR\src-tauri\target\release\entrance.exe"
+    - .\scripts\release\run-windows-native-smoke.ps1 -Configuration Release -SkipBuild -EntranceExePath "$env:CI_PROJECT_DIR/src-tauri/target/release/entrance.exe"
   artifacts:
     when: always
     paths:
