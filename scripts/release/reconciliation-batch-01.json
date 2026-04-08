@@ -1,0 +1,64 @@
+{
+  "items": [
+    {
+      "key": "linear:microt:Entrance:issue:MYT-56",
+      "reconciliation_status": "ownership_foundation",
+      "reason": "batch-01 ownership boundary: db-first runtime owner merge"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-61",
+      "reconciliation_status": "verification_gate_completed",
+      "reason": "batch-01 runtime verification gate completed"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-63",
+      "reconciliation_status": "bootstrap_critical_path",
+      "reason": "batch-01 active bootstrap absorption lane"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-64",
+      "reconciliation_status": "bootstrap_repo_landed",
+      "reason": "batch-01 bootstrap import cut landed repo-side"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-65",
+      "reconciliation_status": "bootstrap_repo_landed",
+      "reason": "batch-01 recovery import cut landed repo-side"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-45",
+      "reconciliation_status": "cold_backlog",
+      "reason": "batch-01 cold backlog: keep preserved but not phase-driving"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-46",
+      "reconciliation_status": "cold_backlog",
+      "reason": "batch-01 cold backlog: keep preserved but not phase-driving"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-47",
+      "reconciliation_status": "cold_backlog",
+      "reason": "batch-01 cold backlog: keep preserved but not phase-driving"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-49",
+      "reconciliation_status": "cold_backlog",
+      "reason": "batch-01 cold backlog: keep preserved but not phase-driving"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-50",
+      "reconciliation_status": "cold_backlog",
+      "reason": "batch-01 cold backlog: keep preserved but not phase-driving"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-51",
+      "reconciliation_status": "cold_backlog",
+      "reason": "batch-01 cold backlog: keep preserved but not phase-driving"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-52",
+      "reconciliation_status": "cold_backlog",
+      "reason": "batch-01 cold backlog: keep preserved but not phase-driving"
+    }
+  ]
+}

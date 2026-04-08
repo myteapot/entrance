@@ -1,0 +1,66 @@
+{
+  "batch": "reconciliation-batch-01",
+  "captured_on": "2026-04-08",
+  "summary": {
+    "planning_item_count": 50,
+    "unreconciled_count_after_apply": 38,
+    "status_buckets": [
+      {
+        "value": "seeded",
+        "count": 50
+      }
+    ],
+    "reconciliation_status_buckets": [
+      {
+        "value": "unreconciled",
+        "count": 38
+      },
+      {
+        "value": "cold_backlog",
+        "count": 7
+      },
+      {
+        "value": "bootstrap_repo_landed",
+        "count": 2
+      },
+      {
+        "value": "bootstrap_critical_path",
+        "count": 1
+      },
+      {
+        "value": "ownership_foundation",
+        "count": 1
+      },
+      {
+        "value": "verification_gate_completed",
+        "count": 1
+      }
+    ]
+  },
+  "key_item_assertions": [
+    {
+      "key": "linear:microt:Entrance:issue:MYT-56",
+      "reconciliation_status": "ownership_foundation"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-61",
+      "reconciliation_status": "verification_gate_completed"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-63",
+      "reconciliation_status": "bootstrap_critical_path"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-64",
+      "reconciliation_status": "bootstrap_repo_landed"
+    },
+    {
+      "key": "linear:microt:Entrance:issue:MYT-65",
+      "reconciliation_status": "bootstrap_repo_landed"
+    }
+  ],
+  "gate": {
+    "expected_unreconciled_max": 38,
+    "passed": true
+  }
+}
