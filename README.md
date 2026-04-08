@@ -76,6 +76,20 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 
 > English: During the current `V1` release-candidate cut, prefer `nota status`, `nota overview`, `nota invariants`, `nota repair`, `nota rebuild-projections`, and `recovery status` as the main operator surfaces.
 
+## Release Gate
+
+发布级自洽与双端验证入口：
+
+```bash
+./scripts/release/verify-v1-self-consistency.sh
+```
+
+```powershell
+./scripts/release/verify-v1-self-consistency.ps1
+```
+
+对应检查清单见：`specs/chore/v1_release_gate_checklist.md`。
+
 ## 版权与许可
 
 当前仓库采用收紧的 source-available 许可模式。
