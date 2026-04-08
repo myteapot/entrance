@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../platform/core";
 
 export type IssueStatus = "todo" | "in_progress" | "in_review" | "done" | "cancelled";
 export type IssuePriority = "none" | "urgent" | "high" | "medium" | "low";

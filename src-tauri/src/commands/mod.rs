@@ -92,6 +92,13 @@ pub(crate) fn dashboard_summary(
     dashboard: tauri::State<'_, DashboardUiState>,
     data_store: tauri::State<'_, DataStore>,
 ) -> Result<DashboardSummary, String> {
+    build_dashboard_summary(&dashboard, &data_store)
+}
+
+pub(crate) fn build_dashboard_summary(
+    dashboard: &DashboardUiState,
+    data_store: &DataStore,
+) -> Result<DashboardSummary, String> {
     let tasks = if dashboard.forge_enabled {
         data_store
             .list_forge_tasks()

@@ -1,10 +1,10 @@
 use serde::Serialize;
 use serde_json::json;
-use tauri::{AppHandle, State, Wry};
+use tauri::State;
 
 use crate::core::{
     data_store::{DataStore, NewNotaRuntimeReceipt, NotaRuntimeAllocationUpdate},
-    event_bus::EventBus,
+    event_bus::emit_graph_update_runtime,
     graph_events::GraphUpdateEvent,
     nota::NotaDoAllocationPayload,
 };
@@ -44,12 +44,14 @@ pub async fn nota_prayer_list(
 }
 
 #[tauri::command]
-pub async fn nota_approve_prayer(
-    app: AppHandle<Wry>,
-    event_bus: State<'_, EventBus>,
+pub fn nota_approve_prayer(
     data_store: State<'_, DataStore>,
     allocation_id: i64,
 ) -> Result<String, String> {
+    approve_prayer(&data_store, allocation_id)
+}
+
+pub(crate) fn approve_prayer(data_store: &DataStore, allocation_id: i64) -> Result<String, String> {
     let allocation = data_store
         .list_nota_runtime_allocations()
         .map_err(|error| error.to_string())?
@@ -80,23 +82,26 @@ pub async fn nota_approve_prayer(
         )
     };
 
-    let _ = event_bus.emit_graph_update(
-        &app,
-        &GraphUpdateEvent::NodeStateChanged {
-            id: format!("alloc-{}", updated_allocation.id),
-            tone: "steady".to_string(),
-            detail,
-        },
-    );
+    emit_graph_update_runtime(&GraphUpdateEvent::NodeStateChanged {
+        id: format!("alloc-{}", updated_allocation.id),
+        tone: "steady".to_string(),
+        detail,
+    });
 
     Ok(format!("Approved allocation {}", updated_allocation.id))
 }
 
 #[tauri::command]
-pub async fn nota_reject_prayer(
-    app: AppHandle<Wry>,
-    event_bus: State<'_, EventBus>,
+pub fn nota_reject_prayer(
     data_store: State<'_, DataStore>,
+    allocation_id: i64,
+    reason: String,
+) -> Result<String, String> {
+    reject_prayer(&data_store, allocation_id, reason)
+}
+
+pub(crate) fn reject_prayer(
+    data_store: &DataStore,
     allocation_id: i64,
     reason: String,
 ) -> Result<String, String> {
@@ -135,14 +140,11 @@ pub async fn nota_reject_prayer(
         })
         .map_err(|error| error.to_string())?;
 
-    let _ = event_bus.emit_graph_update(
-        &app,
-        &GraphUpdateEvent::NodeStateChanged {
-            id: format!("alloc-{}", updated_allocation.id),
-            tone: "caution".to_string(),
-            detail: format!("rejected: {}", reason),
-        },
-    );
+    emit_graph_update_runtime(&GraphUpdateEvent::NodeStateChanged {
+        id: format!("alloc-{}", updated_allocation.id),
+        tone: "caution".to_string(),
+        detail: format!("rejected: {}", reason),
+    });
 
     Ok(format!(
         "Rejected allocation {} reason: {}",

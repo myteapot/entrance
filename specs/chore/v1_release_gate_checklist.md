@@ -16,6 +16,18 @@ Windows PowerShell:
 ./scripts/release/verify-v1-self-consistency.ps1
 ```
 
+Electron host smoke:
+
+```bash
+pnpm test:electron-smoke
+```
+
+Windows native smoke runner:
+
+```powershell
+./scripts/release/run-windows-native-smoke.ps1 -Configuration Release
+```
+
 ## Gate Conditions
 
 - Runtime closure:
@@ -34,6 +46,7 @@ Windows PowerShell:
 - Dual-host acceptance:
   - Electron smoke passes (`invoke/listen` + route sweep)
   - Windows native smoke passes (`dotnet test tests/native/EntranceNativeTests.csproj`)
+  - GitLab pipeline jobs are all green: `linux-verify`, `electron-smoke`, `windows-native`
 
 ## Manual Fallbacks
 
@@ -56,4 +69,13 @@ ENTRANCE_EXE_PATH=/path/to/entrance ./scripts/release/verify-v1-self-consistency
 ```powershell
 $env:ENTRANCE_EXE_PATH = "C:\path\to\entrance.exe"
 ./scripts/release/verify-v1-self-consistency.ps1
+```
+
+- Run Windows native smoke against a prebuilt exe:
+
+```powershell
+./scripts/release/run-windows-native-smoke.ps1 `
+  -SkipBuild `
+  -EntranceExePath "C:\path\to\entrance.exe" `
+  -Configuration Release
 ```

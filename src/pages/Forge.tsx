@@ -1,6 +1,6 @@
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "../platform/core";
+import { open } from "../platform/dialog";
 import "./Forge.css";
 import {
   applyForgeTaskStatusEvent,

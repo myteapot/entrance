@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "../../platform/core";
+import { listen } from "../../platform/event";
 
 export type TaskStatus = "Pending" | "Running" | "Done" | "Failed" | "Cancelled" | "Blocked";
 export type LogStream = "stdout" | "stderr" | "system";

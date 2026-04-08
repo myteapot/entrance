@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../platform/core";
 
 export interface LandingImportReport {
   ingest_run_id: number;

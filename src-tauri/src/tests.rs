@@ -15,8 +15,8 @@ use crate::core::data_store::{
 use crate::core::supervision::{SupervisionSignalFamily, SupervisorAction};
 use crate::{
     build_nota_runtime_status, cli_help_for_args, prepare_forge_dispatch_cli,
-    verify_forge_dispatch_cli, COMPILER_CLI_HELP, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP,
-    ROOT_CLI_HELP,
+    verify_forge_dispatch_cli, COMPILER_CLI_HELP, ELECTRON_BRIDGE_CLI_HELP, FORGE_CLI_HELP,
+    MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
 };
 
 struct TestDir {
@@ -94,6 +94,19 @@ fn cli_help_is_available_without_falling_back_to_gui() {
 
     let mcp_stdio = vec!["mcp".to_string(), "stdio".to_string(), "--help".to_string()];
     assert_eq!(cli_help_for_args(&mcp_stdio), Some(MCP_CLI_HELP));
+
+    let electron = vec!["electron-bridge".to_string(), "--help".to_string()];
+    assert_eq!(cli_help_for_args(&electron), Some(ELECTRON_BRIDGE_CLI_HELP));
+
+    let electron_stdio = vec![
+        "electron-bridge".to_string(),
+        "stdio".to_string(),
+        "--help".to_string(),
+    ];
+    assert_eq!(
+        cli_help_for_args(&electron_stdio),
+        Some(ELECTRON_BRIDGE_CLI_HELP)
+    );
 
     let forge = vec!["forge".to_string(), "--help".to_string()];
     assert_eq!(cli_help_for_args(&forge), Some(FORGE_CLI_HELP));

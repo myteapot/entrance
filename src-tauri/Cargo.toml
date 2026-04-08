@@ -40,7 +40,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 walkdir = "2"
-tokio = { version = "1.50.0", features = ["io-util", "net", "process", "sync"] }
+tokio = { version = "1.50.0", features = ["io-std", "io-util", "net", "process", "sync"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 

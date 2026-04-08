@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../../platform/event";
 
 export interface GraphUpdateEvent {
   kind: "NodeCreated" | "NodeStateChanged" | "NodeArchived" | "EdgeCreated";

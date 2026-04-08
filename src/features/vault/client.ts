@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../platform/core";
 
 export const GITLAB_UPDATER_PROVIDER = "gitlab-updater";
 export const GITLAB_UPDATER_NAME = "Entrance GitLab Bot";

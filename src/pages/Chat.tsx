@@ -1,5 +1,5 @@
 import { A } from "@solidjs/router";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../platform/dialog";
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import "./Chat.css";
 import {

@@ -1,4 +1,5 @@
 mod compiler_cli;
+mod electron_bridge_cli;
 mod forge_cli;
 mod issues_cli;
 mod mcp_cli;
@@ -32,6 +33,7 @@ pub(crate) use forge_cli::{prepare_forge_dispatch_cli, verify_forge_dispatch_cli
 
 use self::{
     compiler_cli::run_compiler_cli,
+    electron_bridge_cli::run_electron_bridge_stdio,
     forge_cli::run_forge_cli,
     issues_cli::run_issues_cli,
     mcp_cli::{run_mcp_http, run_mcp_stdio},
@@ -48,6 +50,7 @@ Usage:
 
 Commands:
   compiler    Inspect the compiler registry query surface
+  electron-bridge  Serve the Electron shell backend over stdio
   nota       Read or write NOTA runtime continuity surfaces
   mcp        Serve Entrance as an MCP server over stdio or HTTP
   forge      Run Forge dispatch and bootstrap helpers
@@ -161,6 +164,10 @@ pub(crate) const MCP_CLI_HELP: &str = r#"Usage:
   entrance mcp http [--port <port>] [--endpoint <path>] [--actor-role <nota|arch|dev>]
 "#;
 
+pub(crate) const ELECTRON_BRIDGE_CLI_HELP: &str = r#"Usage:
+  entrance electron-bridge stdio
+"#;
+
 fn is_help_flag(value: &str) -> bool {
     matches!(value, "help" | "-h" | "--help")
 }
@@ -173,6 +180,9 @@ pub(crate) fn cli_help_for_args(args: &[String]) -> Option<&'static str> {
         [command, flag] if command == "hygiene" && is_help_flag(flag) => Some(HYGIENE_CLI_HELP),
         [command, flag] if command == "compiler" && is_help_flag(flag) => Some(COMPILER_CLI_HELP),
         [command, flag] if command == "memory" && is_help_flag(flag) => Some(MEMORY_CLI_HELP),
+        [command, flag] if command == "electron-bridge" && is_help_flag(flag) => {
+            Some(ELECTRON_BRIDGE_CLI_HELP)
+        }
         [command, subcommand, flag]
             if command == "compiler" && subcommand == "registry" && is_help_flag(flag) =>
         {
@@ -182,6 +192,11 @@ pub(crate) fn cli_help_for_args(args: &[String]) -> Option<&'static str> {
         [command, flag] if command == "forge" && is_help_flag(flag) => Some(FORGE_CLI_HELP),
         [command, flag] if command == "issues" && is_help_flag(flag) => Some(ISSUES_CLI_HELP),
         [command, flag] if command == "mcp" && is_help_flag(flag) => Some(MCP_CLI_HELP),
+        [command, transport, flag]
+            if command == "electron-bridge" && transport == "stdio" && is_help_flag(flag) =>
+        {
+            Some(ELECTRON_BRIDGE_CLI_HELP)
+        }
         [command, transport, flag]
             if command == "mcp"
                 && matches!(transport.as_str(), "stdio" | "http")
@@ -213,11 +228,17 @@ pub fn dispatch_cli_or_run() -> Result<()> {
         [command, rest @ ..] if command == "nota" => run_nota_cli(rest),
         [command, rest @ ..] if command == "forge" => run_forge_cli(rest),
         [command, rest @ ..] if command == "issues" => run_issues_cli(rest),
+        [command, transport, rest @ ..] if command == "electron-bridge" && transport == "stdio" => {
+            run_electron_bridge_stdio(rest)
+        }
         [command, transport, rest @ ..] if command == "mcp" && transport == "stdio" => {
             run_mcp_stdio(rest)
         }
         [command, transport, rest @ ..] if command == "mcp" && transport == "http" => {
             run_mcp_http(rest)
+        }
+        [command, ..] if command == "electron-bridge" => {
+            bail!("unsupported Electron bridge transport, expected `entrance electron-bridge stdio`")
         }
         [command, ..] if command == "mcp" => {
             bail!("unsupported MCP transport, expected `entrance mcp stdio` or `entrance mcp http`")

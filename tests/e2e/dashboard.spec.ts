@@ -9,7 +9,7 @@ test("renders the dashboard map region", async ({ page }) => {
   await page.goto("/board");
 
   await expect(page.locator(".board-map")).toBeVisible();
-  await expect(page.locator(".board-map__grid")).toBeVisible();
+  await expect(page.locator(".board-map__graph-shell")).toBeVisible();
 });
 
 test("renders the dashboard hero pills", async ({ page }) => {

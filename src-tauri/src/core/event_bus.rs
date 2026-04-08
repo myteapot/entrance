@@ -85,19 +85,29 @@ impl EventBus {
 pub fn install_runtime_emitters<R: Runtime + 'static>(event_bus: EventBus, app: AppHandle<R>) {
     let graph_bus = event_bus.clone();
     let graph_app = app.clone();
-    let _ = GRAPH_EMITTER.set(Arc::new(move |event: &GraphUpdateEvent| {
-        if let Err(error) = graph_bus.emit_graph_update(&graph_app, event) {
-            tracing::warn!(?error, "failed to emit graph update");
-        }
-    }));
-
     let dialog_bus = event_bus;
     let dialog_app = app;
-    let _ = DIALOG_EMITTER.set(Arc::new(move |event: &NotaDialogEvent| {
-        if let Err(error) = dialog_bus.emit_nota_dialog(&dialog_app, event) {
-            tracing::warn!(?error, "failed to emit nota dialog");
-        }
-    }));
+    install_external_emitters(
+        move |event: &GraphUpdateEvent| {
+            if let Err(error) = graph_bus.emit_graph_update(&graph_app, event) {
+                tracing::warn!(?error, "failed to emit graph update");
+            }
+        },
+        move |event: &NotaDialogEvent| {
+            if let Err(error) = dialog_bus.emit_nota_dialog(&dialog_app, event) {
+                tracing::warn!(?error, "failed to emit nota dialog");
+            }
+        },
+    );
+}
+
+pub fn install_external_emitters<G, D>(on_graph: G, on_dialog: D)
+where
+    G: Fn(&GraphUpdateEvent) + Send + Sync + 'static,
+    D: Fn(&NotaDialogEvent) + Send + Sync + 'static,
+{
+    let _ = GRAPH_EMITTER.set(Arc::new(on_graph));
+    let _ = DIALOG_EMITTER.set(Arc::new(on_dialog));
 }
 
 pub fn emit_graph_update_runtime(event: &GraphUpdateEvent) {
