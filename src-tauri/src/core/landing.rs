@@ -43,6 +43,60 @@ pub struct LandingPlanningItemSummary {
     pub promotion_recorded_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LandingReconcileBatchManifest {
+    #[serde(default)]
+    pub items: Vec<LandingReconcileBatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LandingReconcileBatchItem {
+    pub key: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub reconciliation_status: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LandingReconcileBatchItemResult {
+    pub key: String,
+    pub applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planning_item_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reconciliation_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LandingReconcileBatchApplyReport {
+    pub source_file: String,
+    pub requested_count: usize,
+    pub applied_count: usize,
+    pub skipped_count: usize,
+    pub results: Vec<LandingReconcileBatchItemResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LandingReconcileBucketCount {
+    pub value: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LandingReconcileSummaryReport {
+    pub planning_item_count: usize,
+    pub unreconciled_count: usize,
+    pub reconciliation_status_buckets: Vec<LandingReconcileBucketCount>,
+    pub status_buckets: Vec<LandingReconcileBucketCount>,
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 struct LandingImportProgress {
     imported_issue_count: i64,
@@ -539,6 +593,182 @@ pub fn list_landing_unreconciled_items(
         .collect())
 }
 
+pub fn set_landing_reconcile_status(
+    data_store: &DataStore,
+    key: &str,
+    status: Option<&str>,
+    reconciliation_status: Option<&str>,
+    reason: Option<&str>,
+) -> Result<LandingPlanningItemSummary> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(anyhow!("`--key` must not be empty"));
+    }
+
+    let updated = data_store
+        .update_planning_item_by_canonical_key(key, status, reconciliation_status)?
+        .ok_or_else(|| anyhow!("planning item `{key}` was not found"))?;
+    let reason = reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or(Some("landing reconcile set-status"));
+    data_store.append_promotion_record(NewPromotionRecord {
+        subject_kind: "planning_item",
+        subject_id: updated.id,
+        promotion_state: updated.reconciliation_status.as_str(),
+        reason,
+        source_ingest_run_id: None,
+    })?;
+
+    list_landing_planning_items(data_store)?
+        .into_iter()
+        .find(|item| item.planning_item.id == updated.id)
+        .ok_or_else(|| anyhow!("planning item `{key}` disappeared after reconcile update"))
+}
+
+pub fn apply_landing_reconcile_batch(
+    data_store: &DataStore,
+    manifest_path: impl AsRef<Path>,
+) -> Result<LandingReconcileBatchApplyReport> {
+    let manifest_path = manifest_path.as_ref();
+    let content = fs::read_to_string(manifest_path).with_context(|| {
+        format!(
+            "failed to read reconcile batch manifest `{}`",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: LandingReconcileBatchManifest =
+        serde_json::from_str(&content).with_context(|| {
+            format!(
+                "failed to parse reconcile batch manifest `{}`",
+                manifest_path.display()
+            )
+        })?;
+
+    let mut results = Vec::new();
+    let mut applied_count = 0usize;
+    let mut skipped_count = 0usize;
+
+    for item in manifest.items {
+        let key = item.key.trim().to_string();
+        if key.is_empty() {
+            skipped_count += 1;
+            results.push(LandingReconcileBatchItemResult {
+                key: item.key,
+                applied: false,
+                planning_item_id: None,
+                status: None,
+                reconciliation_status: None,
+                message: Some("empty key".to_string()),
+            });
+            continue;
+        }
+
+        let status = item.status.as_deref().map(str::trim).filter(|value| !value.is_empty());
+        let reconciliation_status = item
+            .reconciliation_status
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if status.is_none() && reconciliation_status.is_none() {
+            skipped_count += 1;
+            results.push(LandingReconcileBatchItemResult {
+                key,
+                applied: false,
+                planning_item_id: None,
+                status: None,
+                reconciliation_status: None,
+                message: Some("no status fields provided".to_string()),
+            });
+            continue;
+        }
+
+        match set_landing_reconcile_status(
+            data_store,
+            &key,
+            status,
+            reconciliation_status,
+            item.reason.as_deref(),
+        ) {
+            Ok(summary) => {
+                applied_count += 1;
+                results.push(LandingReconcileBatchItemResult {
+                    key,
+                    applied: true,
+                    planning_item_id: Some(summary.planning_item.id),
+                    status: Some(summary.planning_item.status),
+                    reconciliation_status: Some(summary.planning_item.reconciliation_status),
+                    message: None,
+                });
+            }
+            Err(error) => {
+                skipped_count += 1;
+                results.push(LandingReconcileBatchItemResult {
+                    key,
+                    applied: false,
+                    planning_item_id: None,
+                    status: None,
+                    reconciliation_status: None,
+                    message: Some(error.to_string()),
+                });
+            }
+        }
+    }
+
+    Ok(LandingReconcileBatchApplyReport {
+        source_file: manifest_path.to_string_lossy().to_string(),
+        requested_count: results.len(),
+        applied_count,
+        skipped_count,
+        results,
+    })
+}
+
+pub fn landing_reconcile_report(data_store: &DataStore) -> Result<LandingReconcileSummaryReport> {
+    let items = data_store.list_planning_items()?;
+    let unreconciled_count = items
+        .iter()
+        .filter(|item| item.reconciliation_status == "unreconciled")
+        .count();
+    let mut reconciliation_counts = HashMap::<String, usize>::new();
+    let mut status_counts = HashMap::<String, usize>::new();
+    for item in items {
+        *reconciliation_counts
+            .entry(item.reconciliation_status)
+            .or_insert(0usize) += 1;
+        *status_counts.entry(item.status).or_insert(0usize) += 1;
+    }
+
+    let mut reconciliation_status_buckets = reconciliation_counts
+        .into_iter()
+        .map(|(value, count)| LandingReconcileBucketCount { value, count })
+        .collect::<Vec<_>>();
+    reconciliation_status_buckets.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.value.cmp(&right.value))
+    });
+
+    let mut status_buckets = status_counts
+        .into_iter()
+        .map(|(value, count)| LandingReconcileBucketCount { value, count })
+        .collect::<Vec<_>>();
+    status_buckets.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.value.cmp(&right.value))
+    });
+
+    Ok(LandingReconcileSummaryReport {
+        planning_item_count: reconciliation_status_buckets.iter().map(|bucket| bucket.count).sum(),
+        unreconciled_count,
+        reconciliation_status_buckets,
+        status_buckets,
+    })
+}
+
 fn import_relation_links(
     data_store: &DataStore,
     planning_item_id: i64,
@@ -707,6 +937,76 @@ mod tests {
         assert_eq!(unreconciled_summaries.len(), 3);
 
         let _ = fs::remove_file(snapshot_path);
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_set_status_batch_and_report_work() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let snapshot_path = write_test_snapshot()?;
+        let _ = import_linear_entrance_snapshot(&store, &snapshot_path)?;
+
+        let key_100 = "linear:microt:Entrance:issue:MYT-100";
+        let key_101 = "linear:microt:Entrance:issue:MYT-101";
+
+        let updated = set_landing_reconcile_status(
+            &store,
+            key_100,
+            Some("triaged"),
+            Some("critical_path"),
+            Some("batch-01 critical path"),
+        )?;
+        assert_eq!(updated.planning_item.canonical_key.as_deref(), Some(key_100));
+        assert_eq!(updated.planning_item.status, "triaged");
+        assert_eq!(updated.planning_item.reconciliation_status, "critical_path");
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("failed to compute reconcile batch nonce")?
+            .as_nanos();
+        let manifest_path =
+            env::temp_dir().join(format!("entrance-reconcile-batch-test-{nonce}.json"));
+        let manifest = serde_json::json!({
+            "items": [
+                {
+                    "key": key_101,
+                    "status": "triaged",
+                    "reconciliation_status": "cold_backlog",
+                    "reason": "batch-01 cold backlog"
+                },
+                {
+                    "key": "linear:microt:Entrance:issue:NOT-FOUND",
+                    "status": "triaged",
+                    "reconciliation_status": "historical"
+                }
+            ]
+        });
+        fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?).with_context(|| {
+            format!(
+                "failed to write reconcile manifest `{}`",
+                manifest_path.display()
+            )
+        })?;
+
+        let batch_report = apply_landing_reconcile_batch(&store, &manifest_path)?;
+        assert_eq!(batch_report.requested_count, 2);
+        assert_eq!(batch_report.applied_count, 1);
+        assert_eq!(batch_report.skipped_count, 1);
+
+        let summary = landing_reconcile_report(&store)?;
+        assert_eq!(summary.planning_item_count, 3);
+        assert_eq!(summary.unreconciled_count, 1);
+        assert!(summary
+            .reconciliation_status_buckets
+            .iter()
+            .any(|bucket| bucket.value == "critical_path" && bucket.count == 1));
+        assert!(summary
+            .reconciliation_status_buckets
+            .iter()
+            .any(|bucket| bucket.value == "cold_backlog" && bucket.count == 1));
+
+        let _ = fs::remove_file(snapshot_path);
+        let _ = fs::remove_file(manifest_path);
         Ok(())
     }
 

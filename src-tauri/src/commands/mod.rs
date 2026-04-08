@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::PathBuf,
+};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -280,9 +283,9 @@ pub(crate) fn write_hot_root_projection(
     let mirrored_repo_top_dir = mirror_project_dir
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|project_dir| project_dir.to_string());
-    if let Some(project_dir) = mirrored_repo_top_dir.as_deref() {
-        let repo_top_dir = Path::new(project_dir).join("specs").join("top");
+        .map(resolve_mirror_project_dir);
+    if let Some(project_dir) = mirrored_repo_top_dir.as_ref() {
+        let repo_top_dir = project_dir.join("specs").join("top");
         let repo_top_dir_display = repo_top_dir.to_string_lossy().replace('\\', "/");
         let mirror_target_key = format!("mirror:{repo_top_dir_display}");
         if let Err(error) = fs::create_dir_all(&repo_top_dir).with_context(|| {
@@ -364,10 +367,35 @@ pub(crate) fn write_hot_root_projection(
         export_root: hot_root_dir.display().to_string(),
         files_written,
         mirrored_repo_top_dir: mirrored_repo_top_dir
-            .map(|project_dir| Path::new(&project_dir).join("specs").join("top"))
+            .map(|project_dir| project_dir.join("specs").join("top"))
             .map(|path| path.display().to_string()),
         truth_revision,
     })
+}
+
+fn resolve_mirror_project_dir(raw_project_dir: &str) -> PathBuf {
+    let normalized = raw_project_dir.trim().replace('\\', "/");
+    if cfg!(windows) {
+        return PathBuf::from(normalized);
+    }
+
+    let bytes = normalized.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes[2] == b'/'
+    {
+        let drive = (bytes[0] as char).to_ascii_lowercase().to_string();
+        let suffix = normalized[3..].trim_start_matches('/');
+        let mut converted = PathBuf::from("/mnt");
+        converted.push(drive);
+        if !suffix.is_empty() {
+            converted.push(suffix);
+        }
+        return converted;
+    }
+
+    PathBuf::from(normalized)
 }
 
 pub(crate) fn rebuild_nota_projections(
@@ -735,5 +763,26 @@ fn update_latest_timestamp(current: &mut Option<String>, candidate: Option<&str>
         .unwrap_or(true);
     if should_replace {
         *current = Some(candidate.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_mirror_project_dir;
+
+    #[test]
+    fn windows_style_project_dir_is_mapped_to_wsl_mount_on_non_windows() {
+        if cfg!(windows) {
+            return;
+        }
+
+        let resolved = resolve_mirror_project_dir("A:/Agent/Entrance");
+        assert_eq!(resolved.to_string_lossy(), "/mnt/a/Agent/Entrance");
+    }
+
+    #[test]
+    fn posix_project_dir_is_preserved() {
+        let resolved = resolve_mirror_project_dir("/tmp/entrance");
+        assert_eq!(resolved.to_string_lossy(), "/tmp/entrance");
     }
 }

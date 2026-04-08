@@ -13,8 +13,10 @@ use crate::{
         bootstrap_for_paths,
         hygiene::{list_spec_hygiene_v0, run_spec_hygiene_v0},
         landing::{
-            import_linear_entrance_snapshot, list_landing_ingest_runs, list_landing_mirror_items,
+            apply_landing_reconcile_batch, import_linear_entrance_snapshot,
+            landing_reconcile_report, list_landing_ingest_runs, list_landing_mirror_items,
             list_landing_planning_items, list_landing_unreconciled_items,
+            set_landing_reconcile_status,
         },
         recovery::{
             build_recovery_status_report, import_recovery_seed, list_recovery_seed_rows,
@@ -67,6 +69,9 @@ pub(crate) const LANDING_CLI_HELP: &str = r#"Usage:
   entrance landing mirrors
   entrance landing planning
   entrance landing unreconciled
+  entrance landing reconcile set-status --key <canonical_key> [--status <status>] [--reconciliation-status <status>] [--reason <text>]
+  entrance landing reconcile batch-apply --file <path>
+  entrance landing reconcile report
 "#;
 
 pub(crate) const RECOVERY_CLI_HELP: &str = r#"Usage:
@@ -338,9 +343,111 @@ fn run_landing_cli(args: &[String]) -> Result<()> {
         [command] if command == "unreconciled" => {
             print_json(&list_landing_unreconciled_items(&startup.data_store())?)
         }
+        [command, subcommand, rest @ ..] if command == "reconcile" && subcommand == "set-status" => {
+            let (key, status, reconciliation_status, reason) =
+                parse_landing_reconcile_set_status_args(rest)?;
+            let report = set_landing_reconcile_status(
+                &startup.data_store(),
+                key.as_str(),
+                status.as_deref(),
+                reconciliation_status.as_deref(),
+                reason.as_deref(),
+            )?;
+            print_json(&report)
+        }
+        [command, subcommand, rest @ ..]
+            if command == "reconcile" && subcommand == "batch-apply" =>
+        {
+            let manifest_path = parse_landing_reconcile_batch_args(rest)?;
+            print_json(&apply_landing_reconcile_batch(
+                &startup.data_store(),
+                manifest_path.as_str(),
+            )?)
+        }
+        [command, subcommand] if command == "reconcile" && subcommand == "report" => {
+            print_json(&landing_reconcile_report(&startup.data_store())?)
+        }
         _ => bail!(
-            "unsupported landing command, expected one of `entrance landing import --file <path>`, `entrance landing runs`, `entrance landing mirrors`, `entrance landing planning`, or `entrance landing unreconciled`"
+            "unsupported landing command, expected one of `entrance landing import --file <path>`, `entrance landing runs`, `entrance landing mirrors`, `entrance landing planning`, `entrance landing unreconciled`, `entrance landing reconcile set-status --key <canonical_key> [--status <status>] [--reconciliation-status <status>]`, `entrance landing reconcile batch-apply --file <path>`, or `entrance landing reconcile report`"
         ),
+    }
+}
+
+fn parse_landing_reconcile_set_status_args(
+    args: &[String],
+) -> Result<(String, Option<String>, Option<String>, Option<String>)> {
+    let mut key: Option<String> = None;
+    let mut status: Option<String> = None;
+    let mut reconciliation_status: Option<String> = None;
+    let mut reason: Option<String> = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--key" => {
+                let value = args.get(index + 1).context(
+                    "`entrance landing reconcile set-status --key` requires a value",
+                )?;
+                key = Some(value.trim().to_string());
+                index += 2;
+            }
+            "--status" => {
+                let value = args.get(index + 1).context(
+                    "`entrance landing reconcile set-status --status` requires a value",
+                )?;
+                status = Some(value.trim().to_string());
+                index += 2;
+            }
+            "--reconciliation-status" => {
+                let value = args.get(index + 1).context(
+                    "`entrance landing reconcile set-status --reconciliation-status` requires a value",
+                )?;
+                reconciliation_status = Some(value.trim().to_string());
+                index += 2;
+            }
+            "--reason" => {
+                let value = args.get(index + 1).context(
+                    "`entrance landing reconcile set-status --reason` requires a value",
+                )?;
+                reason = Some(value.trim().to_string());
+                index += 2;
+            }
+            other => bail!("unsupported landing reconcile set-status argument `{other}`"),
+        }
+    }
+
+    let key = key
+        .filter(|value| !value.is_empty())
+        .context("`entrance landing reconcile set-status` requires `--key <canonical_key>`")?;
+    let status = status.filter(|value| !value.is_empty());
+    let reconciliation_status = reconciliation_status.filter(|value| !value.is_empty());
+    if status.is_none() && reconciliation_status.is_none() {
+        bail!(
+            "`entrance landing reconcile set-status` requires at least one of `--status` or `--reconciliation-status`"
+        );
+    }
+
+    Ok((key, status, reconciliation_status, reason))
+}
+
+fn parse_landing_reconcile_batch_args(args: &[String]) -> Result<String> {
+    match args {
+        [flag, value] if flag == "--file" => {
+            let value = value.trim();
+            if value.is_empty() {
+                bail!("`entrance landing reconcile batch-apply --file` must not be empty");
+            }
+            Ok(value.to_string())
+        }
+        [value] => {
+            let value = value.trim();
+            if value.is_empty() {
+                bail!("`entrance landing reconcile batch-apply` path must not be empty");
+            }
+            Ok(value.to_string())
+        }
+        [] => bail!("`entrance landing reconcile batch-apply` requires `--file <path>`"),
+        [other, ..] => bail!("unsupported landing reconcile batch-apply argument `{other}`"),
     }
 }
 
