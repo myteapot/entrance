@@ -702,9 +702,19 @@ fn evaluate_runtime_invariants(context: &InvariantContext) -> Result<Vec<Invaria
             checkpoint_id,
             context.current_handout.as_ref(),
             context.current_wake_request.as_ref(),
+            context.round_state.fully_settled,
         ) {
-            (None, _, _) => INVARIANT_NOT_APPLICABLE,
-            (Some(_), Some(handout), Some(wake_request))
+            (None, _, _, _) => INVARIANT_NOT_APPLICABLE,
+            (Some(_), Some(handout), None, true)
+                if bridge_payload_matches_round_state(
+                    &context.round_state,
+                    handout.payload.round_state.as_str(),
+                    handout.payload.detail_round_state.as_deref(),
+                ) =>
+            {
+                INVARIANT_PASSED
+            }
+            (Some(_), Some(handout), Some(wake_request), false)
                 if bridge_payload_matches_round_state(
                     &context.round_state,
                     handout.payload.round_state.as_str(),
@@ -723,9 +733,19 @@ fn evaluate_runtime_invariants(context: &InvariantContext) -> Result<Vec<Invaria
             checkpoint_id,
             context.current_handout.as_ref(),
             context.current_wake_request.as_ref(),
+            context.round_state.fully_settled,
         ) {
-            (None, _, _) => "info",
-            (Some(_), Some(handout), Some(wake_request))
+            (None, _, _, _) => "info",
+            (Some(_), Some(handout), None, true)
+                if bridge_payload_matches_round_state(
+                    &context.round_state,
+                    handout.payload.round_state.as_str(),
+                    handout.payload.detail_round_state.as_deref(),
+                ) =>
+            {
+                "info"
+            }
+            (Some(_), Some(handout), Some(wake_request), false)
                 if bridge_payload_matches_round_state(
                     &context.round_state,
                     handout.payload.round_state.as_str(),
@@ -747,10 +767,16 @@ fn evaluate_runtime_invariants(context: &InvariantContext) -> Result<Vec<Invaria
             checkpoint_id,
             context.current_handout.as_ref(),
             context.current_wake_request.as_ref(),
+            context.round_state.fully_settled,
         ) {
-            (None, _, _) => "No current checkpoint exists, so bridge alignment is not applicable."
-                .to_string(),
-            (Some(_), Some(_), Some(_)) => format!(
+            (None, _, _, _) => {
+                "No current checkpoint exists, so bridge alignment is not applicable.".to_string()
+            }
+            (Some(_), Some(_), None, true) => format!(
+                "Current handout mirrors fully settled round state `{}` / `{}` and wake-request bridge is intentionally absent.",
+                context.round_state.state, context.round_state.detail_state
+            ),
+            (Some(_), Some(_), Some(_), false) => format!(
                 "Current handout and wake request mirror round state `{}` / `{}`.",
                 context.round_state.state, context.round_state.detail_state
             ),
@@ -763,6 +789,7 @@ fn evaluate_runtime_invariants(context: &InvariantContext) -> Result<Vec<Invaria
         evidence_json: serde_json::to_string(&json!({
             "round_state": context.round_state.state,
             "detail_state": context.round_state.detail_state,
+            "fully_settled": context.round_state.fully_settled,
             "handout_present": context.current_handout.is_some(),
             "handout_round_state": context.current_handout.as_ref().map(|handout| handout.payload.round_state.as_str()),
             "handout_detail_state": context.current_handout.as_ref().and_then(|handout| handout.payload.detail_round_state.as_deref()),
