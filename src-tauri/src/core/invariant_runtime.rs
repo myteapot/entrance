@@ -1056,8 +1056,11 @@ mod tests {
     use anyhow::Result;
 
     use crate::core::{
-        data_store::{DataStore, MigrationPlan, UpsertRuntimeHost},
-        nota_runtime::{write_runtime_checkpoint, NotaCheckpointRequest},
+        data_store::{DataStore, MigrationPlan, NewCadenceObject, UpsertRuntimeHost},
+        nota_runtime::{
+            write_runtime_checkpoint, CadenceAcceptanceBundlePayload, CadenceHandoutPayload,
+            NotaCheckpointPayload, NotaCheckpointRequest,
+        },
         projection_runtime::{
             record_projection_failure, ProjectionTargetSpec, ProjectionTruthRevision,
             HOT_ROOT_PROJECTION_CLASS, REQUIRED_PROJECTION_POLICY,
@@ -1140,6 +1143,124 @@ mod tests {
             repair_lane.items[0].source_invariant_key.as_deref(),
             Some("required_projection_freshness")
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn fully_settled_round_can_pass_bridge_alignment_without_wake_request() -> Result<()> {
+        let temp_db = TempDbPath::new("runtime-invariants-fully-settled-bridge")?;
+        let migration_plan = MigrationPlan::new(crate::plugins::forge::migrations());
+        let store = DataStore::open(temp_db.path(), migration_plan)?;
+
+        store.upsert_runtime_host(UpsertRuntimeHost {
+            host_key: "linux:test:/tmp/.entrance",
+            os_family: "linux",
+            host_label: "test-host",
+            kernel_label: "unix",
+            user_home: "/tmp",
+            owner_root: "/tmp/.entrance",
+            config_path: "/tmp/.entrance/entrance.toml",
+            runtime_db_path: "/tmp/.entrance/data/entrance.db",
+            exports_path: "/tmp/.entrance/exports",
+            worktrees_root: "/tmp/.entrance/worktrees",
+            wsl_distro_name: None,
+            path_style: "posix",
+            status: "active",
+        })?;
+
+        let checkpoint_payload = NotaCheckpointPayload {
+            stable_level: "runtime invariant truth".to_string(),
+            landed: vec!["fully settled checkpoint".to_string()],
+            remaining: vec!["none".to_string()],
+            human_continuity_bus: "reduced".to_string(),
+            selected_trunk: Some("runtime invariants".to_string()),
+            next_start_hints: Vec::new(),
+            repo_context: None,
+        };
+        let checkpoint_payload_json = serde_json::to_string(&checkpoint_payload)?;
+        let checkpoint = store.insert_cadence_object(NewCadenceObject {
+            cadence_kind: "CADENCE_CHECKPOINT",
+            title: "Checkpoint: invariant fully settled bridge",
+            summary: "Fully settled checkpoint for invariant bridge test.",
+            payload_json: &checkpoint_payload_json,
+            scope_type: "runtime",
+            scope_ref: "Entrance",
+            source_type: "nota_runtime",
+            source_ref: "invariant_test:checkpoint",
+            admission_policy: "AP_STORAGE_AND_COLD_ALWAYS",
+            projection_policy: "PP_HOT_ACTIVE_ONLY",
+            status: "active",
+            is_current: true,
+        })?;
+
+        let acceptance_payload = CadenceAcceptanceBundlePayload {
+            checkpoint_id: checkpoint.id,
+            transaction_id: 0,
+            allocation_id: 0,
+            lineage_ref: "invariant/test/fully-settled".to_string(),
+            acceptance_kind: "human_round_acceptance".to_string(),
+            round_state: "fully_settled".to_string(),
+            fully_settled: true,
+            child_dispatch_role: "human".to_string(),
+            execution_host: "boundary".to_string(),
+            target_kind: "cadence_human_round".to_string(),
+            target_ref: "0".to_string(),
+            review_verdict: None,
+            integrate_outcome: None,
+            finalize_state: None,
+        };
+        let acceptance_payload_json = serde_json::to_string(&acceptance_payload)?;
+        let acceptance_bundle = store.insert_cadence_object(NewCadenceObject {
+            cadence_kind: "CADENCE_ACCEPTANCE_BUNDLE",
+            title: "Acceptance bundle: invariant fully settled",
+            summary: "Acceptance is fully settled for invariant bridge test.",
+            payload_json: &acceptance_payload_json,
+            scope_type: "runtime",
+            scope_ref: "Entrance",
+            source_type: "nota_runtime",
+            source_ref: "invariant_test:acceptance_bundle",
+            admission_policy: "AP_STORAGE_AND_COLD_ALWAYS",
+            projection_policy: "PP_HOT_ACTIVE_ONLY",
+            status: "active",
+            is_current: true,
+        })?;
+
+        let handout_payload = CadenceHandoutPayload {
+            checkpoint_id: checkpoint.id,
+            round_state: "fully_settled".to_string(),
+            detail_round_state: Some("fully_settled".to_string()),
+            stable_level: "runtime invariant truth".to_string(),
+            human_continuity_bus: "reduced".to_string(),
+            selected_trunk: Some("runtime invariants".to_string()),
+            human_round_id: None,
+            acceptance_bundle_id: Some(acceptance_bundle.id),
+            next_step: None,
+            summary: "Fully settled handout for invariant bridge test.".to_string(),
+        };
+        let handout_payload_json = serde_json::to_string(&handout_payload)?;
+        store.insert_cadence_object(NewCadenceObject {
+            cadence_kind: "CADENCE_HANDOUT",
+            title: "Handout: invariant fully settled",
+            summary: "Handout mirrors fully settled round state.",
+            payload_json: &handout_payload_json,
+            scope_type: "runtime",
+            scope_ref: "Entrance",
+            source_type: "nota_runtime",
+            source_ref: "invariant_test:handout",
+            admission_policy: "AP_STORAGE_AND_COLD_ALWAYS",
+            projection_policy: "PP_HOT_ACTIVE_ONLY",
+            status: "active",
+            is_current: true,
+        })?;
+
+        let (invariants, _) = refresh_runtime_invariants(&store)?;
+        let bridge = invariants
+            .invariants
+            .iter()
+            .find(|invariant| invariant.invariant_key == "bridge_projection_alignment")
+            .expect("bridge projection alignment invariant should exist");
+        assert_eq!(bridge.status, "passed");
 
         Ok(())
     }
