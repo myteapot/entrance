@@ -90,6 +90,16 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 
 对应检查清单见：`specs/chore/v1_release_gate_checklist.md`。
 
+双端补充验证命令：
+
+```bash
+pnpm test:electron-smoke
+```
+
+```powershell
+./scripts/release/run-windows-native-smoke.ps1 -Configuration Release
+```
+
 ## 版权与许可
 
 当前仓库采用收紧的 source-available 许可模式。

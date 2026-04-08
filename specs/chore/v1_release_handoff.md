@@ -1,7 +1,7 @@
 # Entrance V1 Release Handoff (Self-Consistency + Dual Host)
 
 > Last updated: 2026-04-08
-> Branch baseline: `codex/v1-release-self-consistency`
+> Branch baseline: `codex/v1-windows-electron-validation`
 
 ## Purpose
 
@@ -45,6 +45,8 @@ The release gate script is:
 
 - `scripts/release/verify-v1-self-consistency.sh`
 - `scripts/release/verify-v1-self-consistency.ps1`
+- `scripts/release/electron-smoke.mjs`
+- `scripts/release/run-windows-native-smoke.ps1`
 
 Default chain:
 
@@ -55,8 +57,20 @@ Default chain:
 5. `landing reconcile report` checks `unreconciled_count<=38` and key-item classification.
 6. `cargo test --lib` + `pnpm check`.
 7. Browser e2e with Linux rollup native dependency preflight.
+8. Electron smoke (`pnpm test:electron-smoke`) for route sweep + invoke/listen bridge.
+9. Windows native smoke (`run-windows-native-smoke.ps1`) with `ENTRANCE_EXE_PATH`.
 
 Artifacts are written to `test-results/release-self-consistency` by default.
+
+## CI Gate Wiring
+
+Release merge gate in `.gitlab-ci.yml`:
+
+- `linux-verify`: `pnpm check` + `cargo test --lib` + `pnpm test:e2e` (includes rollup preflight).
+- `electron-smoke`: `xvfb-run -a pnpm test:electron-smoke`.
+- `windows-native`: release build + `run-windows-native-smoke.ps1`.
+
+All three jobs must pass before MR2 merge.
 
 ## Wiki Sync Note
 

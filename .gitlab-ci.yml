@@ -1,0 +1,69 @@
+stages:
+  - verify
+
+default:
+  interruptible: true
+
+.linux-rust-node:
+  image: node:22-bookworm
+  stage: verify
+  variables:
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+    RUSTUP_HOME: "$CI_PROJECT_DIR/.rustup"
+    PNPM_HOME: "$CI_PROJECT_DIR/.pnpm"
+    PATH: "$PNPM_HOME:$CARGO_HOME/bin:$PATH"
+  cache:
+    key: "$CI_JOB_NAME"
+    paths:
+      - .cargo/
+      - .rustup/
+      - .pnpm/
+      - node_modules/
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends curl ca-certificates git pkg-config libssl-dev build-essential xvfb
+    - curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+    - corepack enable
+    - pnpm install --frozen-lockfile
+
+linux-verify:
+  extends: .linux-rust-node
+  script:
+    - |
+      node -e "require.resolve('@rollup/rollup-linux-x64-gnu')" || \
+      (rm -rf node_modules && pnpm install --frozen-lockfile && node -e "require.resolve('@rollup/rollup-linux-x64-gnu')")
+    - pnpm exec playwright install --with-deps chromium
+    - pnpm check
+    - cargo test --manifest-path src-tauri/Cargo.toml --lib
+    - pnpm test:e2e
+  artifacts:
+    when: always
+    paths:
+      - test-results/
+      - playwright-report/
+    expire_in: 7 days
+
+electron-smoke:
+  extends: .linux-rust-node
+  script:
+    - cargo build --manifest-path src-tauri/Cargo.toml --locked
+    - xvfb-run -a pnpm test:electron-smoke
+  artifacts:
+    when: always
+    paths:
+      - test-results/
+    expire_in: 7 days
+
+windows-native:
+  stage: verify
+  tags:
+    - windows
+  script:
+    - rustup default stable
+    - cargo build --manifest-path src-tauri/Cargo.toml --locked --release
+    - .\scripts\release\run-windows-native-smoke.ps1 -Configuration Release -SkipBuild -EntranceExePath "$env:CI_PROJECT_DIR\src-tauri\target\release\entrance.exe"
+  artifacts:
+    when: always
+    paths:
+      - tests/native/TestResults/
+    expire_in: 7 days
