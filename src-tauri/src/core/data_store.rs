@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 #[cfg(test)]
 use rusqlite::OpenFlags;
@@ -3614,6 +3614,54 @@ impl DataStore {
             let rows = stmt.query_map([], map_planning_item_row)?;
             let items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(items)
+        })
+    }
+
+    pub fn update_planning_item_by_canonical_key(
+        &self,
+        canonical_key: &str,
+        status: Option<&str>,
+        reconciliation_status: Option<&str>,
+    ) -> Result<Option<StoredPlanningItem>> {
+        let canonical_key = canonical_key.trim();
+        if canonical_key.is_empty() {
+            bail!("planning item canonical key must not be empty");
+        }
+        if status.is_none() && reconciliation_status.is_none() {
+            bail!("at least one of status or reconciliation_status must be provided");
+        }
+
+        let now = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            let Some(existing) = fetch_planning_item_by_canonical_key(conn, canonical_key)? else {
+                return Ok(None);
+            };
+
+            let next_status = status.unwrap_or(existing.status.as_str()).trim().to_string();
+            let next_reconciliation_status = reconciliation_status
+                .unwrap_or(existing.reconciliation_status.as_str())
+                .trim()
+                .to_string();
+            if next_status.is_empty() {
+                bail!("planning item status must not be empty");
+            }
+            if next_reconciliation_status.is_empty() {
+                bail!("planning item reconciliation status must not be empty");
+            }
+
+            conn.execute(
+                r#"
+                UPDATE planning_items
+                SET
+                    status = ?2,
+                    reconciliation_status = ?3,
+                    updated_at = ?4
+                WHERE canonical_key = ?1
+                "#,
+                params![canonical_key, next_status, next_reconciliation_status, now],
+            )?;
+
+            fetch_planning_item_by_canonical_key(conn, canonical_key)
         })
     }
 
@@ -8442,6 +8490,44 @@ mod tests {
         assert_eq!(links[0].id, link.id);
         assert_eq!(promotions.len(), 1);
         assert_eq!(promotions[0].id, promotion.id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn planning_item_reconcile_update_by_canonical_key() -> Result<()> {
+        let store = DataStore::in_memory(MigrationPlan::new(&[]))?;
+        let item = store.upsert_planning_item(UpsertPlanningItem {
+            canonical_key: Some("linear:microt:Entrance:issue:MYT-63"),
+            item_type: "issue",
+            title: "Decommission .agents master control",
+            description: Some("seeded from mirror"),
+            status: "seeded",
+            reconciliation_status: "unreconciled",
+            source_system: Some("linear"),
+            source_workspace: Some("microt"),
+            source_project: Some("Entrance"),
+            source_key: Some("MYT-63"),
+            seeded_from_mirror_id: None,
+        })?;
+
+        let updated = store
+            .update_planning_item_by_canonical_key(
+                "linear:microt:Entrance:issue:MYT-63",
+                Some("triaged"),
+                Some("critical_path"),
+            )?
+            .expect("planning item should be updated");
+        assert_eq!(updated.id, item.id);
+        assert_eq!(updated.status, "triaged");
+        assert_eq!(updated.reconciliation_status, "critical_path");
+
+        let missing = store.update_planning_item_by_canonical_key(
+            "linear:microt:Entrance:issue:NOT-FOUND",
+            Some("triaged"),
+            Some("cold_backlog"),
+        )?;
+        assert!(missing.is_none());
 
         Ok(())
     }
