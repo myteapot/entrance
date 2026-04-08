@@ -21,6 +21,7 @@ const mockAliases: Record<string, string> = isTauri
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: "./",
   plugins: [solid()],
   build: {
     rollupOptions: {
