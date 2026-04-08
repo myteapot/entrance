@@ -33,7 +33,7 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(test)]
 pub(crate) use cli::{
     cli_help_for_args, prepare_forge_dispatch_cli, verify_forge_dispatch_cli, COMPILER_CLI_HELP,
-    FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
+    ELECTRON_BRIDGE_CLI_HELP, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
 };
 pub(crate) use core::overview::{build_nota_runtime_overview, build_nota_runtime_status};
 
