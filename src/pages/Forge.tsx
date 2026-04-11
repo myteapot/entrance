@@ -19,6 +19,15 @@ import {
 
 const AUTO_DISPATCH_MODEL = "codex";
 
+function formatDispatchContextError(error: unknown) {
+  const message = String(error ?? "");
+  if (message.includes("git rev-parse --show-toplevel failed")) {
+    return "Current worktree could not be detected. If you launched Entrance from the desktop, choose a Git project in Project directory and click Refresh Context.";
+  }
+
+  return message;
+}
+
 export default function Forge() {
   const [tasks, setTasks] = createSignal<ForgeTask[]>([]);
   const [selectedTaskId, setSelectedTaskId] = createSignal<number | null>(null);
@@ -232,7 +241,7 @@ export default function Forge() {
     } catch (error) {
       console.error("Failed to prepare Agent dispatch", error);
       setDispatchContext(null);
-      setDispatchContextError(String(error));
+      setDispatchContextError(formatDispatchContextError(error));
     } finally {
       setIsLoadingDispatchContext(false);
     }
@@ -254,8 +263,9 @@ export default function Forge() {
       );
     } catch (error) {
       console.error("Failed to auto-dispatch Agent", error);
-      setDispatchContextError(String(error));
-      alert("Error dispatching agent: " + error);
+      const formattedError = formatDispatchContextError(error);
+      setDispatchContextError(formattedError);
+      alert("Error dispatching agent: " + formattedError);
     } finally {
       setIsLaunchingAgent(false);
     }
