@@ -128,6 +128,16 @@ const resolveBridgeSpawn = () => {
   };
 };
 
+const resolveBridgeCwd = () => {
+  if (app.isPackaged) {
+    // In packaged builds __dirname resolves inside app.asar, which is a file.
+    // Use the executable directory as a stable real directory for child process cwd.
+    return path.dirname(process.execPath);
+  }
+
+  return repoRoot;
+};
+
 const handleBridgeMessage = (line) => {
   let payload;
   try {
@@ -184,7 +194,7 @@ const startRustBridge = () => {
   bridgeStartPromise = new Promise((resolve, reject) => {
     const { command, args } = resolveBridgeSpawn();
     const child = spawn(command, args, {
-      cwd: repoRoot,
+      cwd: resolveBridgeCwd(),
       env: { ...process.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
