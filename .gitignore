@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-electron
 .vscode
 src-tauri/target
 src-tauri/.cargo/config.local.toml
@@ -11,3 +12,4 @@ test-results/
 playwright-report/
 tests/native/bin/
 tests/native/obj/
+full-matrix-artifacts/

@@ -2,13 +2,22 @@
   "name": "entrance",
   "version": "1.0.0-rc.1",
   "private": true,
+  "homepage": "http://server:9311/publish/entrance",
+  "author": {
+    "name": "Entrance Maintainers",
+    "email": "maintainers@entrance.local"
+  },
   "description": "Entrance V1 release candidate runtime shell powered by Tauri 2 and SolidJS",
+  "main": "electron/main.mjs",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:electron": "node electron/dev.mjs",
     "build": "pnpm check && vite build",
     "start:electron": "electron electron/main.mjs",
+    "build:electron:prereq": "pnpm check && vite build && cargo build --manifest-path src-tauri/Cargo.toml --release --bin entrance",
+    "build:electron:rpm": "bash scripts/release/build-electron-rpm.sh",
+    "build:electron:dir": "pnpm build:electron:prereq && electron-builder --config electron-builder.json --dir --publish never",
     "test:electron-smoke": "node scripts/release/electron-smoke.mjs",
     "preview": "vite preview",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
@@ -35,6 +44,7 @@
     "@types/d3-force": "^3.0.10",
     "@types/node": "^24.0.0",
     "electron": "^41.1.1",
+    "electron-builder": "^26.0.12",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vite-plugin-solid": "^2.11.0"

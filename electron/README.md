@@ -15,3 +15,11 @@ This branch keeps the renderer DB-first and frontend-compatible while backing El
 2. Start the scaffold shell with `pnpm dev:electron`.
 3. The script starts Vite on `http://127.0.0.1:1420` and then launches Electron with `electron/main.mjs`.
 4. Electron starts a Rust sidecar from `src-tauri/target/debug/entrance` when available and falls back to `cargo run --manifest-path src-tauri/Cargo.toml -- electron-bridge stdio`.
+
+## Release Flow (Linux RPM)
+
+Use this when you need a real installable Electron package instead of a dev shell:
+
+1. Run `pnpm build:electron:rpm`.
+2. The command builds frontend assets, compiles the Rust runtime bridge (`src-tauri/target/release/entrance`), and then runs `electron-builder`.
+3. The RPM output is written under `dist-electron/`.
