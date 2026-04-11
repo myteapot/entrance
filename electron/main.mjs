@@ -74,6 +74,42 @@ const resolveMessageBoxKind = (options) => {
   return options?.kind;
 };
 
+const normalizeOpenDialogOptions = (options = {}) => {
+  const properties = new Set(Array.isArray(options.properties) ? options.properties : []);
+
+  if (options.directory) {
+    properties.add("openDirectory");
+  } else {
+    properties.add("openFile");
+  }
+
+  if (options.multiple) {
+    properties.add("multiSelections");
+  }
+
+  if (options.showHiddenFiles) {
+    properties.add("showHiddenFiles");
+  }
+
+  if (options.createDirectory) {
+    properties.add("createDirectory");
+  }
+
+  if (options.promptToCreate) {
+    properties.add("promptToCreate");
+  }
+
+  return {
+    title: options.title,
+    defaultPath: options.defaultPath,
+    filters: options.filters,
+    buttonLabel: options.buttonLabel,
+    message: options.message,
+    securityScopedBookmarks: options.securityScopedBookmarks,
+    properties: [...properties],
+  };
+};
+
 const broadcastRendererEvent = (channel, payload) => {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) {
@@ -305,7 +341,10 @@ const registerIpc = () => {
 
   ipcMain.handle("entrance:dialog:open", async (event, options = {}) => {
     const targetWindow = resolveWindow(event.sender);
-    const result = await dialog.showOpenDialog(targetWindow, options);
+    const result = await dialog.showOpenDialog(
+      targetWindow,
+      normalizeOpenDialogOptions(options),
+    );
     return openDialogResult(result, options);
   });
 

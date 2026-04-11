@@ -10,6 +10,10 @@ use crate::{
     commands::{self, DashboardUiState, LauncherUiState},
     core::{
         bootstrap_for_paths,
+        chat_archive::{
+            capture_chat_message, get_chat_archive_policy, set_chat_archive_policy,
+            ChatArchivePolicyRequest, ChatCaptureRequest,
+        },
         data_store::{DataStore, NewIssue},
         event_bus::{install_external_emitters, EventBus},
         hygiene::list_spec_hygiene_v0,
@@ -511,6 +515,41 @@ impl ElectronBridgeRuntime {
             "nota_runtime_status" => {
                 to_json_value(build_nota_runtime_status(&self.data_store).map_err(stringify_error)?)
             }
+            "nota_get_chat_archive_policy" => to_json_value(
+                get_chat_archive_policy(&self.data_store, None, None).map_err(stringify_error)?,
+            ),
+            "nota_set_chat_archive_policy" => {
+                let args = parse_args::<SetChatArchivePolicyArgs>(args)?;
+                to_json_value(
+                    set_chat_archive_policy(
+                        &self.data_store,
+                        ChatArchivePolicyRequest {
+                            scope_type: None,
+                            scope_ref: None,
+                            archive_policy: args.archive_policy,
+                        },
+                    )
+                    .map_err(stringify_error)?,
+                )
+            }
+            "nota_capture_chat_message" => {
+                let args = parse_args::<CaptureChatMessageArgs>(args)?;
+                to_json_value(
+                    capture_chat_message(
+                        &self.data_store,
+                        ChatCaptureRequest {
+                            session_ref: args.session_ref,
+                            role: args.role,
+                            content: args.content,
+                            summary: args.summary,
+                            scope_type: None,
+                            scope_ref: None,
+                            linked_decision_id: None,
+                        },
+                    )
+                    .map_err(stringify_error)?,
+                )
+            }
             "forge_create_task" => {
                 let args = parse_args::<ForgeCreateTaskArgs>(args)?;
                 let forge = self.forge()?;
@@ -732,6 +771,21 @@ struct IssueAddCommentArgs {
     issue_key: String,
     author: String,
     body: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetChatArchivePolicyArgs {
+    archive_policy: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureChatMessageArgs {
+    role: String,
+    content: String,
+    summary: Option<String>,
+    session_ref: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

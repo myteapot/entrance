@@ -53,6 +53,7 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
     assert!(startup.mcp_enabled());
     assert!(startup.launcher_enabled());
     assert_eq!(startup.launcher_hotkey(), Some("Alt+Space"));
+    assert!(startup.forge_enabled());
     assert_eq!(startup.forge_http_port(), 9721);
 
     let config = fs::read_to_string(paths.config_path())?.replace("\r\n", "\n");
@@ -68,6 +69,9 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
             "core_hotkeys",
             "core_event_log",
             "plugin_launcher_apps",
+            "plugin_forge_tasks",
+            "plugin_forge_task_logs",
+            "plugin_forge_dispatch_receipts",
         ],
     )?;
 
@@ -120,6 +124,58 @@ enabled = false
         &["core_plugins", "core_hotkeys", "core_event_log"],
     )?;
     assert!(!table_exists(paths.db_path(), "plugin_launcher_apps")?);
+
+    Ok(())
+}
+
+#[test]
+fn legacy_default_config_is_upgraded_to_enable_forge_runtime() -> Result<()> {
+    let temp_dir = TempAppDir::new("legacy-default-upgrade")?;
+    let paths = temp_dir.paths();
+
+    fs::write(
+        paths.config_path(),
+        r#"[core]
+theme = "dark"
+log_level = "info"
+mcp_enabled = true
+
+[paths]
+runtime_db = "data/entrance.db"
+logs = "logs"
+cache = "cache"
+exports = "exports"
+snapshots = "snapshots"
+worktrees = "worktrees"
+
+[plugins.launcher]
+enabled = true
+hotkey = "Alt+Space"
+scan_paths = []
+
+[plugins.forge]
+enabled = false
+http_port = 9721
+
+[plugins.vault]
+enabled = false
+"#,
+    )?;
+
+    let startup = bootstrap_for_paths(paths.clone())?;
+
+    assert!(startup.forge_enabled());
+    assert_tables_exist(
+        paths.db_path(),
+        &[
+            "plugin_forge_tasks",
+            "plugin_forge_task_logs",
+            "plugin_forge_dispatch_receipts",
+        ],
+    )?;
+    let upgraded = fs::read_to_string(paths.config_path())?;
+    assert!(upgraded.contains("[plugins.forge]"));
+    assert!(upgraded.contains("enabled = true"));
 
     Ok(())
 }

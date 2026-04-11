@@ -171,7 +171,11 @@ pub fn compute_pulse(data_store: &DataStore, config: &HeartbeatConfig) -> Result
     let now = Utc::now();
     let stale_cutoff = (now - ChronoDuration::from_std(config.stale_duration())?).to_rfc3339();
 
-    let tasks = data_store.list_forge_tasks()?;
+    let tasks = if data_store.has_table("plugin_forge_tasks")? {
+        data_store.list_forge_tasks()?
+    } else {
+        Vec::new()
+    };
     let active_tasks = tasks.iter().filter(|task| task.status == "Running").count() as u32;
     let stale_tasks = tasks
         .iter()

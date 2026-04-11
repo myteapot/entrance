@@ -6118,6 +6118,10 @@ impl DataStore {
         callback(&connection)
     }
 
+    pub fn has_table(&self, table: &str) -> Result<bool> {
+        self.with_connection(|connection| table_exists(connection, table))
+    }
+
     fn lock_connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
         self.connection
             .lock()

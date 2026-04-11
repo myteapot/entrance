@@ -163,6 +163,24 @@ const budgetUsagePercent = (activeInstances: number, limit: number) => {
 const metricValue = (value?: number | null) =>
   typeof value === "number" ? value.toLocaleString() : "—";
 
+const humanizeConsoleError = (error: unknown) => {
+  const message = String(error ?? "");
+  const sanitized = message
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+
+  if (sanitized.includes("no such table: plugin_forge_tasks")) {
+    return "Do runtime is still being prepared for this install. Reopen Entrance after the runtime upgrade finishes.";
+  }
+
+  if (sanitized.includes("forge plugin is not enabled")) {
+    return "Do runtime is currently turned off for this install. Reopen Entrance after enabling the Do runtime.";
+  }
+
+  return sanitized || "Console failed to load the current runtime state.";
+};
+
 const InstanceBranch = (props: InstanceBranchProps) => {
   const children = createMemo(() => props.childrenOf(props.instance.id));
 
@@ -254,7 +272,7 @@ export default function Console() {
       setLastRefreshedAt(new Date().toISOString());
     } catch (loadError) {
       console.warn("Console refresh failed", loadError);
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      setError(humanizeConsoleError(loadError));
     }
   };
 
@@ -403,7 +421,7 @@ export default function Console() {
             <div>
               <h3>Manage the full instance lineage from root to leaf.</h3>
               <p>
-                Create new instances, stop a subtree, or spawn children without leaving the
+                Start a new root lane, attach a child lane, or stop a subtree without leaving the
                 runtime shell.
               </p>
             </div>
@@ -415,6 +433,10 @@ export default function Console() {
                 {metricValue(pulse()?.active_instances)} active
               </span>
             </div>
+          </div>
+
+          <div class="console-create-intro">
+            <p>Root instances start a new tree. Choose a parent only when you want a child lane.</p>
           </div>
 
           <form
@@ -463,9 +485,11 @@ export default function Console() {
               </select>
             </label>
 
-            <button type="submit" class="console-button console-button--primary" disabled={isCreating()}>
-              {isCreating() ? "Creating..." : "Create Instance"}
-            </button>
+            <div class="console-create-form__actions">
+              <button type="submit" class="console-button console-button--primary" disabled={isCreating()}>
+                {isCreating() ? "Creating..." : "Create Instance"}
+              </button>
+            </div>
           </form>
 
           <Show

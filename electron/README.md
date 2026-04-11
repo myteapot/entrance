@@ -21,5 +21,5 @@ This branch keeps the renderer DB-first and frontend-compatible while backing El
 Use this when you need a real installable Electron package instead of a dev shell:
 
 1. Run `pnpm build:electron:rpm`.
-2. The command builds frontend assets, compiles the Rust runtime bridge (`src-tauri/target/release/entrance`), and then runs `electron-builder`.
+2. The command builds frontend assets, compiles the Rust runtime bridge (`src-tauri/target/release/entrance`), stages a clean Electron release project, and then runs `electron-builder`.
 3. The RPM output is written under `dist-electron/`.
