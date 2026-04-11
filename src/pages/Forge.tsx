@@ -18,11 +18,23 @@ import {
 } from "../features/forge/taskFeed";
 
 const AUTO_DISPATCH_MODEL = "codex";
+type DispatchMode = "auto" | "project";
 
-function formatDispatchContextError(error: unknown) {
+function formatDispatchContextError(error: unknown, mode: DispatchMode) {
   const message = String(error ?? "");
   if (message.includes("git rev-parse --show-toplevel failed")) {
-    return "Current worktree could not be detected. If you launched Entrance from the desktop, choose a Git project in Project directory and click Refresh Context.";
+    if (mode === "auto") {
+      return "Current worktree could not be detected. If you launched Entrance from the desktop, choose a Git project directory and refresh context.";
+    }
+    return "The selected project directory is not a Git worktree. Choose a repository root and refresh context.";
+  }
+
+  if (message.includes("Project directory `") && message.includes("does not exist")) {
+    return "The selected project directory does not exist. Choose a valid local repository path.";
+  }
+
+  if (message.includes("does not match worktree repository")) {
+    return "The selected project directory does not match the detected worktree repository. Re-select the repository root.";
   }
 
   return message;
@@ -40,11 +52,19 @@ export default function Forge() {
   const [isLoadingDispatchContext, setIsLoadingDispatchContext] = createSignal(false);
   const [isLaunchingAgent, setIsLaunchingAgent] = createSignal(false);
   const [projectDir, setProjectDir] = createSignal(localStorage.getItem("forge_project_dir") || "");
+  const [dispatchMode, setDispatchMode] = createSignal<DispatchMode>(
+    localStorage.getItem("forge_project_dir")?.trim() ? "project" : "auto",
+  );
   const [agentCommand, setAgentCommand] = createSignal(localStorage.getItem("forge_agent_command") || "");
 
   const updateProjectDir = (dir: string) => {
     setProjectDir(dir);
     localStorage.setItem("forge_project_dir", dir);
+    if (dir.trim()) {
+      setDispatchMode("project");
+    }
+    setDispatchContext(null);
+    setDispatchContextError(null);
   };
 
   const updateAgentCommand = (cmd: string) => {
@@ -56,7 +76,7 @@ export default function Forge() {
     const selected = await open({ directory: true, title: "Select Project Directory" });
     if (selected && typeof selected === "string") {
       updateProjectDir(selected);
-      void loadDispatchContext();
+      void loadDispatchContext("project");
     }
   };
 
@@ -232,16 +252,27 @@ export default function Forge() {
     return id;
   };
 
-  const loadDispatchContext = async () => {
+  const loadDispatchContext = async (mode: DispatchMode) => {
+    setDispatchMode(mode);
     setIsLoadingDispatchContext(true);
     setDispatchContextError(null);
 
+    const selectedProjectDir = projectDir().trim();
+    if (mode === "project" && !selectedProjectDir) {
+      setDispatchContext(null);
+      setDispatchContextError("Choose a project directory first, then refresh context.");
+      setIsLoadingDispatchContext(false);
+      return;
+    }
+
     try {
-      setDispatchContext(await prepareForgeAgentDispatch(projectDir() || undefined));
+      setDispatchContext(
+        await prepareForgeAgentDispatch(mode === "project" ? selectedProjectDir : undefined),
+      );
     } catch (error) {
       console.error("Failed to prepare Agent dispatch", error);
       setDispatchContext(null);
-      setDispatchContextError(formatDispatchContextError(error));
+      setDispatchContextError(formatDispatchContextError(error, mode));
     } finally {
       setIsLoadingDispatchContext(false);
     }
@@ -251,8 +282,18 @@ export default function Forge() {
     setIsLaunchingAgent(true);
     setDispatchContextError(null);
 
+    const mode = dispatchMode();
+    const selectedProjectDir = projectDir().trim();
+    if (mode === "project" && !selectedProjectDir) {
+      setDispatchContextError("Choose a project directory first, then refresh context.");
+      setIsLaunchingAgent(false);
+      return;
+    }
+
     try {
-      const context = await prepareForgeAgentDispatch(projectDir() || undefined);
+      const context = await prepareForgeAgentDispatch(
+        mode === "project" ? selectedProjectDir : undefined,
+      );
       setDispatchContext(context);
       await dispatchAgent(
         context.issue_id,
@@ -263,7 +304,7 @@ export default function Forge() {
       );
     } catch (error) {
       console.error("Failed to auto-dispatch Agent", error);
-      const formattedError = formatDispatchContextError(error);
+      const formattedError = formatDispatchContextError(error, mode);
       setDispatchContextError(formattedError);
       alert("Error dispatching agent: " + formattedError);
     } finally {
@@ -273,7 +314,9 @@ export default function Forge() {
 
   onMount(() => {
     void fetchTasks();
-    void loadDispatchContext();
+    if (projectDir().trim()) {
+      void loadDispatchContext("project");
+    }
 
     void (async () => {
       const unlistenStatus = await listenToForgeTaskStatus((payload) => {
@@ -394,8 +437,9 @@ export default function Forge() {
       <div class="forge-header">
         <div>
           <h1 class="forge-title">Do</h1>
+          <p class="forge-subtitle">Start from current worktree or choose a project directory.</p>
         </div>
-        <div style={{ display: "flex", gap: "0.75rem" }}>
+        <div class="forge-header-actions">
           <button
             class="btn btn-primary"
             disabled={isLaunchingAgent() || isLoadingDispatchContext() || !dispatchContext()}
@@ -407,82 +451,125 @@ export default function Forge() {
                 ? "Preparing Do..."
                 : "Run Do"}
           </button>
-          <button class="btn" onClick={() => setShowNewTaskModal(true)}>+ Advanced Task</button>
         </div>
       </div>
 
-      <div class="auto-dispatch-card">
-        <div class="auto-dispatch-card__header">
-          <div>
-            <p class="auto-dispatch-card__eyebrow">Do</p>
-            <h2 class="auto-dispatch-card__title">Automatic NOTA dispatch from the current worktree</h2>
+      <div class="do-launch-panel">
+        <div class="do-entry-grid">
+          <div class={`do-entry-card ${dispatchMode() === "auto" ? "active" : ""}`}>
+            <p class="do-entry-card__eyebrow">Entry A</p>
+            <h2 class="do-entry-card__title">Use current worktree</h2>
+            <p class="do-entry-card__desc">
+              Use this when Entrance is launched from a repository terminal.
+            </p>
+            <div class="do-entry-card__actions">
+              <button
+                class="btn"
+                disabled={isLoadingDispatchContext()}
+                onClick={() => void loadDispatchContext("auto")}
+              >
+                {isLoadingDispatchContext() && dispatchMode() === "auto"
+                  ? "Detecting..."
+                  : "Detect current worktree"}
+              </button>
+            </div>
+            <Show when={dispatchMode() === "auto" && dispatchContext()}>
+              <div class="do-entry-state do-entry-state-ok">Current worktree context is ready.</div>
+            </Show>
+            <Show when={dispatchMode() === "auto" && dispatchContextError()}>
+              <div class="do-entry-state do-entry-state-warn">{dispatchContextError()}</div>
+            </Show>
           </div>
-          <div style={{ display: "flex", gap: "0.5rem", "align-items": "center" }}>
-            <input
-              class="form-input"
-              type="text"
-              value={projectDir()}
-              onInput={(e) => updateProjectDir(e.currentTarget.value)}
-              placeholder="Project directory (e.g. A:/Agent/Entrance)"
-              style={{ width: "320px", "font-size": "0.8rem" }}
-            />
-            <button class="btn" onClick={() => void pickProjectDir()} style={{ "white-space": "nowrap" }}>Browse</button>
-            <button
-              class="btn"
-              disabled={isLoadingDispatchContext()}
-              onClick={() => void loadDispatchContext()}
-            >
-              {isLoadingDispatchContext() ? "Refreshing..." : "Refresh Context"}
-            </button>
+
+          <div class={`do-entry-card ${dispatchMode() === "project" ? "active" : ""}`}>
+            <p class="do-entry-card__eyebrow">Entry B</p>
+            <h2 class="do-entry-card__title">Choose project directory</h2>
+            <p class="do-entry-card__desc">
+              Recommended for desktop launch and installed app usage.
+            </p>
+            <div class="do-input-row">
+              <input
+                class="form-input"
+                type="text"
+                value={projectDir()}
+                onInput={(e) => updateProjectDir(e.currentTarget.value)}
+                placeholder="Project directory (e.g. /home/user/work/entrance)"
+              />
+            </div>
+            <div class="do-entry-card__actions">
+              <button class="btn" onClick={() => void pickProjectDir()}>Browse</button>
+              <button
+                class="btn"
+                disabled={isLoadingDispatchContext()}
+                onClick={() => void loadDispatchContext("project")}
+              >
+                {isLoadingDispatchContext() && dispatchMode() === "project"
+                  ? "Refreshing..."
+                  : "Refresh Context"}
+              </button>
+            </div>
+            <Show when={dispatchMode() === "project" && dispatchContext()}>
+              <div class="do-entry-state do-entry-state-ok">Project directory context is ready.</div>
+            </Show>
+            <Show when={dispatchMode() === "project" && dispatchContextError()}>
+              <div class="do-entry-state do-entry-state-warn">{dispatchContextError()}</div>
+            </Show>
           </div>
-          <div style={{ display: "flex", gap: "0.5rem", "align-items": "center", "margin-top": "0.5rem" }}>
+        </div>
+
+        <div class="do-settings-row">
+          <div class="do-agent-command">
+            <label class="form-label">Agent command (optional)</label>
             <input
               class="form-input"
               type="text"
               value={agentCommand()}
               onInput={(e) => updateAgentCommand(e.currentTarget.value)}
               placeholder="Agent command (leave empty for default, e.g. codex)"
-              style={{ width: "320px", "font-size": "0.8rem" }}
             />
-            <span style={{ "font-size": "0.75rem", color: "var(--color-text-tertiary)" }}>
+            <p class="do-setting-hint">
               {agentCommand() ? `Using: ${agentCommand()}` : "Using default CLI"}
-            </span>
+            </p>
+          </div>
+          <div class="do-secondary-actions">
+            <span class="do-secondary-label">More options</span>
+            <button class="btn do-advanced-btn" onClick={() => setShowNewTaskModal(true)}>
+              Advanced Task
+            </button>
           </div>
         </div>
 
-        <Show
-          when={dispatchContext()}
-          fallback={
-            <div class="task-callout callout-failed">
-              {dispatchContextError() ?? "Do could not resolve an issue worktree for automatic dispatch."}
-            </div>
-          }
-        >
+        <Show when={dispatchContext()} fallback={
+          <div class={`task-callout ${dispatchContextError() ? "callout-failed" : "callout-neutral"}`}>
+            {dispatchContextError() ?? "Choose one entry above and refresh context to prepare a Do run."}
+          </div>
+        }>
           {(context) => (
             <>
+              <h3 class="do-context-title">Prepared context</h3>
               <div class="token-chip-list">
                 <span class="token-chip">{context().issue_id}</span>
                 <span class="token-chip">{context().issue_status}</span>
                 <span class="token-chip">{AUTO_DISPATCH_MODEL}</span>
               </div>
-              <div class="auto-dispatch-grid">
-                <div class="auto-dispatch-field">
-                  <span class="auto-dispatch-field__label">Issue</span>
-                  <span class="auto-dispatch-field__value">
+              <div class="do-context-grid">
+                <div class="do-context-field">
+                  <span class="do-context-field__label">Issue</span>
+                  <span class="do-context-field__value">
                     {context().issue_title ?? "Current worktree issue"}
                   </span>
                 </div>
-                <div class="auto-dispatch-field">
-                  <span class="auto-dispatch-field__label">Project Root</span>
-                  <span class="auto-dispatch-field__value">{context().project_root}</span>
+                <div class="do-context-field">
+                  <span class="do-context-field__label">Repository</span>
+                  <span class="do-context-field__value">{context().project_root}</span>
                 </div>
-                <div class="auto-dispatch-field">
-                  <span class="auto-dispatch-field__label">Worktree</span>
-                  <span class="auto-dispatch-field__value">{context().worktree_path}</span>
+                <div class="do-context-field">
+                  <span class="do-context-field__label">Worktree</span>
+                  <span class="do-context-field__value">{context().worktree_path}</span>
                 </div>
-                <div class="auto-dispatch-field">
-                  <span class="auto-dispatch-field__label">Prompt Source</span>
-                  <span class="auto-dispatch-field__value">{context().prompt_source}</span>
+                <div class="do-context-field">
+                  <span class="do-context-field__label">Prompt source</span>
+                  <span class="do-context-field__value">{context().prompt_source}</span>
                 </div>
               </div>
               <Show when={context().issue_status_source === "fallback"}>
@@ -490,9 +577,6 @@ export default function Forge() {
                   No local issue summary was available, so Do used a generic `Todo` prompt
                   fallback. Dispatch still works, but status-specific prompt shaping was skipped.
                 </div>
-              </Show>
-              <Show when={dispatchContextError()}>
-                <div class="task-callout callout-failed">{dispatchContextError()}</div>
               </Show>
             </>
           )}
