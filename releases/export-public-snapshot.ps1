@@ -33,14 +33,14 @@ $excludedDirectories = @(
     ".git",
     "node_modules",
     "dist",
-    "src-tauri\target",
+    "hosts/desktop/tauri\target",
     "releases\v0.3.1-headless-alpha.1\package"
 )
 
 $excludedFiles = @(
     "entrance.key",
     "entrance.toml",
-    "src-tauri\.cargo\config.local.toml",
+    "hosts/desktop/tauri\.cargo\config.local.toml",
     "releases\export-public-snapshot.ps1"
 )
 

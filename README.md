@@ -42,17 +42,17 @@ pnpm build
 4. 构建 Windows 二进制：
 
 ```powershell
-cargo build --manifest-path src-tauri/Cargo.toml --release
+cargo build --manifest-path hosts/desktop/tauri/Cargo.toml --release
 ```
 
 5. 读取运行时：
 
 ```powershell
-.\src-tauri\target\release\entrance.exe nota status
-.\src-tauri\target\release\entrance.exe nota overview
+.\hosts/desktop/tauri\target\release\entrance.exe nota status
+.\hosts/desktop/tauri\target\release\entrance.exe nota overview
 ```
 
-> English: Source builds are supported. Install Node.js, pnpm, Rust, and the Windows build toolchain, then run `pnpm install`, `pnpm build`, and `cargo build --manifest-path src-tauri/Cargo.toml --release`.
+> English: Source builds are supported. Install Node.js, pnpm, Rust, and the Windows build toolchain, then run `pnpm install`, `pnpm build`, and `cargo build --manifest-path hosts/desktop/tauri/Cargo.toml --release`.
 
 ## Runtime Operations
 
@@ -81,14 +81,14 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 发布级自洽与双端验证入口：
 
 ```bash
-./scripts/release/verify-v1-self-consistency.sh
+./hosts/release/verify-v1-self-consistency.sh
 ```
 
 ```powershell
-./scripts/release/verify-v1-self-consistency.ps1
+./hosts/release/verify-v1-self-consistency.ps1
 ```
 
-对应检查清单见：`specs/chore/v1_release_gate_checklist.md`。
+对应检查清单见：`notes/specs/chore/v1_release_gate_checklist.md`。
 
 双端补充验证命令：
 
@@ -97,7 +97,7 @@ pnpm test:electron-smoke
 ```
 
 ```powershell
-./scripts/release/run-windows-native-smoke.ps1 -Configuration Release
+./hosts/release/run-windows-native-smoke.ps1 -Configuration Release
 ```
 
 ## 版权与许可

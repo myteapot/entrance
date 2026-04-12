@@ -10,7 +10,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $resolvedBinaryPath = $BinaryPath
 
 if ([string]::IsNullOrWhiteSpace($resolvedBinaryPath)) {
-    $resolvedBinaryPath = Join-Path $repoRoot "src-tauri\target\release\entrance.exe"
+    $resolvedBinaryPath = Join-Path $repoRoot "hosts/desktop/tauri\target\release\entrance.exe"
 } elseif (-not [System.IO.Path]::IsPathRooted($resolvedBinaryPath)) {
     $resolvedBinaryPath = Join-Path $repoRoot $resolvedBinaryPath
 }

@@ -1,6 +1,6 @@
 # Entrance — Agent Context
 
-> **Last updated**: 2026-04-05
+> **Last updated**: 2026-04-12
 > **Branch**: `main`, HEAD: `b5c9ee6`
 > **Stack**: Tauri 2 + Rust backend + SolidJS frontend
 
@@ -14,17 +14,17 @@ Agent OS — 面向智能体的操作系统。五层种姓制：`Human → NOTA 
 
 | Subsystem | Path |
 |-----------|------|
-| Compiler pipeline | `src-tauri/src/core/compiler/` |
-| NOTA runtime | `src-tauri/src/core/nota/mod.rs` (~8000 LOC) |
-| Data layer | `src-tauri/src/core/data_store.rs` (SQLite, ~7500 LOC) |
-| Supervision | `src-tauri/src/core/supervision.rs` |
-| Forge engine | `src-tauri/src/plugins/forge/` |
-| Frontend pages | `src/pages/` (Chat, Forge, Dashboard, Console, Settings) |
-| Design tokens | `src/styles/theme.css` |
-| App shell CSS | `src/App.css` |
-| Graph component | `src/components/ComputeGraph.tsx` |
-| Graph engine | `src/features/dashboard/graphEngine.ts` |
-| Graph store | `src/features/dashboard/graphStore.ts` |
+| Compiler pipeline | `hosts/desktop/tauri/src/core/compiler/` |
+| NOTA runtime | `hosts/desktop/tauri/src/core/nota/mod.rs` (~8000 LOC) |
+| Data layer | `hosts/desktop/tauri/src/core/data_store.rs` (SQLite, ~7500 LOC) |
+| Supervision | `hosts/desktop/tauri/src/core/supervision.rs` |
+| Forge engine | `hosts/desktop/tauri/src/hosts/plugins/forge/` |
+| Frontend pages | `surfaces/gui/renderer/pages/` (Chat, Forge, Dashboard, Console, Settings) |
+| Design tokens | `surfaces/gui/renderer/styles/theme.css` |
+| App shell CSS | `surfaces/gui/renderer/App.css` |
+| Graph component | `surfaces/gui/renderer/components/ComputeGraph.tsx` |
+| Graph engine | `surfaces/gui/renderer/features/dashboard/graphEngine.ts` |
+| Graph store | `surfaces/gui/renderer/features/dashboard/graphStore.ts` |
 
 ## Design Language: Carbon
 
@@ -42,8 +42,8 @@ Agent OS — 面向智能体的操作系统。五层种姓制：`Human → NOTA 
 pnpm dev                    # → http://localhost:1420
 
 # Backend
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml --lib  # 244 tests
+cargo check --manifest-path hosts/desktop/tauri/Cargo.toml
+cargo test --manifest-path hosts/desktop/tauri/Cargo.toml --lib  # 248 tests
 
 # Full app (Tauri desktop)
 pnpm tauri dev

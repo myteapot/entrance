@@ -6,5 +6,5 @@
     "allowSyntheticDefaultImports": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts"]
+  "include": ["surfaces/gui/vite.config.ts", "hosts/desktop/browser/playwright.config.ts"]
 }

@@ -11,4 +11,4 @@
 
 - Runtime truth remains anchored in `~/.entrance/data/entrance.db`.
 - Updater metadata for this release candidate is staged in GitLab, but signed platform artifacts still need to be attached before public updater pickup should be enabled.
-- Release packaging should use `releases/package-release.ps1` after building `src-tauri\\target\\release\\entrance.exe`.
+- Release packaging should use `releases/package-release.ps1` after building `hosts/desktop/tauri\\target\\release\\entrance.exe`.
