@@ -22,15 +22,19 @@ type DispatchMode = "auto" | "project";
 
 function formatDispatchContextError(error: unknown, mode: DispatchMode) {
   const message = String(error ?? "");
+  if (message.includes("forge plugin is not enabled")) {
+    return "Do runtime is currently turned off for this install. Reopen Entrance after enabling the Do runtime.";
+  }
+
   if (message.includes("git rev-parse --show-toplevel failed")) {
     if (mode === "auto") {
       return "Current worktree could not be detected. If you launched Entrance from the desktop, choose a Git project directory and refresh context.";
     }
-    return "The selected project directory is not a Git worktree. Choose a repository root and refresh context.";
+    return "The selected folder is not a Git repository root. Choose an existing local repository and refresh context.";
   }
 
   if (message.includes("Project directory `") && message.includes("does not exist")) {
-    return "The selected project directory does not exist. Choose a valid local repository path.";
+    return "The selected folder does not exist. Choose an existing local repository path.";
   }
 
   if (message.includes("does not match worktree repository")) {
@@ -73,7 +77,12 @@ export default function Forge() {
   };
 
   const pickProjectDir = async () => {
-    const selected = await open({ directory: true, title: "Select Project Directory" });
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Choose Repository Folder",
+      defaultPath: projectDir().trim() || undefined,
+    });
     if (selected && typeof selected === "string") {
       updateProjectDir(selected);
       void loadDispatchContext("project");
@@ -437,7 +446,9 @@ export default function Forge() {
       <div class="forge-header">
         <div>
           <h1 class="forge-title">Do</h1>
-          <p class="forge-subtitle">Start from current worktree or choose a project directory.</p>
+          <p class="forge-subtitle">
+            Run work from the current worktree, or choose an existing Git repository folder.
+          </p>
         </div>
         <div class="forge-header-actions">
           <button
@@ -485,7 +496,7 @@ export default function Forge() {
             <p class="do-entry-card__eyebrow">Entry B</p>
             <h2 class="do-entry-card__title">Choose project directory</h2>
             <p class="do-entry-card__desc">
-              Recommended for desktop launch and installed app usage.
+              Recommended when Entrance is opened from an installed desktop app.
             </p>
             <div class="do-input-row">
               <input
@@ -493,11 +504,14 @@ export default function Forge() {
                 type="text"
                 value={projectDir()}
                 onInput={(e) => updateProjectDir(e.currentTarget.value)}
-                placeholder="Project directory (e.g. /home/user/work/entrance)"
+                placeholder="Existing Git repository root (e.g. /home/user/work/entrance)"
               />
             </div>
+            <p class="do-entry-card__hint">
+              Choose an existing repository root. Do will not create a new project folder for you.
+            </p>
             <div class="do-entry-card__actions">
-              <button class="btn" onClick={() => void pickProjectDir()}>Browse</button>
+              <button class="btn" onClick={() => void pickProjectDir()}>Choose Folder</button>
               <button
                 class="btn"
                 disabled={isLoadingDispatchContext()}

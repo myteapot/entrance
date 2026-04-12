@@ -8,11 +8,15 @@ import {
 } from "../features/landing/client";
 import { listenToForgeTaskStatus } from "../features/forge/taskFeed";
 import {
+  captureChatMessage,
   fetchNotaRuntimeOverview,
   fetchNotaRuntimeStatus,
+  updateChatArchivePolicy,
+  type ChatArchivePolicy,
   type NotaCheckpointRecord,
   type NotaRuntimeOverview,
   type NotaRuntimeStatus,
+  type StoredChatCaptureRecord,
   type StoredDecisionRecord,
   type StoredNotaRuntimeTransaction,
 } from "../features/nota/overview";
@@ -74,6 +78,54 @@ const renderCheckpointTitle = (checkpoint: NotaCheckpointRecord | null) => {
   return `Checkpoint ${checkpoint.cadence_object.id}: ${checkpoint.cadence_object.title}`;
 };
 
+const humanizeChatError = (error: unknown) => {
+  const message = String(error ?? "");
+  const sanitized = message
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+
+  return sanitized || "Chat surface failed to sync with the runtime.";
+};
+
+const archivePolicyLabel = (policy: ChatArchivePolicy) => {
+  switch (policy) {
+    case "summary":
+      return "Keep summary";
+    case "full":
+      return "Keep full message";
+    case "off":
+    default:
+      return "Do not keep";
+  }
+};
+
+const isHumanCapture = (capture: StoredChatCaptureRecord) =>
+  capture.role.trim().toLowerCase() === "human";
+
+const surfaceGuide = [
+  {
+    title: "Chat",
+    body: "Tell NOTA what changed, what is blocked, or what you want next.",
+  },
+  {
+    title: "Do",
+    body: "Run work inside a real repository and watch task logs.",
+  },
+  {
+    title: "Board",
+    body: "See the current mission state, next step, and runtime truth in one place.",
+  },
+  {
+    title: "Console",
+    body: "Manage runtime lanes and inspect system health.",
+  },
+  {
+    title: "Issues",
+    body: "Track built-in issues when you want a local queue inside Entrance itself.",
+  },
+];
+
 const Chat = () => {
   const [overview, setOverview] = createSignal<NotaRuntimeOverview | null>(null);
   const [status, setStatus] = createSignal<NotaRuntimeStatus | null>(null);
@@ -84,6 +136,12 @@ const Chat = () => {
   const [importTone, setImportTone] = createSignal<"success" | "error" | null>(null);
   const [importFeedback, setImportFeedback] = createSignal<string | null>(null);
   const [lastImportReport, setLastImportReport] = createSignal<LandingImportReport | null>(null);
+  const [draftMessage, setDraftMessage] = createSignal("");
+  const [draftPolicy, setDraftPolicy] = createSignal<ChatArchivePolicy>("summary");
+  const [draftPolicyTouched, setDraftPolicyTouched] = createSignal(false);
+  const [isSendingMessage, setIsSendingMessage] = createSignal(false);
+  const [composerFeedback, setComposerFeedback] = createSignal<string | null>(null);
+  const [composerTone, setComposerTone] = createSignal<"success" | "error" | null>(null);
 
   const loadFrontDoor = async () => {
     try {
@@ -94,10 +152,14 @@ const Chat = () => {
       ]);
       setOverview(nextOverview);
       setStatus(nextStatus);
+      if (!draftPolicyTouched()) {
+        const suggestedPolicy = nextStatus.chat_policy.setting.archive_policy;
+        setDraftPolicy(suggestedPolicy === "off" ? "summary" : suggestedPolicy);
+      }
       setLastRefreshedAt(new Date().toISOString());
     } catch (loadError) {
       console.error("Failed to fetch NOTA runtime front door", loadError);
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      setError(humanizeChatError(loadError));
     } finally {
       setIsLoading(false);
     }
@@ -131,10 +193,46 @@ const Chat = () => {
       console.error("Failed to import snapshot from Chat front door", importError);
       setImportTone("error");
       setImportFeedback(
-        importError instanceof Error ? importError.message : String(importError),
+        humanizeChatError(importError),
       );
     } finally {
       setIsImporting(false);
+    }
+  };
+
+  const handleSendMessage = async () => {
+    const content = draftMessage().trim();
+    if (!content) {
+      setComposerTone("error");
+      setComposerFeedback("Write a message for NOTA before sending.");
+      return;
+    }
+
+    setIsSendingMessage(true);
+    setComposerTone(null);
+    setComposerFeedback(null);
+
+    try {
+      const currentPolicy = status()?.chat_policy.setting.archive_policy ?? "off";
+      if (draftPolicy() !== currentPolicy) {
+        await updateChatArchivePolicy(draftPolicy());
+      }
+
+      const report = await captureChatMessage("human", content, undefined, "desktop-chat");
+      setDraftMessage("");
+      setComposerTone("success");
+      setComposerFeedback(
+        report.stored
+          ? `Saved for NOTA with ${archivePolicyLabel(report.policy)}.`
+          : "Archive is off, so this message was not stored.",
+      );
+      await loadFrontDoor();
+    } catch (sendError) {
+      console.error("Failed to capture chat message", sendError);
+      setComposerTone("error");
+      setComposerFeedback(humanizeChatError(sendError));
+    } finally {
+      setIsSendingMessage(false);
     }
   };
 
@@ -169,7 +267,8 @@ const Chat = () => {
     () => overview()?.transactions.transactions.slice(0, 3) ?? [],
   );
   const latestDecisions = createMemo(() => overview()?.decisions.decisions.slice(0, 3) ?? []);
-  const recentCaptures = createMemo(() => overview()?.chat_captures.captures.slice(0, 2) ?? []);
+  const recentCaptures = createMemo(() => overview()?.chat_captures.captures.slice(0, 6) ?? []);
+  const conversationCaptures = createMemo(() => [...recentCaptures()].reverse());
   const latestDecision = createMemo(() => latestDecisions()[0] ?? null);
   const refreshLine = createMemo(() => {
     const value = lastRefreshedAt();
@@ -219,6 +318,127 @@ const Chat = () => {
           </div>
         )}
       </Show>
+
+      <Show when={composerFeedback()}>
+        {(message) => (
+          <div
+            class={`chat-callout ${
+              composerTone() === "success" ? "chat-callout--success" : "chat-callout--error"
+            }`}
+          >
+            {message()}
+          </div>
+        )}
+      </Show>
+
+      <section class="chat-entry-grid" aria-label="Chat entry and page guide">
+        <article class="dashboard-card chat-card chat-composer-card">
+          <div class="dashboard-card__topline">
+            <p class="dashboard-card__caption">Talk to NOTA</p>
+            <span class="chat-status-pill">{archivePolicyLabel(draftPolicy())}</span>
+          </div>
+
+          <div class="chat-composer-card__headline">
+            <div>
+              <h3>Start here when you want NOTA to remember your next move.</h3>
+              <p>
+                Chat is the human front door. Say what changed, what is blocked, or what NOTA
+                should carry forward.
+              </p>
+            </div>
+          </div>
+
+          <div class="chat-composer">
+            <label class="chat-composer__field">
+              <span>Message</span>
+              <textarea
+                rows={4}
+                value={draftMessage()}
+                onInput={(event) => setDraftMessage(event.currentTarget.value)}
+                placeholder="Example: tell NOTA what changed, what is blocked, or what should happen next."
+              />
+            </label>
+
+            <div class="chat-composer__controls">
+              <label class="chat-composer__field">
+                <span>Memory</span>
+                <select
+                  value={draftPolicy()}
+                  onChange={(event) => {
+                    setDraftPolicy(event.currentTarget.value as ChatArchivePolicy);
+                    setDraftPolicyTouched(true);
+                  }}
+                >
+                  <option value="summary">Keep summary</option>
+                  <option value="full">Keep full message</option>
+                  <option value="off">Do not keep</option>
+                </select>
+              </label>
+
+              <div class="chat-composer__actions">
+                <button
+                  class="front-door-action front-door-action--primary"
+                  type="button"
+                  disabled={isSendingMessage()}
+                  onClick={() => void handleSendMessage()}
+                >
+                  {isSendingMessage() ? "Sending..." : "Send to NOTA"}
+                </button>
+              </div>
+            </div>
+
+            <p class="chat-composer__hint">
+              Use summary mode for normal work. Use full mode only when the exact wording matters.
+            </p>
+          </div>
+
+          <div class="chat-live-thread" aria-label="Recent chat captures">
+            <Show
+              when={conversationCaptures().length > 0}
+              fallback={
+                <div class="chat-live-thread__empty">
+                  No saved chat yet. Your first message will appear here.
+                </div>
+              }
+            >
+              <For each={conversationCaptures()}>
+                {(capture) => (
+                  <article
+                    class={`chat-live-thread__bubble ${
+                      isHumanCapture(capture) ? "is-human" : "is-assistant"
+                    }`}
+                  >
+                    <div class="chat-live-thread__topline">
+                      <strong>{isHumanCapture(capture) ? "You" : "NOTA"}</strong>
+                      <span>{formatTimestamp(capture.created_at)}</span>
+                    </div>
+                    <p>{capture.summary || capture.content || "No summary stored."}</p>
+                  </article>
+                )}
+              </For>
+            </Show>
+          </div>
+        </article>
+
+        <article class="dashboard-card chat-card chat-surface-guide">
+          <div class="dashboard-card__topline">
+            <p class="dashboard-card__caption">What each page is for</p>
+            <span class="dashboard-card__badge">Human guide</span>
+          </div>
+          <h3>These five pages are not peers.</h3>
+          <p>Each one has a different job. Chat is where you talk; the others execute or report.</p>
+          <div class="chat-surface-guide__grid">
+            <For each={surfaceGuide}>
+              {(item) => (
+                <section class="chat-surface-guide__item">
+                  <strong>{item.title}</strong>
+                  <p>{item.body}</p>
+                </section>
+              )}
+            </For>
+          </div>
+        </article>
+      </section>
 
       <section class="front-door-layout" aria-label="Native front door">
         <article class="dashboard-card dashboard-card--forge-widget chat-card front-door-shell">

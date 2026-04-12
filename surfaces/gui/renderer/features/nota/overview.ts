@@ -132,6 +132,12 @@ export interface ChatCaptureListReport {
   captures: StoredChatCaptureRecord[];
 }
 
+export interface ChatCaptureReport {
+  policy: ChatArchivePolicy;
+  stored: boolean;
+  record?: StoredChatCaptureRecord | null;
+}
+
 export interface NotaRuntimeBoundaryStep {
   state: string;
   transaction_id: number;
@@ -236,3 +242,24 @@ export const fetchNotaRuntimeOverview = () =>
 
 export const fetchNotaRuntimeStatus = () =>
   invoke<NotaRuntimeStatus>("nota_runtime_status");
+
+export const fetchChatArchivePolicy = () =>
+  invoke<ChatArchivePolicyReport>("nota_get_chat_archive_policy");
+
+export const updateChatArchivePolicy = (archivePolicy: ChatArchivePolicy) =>
+  invoke<ChatArchivePolicyReport>("nota_set_chat_archive_policy", {
+    archivePolicy,
+  });
+
+export const captureChatMessage = (
+  role: string,
+  content: string,
+  summary?: string,
+  sessionRef?: string,
+) =>
+  invoke<ChatCaptureReport>("nota_capture_chat_message", {
+    role,
+    content,
+    summary,
+    sessionRef,
+  });

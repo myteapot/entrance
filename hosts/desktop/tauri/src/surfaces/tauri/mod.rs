@@ -10,6 +10,10 @@ pub mod issues;
 pub mod nota_prayer;
 
 use crate::core::{
+    chat_archive::{
+        capture_chat_message, get_chat_archive_policy, set_chat_archive_policy,
+        ChatArchivePolicyReport, ChatArchivePolicyRequest, ChatCaptureReport, ChatCaptureRequest,
+    },
     cold_docs_runtime::{export_cold_docs_to_repo, NotaColdDocExportReport},
     data_store::{DataStore, StoredAgentInstance, StoredSourceIngestRun},
     hygiene::{list_spec_hygiene_v0, SpecHygieneReport},
@@ -451,6 +455,52 @@ pub(crate) fn nota_runtime_status(
     data_store: tauri::State<'_, DataStore>,
 ) -> Result<NotaRuntimeStatus, String> {
     build_nota_runtime_status(&data_store).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn nota_get_chat_archive_policy(
+    data_store: tauri::State<'_, DataStore>,
+) -> Result<ChatArchivePolicyReport, String> {
+    get_chat_archive_policy(&data_store, None, None).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn nota_set_chat_archive_policy(
+    archive_policy: String,
+    data_store: tauri::State<'_, DataStore>,
+) -> Result<ChatArchivePolicyReport, String> {
+    set_chat_archive_policy(
+        &data_store,
+        ChatArchivePolicyRequest {
+            scope_type: None,
+            scope_ref: None,
+            archive_policy,
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn nota_capture_chat_message(
+    role: String,
+    content: String,
+    summary: Option<String>,
+    session_ref: Option<String>,
+    data_store: tauri::State<'_, DataStore>,
+) -> Result<ChatCaptureReport, String> {
+    capture_chat_message(
+        &data_store,
+        ChatCaptureRequest {
+            session_ref,
+            role,
+            content,
+            summary,
+            scope_type: None,
+            scope_ref: None,
+            linked_decision_id: None,
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

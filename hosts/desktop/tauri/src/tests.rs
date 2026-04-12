@@ -328,9 +328,12 @@ fn prepare_forge_dispatch_cli_requires_enabled_forge_plugin() -> Result<()> {
     let _app_data_guard = EnvVarGuard::set("ENTRANCE_APP_DATA_DIR", &app_data_dir);
 
     fs::create_dir_all(&app_data_dir)?;
+    let mut config = EntranceConfig::default();
+    config.core.theme = "light".to_string();
+    config.plugins.forge.enabled = false;
     fs::write(
         app_data_dir.join("entrance.toml"),
-        render_config(&EntranceConfig::default())?,
+        render_config(&config)?,
     )?;
 
     let error = prepare_forge_dispatch_cli(None).expect_err("forge-disabled CLI should fail");

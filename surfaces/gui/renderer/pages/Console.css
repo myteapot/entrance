@@ -50,13 +50,19 @@
 
 .console-create-form {
   display: grid;
-  grid-template-columns: minmax(140px, 180px) minmax(0, 1fr) minmax(180px, 240px) auto;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   align-items: end;
   padding: 12px;
   border-radius: var(--radius-lg);
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.025);
+}
+
+.console-create-intro p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
 
 .console-field {
@@ -73,6 +79,15 @@
 
 .console-field--wide {
   min-width: 0;
+}
+
+.console-create-form__actions {
+  display: flex;
+  align-items: end;
+}
+
+.console-create-form__actions .console-button {
+  width: 100%;
 }
 
 .console-field input,
@@ -401,6 +416,10 @@
   .console-field--wide {
     grid-column: span 2;
   }
+
+  .console-create-form__actions {
+    grid-column: span 2;
+  }
 }
 
 @media (max-width: 720px) {
@@ -413,6 +432,10 @@
     grid-column: span 1;
   }
 
+  .console-create-form__actions {
+    grid-column: span 1;
+  }
+
   .instance-node {
     flex-direction: column;
     align-items: flex-start;
@@ -421,6 +444,10 @@
   .instance-node__actions,
   .console-budget-meter__meta {
     width: 100%;
+  }
+
+  .instance-node__actions .console-button {
+    flex: 1;
   }
 
   .console-health-header {

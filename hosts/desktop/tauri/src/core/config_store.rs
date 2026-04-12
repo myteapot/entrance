@@ -119,7 +119,7 @@ impl Default for LauncherConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ForgeConfig {
-    #[serde(default)]
+    #[serde(default = "default_forge_enabled")]
     pub enabled: bool,
     #[serde(default = "default_forge_http_port")]
     pub http_port: u16,
@@ -134,7 +134,7 @@ pub struct ForgeConfig {
 impl Default for ForgeConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_forge_enabled(),
             http_port: default_forge_http_port(),
             project_dir: None,
             agent_command: None,
@@ -178,8 +178,13 @@ impl ConfigStore {
         let config = if path.exists() {
             let content = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read config file at {}", path.display()))?;
-            toml::from_str::<EntranceConfig>(&content)
-                .with_context(|| format!("failed to parse config file at {}", path.display()))?
+            let mut config = toml::from_str::<EntranceConfig>(&content)
+                .with_context(|| format!("failed to parse config file at {}", path.display()))?;
+            if should_enable_forge_for_legacy_desktop_config(&content, &config)? {
+                config.plugins.forge.enabled = default_forge_enabled();
+                write_config_file(&path, &config)?;
+            }
+            config
         } else {
             let default_config = EntranceConfig::default();
             write_config_file(&path, &default_config)?;
@@ -242,6 +247,10 @@ fn default_launcher_hotkey() -> String {
     DEFAULT_LAUNCHER_HOTKEY.to_string()
 }
 
+fn default_forge_enabled() -> bool {
+    true
+}
+
 fn default_forge_http_port() -> u16 {
     9721
 }
@@ -268,4 +277,27 @@ fn default_snapshots_path() -> String {
 
 fn default_worktrees_path() -> String {
     "worktrees".to_string()
+}
+
+fn should_enable_forge_for_legacy_desktop_config(
+    raw_content: &str,
+    config: &EntranceConfig,
+) -> Result<bool> {
+    if config.plugins.forge.enabled {
+        return Ok(false);
+    }
+
+    let normalized = raw_content.replace("\r\n", "\n");
+    if !normalized.contains("[plugins.forge]") {
+        return Ok(true);
+    }
+
+    let legacy_default = render_config(&legacy_default_config())?.replace("\r\n", "\n");
+    Ok(normalized == legacy_default)
+}
+
+fn legacy_default_config() -> EntranceConfig {
+    let mut config = EntranceConfig::default();
+    config.plugins.forge.enabled = false;
+    config
 }
