@@ -2,7 +2,6 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use serde_json;
-use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::broadcast;
 
 use crate::core::{
@@ -55,50 +54,6 @@ impl EventBus {
         let count = self.sender.send(event).unwrap_or(0);
         Ok(count)
     }
-
-    pub fn emit_launcher_toggle<R: Runtime>(&self, app: &AppHandle<R>) -> Result<()> {
-        app.emit("launcher:toggle", ())?;
-        Ok(())
-    }
-
-    pub fn emit_graph_update<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        event: &GraphUpdateEvent,
-    ) -> Result<()> {
-        let json = serde_json::to_string(event)?;
-        app.emit("graph:update", json)?;
-        Ok(())
-    }
-
-    pub fn emit_nota_dialog<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        event: &NotaDialogEvent,
-    ) -> Result<()> {
-        let json = serde_json::to_string(event)?;
-        app.emit("nota:dialog", json)?;
-        Ok(())
-    }
-}
-
-pub fn install_runtime_emitters<R: Runtime + 'static>(event_bus: EventBus, app: AppHandle<R>) {
-    let graph_bus = event_bus.clone();
-    let graph_app = app.clone();
-    let dialog_bus = event_bus;
-    let dialog_app = app;
-    install_external_emitters(
-        move |event: &GraphUpdateEvent| {
-            if let Err(error) = graph_bus.emit_graph_update(&graph_app, event) {
-                tracing::warn!(?error, "failed to emit graph update");
-            }
-        },
-        move |event: &NotaDialogEvent| {
-            if let Err(error) = dialog_bus.emit_nota_dialog(&dialog_app, event) {
-                tracing::warn!(?error, "failed to emit nota dialog");
-            }
-        },
-    );
 }
 
 pub fn install_external_emitters<G, D>(on_graph: G, on_dialog: D)

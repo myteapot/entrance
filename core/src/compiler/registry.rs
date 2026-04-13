@@ -118,11 +118,9 @@ mod tests {
     };
     use anyhow::Result;
 
-    use crate::{
-        core::{
-            action::{ActionPrimitive, ActionRecord, ActorRole, FlowPhaseCode, KnowledgeLayer},
-            data_store::{DataStore, MigrationPlan},
-        },
+    use crate::core::{
+        action::{ActionPrimitive, ActionRecord, ActorRole, FlowPhaseCode, KnowledgeLayer},
+        data_store::{DataStore, MigrationPlan},
     };
 
     #[test]

@@ -1,13 +1,54 @@
-pub mod core;
-pub mod hosts;
-pub mod surfaces;
+pub mod desktop;
+mod desktop_bridge;
+pub mod tauri_commands;
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use tauri::{Emitter, Manager};
 
+#[allow(unused_imports)]
+mod core {
+    pub mod config_store {
+        pub(crate) use entrance_harness::config::*;
+    }
+
+    pub(crate) use entrance_core::nota as nota_runtime;
+    pub(crate) use entrance_core::*;
+    pub(crate) use entrance_harness::{
+        boot_for_paths as bootstrap_for_paths, resolve_app_data_dir, HarnessPaths as AppPaths,
+        RuntimeServices as StartupState,
+    };
+}
+
+#[allow(unused_imports)]
+mod hosts {
+    pub mod desktop {
+        pub(crate) use crate::desktop::{
+            hotkey, instance_manager, logging, plugin_manager, theme, updater, window,
+        };
+    }
+
+    pub mod plugins {
+        pub(crate) use entrance_harness::plugins::*;
+    }
+}
+
+#[allow(unused_imports)]
+mod surfaces {
+    pub mod tauri {
+        pub(crate) use crate::tauri_commands::*;
+    }
+}
+
 use crate::{
+    core::{
+        bootstrap_for_paths,
+        event_bus::{install_external_emitters, EventBus},
+        resolve_app_data_dir,
+        system_heartbeat::{run_system_heartbeat, HeartbeatConfig},
+        AppPaths,
+    },
     hosts::{
         desktop::{
             hotkey, instance_manager::InstanceManager, logging::LoggingSystem,
@@ -15,27 +56,11 @@ use crate::{
         },
         plugins::{self, launcher::LauncherPlugin, vault::VaultPlugin, AppContext},
     },
-    core::{
-        bootstrap_for_paths,
-        event_bus::{install_runtime_emitters, EventBus},
-        resolve_app_data_dir,
-        system_heartbeat::{run_system_heartbeat, HeartbeatConfig},
-        AppPaths,
-    },
     surfaces::tauri::{DashboardUiState, LauncherUiState},
 };
 
-pub use surfaces::cli::dispatch_cli_or_run;
-
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
-
-#[cfg(test)]
-pub(crate) use surfaces::cli::{
-    cli_help_for_args, prepare_forge_dispatch_cli, verify_forge_dispatch_cli, COMPILER_CLI_HELP,
-    ELECTRON_BRIDGE_CLI_HELP, FORGE_CLI_HELP, MCP_CLI_HELP, NOTA_CLI_HELP, ROOT_CLI_HELP,
-};
-pub(crate) use core::overview::{build_nota_runtime_overview, build_nota_runtime_status};
 
 #[cfg(test)]
 static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -46,6 +71,23 @@ pub(crate) fn test_env_guard() -> std::sync::MutexGuard<'static, ()> {
         .get_or_init(|| Mutex::new(()))
         .lock()
         .expect("test environment lock should not be poisoned")
+}
+
+fn install_tauri_emitters<R: tauri::Runtime + 'static>(app: tauri::AppHandle<R>) {
+    let graph_app = app.clone();
+    let dialog_app = app;
+    install_external_emitters(
+        move |event| {
+            if let Ok(json) = serde_json::to_string(event) {
+                let _ = graph_app.emit("graph:update", json);
+            }
+        },
+        move |event| {
+            if let Ok(json) = serde_json::to_string(event) {
+                let _ = dialog_app.emit("nota:dialog", json);
+            }
+        },
+    );
 }
 
 fn setup_application<R: tauri::Runtime>(
@@ -82,7 +124,7 @@ fn setup_application<R: tauri::Runtime>(
     .count();
 
     app.manage(event_bus.clone());
-    install_runtime_emitters(event_bus.clone(), app.handle().clone());
+    install_tauri_emitters(app.handle().clone());
     app.manage(data_store.clone());
     app.manage(InstanceManager::new(data_store.clone(), event_bus.clone()));
     tauri::async_runtime::spawn({
@@ -220,5 +262,13 @@ pub fn run_tauri_app() {
         .expect("error while running Entrance application");
 }
 
-#[cfg(test)]
-mod tests;
+pub fn run_desktop_bridge() -> anyhow::Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    match args.as_slice() {
+        [] => desktop_bridge::run_electron_bridge_stdio(&[]),
+        [transport] if transport == "stdio" => desktop_bridge::run_electron_bridge_stdio(&[]),
+        [other, ..] => anyhow::bail!(
+            "unsupported desktop bridge transport `{other}`, expected `entrance-desktop-bridge stdio`"
+        ),
+    }
+}

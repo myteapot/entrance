@@ -33,8 +33,8 @@ type McpGuide = {
   snippets: McpSnippet[];
 };
 
-const MCP_STDIO_COMMAND = "entrance mcp stdio";
-const MCP_HTTP_COMMAND = "entrance mcp http --port 9720 --endpoint /mcp";
+const MCP_STDIO_COMMAND = "entrance-mcp stdio";
+const MCP_HTTP_COMMAND = "entrance-mcp http --port 9720 --endpoint /mcp";
 const MCP_HTTP_URL = "http://127.0.0.1:9720/mcp";
 const readNotaDialogPreference = () =>
   typeof window === "undefined"
@@ -67,8 +67,8 @@ const mcpSetupGuides: McpGuide[] = [
           mcpServers: {
             entrance: {
               type: "stdio",
-              command: "entrance",
-              args: ["mcp", "stdio"],
+              command: "entrance-mcp",
+              args: ["stdio"],
             },
           },
         }),
@@ -80,8 +80,8 @@ const mcpSetupGuides: McpGuide[] = [
           mcpServers: {
             entrance: {
               type: "stdio",
-              command: "entrance",
-              args: ["mcp", "stdio"],
+              command: "entrance-mcp",
+              args: ["stdio"],
               env: {},
             },
           },
@@ -93,8 +93,8 @@ const mcpSetupGuides: McpGuide[] = [
         content: renderJson({
           mcpServers: {
             entrance: {
-              command: "entrance",
-              args: ["mcp", "stdio"],
+              command: "entrance-mcp",
+              args: ["stdio"],
             },
           },
         }),

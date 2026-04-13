@@ -104,7 +104,10 @@ async fn run_electron_bridge_stdio_async() -> Result<()> {
         };
 
         if request.kind != "invoke" {
-            tracing::warn!(kind = request.kind, "unsupported Electron bridge request kind");
+            tracing::warn!(
+                kind = request.kind,
+                "unsupported Electron bridge request kind"
+            );
             continue;
         }
 
@@ -279,9 +282,11 @@ impl ElectronBridgeRuntime {
                 &self.dashboard_ui,
                 &self.data_store,
             )?),
-            "list_agent_instances" => {
-                to_json_value(self.data_store.list_agent_instances().map_err(stringify_error)?)
-            }
+            "list_agent_instances" => to_json_value(
+                self.data_store
+                    .list_agent_instances()
+                    .map_err(stringify_error)?,
+            ),
             "get_system_pulse" => to_json_value(
                 compute_pulse(&self.data_store, &HeartbeatConfig::default())
                     .map_err(stringify_error)?,
@@ -557,8 +562,9 @@ impl ElectronBridgeRuntime {
             "forge_create_task" => {
                 let args = parse_args::<ForgeCreateTaskArgs>(args)?;
                 let forge = self.forge()?;
-                let required_tokens = serde_json::to_string(&args.required_tokens.unwrap_or_default())
-                    .map_err(stringify_error)?;
+                let required_tokens =
+                    serde_json::to_string(&args.required_tokens.unwrap_or_default())
+                        .map_err(stringify_error)?;
                 let id = forge
                     .create_task(CreateTaskRequest {
                         name: args.name,
@@ -593,8 +599,11 @@ impl ElectronBridgeRuntime {
             "forge_prepare_agent_dispatch" => {
                 let args = parse_args::<ForgePrepareDispatchArgs>(args)?;
                 to_json_value(
-                    plugins::forge::prepare_agent_dispatch(self.data_store.clone(), args.project_dir)
-                        .await?,
+                    plugins::forge::prepare_agent_dispatch(
+                        self.data_store.clone(),
+                        args.project_dir,
+                    )
+                    .await?,
                 )
             }
             "forge_list_tasks" => {
@@ -614,7 +623,9 @@ impl ElectronBridgeRuntime {
             }
             "forge_cancel_task" => {
                 let args = parse_args::<ForgeTaskIdArgs>(args)?;
-                self.forge()?.cancel_task(args.id).map_err(stringify_error)?;
+                self.forge()?
+                    .cancel_task(args.id)
+                    .map_err(stringify_error)?;
                 to_json_value(())
             }
             other => Err(format!("unsupported Electron bridge command `{other}`")),
@@ -873,7 +884,8 @@ where
     } else {
         args
     };
-    serde_json::from_value(args).map_err(|error| format!("invalid Electron bridge arguments: {error}"))
+    serde_json::from_value(args)
+        .map_err(|error| format!("invalid Electron bridge arguments: {error}"))
 }
 
 fn stringify_error(error: impl std::fmt::Display) -> String {

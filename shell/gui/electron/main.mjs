@@ -8,8 +8,8 @@ import { app, BrowserWindow, dialog, ipcMain } from "electron";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..", "..");
-const cargoManifestPath = path.join(repoRoot, "hosts/desktop/tauri", "Cargo.toml");
-const packagedBridgeName = process.platform === "win32" ? "entrance.exe" : "entrance";
+const packagedBridgeName =
+  process.platform === "win32" ? "entrance-desktop-bridge.exe" : "entrance-desktop-bridge";
 
 const isDev = Boolean(process.env.ENTRANCE_RENDERER_URL);
 const defaultRendererUrl = "http://127.0.0.1:1420";
@@ -28,7 +28,7 @@ const resolveRendererTarget = () => {
     return process.env.ENTRANCE_RENDERER_URL;
   }
 
-  return new URL("../../../dist/index.html", import.meta.url).toString();
+  return new URL("../dist/index.html", import.meta.url).toString();
 };
 
 const resolveWindow = (webContents) =>
@@ -131,20 +131,20 @@ const resolveBridgeSpawn = () => {
     if (existsSync(packagedBridgePath)) {
       return {
         command: packagedBridgePath,
-        args: ["electron-bridge", "stdio"],
+        args: ["stdio"],
       };
     }
   }
 
   const devBridgeCandidates = [
-    path.join(repoRoot, "hosts/desktop/tauri", "target", "debug", packagedBridgeName),
-    path.join(repoRoot, "hosts/desktop/tauri", "target", "release", packagedBridgeName),
+    path.join(repoRoot, "target", "debug", packagedBridgeName),
+    path.join(repoRoot, "target", "release", packagedBridgeName),
   ];
   for (const candidate of devBridgeCandidates) {
     if (existsSync(candidate)) {
       return {
         command: candidate,
-        args: ["electron-bridge", "stdio"],
+        args: ["stdio"],
       };
     }
   }
@@ -155,10 +155,11 @@ const resolveBridgeSpawn = () => {
       "run",
       "--quiet",
       "--locked",
-      "--manifest-path",
-      cargoManifestPath,
+      "-p",
+      "entrance-gui",
+      "--bin",
+      "entrance-desktop-bridge",
       "--",
-      "electron-bridge",
       "stdio",
     ],
   };

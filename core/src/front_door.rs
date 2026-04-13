@@ -6,7 +6,7 @@ use crate::core::nota_runtime::{
 };
 
 #[derive(Clone, Serialize)]
-pub(crate) struct NotaFrontDoorProjection {
+pub struct NotaFrontDoorProjection {
     posture: String,
     summary: String,
     next_action_label: String,
@@ -16,7 +16,7 @@ pub(crate) struct NotaFrontDoorProjection {
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct NotaFrontDoorProgressTrack {
+pub struct NotaFrontDoorProgressTrack {
     id: String,
     label: String,
     value: u8,

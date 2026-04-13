@@ -34,7 +34,7 @@ linux-verify:
       (rm -rf node_modules && pnpm install --frozen-lockfile && pnpm exec vite --version)
     - pnpm exec playwright install --with-deps chromium
     - pnpm check
-    - cargo test --manifest-path hosts/desktop/tauri/Cargo.toml --lib
+    - cargo test --workspace --locked
     - pnpm test:e2e
   artifacts:
     when: always
@@ -46,7 +46,7 @@ linux-verify:
 electron-smoke:
   extends: .linux-rust-node
   script:
-    - cargo build --manifest-path hosts/desktop/tauri/Cargo.toml --locked
+    - cargo build --locked -p entrance-gui --bin entrance-desktop-bridge
     - xvfb-run -a pnpm test:electron-smoke
   artifacts:
     when: always
@@ -60,10 +60,10 @@ windows-native:
     - windows
   script:
     - rustup default stable
-    - cargo build --manifest-path hosts/desktop/tauri/Cargo.toml --locked --release
-    - .\hosts\release\run-windows-native-smoke.ps1 -Configuration Release -SkipBuild -EntranceExePath "$env:CI_PROJECT_DIR/hosts/desktop/tauri/target/release/entrance.exe"
+    - cargo build --locked --release -p entrance-gui --bin entrance-gui
+    - .\shell\gui\release\run-windows-native-smoke.ps1 -Configuration Release -SkipBuild -EntranceExePath "$env:CI_PROJECT_DIR/target/release/entrance-gui.exe"
   artifacts:
     when: always
     paths:
-      - hosts/platform/windows/tests/native/TestResults/
+      - shell/gui/platform/windows/tests/native/TestResults/
     expire_in: 7 days

@@ -2,7 +2,7 @@ node_modules
 dist
 dist-electron
 .vscode
-hosts/desktop/tauri/target
+target/
 hosts/desktop/tauri/.cargo/config.local.toml
 releases/*/package/
 releases/*/*.zip

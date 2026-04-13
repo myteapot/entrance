@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/../.." && pwd)"
+repo_root="$(cd "$script_dir/../../.." && pwd)"
 custom_linux_dir="$script_dir/linux"
 target="${1:-rpm}"
 
@@ -89,15 +89,14 @@ prepare_release_stage() {
   app_version="$(node -e 'console.log(require(process.argv[1]).version)' "$repo_root/package.json")"
   electron_version="$(node -e 'console.log(require(process.argv[1]).version)' "$repo_root/node_modules/electron/package.json")"
   homepage="$(node -e 'console.log(require(process.argv[1]).homepage ?? "")' "$repo_root/package.json")"
-  renderer_dist_dir="$repo_root/surfaces/gui/dist"
+  renderer_dist_dir="$repo_root/shell/gui/dist"
 
   mkdir -p "$stage_dir/dist" "$stage_dir/electron" "$stage_dir/icons" "$stage_dir/scripts/linux"
   cp -a "$renderer_dist_dir/." "$stage_dir/dist/"
-  cp -a "$repo_root/hosts/desktop/electron/." "$stage_dir/electron/"
-  cp -a "$repo_root/hosts/desktop/tauri/icons/." "$stage_dir/icons/"
-  cp -a "$repo_root/hosts/desktop/tauri/target/release/entrance" "$stage_dir/entrance"
+  cp -a "$repo_root/shell/gui/electron/." "$stage_dir/electron/"
+  cp -a "$repo_root/shell/gui/icons/." "$stage_dir/icons/"
+  cp -a "$repo_root/target/release/entrance-desktop-bridge" "$stage_dir/entrance-desktop-bridge"
   cp -a "$custom_linux_dir/after-remove.tpl" "$stage_dir/scripts/linux/after-remove.tpl"
-  perl -0pi -e 's#\.\./\.\./\.\./dist/index\.html#../dist/index.html#g' "$stage_dir/electron/main.mjs"
 
   cat >"$stage_dir/package.json" <<EOF
 {
@@ -130,8 +129,8 @@ EOF
   ],
   "extraResources": [
     {
-      "from": "entrance",
-      "to": "entrance"
+      "from": "entrance-desktop-bridge",
+      "to": "entrance-desktop-bridge"
     }
   ],
   "linux": {

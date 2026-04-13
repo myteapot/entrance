@@ -245,7 +245,7 @@ const mockMcpConfigs = [
     id: 1,
     name: "Local Entrance",
     transport: "stdio",
-    endpoint: "entrance mcp stdio",
+    endpoint: "entrance-mcp stdio",
     enabled: true,
     created_at: "2026-04-05T08:00:00.000Z",
     updated_at: "2026-04-05T08:00:00.000Z",

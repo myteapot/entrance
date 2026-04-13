@@ -6,14 +6,14 @@
     "output": "dist-electron"
   },
   "files": [
-    "dist/**/*",
-    "hosts/desktop/electron/**/*",
+    "shell/gui/dist/**/*",
+    "shell/gui/electron/**/*",
     "package.json"
   ],
   "extraResources": [
     {
-      "from": "hosts/desktop/tauri/target/release/entrance",
-      "to": "entrance"
+      "from": "target/release/entrance-desktop-bridge",
+      "to": "entrance-desktop-bridge"
     }
   ],
   "linux": {
@@ -27,6 +27,6 @@
     ],
     "category": "Development",
     "maintainer": "Entrance Maintainers <maintainers@entrance.local>",
-    "icon": "hosts/desktop/tauri/icons"
+    "icon": "shell/gui/icons"
   }
 }

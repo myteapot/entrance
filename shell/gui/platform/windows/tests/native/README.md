@@ -1,26 +1,26 @@
 # Native Smoke Contract (Windows)
 
-`SmokeTest.cs` launches a built `entrance.exe` and asserts the main window appears with an `Entrance` title.
+`SmokeTest.cs` launches a built `entrance-gui.exe` and asserts the main window appears with an `Entrance` title.
 
 ## Contract
 
 - Input binary path comes from `ENTRANCE_EXE_PATH`.
 - If `ENTRANCE_EXE_PATH` is not set, fallback path is:
-  - `hosts/desktop/tauri/target/release/entrance.exe` (via relative test project traversal).
+  - `target/release/entrance-gui.exe` (via relative test project traversal).
 
 ## Recommended Runner
 
 Use the release runner script so build + env wiring stay reproducible:
 
 ```powershell
-./hosts/release/run-windows-native-smoke.ps1 -Configuration Release
+./shell/gui/release/run-windows-native-smoke.ps1 -Configuration Release
 ```
 
 Use a prebuilt binary:
 
 ```powershell
-./hosts/release/run-windows-native-smoke.ps1 `
+./shell/gui/release/run-windows-native-smoke.ps1 `
   -SkipBuild `
-  -EntranceExePath "C:\path\to\entrance.exe" `
+  -EntranceExePath "C:\path\to\entrance-gui.exe" `
   -Configuration Release
 ```

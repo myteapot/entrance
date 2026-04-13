@@ -48,22 +48,22 @@
   - repo-root recovery seed rows plus the adjacent seed manifest as `recovery_seed` storage artifacts
 - The next real phase is not another architecture rewrite; it remains `Landing / Reconciliation`.
 - The first cold reconciliation cut is now landed:
-  - `notes/specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
+  - `notes/agents/specs/reconciliation-cut.md`
 - That first cut classifies the imported shells as:
   - `bootstrap critical path = 3` (`MYT-63 / MYT-64 / MYT-65`)
   - `cold backlog = 11`
   - `canceled or duplicate residue = 5`
   - `done historical items = 31`
 - `MYT-64` is now repo-side landed:
-  - canonical bootstrap copies now exist under `notes/harness/bootstrap/`
+  - canonical bootstrap copies now exist under `notes/agents/`
   - runtime still has not cut over away from `.agents`
 - `MYT-65` is now repo-side landed:
-  - recovery provenance copies now exist under `notes/specs/recovery/`
+  - recovery provenance copies now exist under `notes/archive/`
   - `.agents` remains preserved, but these docs are no longer recovery-only in location
 - `MYT-63` has now advanced through four small runtime cuts:
   - Forge worktree discovery now uses `~/.entrance/worktrees/{project}/feat-{ISSUE}` as its only runtime owner path
-  - Forge prompt generation now reads Entrance-owned `notes/harness/bootstrap/duet/SKILL.md` instead of shelling to `A:/.agents/nota/scripts/control.py`
-  - Forge now exposes prompt source as `Entrance-owned notes/harness/bootstrap prompt`
+  - Forge prompt generation now reads Entrance-owned `notes/agents/skill.md` instead of shelling to `A:/.agents/nota/scripts/control.py`
+  - Forge now exposes prompt source as `Entrance-owned notes/agents prompt`
 - `MYT-61` is now treated as a completed verification gate kept hot-adjacent, not as an active shell.
 - A new headless Forge verification gate is now landed:
   - `cargo test prepare_dispatch_pipeline_builds_without_agents_runtime --lib --config "build.rustc-wrapper=''" `
@@ -85,25 +85,25 @@
   - it provides an operator-visible verification path for dispatch preparation plus Forge task persistence without active `.agents` runtime dependencies
   - it still does not replace full GUI/app-level `.agents`-absent verification
 - The compressed hot root is now canonical:
-  - `notes/specs/top/machine.md`
-  - `notes/specs/top/control.md`
-  - `notes/specs/top/truth.md`
-  - `notes/specs/top/phase-todo.md`
-  - `notes/specs/top/pending.md`
+  - `notes/agents/specs/machine.md`
+  - `notes/agents/specs/control.md`
+  - `notes/agents/specs/truth.md`
+  - `notes/human/phase-todo.md`
+  - `notes/human/pending.md`
 - The numbered top docs remain mounted transitional detail only; they must not grow back into a second hot root.
 - Codex now has a configured `GitLab MCP` server entry:
   - name: `gitlab`
   - url: `http://server:9311/api/v4/mcp`
   - auth mode: bearer token via `GITLAB_MCP_BEARER_TOKEN`
 - Cold local-detail mounts now exist for the active machine/truth/control cuts, including:
-  - `notes/specs/cold/1.1-os-core/minimal_os_boundary.md`
-  - `notes/specs/cold/1.2-hierarchical-state-machine/minimal_top_graph.md`
-  - `notes/specs/cold/1.3-compiler-action-ir/minimal_registry_cut.md`
-  - `notes/specs/cold/2.1-otp-supervisor-model/minimal_supervision_binding.md`
-  - `notes/specs/cold/2.2-lead-model-3/minimal_control_slot_model.md`
-  - `notes/specs/cold/2.3-control-tree-node-lte-3/minimal_hot_control_tree.md`
-  - `notes/specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
-  - `notes/specs/cold/3.1-learning-truth-system/minimal_truth_plane.md`
+  - `notes/agents/specs/os-boundary.md`
+  - `notes/agents/specs/top-graph.md`
+  - `notes/agents/specs/registry-cut.md`
+  - `notes/agents/specs/supervision-binding.md`
+  - `notes/agents/specs/control-slot-model.md`
+  - `notes/agents/specs/hot-control-tree.md`
+  - `notes/agents/specs/reconciliation-cut.md`
+  - `notes/agents/specs/truth-plane.md`
 - `pending.md` should now be read as "no active architecture or operational blocker in hot view"; prior GitLab MCP token notes are fallback history, not active pending.
 - `~/.entrance/data/entrance.db` is now the canonical runtime storage owner for both landing truth and absorbed repo-root recovery seed truth.
 - `.tmp/landing-appdata/entrance.db` remains only as sandbox proof residue for the original landing import path.
@@ -124,11 +124,11 @@
 ### What Landed
 
 - A minimal landing layer now exists as `core`, not as a plugin:
-  - `hosts/desktop/tauri/migrations/0005_create_core_landing_tables.sql`
-  - `hosts/desktop/tauri/src/core/data_store.rs`
-  - `hosts/desktop/tauri/src/core/landing.rs`
-  - `hosts/desktop/tauri/src/core/mod.rs`
-  - `hosts/desktop/tauri/src/lib.rs`
+  - `core/schema/0005_create_core_landing_tables.sql`
+  - `core/src/data_store.rs`
+  - `core/src/landing.rs`
+  - `core/src/lib.rs`
+  - `harness/src/runtime.rs`
 - The landing split is now explicit and OS-driven:
   - `source_artifacts` / `external_issue_mirrors` hold external captured truth
   - `planning_items` / `promotion_records` hold Entrance-owned planning objects and promotion history
@@ -185,18 +185,18 @@ Read in this order:
 
 1. `entrance nota checkpoints`
 2. `entrance nota decisions`
-3. `notes/specs/chore/top_self_cycle_handout.md`
-4. `notes/specs/top/README.md`
-5. `notes/specs/top/machine.md`
-6. `notes/specs/top/control.md`
-7. `notes/specs/top/truth.md`
-8. `notes/specs/top/phase-todo.md`
-9. `notes/specs/top/pending.md`
-10. `notes/specs/cold/3.1-learning-truth-system/landing_reconciliation_cut.md`
-11. `hosts/desktop/tauri/migrations/0005_create_core_landing_tables.sql`
-12. `hosts/desktop/tauri/src/core/landing.rs`
-13. `hosts/desktop/tauri/src/core/data_store.rs`
-14. `hosts/desktop/tauri/src/lib.rs`
+3. `notes/agents/handout.md`
+4. `notes/agents/specs/README.md`
+5. `notes/agents/specs/machine.md`
+6. `notes/agents/specs/control.md`
+7. `notes/agents/specs/truth.md`
+8. `notes/human/phase-todo.md`
+9. `notes/human/pending.md`
+10. `notes/agents/specs/reconciliation-cut.md`
+11. `core/schema/0005_create_core_landing_tables.sql`
+12. `core/src/landing.rs`
+13. `core/src/data_store.rs`
+14. `harness/src/runtime.rs`
 
 Then descend only into the single selected trunk or substrate lane for the current cycle.
 
@@ -261,7 +261,7 @@ What is still open:
 
 ### Control Warning
 
-- `notes/specs/cold/2.2-lead-model-3/prd.md` is legacy and currently mojibake-prone in terminal rendering.
+- `notes/archive/prd-legacy.md` is legacy and currently mojibake-prone in terminal rendering.
 - Treat it as a weak historical reference, not as canonical architecture source.
 
 ## Landing / Reconciliation State
@@ -277,11 +277,11 @@ What is already landed:
 - every imported Linear issue now has a mirrored landing record plus an Entrance planning shell
 - promotion history is being recorded from the first import onward
 - the minimal landing handoff layer now exists in code, not just in prose
-- the bootstrap substrate now has repo-side canonical copies under `notes/harness/bootstrap/`
-- the recovery substrate now has repo-side canonical copies under `notes/specs/recovery/`
+- the bootstrap substrate now has repo-side canonical copies under `notes/agents/`
+- the recovery substrate now has repo-side canonical copies under `notes/archive/`
 - Forge worktree discovery now uses the Entrance-managed app-data root as its only runtime owner path
-- Forge prompt generation now runs from the repo-side bootstrap owner at `notes/harness/bootstrap/duet/SKILL.md`
-- Forge now exposes prompt source as `Entrance-owned notes/harness/bootstrap prompt`
+- Forge prompt generation now runs from the repo-side bootstrap owner at `notes/agents/skill.md`
+- Forge now exposes prompt source as `Entrance-owned notes/agents prompt`
 - a first cold reconciliation cut now exists and classifies the 50 imported shells into:
   - `MYT-63 / MYT-64 / MYT-65` as the active bootstrap absorption lane
   - `11` parked backlog items
@@ -299,7 +299,7 @@ Local caution:
 
 - do not treat `.tmp/landing-appdata/entrance.db` as production truth
 - do not mistake repo-root `entrance.db` for a current owner DB after runtime absorption; it is historical seed residue only
-- do not casually revert `hosts/desktop/tauri/src/hosts/plugins/forge/mod.rs`; it is unrelated local state in the current worktree
+- do not casually revert `harness/src/plugins/forge/mod.rs`; it is unrelated local state in the current worktree
 
 ## Self-Cycle Protocol For The Next Agent
 

@@ -7,18 +7,19 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$resolvedBinaryPath = $BinaryPath
+$resolvedGuiBinaryPath = $BinaryPath
 
-if ([string]::IsNullOrWhiteSpace($resolvedBinaryPath)) {
-    $resolvedBinaryPath = Join-Path $repoRoot "hosts/desktop/tauri\target\release\entrance.exe"
-} elseif (-not [System.IO.Path]::IsPathRooted($resolvedBinaryPath)) {
-    $resolvedBinaryPath = Join-Path $repoRoot $resolvedBinaryPath
+if ([string]::IsNullOrWhiteSpace($resolvedGuiBinaryPath)) {
+    $resolvedGuiBinaryPath = Join-Path $repoRoot "target\release\entrance-gui.exe"
+} elseif (-not [System.IO.Path]::IsPathRooted($resolvedGuiBinaryPath)) {
+    $resolvedGuiBinaryPath = Join-Path $repoRoot $resolvedGuiBinaryPath
 }
 
 if ([string]::IsNullOrWhiteSpace($AssetName)) {
     $AssetName = "entrance-$Version-windows-x64"
 }
 
+$binaryRoot = Split-Path -Parent $resolvedGuiBinaryPath
 $releaseRoot = Join-Path $repoRoot "releases\$Version"
 $stageRoot = Join-Path $releaseRoot "package"
 $assetRoot = Join-Path $stageRoot $AssetName
@@ -26,8 +27,14 @@ $zipPath = Join-Path $releaseRoot "$AssetName.zip"
 $shaPath = Join-Path $releaseRoot "SHA256SUMS.txt"
 $releaseNotesPath = Join-Path $releaseRoot "RELEASE_NOTES.md"
 
-if (-not (Test-Path $resolvedBinaryPath)) {
-    throw "Binary not found at $resolvedBinaryPath. Build the release binary first."
+$requiredBinaries = @("entrance-gui.exe")
+$optionalBinaries = @("entrance.exe", "entrance-mcp.exe", "entrance-desktop-bridge.exe")
+
+foreach ($binary in $requiredBinaries) {
+    $candidate = Join-Path $binaryRoot $binary
+    if (-not (Test-Path $candidate)) {
+        throw "Required binary not found at $candidate. Build the workspace release binaries first."
+    }
 }
 
 if (-not (Test-Path $releaseNotesPath)) {
@@ -44,7 +51,13 @@ if (Test-Path $zipPath) {
 
 New-Item -ItemType Directory -Path $assetRoot -Force | Out-Null
 
-Copy-Item $resolvedBinaryPath (Join-Path $assetRoot "entrance.exe")
+foreach ($binary in ($requiredBinaries + $optionalBinaries)) {
+    $candidate = Join-Path $binaryRoot $binary
+    if (Test-Path $candidate) {
+        Copy-Item $candidate (Join-Path $assetRoot $binary)
+    }
+}
+
 Copy-Item (Join-Path $repoRoot "README.md") (Join-Path $assetRoot "README.md")
 Copy-Item (Join-Path $repoRoot "LICENSE") (Join-Path $assetRoot "LICENSE")
 Copy-Item (Join-Path $repoRoot "LICENSES.md") (Join-Path $assetRoot "LICENSES.md")
@@ -54,18 +67,17 @@ Copy-Item $releaseNotesPath (Join-Path $assetRoot "RELEASE_NOTES.md")
 
 Compress-Archive -Path (Join-Path $assetRoot "*") -DestinationPath $zipPath -Force
 
-$exeHash = (Get-FileHash (Join-Path $assetRoot "entrance.exe") -Algorithm SHA256).Hash.ToLower()
+$hashLines = @()
+Get-ChildItem $assetRoot -Filter "*.exe" | Sort-Object Name | ForEach-Object {
+    $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+    $hashLines += "$hash *package/$AssetName/$($_.Name)"
+}
 $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
-
-$hashLines = @(
-    "$exeHash *package/$AssetName/entrance.exe"
-    "$zipHash *$AssetName.zip"
-)
+$hashLines += "$zipHash *$AssetName.zip"
 
 python -c "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('\n'.join(sys.argv[2:]) + '\n', encoding='utf-8')" `
     $shaPath `
-    $hashLines[0] `
-    $hashLines[1]
+    $hashLines
 
 Write-Output "Packaged $Version"
 Write-Output "Asset root: $assetRoot"

@@ -41,25 +41,35 @@ continuous-learning = true
 
 ## 渐进式披露索引
 
-> 启动时只需读 `notes/agents/skill.md` + 1 个角色文件。每个角色文件自包含该角色需要的规则。
+> 启动时只需读 SKILL.md + 1 个角色文件。每个角色文件自包含所有该角色需要的规则。
 > Human 唤醒时的提示词可能是模糊的 (e.g. "duet arch", "扮演 dev")，自行理解意图。
 
-```text
-notes/agents/
-├── skill.md                ← 你在这里 (路由 + 流程)
-├── identity.md             ← NOTA 身份 / 宪法 / 行动规则
-├── rules.md                ← NOTA 硬约束
-└── roles/
-    ├── arch.md             ← Arch 方法论行为 (面板 / issue 模板 / phase)
-    ├── dev.md              ← Dev: 审核 + Git 管理
-    └── agent.md            ← Agent: 编码 + worktree 规则
+```
+.agents/
+├─┬ nota/                         ← NOTA Agent (独立身份, 跨项目)
+│ ├── identity.md                    灵魂 + 宪法 + 行动规则
+│ ├── rules.md                       硬约束 (每轮注入)
+│ ├── todo.md                        NOTA 跨项目待办
+│ ├─┬ data/
+│ │   ├── store.db                   SQLite V4 (instincts + documents + coffee_chats)
+│ │   └── store.json                 DB 的 JSON 备份 (Git 追踪)
+│ └─┬ scripts/
+│     ├── db.py                      DB 读写 CLI
+│     └── control.py                 Git ops + Agent prompt 生成
+│
+└─┬ duet/                         ← Duet 项目管理方法论
+  ├── SKILL.md                       ← 你在这里 (路由 + 流程)
+  └─┬ roles/                         启动时读 1 个
+    ├── arch.md                        Arch 方法论行为 (面板/issue模板/phase)
+    ├── dev.md                         Dev: 审核 + Git 管理
+    └── agent.md                       Agent: 编码 + worktree 规则
 ```
 
-> modules/ (ralph-loop, continuous-learning, evolution) 已归档至本地状态；legacy `db.py` bridge 只保留为历史过渡通道。
-> Linear MCP 指南仍可通过 legacy `db.py` bridge 查询 (`db.py doc get linear-tool`)。
+> modules/ (ralph-loop, continuous-learning, evolution) 已归档至 DB (`db.py doc get <slug>`)。
+> Linear MCP 指南已归档至 DB (`db.py doc get linear-tool`)。
 
-**Arch 启动路径**: `notes/agents/identity.md` + `notes/agents/rules.md` + `notes/agents/roles/arch.md` + legacy memory bridge (`db.py list instincts`)
-**Agent/Dev 启动路径**: `notes/agents/skill.md` → `notes/agents/roles/{角色}.md`
+**Arch 启动路径**: `notes/harness/bootstrap/nota/identity.md` + `notes/harness/bootstrap/nota/rules.md` + `notes/harness/bootstrap/duet/roles/arch.md` + legacy memory bridge (`db.py list instincts`)
+**Agent/Dev 启动路径**: `notes/harness/bootstrap/duet/SKILL.md` → `notes/harness/bootstrap/duet/roles/{角色}.md`
 **Legacy Memory Bridge**: `db.py` remains a preserved historical bridge for docs/instincts until memory ownership is absorbed into Entrance local state
 **Agent Prompt 生成**: Entrance Forge runtime owns prompt preparation via `entrance forge prepare-dispatch [--project-dir <path>]`
 **Dispatch Verification**: use `entrance forge verify-dispatch [--project-dir <path>]` to persist a Pending Forge task without requiring `.agents`
@@ -329,3 +339,4 @@ V9: Forge auto-dispatch (PTY引擎+forge_dispatch MCP) + Session关闭SOP + stal
   - ordered downstream pipeline → `rest_for_one`
   - tightly coupled session bundle → `one_for_all`
 - Arch 设计 failure domain，Dev 执行和审核 visibility，Agent 不得自定义 supervision policy
+

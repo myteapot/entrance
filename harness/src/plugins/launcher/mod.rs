@@ -9,7 +9,9 @@ use tauri::State;
 
 use crate::{
     core::data_store::{DataStore, MigrationStep, StoredLauncherApp},
-    hosts::plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
+    hosts::plugins::{
+        AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition,
+    },
 };
 
 use self::{
@@ -30,7 +32,7 @@ const MANIFEST: Manifest = Manifest {
 
 const MIGRATIONS: [MigrationStep; 1] = [MigrationStep {
     name: "0001_create_plugin_launcher_apps",
-    sql: include_str!("../../../../migrations/0001_create_plugin_launcher_apps.sql"),
+    sql: include_str!("schema/0001_create_plugin_launcher_apps.sql"),
 }];
 
 #[derive(Debug, Clone, Serialize)]

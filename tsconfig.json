@@ -7,12 +7,10 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["surfaces/gui/renderer/*"],
-      "@desktop/*": ["surfaces/contracts/desktop/*"]
+      "@/*": ["shell/gui/renderer/*"],
+      "@desktop/*": ["shell/gui/contracts/desktop/*"]
     },
     "types": ["vite/client"],
-
-    /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
@@ -20,12 +18,14 @@
     "noEmit": true,
     "jsx": "preserve",
     "jsxImportSource": "solid-js",
-
-    /* Linting */
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["surfaces/gui/renderer", "surfaces/contracts/desktop", "hosts/desktop/browser/tests/e2e"]
+  "include": [
+    "shell/gui/renderer",
+    "shell/gui/contracts/desktop",
+    "shell/gui/browser/tests/e2e"
+  ]
 }

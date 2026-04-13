@@ -9,7 +9,9 @@ use crate::{
     core::data_store::{
         DataStore, MigrationStep, StoredVaultMcpConfig, StoredVaultToken, StoredVaultTokenSecret,
     },
-    hosts::plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
+    hosts::plugins::{
+        AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition,
+    },
 };
 
 pub(crate) use self::crypto::VaultCipher;
@@ -22,7 +24,7 @@ const MANIFEST: Manifest = Manifest {
 
 const MIGRATIONS: [MigrationStep; 1] = [MigrationStep {
     name: "0003_create_plugin_vault_tables",
-    sql: include_str!("../../../../migrations/0003_create_plugin_vault_tables.sql"),
+    sql: include_str!("schema/0003_create_plugin_vault_tables.sql"),
 }];
 
 pub fn migrations() -> &'static [MigrationStep] {

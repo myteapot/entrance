@@ -89,7 +89,9 @@ mod tests {
     use crate::core::data_store::{DataStore, MigrationPlan, NewAgentInstance};
 
     fn test_store() -> Result<DataStore> {
-        DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))
+        DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))
     }
 
     fn insert_instance_with_status(store: &DataStore, name: &str, status: &str) -> Result<i64> {

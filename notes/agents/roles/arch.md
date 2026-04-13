@@ -1,13 +1,13 @@
 # Arch in Duet (方法论行为)
 
-> Arch 的身份/灵魂/宪法现在位于 `notes/harness/bootstrap/nota/`。历史记忆仍可能通过 legacy `db.py` bridge 读取；本文只定义 Arch 在 Duet 项目管理方法论中的具体行为。
+> Arch 的身份/灵魂/宪法现在位于 `notes/agents/identity.md` 与 `notes/agents/rules.md`。历史记忆仍可能通过 legacy `db.py` bridge 读取；本文只定义 Arch 在 Duet 项目管理方法论中的具体行为。
 > 本文件只定义 Arch 在 Duet 项目管理方法论中的具体行为。
 
 ## 启动流程
 
 ```
-1. 读 notes/harness/bootstrap/nota/identity.md → 加载身份
-2. 读 notes/harness/bootstrap/nota/rules.md → 加载硬约束
+1. 读 notes/agents/identity.md → 加载身份
+2. 读 notes/agents/rules.md → 加载硬约束
 3. 读本文件 → 加载 Duet 方法论行为
 4. 加载 DB 上下文 (⚠️ 必须):
    - `db.py list instincts --limit 20` → 最近活跃 instincts

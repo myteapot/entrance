@@ -43,9 +43,9 @@ fn forge_verify_dispatch_cli_runs_without_agents_runtime() -> Result<()> {
     seed_app_state(&app_data_dir)?;
 
     let project_root = temp_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     fs::create_dir_all(&bootstrap_skill)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
 
     let managed_worktree = app_data_dir
         .join("worktrees")
@@ -85,7 +85,7 @@ fn forge_verify_dispatch_cli_runs_without_agents_runtime() -> Result<()> {
     assert_eq!(report["dispatch"]["issue_status_source"], "fallback");
     assert_eq!(
         report["dispatch"]["prompt_source"],
-        "Entrance-owned notes/harness/bootstrap prompt"
+        "Entrance-owned notes/agents prompt"
     );
     assert_eq!(report["task_status"], "Pending");
     assert_eq!(report["task_command"], "codex");
@@ -98,7 +98,7 @@ fn forge_verify_dispatch_cli_runs_without_agents_runtime() -> Result<()> {
     let prompt = report["dispatch"]["prompt"]
         .as_str()
         .context("dispatch prompt should be a string")?;
-    assert!(prompt.contains("notes/harness/bootstrap/duet/SKILL.md"));
+    assert!(prompt.contains("notes/agents/skill.md"));
     assert!(!prompt.contains(".agents"));
 
     let task_id = report["task_id"]
@@ -142,9 +142,9 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
     seed_app_state(&app_data_dir)?;
 
     let project_root = temp_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     fs::create_dir_all(&bootstrap_skill)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     init_git_repo_with_commit(&project_root)?;
 
     let managed_worktree = app_data_dir
@@ -176,7 +176,7 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
 
     let project_root_path = project_root.to_string_lossy().replace('\\', "/");
     let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
-    let bootstrap_skill_path = format!("{project_root_path}/notes/harness/bootstrap/duet/SKILL.md");
+    let bootstrap_skill_path = format!("{project_root_path}/notes/agents/skill.md");
 
     assert_eq!(report["dispatch"]["issue_id"], "MYT-48");
     assert_eq!(report["dispatch"]["dispatch_role"], "agent");
@@ -184,7 +184,7 @@ fn forge_verify_dispatch_cli_detects_managed_worktree_from_cwd() -> Result<()> {
     assert_eq!(report["dispatch"]["worktree_path"], worktree_path);
     assert_eq!(
         report["dispatch"]["prompt_source"],
-        "Entrance-owned notes/harness/bootstrap prompt"
+        "Entrance-owned notes/agents prompt"
     );
     assert_eq!(report["task_status"], "Pending");
     assert_eq!(report["task_command"], "codex");
@@ -238,9 +238,9 @@ fn forge_prepare_dispatch_cli_reports_managed_worktree_boundary_without_legacy_f
     seed_app_state(&app_data_dir)?;
 
     let project_root = temp_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     fs::create_dir_all(&bootstrap_skill)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
         .args([
@@ -295,10 +295,10 @@ fn forge_bootstrap_mcp_cycle_cli_runs_single_agent_bootstrap_without_human_data_
     seed_mcp_app_state(&app_data_dir)?;
 
     let project_root = temp_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
     init_git_repo_with_commit(&project_root)?;
 
@@ -369,7 +369,7 @@ fn forge_bootstrap_mcp_cycle_cli_runs_single_agent_bootstrap_without_human_data_
     assert_eq!(report["dev_assignment"]["dispatch"]["dispatch_role"], "dev");
     assert_eq!(
         report["dev_assignment"]["dispatch"]["prompt_source"],
-        "Entrance-owned notes/harness/bootstrap dev prompt"
+        "Entrance-owned notes/agents dev prompt"
     );
     assert_eq!(report["dev_assignment"]["task_status"], "Done");
     assert_eq!(
@@ -385,7 +385,7 @@ fn forge_bootstrap_mcp_cycle_cli_runs_single_agent_bootstrap_without_human_data_
 
     assert_eq!(
         report["agent_prepare"]["prompt_source"],
-        "Entrance-owned notes/harness/bootstrap prompt"
+        "Entrance-owned notes/agents prompt"
     );
     assert_eq!(report["agent_prepare"]["issue_id"], "MYT-48");
     assert_eq!(report["agent_prepare"]["child_slot"], "agent-1");
@@ -453,10 +453,10 @@ fn forge_bootstrap_mcp_cycle_cli_can_fan_out_multiple_agent_children() -> Result
     seed_mcp_app_state(&app_data_dir)?;
 
     let project_root = temp_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
     init_git_repo_with_commit(&project_root)?;
 

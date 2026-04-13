@@ -740,7 +740,9 @@ mod tests {
 
     #[test]
     fn projection_with_budget_uses_real_count() -> anyhow::Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
         let allocation = insert_allocation(&store, "task_created")?;
         store.record_budget_consumption(
             allocation.id,
@@ -780,7 +782,9 @@ mod tests {
 
     #[test]
     fn projection_with_zero_budget_matches_default() -> anyhow::Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
         let allocation = insert_allocation(&store, "task_created")?;
         let task = sample_task("Blocked", Some("flaky integration"));
 
@@ -805,7 +809,9 @@ mod tests {
 
     #[test]
     fn escalation_pending_when_budget_exhausted() -> anyhow::Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
         let allocation = insert_allocation(&store, "task_created")?;
         for attempt in 1..=DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts {
             store.record_budget_consumption(
@@ -840,7 +846,9 @@ mod tests {
     #[test]
     fn restart_child_creates_new_task_and_consumes_budget() -> anyhow::Result<()> {
         let _guard = crate::test_env_guard();
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
         let (transaction_id, allocation, failed_task_id) =
             insert_terminal_runtime_allocation(&store, "Failed", Some("agent crashed"))?;
 
@@ -903,7 +911,9 @@ mod tests {
     #[test]
     fn restart_child_respects_budget_exhaustion() -> anyhow::Result<()> {
         let _guard = crate::test_env_guard();
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
         let (transaction_id, allocation, failed_task_id) =
             insert_terminal_runtime_allocation(&store, "Failed", Some("still failing"))?;
         for attempt in 1..=DEFAULT_AGENT_PROCESS_POLICY.retry_budget.max_restarts {

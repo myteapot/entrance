@@ -1,25 +1,23 @@
 # Electron Adapter
 
-This branch keeps the renderer DB-first and frontend-compatible while backing Electron with the real Rust runtime over stdio.
+Electron 现在作为 `shell/gui` 的一部分维护，renderer 通过 `shell/gui/contracts/desktop/*` 与 Rust sidecar 通信，不再经过旧的桌面桥接 CLI 契约。
 
 ## Current Shape
 
-- Renderer code now talks to `surfaces/contracts/desktop/*` bridge modules instead of importing Tauri APIs directly.
-- Electron preload exposes dialogs, relaunch, window lifecycle, `invoke`, and top-level `listen`.
-- Electron main spawns `entrance electron-bridge stdio`, forwards invoke calls to Rust, and relays backend events back into renderer channels.
-- Launcher actions, Forge task operations, dashboard/system events, issue CRUD, NOTA overview/status, and Vault flows now run against the same Rust-owned runtime used by Tauri.
+- Renderer 使用 `shell/gui/contracts/desktop/*` 桥接模块，而不是直接导入 Tauri API。
+- Electron preload 暴露 dialogs、window lifecycle、`invoke`、`listen` 等桌面能力。
+- Electron main 启动独立 sidecar：`entrance-desktop-bridge stdio`。
+- GUI、Electron、CLI、MCP 都读取同一套 `core + harness` 运行时状态。
 
 ## Dev Flow
 
-1. Run `pnpm install`.
-2. Start the scaffold shell with `pnpm dev:electron`.
-3. The script starts Vite on `http://127.0.0.1:1420` and then launches Electron with `hosts/desktop/electron/main.mjs`.
-4. Electron starts a Rust sidecar from `hosts/desktop/tauri/target/debug/entrance` when available and falls back to `cargo run --manifest-path hosts/desktop/tauri/Cargo.toml -- electron-bridge stdio`.
+1. `pnpm install`
+2. `pnpm dev:electron`
+3. 脚本会启动 `shell/gui/vite.config.ts` 指向的 Vite 服务，再以仓库根目录作为 Electron app 入口拉起桌面进程
+4. Electron 优先复用 `target/debug/entrance-desktop-bridge`，否则回退到 `cargo run -p entrance-gui --bin entrance-desktop-bridge -- stdio`
 
-## Release Flow (Linux RPM)
+## Release Flow
 
-Use this when you need a real installable Electron package instead of a dev shell:
-
-1. Run `pnpm build:electron:rpm`.
-2. The command builds frontend assets, compiles the Rust runtime bridge (`hosts/desktop/tauri/target/release/entrance`), stages a clean Electron release project, and then runs `electron-builder`.
-3. The RPM output is written under `dist-electron/`.
+1. `pnpm build:electron:rpm` 或 `pnpm build:electron:dir`
+2. 脚本会构建前端资源、编译 `entrance-desktop-bridge`，然后把 `shell/gui/electron`、`shell/gui/dist`、`shell/gui/icons` 一起打包
+3. 输出写入 `dist-electron/`

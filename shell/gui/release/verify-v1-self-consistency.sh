@@ -2,18 +2,18 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/../.." && pwd)"
-manifest_path="$repo_root/hosts/release/reconciliation-batch-01.json"
+repo_root="$(cd "$script_dir/../../.." && pwd)"
+manifest_path="$repo_root/shell/gui/release/reconciliation-batch-01.json"
 output_dir="${VERIFY_V1_OUTPUT_DIR:-$repo_root/test-results/release-self-consistency}"
 run_e2e=1
 
 usage() {
   cat <<'USAGE'
 Usage:
-  hosts/release/verify-v1-self-consistency.sh [--manifest <path>] [--output-dir <path>] [--skip-e2e]
+  shell/gui/release/verify-v1-self-consistency.sh [--manifest <path>] [--output-dir <path>] [--skip-e2e]
 
 Environment:
-  ENTRANCE_EXE_PATH   Optional path to an Entrance executable.
+  ENTRANCE_EXE_PATH     Optional path to an Entrance CLI executable.
   VERIFY_V1_OUTPUT_DIR  Optional directory for captured JSON snapshots.
 USAGE
 }
@@ -50,17 +50,17 @@ use_cargo=1
 entrance_bin="${ENTRANCE_EXE_PATH:-}"
 if [[ -n "$entrance_bin" ]]; then
   use_cargo=0
-elif [[ -x "$repo_root/hosts/desktop/tauri/target/debug/entrance" ]]; then
-  entrance_bin="$repo_root/hosts/desktop/tauri/target/debug/entrance"
+elif [[ -x "$repo_root/target/debug/entrance" ]]; then
+  entrance_bin="$repo_root/target/debug/entrance"
   use_cargo=0
-elif [[ -x "$repo_root/hosts/desktop/tauri/target/debug/entrance.exe" ]]; then
-  entrance_bin="$repo_root/hosts/desktop/tauri/target/debug/entrance.exe"
+elif [[ -x "$repo_root/target/debug/entrance.exe" ]]; then
+  entrance_bin="$repo_root/target/debug/entrance.exe"
   use_cargo=0
 fi
 
 run_entrance() {
   if [[ "$use_cargo" -eq 1 ]]; then
-    cargo run --manifest-path "$repo_root/hosts/desktop/tauri/Cargo.toml" -- "$@"
+    cargo run -p entrance-cli --bin entrance -- "$@"
   else
     "$entrance_bin" "$@"
   fi
@@ -172,7 +172,7 @@ run_entrance landing planning > "$output_dir/landing-planning.json"
 assert_reconcile
 
 echo "[verify] running type + rust baselines"
-cargo test --manifest-path "$repo_root/hosts/desktop/tauri/Cargo.toml" --lib
+cargo test --workspace --locked
 pnpm -C "$repo_root" check
 
 if [[ "$run_e2e" -eq 1 ]]; then

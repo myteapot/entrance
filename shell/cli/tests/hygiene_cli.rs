@@ -53,8 +53,7 @@ fn hygiene_spec_v0_cli_persists_and_lists_spec_self_clean_findings() -> Result<(
         .context("findings should be an array")?
         .iter()
         .any(|finding| {
-            finding["target_ref"] == "notes/specs/chore/top_self_cycle_handout.md"
-                && finding["status"] == "archived"
+            finding["target_ref"] == "notes/agents/handout.md" && finding["status"] == "archived"
         }));
 
     let db_path = app_data_dir.join("data").join("entrance.db");
@@ -81,9 +80,8 @@ fn hygiene_spec_v0_cli_persists_and_lists_spec_self_clean_findings() -> Result<(
         .iter()
         .any(|relation| {
             relation["relation_type"] == "superseded_by"
-                && relation["source_target_ref"] == "notes/specs/chore/top_self_cycle_handout.md"
-                && relation["target_target_ref"]
-                    == "notes/specs/chore/entrance_v0_headless_system_roadmap.md"
+                && relation["source_target_ref"] == "notes/agents/handout.md"
+                && relation["target_target_ref"] == "notes/human/roadmap.md"
         }));
 
     Ok(())

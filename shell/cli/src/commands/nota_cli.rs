@@ -177,10 +177,10 @@ pub(super) fn run_nota_cli(args: &[String]) -> Result<()> {
             let forge_config = &config.config().plugins.forge;
             let forge_plugin =
                 plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
-            let project_dir = request.project_dir.or_else(|| forge_config.project_dir.clone());
+            let project_dir = request.project_dir.or_else(|| forge_config.project_dir_option());
             let agent_command = request
                 .agent_command
-                .or_else(|| forge_config.agent_command.clone());
+                .or_else(|| forge_config.agent_command_option());
 
             let report = run_nota_do_agent_dispatch(
                 &startup.data_store(),
@@ -207,10 +207,10 @@ pub(super) fn run_nota_cli(args: &[String]) -> Result<()> {
             let forge_config = &config.config().plugins.forge;
             let forge_plugin =
                 plugins::forge::ForgePlugin::new(startup.data_store(), EventBus::new());
-            let project_dir = request.project_dir.or_else(|| forge_config.project_dir.clone());
+            let project_dir = request.project_dir.or_else(|| forge_config.project_dir_option());
             let agent_command = request
                 .agent_command
-                .or_else(|| forge_config.agent_command.clone());
+                .or_else(|| forge_config.agent_command_option());
 
             let report = run_nota_dev_dispatch(
                 &startup.data_store(),

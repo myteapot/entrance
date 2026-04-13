@@ -18,9 +18,9 @@ pub struct SpawnedMcpStdioClient {
 
 impl SpawnedMcpStdioClient {
     pub fn spawn(app_data_dir: &Path, actor_role: ActorRole) -> Result<Self> {
-        let executable = std::env::current_exe().context("failed to resolve current executable")?;
+        let executable = resolve_mcp_executable()?;
         let mut command = Command::new(executable);
-        command.arg("mcp").arg("stdio");
+        command.arg("stdio");
         command.args(["--actor-role", actor_role_slug(actor_role)]);
         command
             .env("ENTRANCE_APP_DATA_DIR", app_data_dir)
@@ -30,7 +30,7 @@ impl SpawnedMcpStdioClient {
 
         let mut child = command
             .spawn()
-            .context("failed to spawn child `entrance mcp stdio` surface")?;
+            .context("failed to spawn child `entrance-mcp stdio` surface")?;
         let stdout = child
             .stdout
             .take()
@@ -165,6 +165,28 @@ impl SpawnedMcpStdioClient {
             return serde_json::from_str(payload)
                 .context("failed to parse MCP stdio response JSON");
         }
+    }
+}
+
+fn resolve_mcp_executable() -> Result<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("ENTRANCE_MCP_BIN") {
+        return Ok(path.into());
+    }
+
+    let current = std::env::current_exe().context("failed to resolve current executable")?;
+    let Some(parent) = current.parent() else {
+        anyhow::bail!("failed to resolve parent directory for current executable");
+    };
+    let binary_name = if cfg!(windows) {
+        "entrance-mcp.exe"
+    } else {
+        "entrance-mcp"
+    };
+    let sibling = parent.join(binary_name);
+    if sibling.is_file() {
+        Ok(sibling)
+    } else {
+        Ok(binary_name.into())
     }
 }
 

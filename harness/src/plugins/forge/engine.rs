@@ -438,15 +438,15 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!("schema/0002_create_plugin_forge_tasks.sql"),
             },
             MigrationStep {
                 name: "0003_create_plugin_vault_tables",
-                sql: include_str!("../../../../migrations/0003_create_plugin_vault_tables.sql"),
+                sql: include_str!("../vault/schema/0003_create_plugin_vault_tables.sql"),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!("schema/0004_create_plugin_forge_task_logs.sql"),
             },
         ]))?;
         let engine = Arc::new(TaskEngine::with_vault_cipher(
@@ -489,15 +489,15 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!("schema/0002_create_plugin_forge_tasks.sql"),
             },
             MigrationStep {
                 name: "0003_create_plugin_vault_tables",
-                sql: include_str!("../../../../migrations/0003_create_plugin_vault_tables.sql"),
+                sql: include_str!("../vault/schema/0003_create_plugin_vault_tables.sql"),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!("schema/0004_create_plugin_forge_task_logs.sql"),
             },
         ]))?;
         let cipher = VaultCipher::from_device_identifier("test-device")?;
@@ -548,15 +548,15 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!("schema/0002_create_plugin_forge_tasks.sql"),
             },
             MigrationStep {
                 name: "0003_create_plugin_vault_tables",
-                sql: include_str!("../../../../migrations/0003_create_plugin_vault_tables.sql"),
+                sql: include_str!("../vault/schema/0003_create_plugin_vault_tables.sql"),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!("schema/0004_create_plugin_forge_task_logs.sql"),
             },
         ]))?;
         let engine = Arc::new(TaskEngine::new(store.clone(), EventBus::new()));
@@ -595,15 +595,15 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!("schema/0002_create_plugin_forge_tasks.sql"),
             },
             MigrationStep {
                 name: "0003_create_plugin_vault_tables",
-                sql: include_str!("../../../../migrations/0003_create_plugin_vault_tables.sql"),
+                sql: include_str!("../vault/schema/0003_create_plugin_vault_tables.sql"),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!("schema/0004_create_plugin_forge_task_logs.sql"),
             },
         ]))?;
         let engine = Arc::new(TaskEngine::new(store.clone(), EventBus::new()));
@@ -649,15 +649,15 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!("schema/0002_create_plugin_forge_tasks.sql"),
             },
             MigrationStep {
                 name: "0003_create_plugin_vault_tables",
-                sql: include_str!("../../../../migrations/0003_create_plugin_vault_tables.sql"),
+                sql: include_str!("../vault/schema/0003_create_plugin_vault_tables.sql"),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!("schema/0004_create_plugin_forge_task_logs.sql"),
             },
         ]))?;
         let engine = Arc::new(TaskEngine::new(store.clone(), EventBus::new()));
@@ -702,11 +702,11 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!("schema/0002_create_plugin_forge_tasks.sql"),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!("schema/0004_create_plugin_forge_task_logs.sql"),
             },
         ]))?;
         let engine = Arc::new(TaskEngine {
@@ -756,11 +756,11 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!("schema/0002_create_plugin_forge_tasks.sql"),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!("schema/0004_create_plugin_forge_task_logs.sql"),
             },
         ]))?;
         let engine = Arc::new(TaskEngine::new_with_parallel_budget(
@@ -817,11 +817,11 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!("schema/0002_create_plugin_forge_tasks.sql"),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!("schema/0004_create_plugin_forge_task_logs.sql"),
             },
         ]))?;
         let engine = Arc::new(TaskEngine::new_with_parallel_budget(

@@ -7,10 +7,8 @@ use std::{
 
 use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
-#[cfg(test)]
-use rusqlite::OpenFlags;
 use rusqlite::{
-    params, types::Type, Connection, OptionalExtension, Transaction, TransactionBehavior,
+    params, types::Type, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -19,91 +17,101 @@ use crate::core::compiler::{
     registry::RegistryEntry,
 };
 use crate::core::parallel_budget::{BudgetCheckResult, CapacityMode, ParallelBudgetConfig};
-use crate::hosts::plugins::launcher::scanner::DiscoveredApp;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiscoveredApp {
+    pub name: String,
+    pub normalized_name: String,
+    pub path: String,
+    pub arguments: Option<String>,
+    pub working_dir: Option<String>,
+    pub icon_path: Option<String>,
+    pub source: String,
+}
 
 const CORE_MIGRATION: MigrationStep = MigrationStep {
     name: "0000_create_core_tables",
-    sql: include_str!("../../migrations/0000_create_core_tables.sql"),
+    sql: include_str!("../schema/0000_create_core_tables.sql"),
 };
 
 const CORE_LANDING_MIGRATION: MigrationStep = MigrationStep {
     name: "0005_create_core_landing_tables",
-    sql: include_str!("../../migrations/0005_create_core_landing_tables.sql"),
+    sql: include_str!("../schema/0005_create_core_landing_tables.sql"),
 };
 
 const CORE_NOTA_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
     name: "0007_create_core_nota_runtime_tables",
-    sql: include_str!("../../migrations/0007_create_core_nota_runtime_tables.sql"),
+    sql: include_str!("../schema/0007_create_core_nota_runtime_tables.sql"),
 };
 
 const CORE_NOTA_DO_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
     name: "0008_create_core_nota_do_runtime_tables",
-    sql: include_str!("../../migrations/0008_create_core_nota_do_runtime_tables.sql"),
+    sql: include_str!("../schema/0008_create_core_nota_do_runtime_tables.sql"),
 };
 
 const CORE_DECISION_LINKS_MIGRATION: MigrationStep = MigrationStep {
     name: "0009_create_core_decision_links",
-    sql: include_str!("../../migrations/0009_create_core_decision_links.sql"),
+    sql: include_str!("../schema/0009_create_core_decision_links.sql"),
 };
 
 const CORE_CHAT_ARCHIVE_MIGRATION: MigrationStep = MigrationStep {
     name: "0010_create_core_chat_archive_tables",
-    sql: include_str!("../../migrations/0010_create_core_chat_archive_tables.sql"),
+    sql: include_str!("../schema/0010_create_core_chat_archive_tables.sql"),
 };
 
 const CORE_NOTA_RUNTIME_ALLOCATIONS_MIGRATION: MigrationStep = MigrationStep {
     name: "0011_create_core_nota_runtime_allocations",
-    sql: include_str!("../../migrations/0011_create_core_nota_runtime_allocations.sql"),
+    sql: include_str!("../schema/0011_create_core_nota_runtime_allocations.sql"),
 };
 
 const CORE_PROJECTION_RUNTIME_MIGRATION: MigrationStep = MigrationStep {
     name: "0012_create_core_projection_runtime_tables",
-    sql: include_str!("../../migrations/0012_create_core_projection_runtime_tables.sql"),
+    sql: include_str!("../schema/0012_create_core_projection_runtime_tables.sql"),
 };
 
 const CORE_RUNTIME_ENVIRONMENT_MIGRATION: MigrationStep = MigrationStep {
     name: "0013_create_core_runtime_environment_tables",
-    sql: include_str!("../../migrations/0013_create_core_runtime_environment_tables.sql"),
+    sql: include_str!("../schema/0013_create_core_runtime_environment_tables.sql"),
 };
 
 const CORE_ANTI_ZENO_MIGRATION: MigrationStep = MigrationStep {
     name: "0014_create_core_anti_zeno_tables",
-    sql: include_str!("../../migrations/0014_create_core_anti_zeno_tables.sql"),
+    sql: include_str!("../schema/0014_create_core_anti_zeno_tables.sql"),
 };
 
 const CORE_RUNTIME_INVARIANT_MIGRATION: MigrationStep = MigrationStep {
     name: "0015_create_core_runtime_invariant_tables",
-    sql: include_str!("../../migrations/0015_create_core_runtime_invariant_tables.sql"),
+    sql: include_str!("../schema/0015_create_core_runtime_invariant_tables.sql"),
 };
 
 const CORE_COMPILER_REGISTRY_MIGRATION: MigrationStep = MigrationStep {
     name: "0016_create_compiler_registry_tables",
-    sql: include_str!("../../migrations/0016_create_compiler_registry_tables.sql"),
+    sql: include_str!("../schema/0016_create_compiler_registry_tables.sql"),
 };
 
 const CORE_SUPERVISION_BUDGET_LEDGER_MIGRATION: MigrationStep = MigrationStep {
     name: "0017_create_supervision_budget_ledger",
-    sql: include_str!("../../migrations/0017_create_supervision_budget_ledger.sql"),
+    sql: include_str!("../schema/0017_create_supervision_budget_ledger.sql"),
 };
 
 const CORE_SIMULATION_GATE_EVIDENCE_MIGRATION: MigrationStep = MigrationStep {
     name: "0018_create_simulation_gate_evidence",
-    sql: include_str!("../../migrations/0018_create_simulation_gate_evidence.sql"),
+    sql: include_str!("../schema/0018_create_simulation_gate_evidence.sql"),
 };
 
 const CORE_NOTA_MEMORY_MIGRATION: MigrationStep = MigrationStep {
     name: "0019_create_nota_memory_tables",
-    sql: include_str!("../../migrations/0019_create_nota_memory_tables.sql"),
+    sql: include_str!("../schema/0019_create_nota_memory_tables.sql"),
 };
 
 const CORE_AGENT_INSTANCES_MIGRATION: MigrationStep = MigrationStep {
     name: "0020_create_agent_instances",
-    sql: include_str!("../../migrations/0020_create_agent_instances.sql"),
+    sql: include_str!("../schema/0020_create_agent_instances.sql"),
 };
 
 const CORE_ISSUES_MIGRATION: MigrationStep = MigrationStep {
     name: "0021_create_issues_tables",
-    sql: include_str!("../../migrations/0021_create_issues_tables.sql"),
+    sql: include_str!("../schema/0021_create_issues_tables.sql"),
 };
 
 const CORE_MIGRATIONS: [MigrationStep; 17] = [
@@ -1818,7 +1826,6 @@ impl DataStore {
         Ok(store)
     }
 
-    #[cfg(test)]
     pub fn open_read_only(
         path: impl AsRef<Path>,
         migration_plan: MigrationPlan<'_>,
@@ -1836,8 +1843,6 @@ impl DataStore {
         Ok(store)
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
     pub fn in_memory(migration_plan: MigrationPlan<'_>) -> Result<Self> {
         let connection = Connection::open_in_memory()?;
         configure_connection(&connection, DataStoreConnectionMode::InMemory)?;
@@ -2035,7 +2040,7 @@ impl DataStore {
                     "#,
                     params![
                         fallback_app_name(path),
-                        crate::hosts::plugins::launcher::search::normalize_text(path),
+                        normalize_launcher_text(path),
                         path,
                         now,
                     ],
@@ -3637,7 +3642,10 @@ impl DataStore {
                 return Ok(None);
             };
 
-            let next_status = status.unwrap_or(existing.status.as_str()).trim().to_string();
+            let next_status = status
+                .unwrap_or(existing.status.as_str())
+                .trim()
+                .to_string();
             let next_reconciliation_status = reconciliation_status
                 .unwrap_or(existing.reconciliation_status.as_str())
                 .trim()
@@ -6129,6 +6137,23 @@ impl DataStore {
     }
 }
 
+fn normalize_launcher_text(input: &str) -> String {
+    let mut normalized = String::with_capacity(input.len());
+    let mut previous_was_space = false;
+
+    for character in input.chars().flat_map(char::to_lowercase) {
+        if character.is_alphanumeric() {
+            normalized.push(character);
+            previous_was_space = false;
+        } else if !previous_was_space {
+            normalized.push(' ');
+            previous_was_space = true;
+        }
+    }
+
+    normalized.trim().to_string()
+}
+
 fn map_launcher_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredLauncherApp> {
     Ok(StoredLauncherApp {
         id: row.get(0)?,
@@ -8034,7 +8059,9 @@ mod tests {
     }
 
     fn store_with_forge_migrations() -> Result<DataStore> {
-        DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))
+        DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))
     }
 
     fn insert_test_instance(
@@ -8065,11 +8092,15 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!(
+                    "../../harness/src/plugins/forge/schema/0002_create_plugin_forge_tasks.sql"
+                ),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!(
+                    "../../harness/src/plugins/forge/schema/0004_create_plugin_forge_task_logs.sql"
+                ),
             },
         ]))?;
 
@@ -8094,11 +8125,15 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!(
+                    "../../harness/src/plugins/forge/schema/0002_create_plugin_forge_tasks.sql"
+                ),
             },
             MigrationStep {
                 name: "0004_create_plugin_forge_task_logs",
-                sql: include_str!("../../migrations/0004_create_plugin_forge_task_logs.sql"),
+                sql: include_str!(
+                    "../../harness/src/plugins/forge/schema/0004_create_plugin_forge_task_logs.sql"
+                ),
             },
         ]))?;
 
@@ -8257,12 +8292,12 @@ mod tests {
         let store = DataStore::in_memory(MigrationPlan::new(&[
             MigrationStep {
                 name: "0002_create_plugin_forge_tasks",
-                sql: include_str!("../../migrations/0002_create_plugin_forge_tasks.sql"),
+                sql: include_str!("../../harness/src/plugins/forge/schema/0002_create_plugin_forge_tasks.sql"),
             },
             MigrationStep {
                 name: "0006_create_plugin_forge_dispatch_receipts",
                 sql: include_str!(
-                    "../../migrations/0006_create_plugin_forge_dispatch_receipts.sql"
+                    "../../harness/src/plugins/forge/schema/0006_create_plugin_forge_dispatch_receipts.sql"
                 ),
             },
         ]))?;

@@ -2008,12 +2008,13 @@ mod tests {
         },
         hosts::plugins::{
             forge::ForgePlugin,
-            launcher::{scanner::DiscoveredApp, search::normalize_text, LauncherPlugin},
+            launcher::{search::normalize_text, LauncherPlugin},
             vault::VaultPlugin,
         },
     };
 
     use crate::core::action::ActorRole;
+    use entrance_core::data_store::DiscoveredApp;
 
     use super::{McpPluginSet, McpServer, McpTransport, MCP_PROTOCOL_VERSION};
 

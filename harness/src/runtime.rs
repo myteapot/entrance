@@ -1,176 +1,28 @@
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-
-use crate::hosts::plugins::{forge, launcher, vault};
-
-use self::{
-    config_store::{ConfigStore, EntranceConfig},
+use entrance_core::{
+    compiler,
     data_store::{DataStore, MigrationPlan, MigrationStep},
 };
 
-pub mod action;
-pub mod anti_zeno_runtime;
-pub mod bootstrap_mcp_cycle;
-pub mod chat_archive;
-pub mod cold_docs_runtime;
-pub mod compiler;
-pub mod config_store;
-pub mod data_store;
-pub mod design_governance;
-pub mod environment_runtime;
-pub mod event_bus;
-pub mod front_door;
-pub mod graph_events;
-pub mod hygiene;
-pub mod invariant_runtime;
-pub mod landing;
-pub mod memory_import;
-pub mod nota;
-pub use nota as nota_runtime;
-pub mod overview;
-pub mod parallel_budget;
-pub mod permission;
-pub mod projection_runtime;
-pub mod recovery;
-pub mod supervision;
-pub mod system_heartbeat;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppPaths {
-    app_data_dir: PathBuf,
-    config_path: PathBuf,
-    data_dir: PathBuf,
-    db_path: PathBuf,
-    log_dir: PathBuf,
-    cache_dir: PathBuf,
-    exports_dir: PathBuf,
-    snapshots_dir: PathBuf,
-    worktrees_dir: PathBuf,
-}
-
-impl AppPaths {
-    pub fn new(app_data_dir: impl Into<PathBuf>) -> Self {
-        let app_data_dir = app_data_dir.into();
-        Self {
-            config_path: app_data_dir.join("entrance.toml"),
-            data_dir: app_data_dir.join("data"),
-            db_path: app_data_dir.join("data").join("entrance.db"),
-            log_dir: app_data_dir.join("logs"),
-            cache_dir: app_data_dir.join("cache"),
-            exports_dir: app_data_dir.join("exports"),
-            snapshots_dir: app_data_dir.join("snapshots"),
-            worktrees_dir: app_data_dir.join("worktrees"),
-            app_data_dir,
-        }
-    }
-
-    pub fn from_config(app_data_dir: impl Into<PathBuf>, config: &EntranceConfig) -> Result<Self> {
-        let app_data_dir = app_data_dir.into();
-        let config_path = app_data_dir.join("entrance.toml");
-        let db_path = resolve_owned_relative_path(
-            &app_data_dir,
-            &config.paths.runtime_db,
-            "paths.runtime_db",
-        )?;
-        let data_dir = db_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| app_data_dir.clone());
-        let log_dir = resolve_owned_relative_path(&app_data_dir, &config.paths.logs, "paths.logs")?;
-        let cache_dir =
-            resolve_owned_relative_path(&app_data_dir, &config.paths.cache, "paths.cache")?;
-        let exports_dir =
-            resolve_owned_relative_path(&app_data_dir, &config.paths.exports, "paths.exports")?;
-        let snapshots_dir =
-            resolve_owned_relative_path(&app_data_dir, &config.paths.snapshots, "paths.snapshots")?;
-        let worktrees_dir =
-            resolve_owned_relative_path(&app_data_dir, &config.paths.worktrees, "paths.worktrees")?;
-
-        Ok(Self {
-            app_data_dir,
-            config_path,
-            data_dir,
-            db_path,
-            log_dir,
-            cache_dir,
-            exports_dir,
-            snapshots_dir,
-            worktrees_dir,
-        })
-    }
-
-    pub fn app_data_dir(&self) -> &Path {
-        &self.app_data_dir
-    }
-
-    pub fn config_path(&self) -> &Path {
-        &self.config_path
-    }
-
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
-
-    pub fn db_path(&self) -> &Path {
-        &self.db_path
-    }
-
-    pub fn log_dir(&self) -> &Path {
-        &self.log_dir
-    }
-
-    pub fn cache_dir(&self) -> &Path {
-        &self.cache_dir
-    }
-
-    pub fn exports_dir(&self) -> &Path {
-        &self.exports_dir
-    }
-
-    pub fn snapshots_dir(&self) -> &Path {
-        &self.snapshots_dir
-    }
-
-    pub fn worktrees_dir(&self) -> &Path {
-        &self.worktrees_dir
-    }
-
-    pub fn ensure_layout(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.app_data_dir)?;
-        std::fs::create_dir_all(&self.data_dir)?;
-        std::fs::create_dir_all(&self.log_dir)?;
-        std::fs::create_dir_all(&self.cache_dir)?;
-        std::fs::create_dir_all(&self.exports_dir)?;
-        std::fs::create_dir_all(&self.snapshots_dir)?;
-        std::fs::create_dir_all(&self.worktrees_dir)?;
-        if let Some(parent) = self.db_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        Ok(())
-    }
-}
-
-pub fn resolve_app_data_dir() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("ENTRANCE_APP_DATA_DIR") {
-        return Ok(PathBuf::from(path));
-    }
-
-    dirs::home_dir()
-        .map(|home| home.join(".entrance"))
-        .context("failed to resolve Entrance owner root under the user home directory")
-}
+use crate::{
+    config::{ConfigStore, EntranceConfig},
+    environment_runtime,
+    paths::HarnessPaths,
+    plugins::{forge, launcher, vault},
+};
 
 #[derive(Debug, Clone)]
-pub struct StartupState {
-    paths: AppPaths,
+pub struct RuntimeServices {
+    paths: HarnessPaths,
     config: EntranceConfig,
     config_store: ConfigStore,
     data_store: DataStore,
 }
 
-impl StartupState {
-    pub fn paths(&self) -> &AppPaths {
+impl RuntimeServices {
+    pub fn paths(&self) -> &HarnessPaths {
         &self.paths
     }
 
@@ -182,8 +34,12 @@ impl StartupState {
         self.config_store.clone()
     }
 
+    pub fn config(&self) -> &EntranceConfig {
+        &self.config
+    }
+
     pub fn theme(&self) -> &str {
-        &self.config.core.theme
+        &self.config.shell.gui.theme
     }
 
     pub fn log_level(&self) -> &str {
@@ -191,7 +47,7 @@ impl StartupState {
     }
 
     pub fn mcp_enabled(&self) -> bool {
-        self.config.core.mcp_enabled
+        self.config.shell.mcp.enabled
     }
 
     pub fn launcher_enabled(&self) -> bool {
@@ -215,15 +71,33 @@ impl StartupState {
             .plugins
             .launcher
             .enabled
-            .then_some(self.config.plugins.launcher.hotkey.as_str())
+            .then_some(self.config.shell.gui.global_hotkey.as_str())
     }
 }
 
-pub fn bootstrap_for_paths(paths: AppPaths) -> Result<StartupState> {
+pub fn resolve_app_data_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("ENTRANCE_APP_DATA_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+
+    dirs::home_dir()
+        .map(|home| home.join(".entrance"))
+        .context("failed to resolve Entrance owner root under the user home directory")
+}
+
+pub fn boot() -> Result<RuntimeServices> {
+    boot_for_root(resolve_app_data_dir()?)
+}
+
+pub fn boot_for_root(root: impl AsRef<Path>) -> Result<RuntimeServices> {
+    boot_for_paths(HarnessPaths::new(root.as_ref().to_path_buf()))
+}
+
+pub fn boot_for_paths(paths: HarnessPaths) -> Result<RuntimeServices> {
     std::fs::create_dir_all(paths.app_data_dir())?;
     let config_store = ConfigStore::load_or_create(paths.config_path())?;
     let config = config_store.config().clone();
-    let paths = AppPaths::from_config(paths.app_data_dir().to_path_buf(), &config)?;
+    let paths = build_resolved_paths(paths.app_data_dir(), &config)?;
     migrate_legacy_runtime_db(paths.app_data_dir(), paths.db_path())?;
     paths.ensure_layout()?;
 
@@ -233,7 +107,7 @@ pub fn bootstrap_for_paths(paths: AppPaths) -> Result<StartupState> {
     compiler::registry::seed_registry_snapshot(&data_store)?;
     environment_runtime::record_runtime_environment(&data_store, &paths)?;
 
-    Ok(StartupState {
+    Ok(RuntimeServices {
         paths,
         config,
         config_store,
@@ -241,13 +115,42 @@ pub fn bootstrap_for_paths(paths: AppPaths) -> Result<StartupState> {
     })
 }
 
-pub fn resolve_runtime_paths() -> Result<AppPaths> {
+pub fn resolve_runtime_paths() -> Result<HarnessPaths> {
     let root = resolve_app_data_dir()?;
     std::fs::create_dir_all(&root)?;
     let config_store = ConfigStore::load_or_create(root.join("entrance.toml"))?;
-    let paths = AppPaths::from_config(root, config_store.config())?;
+    let paths = build_resolved_paths(&root, config_store.config())?;
     paths.ensure_layout()?;
     Ok(paths)
+}
+
+fn build_resolved_paths(root: impl AsRef<Path>, config: &EntranceConfig) -> Result<HarnessPaths> {
+    let root = root.as_ref().to_path_buf();
+    let config_path = root.join("entrance.toml");
+    let db_path = resolve_owned_relative_path(&root, &config.paths.runtime_db, "paths.runtime_db")?;
+    let data_dir = db_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.clone());
+    let log_dir = resolve_owned_relative_path(&root, &config.paths.logs, "paths.logs")?;
+    let cache_dir = resolve_owned_relative_path(&root, &config.paths.cache, "paths.cache")?;
+    let exports_dir = resolve_owned_relative_path(&root, &config.paths.exports, "paths.exports")?;
+    let snapshots_dir =
+        resolve_owned_relative_path(&root, &config.paths.snapshots, "paths.snapshots")?;
+    let worktrees_dir =
+        resolve_owned_relative_path(&root, &config.paths.worktrees, "paths.worktrees")?;
+
+    Ok(HarnessPaths::resolved(
+        root,
+        config_path,
+        data_dir,
+        db_path,
+        log_dir,
+        cache_dir,
+        exports_dir,
+        snapshots_dir,
+        worktrees_dir,
+    ))
 }
 
 fn enabled_plugin_migrations(config: &EntranceConfig) -> Vec<MigrationStep> {

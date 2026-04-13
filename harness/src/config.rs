@@ -16,6 +16,8 @@ pub struct EntranceConfig {
     pub paths: PathsConfig,
     #[serde(default)]
     pub plugins: PluginsConfig,
+    #[serde(default)]
+    pub shell: ShellConfig,
 }
 
 impl Default for EntranceConfig {
@@ -24,26 +26,21 @@ impl Default for EntranceConfig {
             core: CoreConfig::default(),
             paths: PathsConfig::default(),
             plugins: PluginsConfig::default(),
+            shell: ShellConfig::default(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CoreConfig {
-    #[serde(default = "default_theme")]
-    pub theme: String,
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    #[serde(default = "default_true")]
-    pub mcp_enabled: bool,
 }
 
 impl Default for CoreConfig {
     fn default() -> Self {
         Self {
-            theme: default_theme(),
             log_level: default_log_level(),
-            mcp_enabled: default_true(),
         }
     }
 }
@@ -92,7 +89,7 @@ impl Default for PluginsConfig {
         Self {
             launcher: LauncherConfig::default(),
             forge: ForgeConfig::default(),
-            vault: TogglePluginConfig::default_disabled(),
+            vault: TogglePluginConfig::default_enabled(),
         }
     }
 }
@@ -101,8 +98,6 @@ impl Default for PluginsConfig {
 pub struct LauncherConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_launcher_hotkey")]
-    pub hotkey: String,
     #[serde(default)]
     pub scan_paths: Vec<String>,
 }
@@ -111,7 +106,6 @@ impl Default for LauncherConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            hotkey: default_launcher_hotkey(),
             scan_paths: Vec::new(),
         }
     }
@@ -119,26 +113,34 @@ impl Default for LauncherConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ForgeConfig {
-    #[serde(default = "default_forge_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_forge_http_port")]
     pub http_port: u16,
     #[serde(default)]
-    pub project_dir: Option<String>,
-    /// Custom agent command path. When set, overrides the default CLI name.
-    /// e.g. "C:\\Scoop\\apps\\nodejs\\current\\bin\\codex.cmd"
+    pub project_dir: String,
     #[serde(default)]
-    pub agent_command: Option<String>,
+    pub agent_command: String,
 }
 
 impl Default for ForgeConfig {
     fn default() -> Self {
         Self {
-            enabled: default_forge_enabled(),
+            enabled: true,
             http_port: default_forge_http_port(),
-            project_dir: None,
-            agent_command: None,
+            project_dir: String::new(),
+            agent_command: String::new(),
         }
+    }
+}
+
+impl ForgeConfig {
+    pub fn project_dir_option(&self) -> Option<String> {
+        normalize_optional_string(&self.project_dir)
+    }
+
+    pub fn agent_command_option(&self) -> Option<String> {
+        normalize_optional_string(&self.agent_command)
     }
 }
 
@@ -149,12 +151,204 @@ pub struct TogglePluginConfig {
 }
 
 impl TogglePluginConfig {
+    fn default_enabled() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl Default for TogglePluginConfig {
+    fn default() -> Self {
+        Self::default_enabled()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellConfig {
+    #[serde(default)]
+    pub cli: CliShellConfig,
+    #[serde(default)]
+    pub gui: GuiShellConfig,
+    #[serde(default)]
+    pub mcp: McpShellConfig,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            cli: CliShellConfig::default(),
+            gui: GuiShellConfig::default(),
+            mcp: McpShellConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CliShellConfig {
+    #[serde(default = "default_cli_output")]
+    pub default_output: String,
+}
+
+impl Default for CliShellConfig {
+    fn default() -> Self {
+        Self {
+            default_output: default_cli_output(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuiShellConfig {
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_launcher_hotkey")]
+    pub global_hotkey: String,
+}
+
+impl Default for GuiShellConfig {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+            global_hotkey: default_launcher_hotkey(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpShellConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_mcp_mode")]
+    pub mode: String,
+    #[serde(default = "default_mcp_actor_role")]
+    pub default_actor_role: String,
+}
+
+impl Default for McpShellConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: default_mcp_mode(),
+            default_actor_role: default_mcp_actor_role(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LegacyEntranceConfig {
+    #[serde(default)]
+    core: LegacyCoreConfig,
+    #[serde(default)]
+    paths: PathsConfig,
+    #[serde(default)]
+    plugins: LegacyPluginsConfig,
+}
+
+impl Default for LegacyEntranceConfig {
+    fn default() -> Self {
+        Self {
+            core: LegacyCoreConfig::default(),
+            paths: PathsConfig::default(),
+            plugins: LegacyPluginsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LegacyCoreConfig {
+    #[serde(default = "default_theme")]
+    theme: String,
+    #[serde(default = "default_log_level")]
+    log_level: String,
+    #[serde(default = "default_true")]
+    mcp_enabled: bool,
+}
+
+impl Default for LegacyCoreConfig {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+            log_level: default_log_level(),
+            mcp_enabled: default_true(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LegacyPluginsConfig {
+    #[serde(default)]
+    launcher: LegacyLauncherConfig,
+    #[serde(default)]
+    forge: LegacyForgeConfig,
+    #[serde(default)]
+    vault: LegacyTogglePluginConfig,
+}
+
+impl Default for LegacyPluginsConfig {
+    fn default() -> Self {
+        Self {
+            launcher: LegacyLauncherConfig::default(),
+            forge: LegacyForgeConfig::default(),
+            vault: LegacyTogglePluginConfig::default_disabled(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LegacyLauncherConfig {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_launcher_hotkey")]
+    hotkey: String,
+    #[serde(default)]
+    scan_paths: Vec<String>,
+}
+
+impl Default for LegacyLauncherConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hotkey: default_launcher_hotkey(),
+            scan_paths: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LegacyForgeConfig {
+    #[serde(default = "default_legacy_forge_enabled")]
+    enabled: bool,
+    #[serde(default = "default_legacy_forge_http_port")]
+    http_port: u16,
+    #[serde(default)]
+    project_dir: Option<String>,
+    #[serde(default)]
+    agent_command: Option<String>,
+}
+
+impl Default for LegacyForgeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_legacy_forge_enabled(),
+            http_port: default_legacy_forge_http_port(),
+            project_dir: None,
+            agent_command: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LegacyTogglePluginConfig {
+    #[serde(default)]
+    enabled: bool,
+}
+
+impl LegacyTogglePluginConfig {
     fn default_disabled() -> Self {
         Self { enabled: false }
     }
 }
 
-impl Default for TogglePluginConfig {
+impl Default for LegacyTogglePluginConfig {
     fn default() -> Self {
         Self::default_disabled()
     }
@@ -178,10 +372,9 @@ impl ConfigStore {
         let config = if path.exists() {
             let content = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read config file at {}", path.display()))?;
-            let mut config = toml::from_str::<EntranceConfig>(&content)
+            let (config, rewritten) = parse_config_document(&content)
                 .with_context(|| format!("failed to parse config file at {}", path.display()))?;
-            if should_enable_forge_for_legacy_desktop_config(&content, &config)? {
-                config.plugins.forge.enabled = default_forge_enabled();
+            if rewritten {
                 write_config_file(&path, &config)?;
             }
             config
@@ -203,7 +396,7 @@ impl ConfigStore {
     }
 
     pub fn theme(&self) -> &str {
-        &self.config.core.theme
+        &self.config.shell.gui.theme
     }
 
     pub fn log_level(&self) -> &str {
@@ -211,12 +404,81 @@ impl ConfigStore {
     }
 
     pub fn mcp_enabled(&self) -> bool {
-        self.config.core.mcp_enabled
+        self.config.shell.mcp.enabled
     }
 
     pub fn set_theme(&mut self, theme: impl Into<String>) -> Result<()> {
-        self.config.core.theme = theme.into();
+        self.config.shell.gui.theme = theme.into();
         write_config_file(&self.path, &self.config)
+    }
+}
+
+fn parse_config_document(raw_content: &str) -> Result<(EntranceConfig, bool)> {
+    let parsed = toml::from_str::<toml::Value>(raw_content).context("failed to parse TOML")?;
+    if contains_legacy_schema(&parsed) {
+        let mut legacy = toml::from_str::<LegacyEntranceConfig>(raw_content)
+            .context("failed to parse legacy Entrance config schema")?;
+        if should_enable_forge_for_legacy_desktop_config(raw_content, &legacy)? {
+            legacy.plugins.forge.enabled = true;
+        }
+        return Ok((legacy_into_current(legacy), true));
+    }
+
+    let config = toml::from_str::<EntranceConfig>(raw_content)
+        .context("failed to parse Entrance config schema")?;
+    Ok((config, false))
+}
+
+fn contains_legacy_schema(value: &toml::Value) -> bool {
+    has_table_key(value, &["core", "theme"])
+        || has_table_key(value, &["core", "mcp_enabled"])
+        || has_table_key(value, &["plugins", "launcher", "hotkey"])
+}
+
+fn has_table_key(value: &toml::Value, path: &[&str]) -> bool {
+    let mut current = value;
+    for segment in path {
+        let Some(next) = current.get(*segment) else {
+            return false;
+        };
+        current = next;
+    }
+    true
+}
+
+fn legacy_into_current(legacy: LegacyEntranceConfig) -> EntranceConfig {
+    EntranceConfig {
+        core: CoreConfig {
+            log_level: legacy.core.log_level,
+        },
+        paths: legacy.paths,
+        plugins: PluginsConfig {
+            launcher: LauncherConfig {
+                enabled: legacy.plugins.launcher.enabled,
+                scan_paths: legacy.plugins.launcher.scan_paths,
+            },
+            forge: ForgeConfig {
+                enabled: legacy.plugins.forge.enabled,
+                http_port: legacy.plugins.forge.http_port,
+                project_dir: legacy.plugins.forge.project_dir.unwrap_or_default(),
+                agent_command: legacy.plugins.forge.agent_command.unwrap_or_default(),
+            },
+            vault: TogglePluginConfig {
+                enabled: legacy.plugins.vault.enabled,
+            },
+        },
+        shell: ShellConfig {
+            cli: CliShellConfig::default(),
+            gui: GuiShellConfig {
+                theme: legacy.core.theme,
+                global_hotkey: legacy.plugins.launcher.hotkey,
+            },
+            mcp: McpShellConfig {
+                enabled: legacy.core.mcp_enabled,
+                mode: default_mcp_mode(),
+                default_actor_role: default_mcp_actor_role(),
+            },
+        },
     }
 }
 
@@ -228,7 +490,12 @@ fn write_config_file(path: &Path, config: &EntranceConfig) -> Result<()> {
 }
 
 pub fn render_config(config: &EntranceConfig) -> Result<String> {
-    toml::to_string_pretty(config).context("failed to render default config")
+    toml::to_string_pretty(config).context("failed to render Entrance config")
+}
+
+fn normalize_optional_string(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn default_theme() -> String {
@@ -247,12 +514,20 @@ fn default_launcher_hotkey() -> String {
     DEFAULT_LAUNCHER_HOTKEY.to_string()
 }
 
-fn default_forge_enabled() -> bool {
-    true
+fn default_forge_http_port() -> u16 {
+    9315
 }
 
-fn default_forge_http_port() -> u16 {
-    9721
+fn default_cli_output() -> String {
+    "json".to_string()
+}
+
+fn default_mcp_mode() -> String {
+    "stdio".to_string()
+}
+
+fn default_mcp_actor_role() -> String {
+    "nota".to_string()
 }
 
 fn default_runtime_db_path() -> String {
@@ -279,11 +554,19 @@ fn default_worktrees_path() -> String {
     "worktrees".to_string()
 }
 
+fn default_legacy_forge_enabled() -> bool {
+    false
+}
+
+fn default_legacy_forge_http_port() -> u16 {
+    9721
+}
+
 fn should_enable_forge_for_legacy_desktop_config(
     raw_content: &str,
-    config: &EntranceConfig,
+    legacy: &LegacyEntranceConfig,
 ) -> Result<bool> {
-    if config.plugins.forge.enabled {
+    if legacy.plugins.forge.enabled {
         return Ok(false);
     }
 
@@ -292,12 +575,12 @@ fn should_enable_forge_for_legacy_desktop_config(
         return Ok(true);
     }
 
-    let legacy_default = render_config(&legacy_default_config())?.replace("\r\n", "\n");
+    let legacy_default = toml::to_string_pretty(&legacy_default_config())
+        .context("failed to render legacy Entrance config")?
+        .replace("\r\n", "\n");
     Ok(normalized == legacy_default)
 }
 
-fn legacy_default_config() -> EntranceConfig {
-    let mut config = EntranceConfig::default();
-    config.plugins.forge.enabled = false;
-    config
+fn legacy_default_config() -> LegacyEntranceConfig {
+    LegacyEntranceConfig::default()
 }

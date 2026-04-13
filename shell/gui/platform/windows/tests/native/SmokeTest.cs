@@ -11,7 +11,7 @@ public class SmokeTest
     public void MainWindowAppears()
     {
         var exePath = Environment.GetEnvironmentVariable("ENTRANCE_EXE_PATH")
-            ?? Path.Combine("..", "..", "..", "..", "hosts/desktop/tauri", "target", "release", "entrance.exe");
+            ?? Path.Combine("..", "..", "..", "..", "..", "..", "target", "release", "entrance-gui.exe");
 
         using var app = Application.Launch(exePath);
         using var automation = new UIA3Automation();

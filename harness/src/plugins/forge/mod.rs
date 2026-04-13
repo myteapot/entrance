@@ -17,15 +17,22 @@ use crate::{
             DataStore, MigrationStep, NewForgeDispatchReceipt, StoredForgeDispatchReceipt,
             StoredForgeTask, StoredForgeTaskLog,
         },
+        dispatch_host::{DispatchHost, PreparedDispatch},
         event_bus::EventBus,
         supervision::SupervisionStrategy,
     },
-    hosts::plugins::{AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition},
+    hosts::plugins::{
+        AppContext, Event, Manifest, McpToolDefinition, Plugin, TauriCommandDefinition,
+    },
 };
 use anyhow::Result;
 use engine::TaskEngine;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::async_runtime::JoinHandle;
+
+pub use entrance_core::dispatch_host::{
+    CreateTaskRequest, DispatchReceiptRequest, ForgeTaskMetadata,
+};
 
 const MANIFEST: Manifest = Manifest {
     name: "forge",
@@ -36,23 +43,22 @@ const MANIFEST: Manifest = Manifest {
 const MIGRATIONS: [MigrationStep; 3] = [
     MigrationStep {
         name: "0002_create_plugin_forge_tasks",
-        sql: include_str!("../../../../migrations/0002_create_plugin_forge_tasks.sql"),
+        sql: include_str!("schema/0002_create_plugin_forge_tasks.sql"),
     },
     MigrationStep {
         name: "0004_create_plugin_forge_task_logs",
-        sql: include_str!("../../../../migrations/0004_create_plugin_forge_task_logs.sql"),
+        sql: include_str!("schema/0004_create_plugin_forge_task_logs.sql"),
     },
     MigrationStep {
         name: "0006_create_plugin_forge_dispatch_receipts",
-        sql: include_str!("../../../../migrations/0006_create_plugin_forge_dispatch_receipts.sql"),
+        sql: include_str!("schema/0006_create_plugin_forge_dispatch_receipts.sql"),
     },
 ];
 
-const ENTRANCE_BOOTSTRAP_SKILL_RELATIVE_PATH: &str = "notes/harness/bootstrap/duet/SKILL.md";
-const ENTRANCE_BOOTSTRAP_PROMPT_SOURCE_LABEL: &str = "Entrance-owned notes/harness/bootstrap prompt";
-const ENTRANCE_BOOTSTRAP_DEV_ROLE_RELATIVE_PATH: &str = "notes/harness/bootstrap/duet/roles/dev.md";
-const ENTRANCE_BOOTSTRAP_DEV_PROMPT_SOURCE_LABEL: &str =
-    "Entrance-owned notes/harness/bootstrap dev prompt";
+const ENTRANCE_BOOTSTRAP_SKILL_RELATIVE_PATH: &str = "notes/agents/skill.md";
+const ENTRANCE_BOOTSTRAP_PROMPT_SOURCE_LABEL: &str = "Entrance-owned notes/agents prompt";
+const ENTRANCE_BOOTSTRAP_DEV_ROLE_RELATIVE_PATH: &str = "notes/agents/roles/dev.md";
+const ENTRANCE_BOOTSTRAP_DEV_PROMPT_SOURCE_LABEL: &str = "Entrance-owned notes/agents dev prompt";
 const FORGE_AGENT_DISPATCH_ROLE: ActorRole = ActorRole::Agent;
 const FORGE_DEV_DISPATCH_ROLE: ActorRole = ActorRole::Dev;
 const FORGE_AGENT_DISPATCH_TOOL_NAME: &str = "forge_dispatch_agent";
@@ -83,49 +89,6 @@ pub struct ForgeTaskDetails {
 pub struct ForgeTaskSupervisionSnapshot {
     pub parent_receipt: Option<StoredForgeDispatchReceipt>,
     pub child_receipts: Vec<StoredForgeDispatchReceipt>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DispatchReceiptRequest {
-    pub parent_task_id: i64,
-    pub supervision_strategy: SupervisionStrategy,
-    pub child_dispatch_role: ActorRole,
-    pub child_dispatch_tool_name: String,
-    pub child_slot: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CreateTaskRequest {
-    pub name: String,
-    pub command: String,
-    pub args: String,
-    pub working_dir: Option<String>,
-    pub stdin_text: Option<String>,
-    pub required_tokens: String,
-    pub metadata: String,
-    pub dispatch_receipt: Option<DispatchReceiptRequest>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ForgeTaskMetadata {
-    #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub issue_id: Option<String>,
-    #[serde(default)]
-    pub worktree_path: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub dispatch_role: Option<ActorRole>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dispatch_tool_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allocator_role: Option<ActorRole>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allocator_surface: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -384,6 +347,108 @@ impl ForgePlugin {
     }
 }
 
+impl From<PreparedAgentDispatch> for PreparedDispatch {
+    fn from(dispatch: PreparedAgentDispatch) -> Self {
+        Self {
+            dispatch_role: dispatch.dispatch_role,
+            dispatch_tool_name: dispatch.dispatch_tool_name,
+            issue_id: dispatch.issue_id,
+            issue_status: dispatch.issue_status,
+            issue_status_source: dispatch.issue_status_source,
+            issue_title: dispatch.issue_title,
+            project_root: dispatch.project_root,
+            worktree_path: dispatch.worktree_path,
+            prompt_source: dispatch.prompt_source,
+            prompt: dispatch.prompt,
+        }
+    }
+}
+
+impl From<PreparedDevDispatch> for PreparedDispatch {
+    fn from(dispatch: PreparedDevDispatch) -> Self {
+        Self {
+            dispatch_role: dispatch.dispatch_role,
+            dispatch_tool_name: dispatch.dispatch_tool_name,
+            issue_id: dispatch.issue_id,
+            issue_status: dispatch.issue_status,
+            issue_status_source: dispatch.issue_status_source,
+            issue_title: dispatch.issue_title,
+            project_root: dispatch.project_root,
+            worktree_path: dispatch.worktree_path,
+            prompt_source: dispatch.prompt_source,
+            prompt: dispatch.prompt,
+        }
+    }
+}
+
+impl DispatchHost for ForgePlugin {
+    fn prepare_agent_dispatch(
+        &self,
+        data_store: &DataStore,
+        project_dir: Option<String>,
+    ) -> Result<PreparedDispatch> {
+        prepare_agent_dispatch_blocking(data_store.clone(), project_dir)
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
+    }
+
+    fn prepare_dev_dispatch(
+        &self,
+        data_store: &DataStore,
+        project_dir: Option<String>,
+    ) -> Result<PreparedDispatch> {
+        prepare_dev_dispatch_blocking(data_store.clone(), project_dir)
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
+    }
+
+    fn build_agent_task_request(
+        &self,
+        dispatch: &PreparedDispatch,
+        model: String,
+        agent_command: Option<String>,
+    ) -> Result<CreateTaskRequest> {
+        build_agent_task_request(
+            dispatch.issue_id.clone(),
+            dispatch.worktree_path.clone(),
+            model,
+            dispatch.prompt.clone(),
+            Vec::new(),
+            agent_command,
+        )
+        .map_err(anyhow::Error::msg)
+    }
+
+    fn build_dev_task_request(
+        &self,
+        dispatch: &PreparedDispatch,
+        model: String,
+        agent_command: Option<String>,
+    ) -> Result<CreateTaskRequest> {
+        build_dev_task_request(
+            dispatch.issue_id.clone(),
+            dispatch.worktree_path.clone(),
+            model,
+            dispatch.prompt.clone(),
+            Vec::new(),
+            agent_command,
+        )
+        .map_err(anyhow::Error::msg)
+    }
+
+    fn create_task(&self, request: CreateTaskRequest) -> Result<i64> {
+        ForgePlugin::create_task(self, request)
+    }
+
+    fn get_task(&self, task_id: i64) -> Result<Option<StoredForgeTask>> {
+        ForgePlugin::get_task(self, task_id)
+    }
+
+    fn spawn_task(&self, task_id: i64) -> Result<()> {
+        self.engine().spawn_task(task_id)
+    }
+}
+
 pub async fn prepare_agent_dispatch(
     data_store: DataStore,
     project_dir: Option<String>,
@@ -623,7 +688,7 @@ async fn build_prepared_dev_dispatch(
     })
 }
 
-pub(crate) fn build_agent_task_request(
+pub fn build_agent_task_request(
     issue_id: String,
     worktree_path: String,
     model: String,
@@ -645,7 +710,7 @@ pub(crate) fn build_agent_task_request(
     )
 }
 
-pub(crate) fn build_dev_task_request(
+pub fn build_dev_task_request(
     issue_id: String,
     worktree_path: String,
     model: String,
@@ -1397,7 +1462,7 @@ fn generate_agent_prompt(
     let bootstrap_skill_path = normalize_display_path(&bootstrap_skill_path);
 
     Ok(format!(
-        "读 `{bootstrap_skill_path}`，以 Agent 身份启动。\n获取 issue `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/notes/specs/`\n\n第一动作，在写任何代码前必须完成:\n1. 调用 Entrance Forge MCP，把 `{issue_id}` 标记为 `In Progress`\n2. 在 issue comment 留言:\n   `> Agent ({{当前模型名}}) 已领取，开始工作`\n\n这是硬约束:\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 issue comment 中汇报结果。"
+        "读 `{bootstrap_skill_path}`，以 Agent 身份启动。\n获取 issue `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/notes/agents/specs/`\n\n第一动作，在写任何代码前必须完成:\n1. 调用 Entrance Forge MCP，把 `{issue_id}` 标记为 `In Progress`\n2. 在 issue comment 留言:\n   `> Agent ({{当前模型名}}) 已领取，开始工作`\n\n这是硬约束:\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 issue comment 中汇报结果。"
     ))
 }
 
@@ -1440,7 +1505,7 @@ fn generate_dev_prompt(
     let dev_role_path = normalize_display_path(&dev_role_path);
 
     Ok(format!(
-        "读 `{bootstrap_skill_path}` 和 `{dev_role_path}`，以 Dev 身份启动。\n获取 issue `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/notes/specs/`\n\n这是当前 dev dispatch cut 的边界:\n- 这次只落 `prepare / dispatch` 启动面，不把它当成完整的 Dev 状态机\n- 如需派发 Agent，优先使用 Entrance-owned Forge runtime，不手写 agent prompt\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n\n当前任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 issue comment 中汇报 Dev 侧结果。"
+        "读 `{bootstrap_skill_path}` 和 `{dev_role_path}`，以 Dev 身份启动。\n获取 issue `{issue_id}`（当前状态: `{issue_status}`）。\n**只在 worktree `{worktree_path}` 中工作。**\n\n项目根目录 `{project_root}`\nSpecs 目录: `{project_root}/notes/agents/specs/`\n\n这是当前 dev dispatch cut 的边界:\n- 这次只落 `prepare / dispatch` 启动面，不把它当成完整的 Dev 状态机\n- 如需派发 Agent，优先使用 Entrance-owned Forge runtime，不手写 agent prompt\n- 所有文件修改都必须发生在 `{worktree_path}`\n- 禁止在主目录 `{project_root}` 里执行 `git checkout` / `git switch`\n- 禁止在主目录 `{project_root}` 新增或修改业务文件\n- commit 只允许发生在 worktree 内\n\n当前任务:\n{task}\n\n参考:\n- (none specified)\n\n完成后在 issue comment 中汇报 Dev 侧结果。"
     ))
 }
 
@@ -1982,9 +2047,9 @@ mod tests {
     fn generated_prompt_uses_entrance_bootstrap_skill() {
         let temp_dir = TestDir::new("dispatch-prompt");
         let project_root = temp_dir.path().join("Entrance");
-        let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+        let bootstrap_skill = project_root.join("notes").join("agents");
         fs::create_dir_all(&bootstrap_skill).expect("bootstrap skill directory should exist");
-        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")
+        fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")
             .expect("bootstrap skill should be written");
 
         let worktree_path = temp_dir
@@ -2008,7 +2073,7 @@ mod tests {
         )
         .expect("prompt should be generated");
 
-        assert!(prompt.contains("notes/harness/bootstrap/duet/SKILL.md"));
+        assert!(prompt.contains("notes/agents/skill.md"));
         assert!(prompt.contains(&worktree_path.to_string_lossy().replace('\\', "/")));
         assert!(!prompt.contains(".agents/nota/scripts/control.py"));
     }
@@ -2017,10 +2082,10 @@ mod tests {
     fn generated_dev_prompt_uses_entrance_bootstrap_dev_role() {
         let temp_dir = TestDir::new("dispatch-dev-prompt");
         let project_root = temp_dir.path().join("Entrance");
-        let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+        let bootstrap_skill = project_root.join("notes").join("agents");
         let dev_role = bootstrap_skill.join("roles");
         fs::create_dir_all(&dev_role).expect("bootstrap dev role directory should exist");
-        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")
+        fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")
             .expect("bootstrap skill should be written");
         fs::write(dev_role.join("dev.md"), "# test dev role\n")
             .expect("bootstrap dev role should be written");
@@ -2046,8 +2111,8 @@ mod tests {
         )
         .expect("prompt should be generated");
 
-        assert!(prompt.contains("notes/harness/bootstrap/duet/SKILL.md"));
-        assert!(prompt.contains("notes/harness/bootstrap/duet/roles/dev.md"));
+        assert!(prompt.contains("notes/agents/skill.md"));
+        assert!(prompt.contains("notes/agents/roles/dev.md"));
         assert!(prompt.contains("以 Dev 身份启动"));
         assert!(!prompt.contains(".agents"));
     }
@@ -2079,7 +2144,7 @@ mod tests {
         )
         .expect_err("missing bootstrap skill should fail");
 
-        assert!(error.contains("notes/harness/bootstrap/duet/SKILL.md"));
+        assert!(error.contains("notes/agents/skill.md"));
     }
 
     #[test]
@@ -2088,9 +2153,9 @@ mod tests {
 
         let temp_dir = TestDir::new("dispatch-pipeline-no-agents");
         let project_root = temp_dir.path().join("Entrance");
-        let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+        let bootstrap_skill = project_root.join("notes").join("agents");
         fs::create_dir_all(&bootstrap_skill)?;
-        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
 
         let managed_root = temp_dir.path().join("appdata").join("worktrees");
         let managed_worktree = managed_root.join("Entrance").join("feat-MYT-48");
@@ -2118,15 +2183,12 @@ mod tests {
         assert_eq!(dispatch.issue_status, "Todo");
         assert_eq!(dispatch.issue_status_source, "fallback");
         assert!(dispatch.issue_title.is_none());
-        assert_eq!(
-            dispatch.prompt_source,
-            "Entrance-owned notes/harness/bootstrap prompt"
-        );
+        assert_eq!(dispatch.prompt_source, "Entrance-owned notes/agents prompt");
         assert_eq!(
             dispatch.worktree_path,
             managed_worktree.to_string_lossy().replace('\\', "/")
         );
-        assert!(dispatch.prompt.contains("notes/harness/bootstrap/duet/SKILL.md"));
+        assert!(dispatch.prompt.contains("notes/agents/skill.md"));
         assert!(!dispatch.prompt.contains(".agents"));
 
         let request = build_agent_task_request(
@@ -2168,10 +2230,10 @@ mod tests {
 
         let temp_dir = TestDir::new("dispatch-dev-pipeline-no-agents");
         let project_root = temp_dir.path().join("Entrance");
-        let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+        let bootstrap_skill = project_root.join("notes").join("agents");
         let dev_role = bootstrap_skill.join("roles");
         fs::create_dir_all(&dev_role)?;
-        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
         fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
         let managed_root = temp_dir.path().join("appdata").join("worktrees");
@@ -2202,16 +2264,14 @@ mod tests {
         assert!(dispatch.issue_title.is_none());
         assert_eq!(
             dispatch.prompt_source,
-            "Entrance-owned notes/harness/bootstrap dev prompt"
+            "Entrance-owned notes/agents dev prompt"
         );
         assert_eq!(
             dispatch.worktree_path,
             managed_worktree.to_string_lossy().replace('\\', "/")
         );
-        assert!(dispatch.prompt.contains("notes/harness/bootstrap/duet/SKILL.md"));
-        assert!(dispatch
-            .prompt
-            .contains("notes/harness/bootstrap/duet/roles/dev.md"));
+        assert!(dispatch.prompt.contains("notes/agents/skill.md"));
+        assert!(dispatch.prompt.contains("notes/agents/roles/dev.md"));
         assert!(!dispatch.prompt.contains(".agents"));
 
         let request = build_dev_task_request(
@@ -2264,9 +2324,9 @@ mod tests {
         assert!(startup.forge_enabled());
 
         let project_root = temp_dir.path().join("Entrance");
-        let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+        let bootstrap_skill = project_root.join("notes").join("agents");
         fs::create_dir_all(&bootstrap_skill)?;
-        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
 
         let managed_worktree = app_data_dir
             .join("worktrees")
@@ -2299,10 +2359,7 @@ mod tests {
         assert_eq!(dispatch.issue_status, "Todo");
         assert_eq!(dispatch.issue_status_source, "fallback");
         assert!(dispatch.issue_title.is_none());
-        assert_eq!(
-            dispatch.prompt_source,
-            "Entrance-owned notes/harness/bootstrap prompt"
-        );
+        assert_eq!(dispatch.prompt_source, "Entrance-owned notes/agents prompt");
         assert_eq!(
             dispatch.worktree_path,
             managed_worktree.to_string_lossy().replace('\\', "/")
@@ -2363,9 +2420,9 @@ mod tests {
         assert!(startup.forge_enabled());
 
         let project_root = temp_dir.path().join("Entrance");
-        let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+        let bootstrap_skill = project_root.join("notes").join("agents");
         fs::create_dir_all(&bootstrap_skill)?;
-        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
         fs::write(project_root.join("README.md"), "slot dispatch test\n")?;
         init_git_repo_with_commit(&project_root);
 
@@ -2437,10 +2494,10 @@ mod tests {
         assert!(startup.forge_enabled());
 
         let project_root = temp_dir.path().join("Entrance");
-        let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+        let bootstrap_skill = project_root.join("notes").join("agents");
         let dev_role = bootstrap_skill.join("roles");
         fs::create_dir_all(&dev_role)?;
-        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
         fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
         let managed_worktree = app_data_dir
@@ -2476,7 +2533,7 @@ mod tests {
         assert!(dispatch.issue_title.is_none());
         assert_eq!(
             dispatch.prompt_source,
-            "Entrance-owned notes/harness/bootstrap dev prompt"
+            "Entrance-owned notes/agents dev prompt"
         );
         assert_eq!(
             dispatch.worktree_path,

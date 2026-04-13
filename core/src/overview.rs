@@ -41,124 +41,124 @@ use crate::core::{
 };
 
 #[derive(Clone, Serialize)]
-pub(crate) struct NotaRuntimeOverview {
-    pub(crate) chat_policy: ChatArchivePolicyReport,
-    pub(crate) checkpoints: NotaCheckpointListReport,
-    pub(crate) human_rounds: NotaHumanRoundListReport,
-    pub(crate) acceptance_bundles: NotaAcceptanceBundleListReport,
-    pub(crate) transactions: NotaRuntimeTransactionsReport,
-    pub(crate) allocations: NotaRuntimeAllocationsReport,
-    pub(crate) visions: NotaVisionListReport,
-    pub(crate) todos: NotaTodoListReport,
-    pub(crate) cold_docs: NotaColdDocListReport,
+pub struct NotaRuntimeOverview {
+    pub chat_policy: ChatArchivePolicyReport,
+    pub checkpoints: NotaCheckpointListReport,
+    pub human_rounds: NotaHumanRoundListReport,
+    pub acceptance_bundles: NotaAcceptanceBundleListReport,
+    pub transactions: NotaRuntimeTransactionsReport,
+    pub allocations: NotaRuntimeAllocationsReport,
+    pub visions: NotaVisionListReport,
+    pub todos: NotaTodoListReport,
+    pub cold_docs: NotaColdDocListReport,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) host: Option<crate::core::data_store::StoredRuntimeHost>,
-    pub(crate) worktrees: OwnedWorktreeRegistryReport,
-    pub(crate) recovery: RecoveryImportOnlyStatusReport,
+    pub host: Option<crate::core::data_store::StoredRuntimeHost>,
+    pub worktrees: OwnedWorktreeRegistryReport,
+    pub recovery: RecoveryImportOnlyStatusReport,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) recommended_checkpoint: Option<NotaCheckpointRequest>,
+    pub recommended_checkpoint: Option<NotaCheckpointRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) handout: Option<NotaHandoutRecord>,
+    pub handout: Option<NotaHandoutRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) wake_request: Option<NotaWakeRequestRecord>,
+    pub wake_request: Option<NotaWakeRequestRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) review: Option<NotaRuntimeReview>,
+    pub review: Option<NotaRuntimeReview>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) integrate: Option<NotaRuntimeIntegrate>,
+    pub integrate: Option<NotaRuntimeIntegrate>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) finalize: Option<NotaRuntimeFinalize>,
+    pub finalize: Option<NotaRuntimeFinalize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) next_step: Option<NotaRuntimeNextStep>,
-    pub(crate) round_state: NotaRoundStateProjection,
-    pub(crate) anti_zeno: NotaAntiZenoProjection,
-    pub(crate) anti_zeno_budget: AntiZenoBudgetReport,
-    pub(crate) front_door: NotaFrontDoorProjection,
-    pub(crate) projections: ProjectionStatusReport,
-    pub(crate) invariants: RuntimeInvariantReport,
-    pub(crate) repair_lane: RepairLaneReport,
-    pub(crate) decisions: DesignDecisionListReport,
-    pub(crate) chat_captures: ChatCaptureListReport,
+    pub next_step: Option<NotaRuntimeNextStep>,
+    pub round_state: NotaRoundStateProjection,
+    pub anti_zeno: NotaAntiZenoProjection,
+    pub anti_zeno_budget: AntiZenoBudgetReport,
+    pub front_door: NotaFrontDoorProjection,
+    pub projections: ProjectionStatusReport,
+    pub invariants: RuntimeInvariantReport,
+    pub repair_lane: RepairLaneReport,
+    pub decisions: DesignDecisionListReport,
+    pub chat_captures: ChatCaptureListReport,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) current_supervision: Option<RuntimeSupervisionProjection>,
+    pub current_supervision: Option<RuntimeSupervisionProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) current_supervision_incident: Option<RuntimeSupervisionIncidentSummary>,
+    pub current_supervision_incident: Option<RuntimeSupervisionIncidentSummary>,
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct NotaRuntimeStatus {
-    pub(crate) chat_policy: ChatArchivePolicyReport,
-    pub(crate) human_round_count: usize,
+pub struct NotaRuntimeStatus {
+    pub chat_policy: ChatArchivePolicyReport,
+    pub human_round_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) current_human_round: Option<NotaHumanRoundRecord>,
-    pub(crate) checkpoint_count: usize,
-    pub(crate) current_checkpoint_id: Option<i64>,
+    pub current_human_round: Option<NotaHumanRoundRecord>,
+    pub checkpoint_count: usize,
+    pub current_checkpoint_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) current_checkpoint: Option<NotaCheckpointRecord>,
-    pub(crate) acceptance_bundle_count: usize,
+    pub current_checkpoint: Option<NotaCheckpointRecord>,
+    pub acceptance_bundle_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) current_acceptance_bundle: Option<NotaAcceptanceBundleRecord>,
-    pub(crate) transaction_count: usize,
+    pub current_acceptance_bundle: Option<NotaAcceptanceBundleRecord>,
+    pub transaction_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) latest_transaction: Option<StoredNotaRuntimeTransaction>,
-    pub(crate) allocation_count: usize,
+    pub latest_transaction: Option<StoredNotaRuntimeTransaction>,
+    pub allocation_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) latest_allocation: Option<NotaRuntimeAllocationReadRecord>,
+    pub latest_allocation: Option<NotaRuntimeAllocationReadRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) current_supervision: Option<RuntimeSupervisionProjection>,
+    pub current_supervision: Option<RuntimeSupervisionProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) current_supervision_incident: Option<RuntimeSupervisionIncidentSummary>,
-    pub(crate) receipt_count: usize,
+    pub current_supervision_incident: Option<RuntimeSupervisionIncidentSummary>,
+    pub receipt_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) latest_receipt: Option<StoredNotaRuntimeReceipt>,
-    pub(crate) decision_count: usize,
+    pub latest_receipt: Option<StoredNotaRuntimeReceipt>,
+    pub decision_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) latest_decision: Option<StoredDecisionRecord>,
-    pub(crate) chat_capture_count: usize,
-    pub(crate) vision_count: usize,
-    pub(crate) todo_count: usize,
-    pub(crate) cold_doc_count: usize,
-    pub(crate) cold_docs: NotaColdDocListReport,
+    pub latest_decision: Option<StoredDecisionRecord>,
+    pub chat_capture_count: usize,
+    pub vision_count: usize,
+    pub todo_count: usize,
+    pub cold_doc_count: usize,
+    pub cold_docs: NotaColdDocListReport,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) host: Option<crate::core::data_store::StoredRuntimeHost>,
-    pub(crate) worktree_count: usize,
-    pub(crate) worktrees: OwnedWorktreeRegistryReport,
-    pub(crate) recovery: RecoveryImportOnlyStatusReport,
+    pub host: Option<crate::core::data_store::StoredRuntimeHost>,
+    pub worktree_count: usize,
+    pub worktrees: OwnedWorktreeRegistryReport,
+    pub recovery: RecoveryImportOnlyStatusReport,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) recommended_checkpoint: Option<NotaCheckpointRequest>,
+    pub recommended_checkpoint: Option<NotaCheckpointRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) handout: Option<NotaHandoutRecord>,
+    pub handout: Option<NotaHandoutRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) wake_request: Option<NotaWakeRequestRecord>,
+    pub wake_request: Option<NotaWakeRequestRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) review: Option<NotaRuntimeReview>,
+    pub review: Option<NotaRuntimeReview>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) integrate: Option<NotaRuntimeIntegrate>,
+    pub integrate: Option<NotaRuntimeIntegrate>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) finalize: Option<NotaRuntimeFinalize>,
+    pub finalize: Option<NotaRuntimeFinalize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) next_step: Option<NotaRuntimeNextStep>,
-    pub(crate) round_state: NotaRoundStateProjection,
-    pub(crate) anti_zeno: NotaAntiZenoProjection,
-    pub(crate) anti_zeno_budget: AntiZenoBudgetReport,
-    pub(crate) front_door: NotaFrontDoorProjection,
-    pub(crate) projections: ProjectionStatusReport,
-    pub(crate) invariants: RuntimeInvariantReport,
-    pub(crate) repair_lane: RepairLaneReport,
+    pub next_step: Option<NotaRuntimeNextStep>,
+    pub round_state: NotaRoundStateProjection,
+    pub anti_zeno: NotaAntiZenoProjection,
+    pub anti_zeno_budget: AntiZenoBudgetReport,
+    pub front_door: NotaFrontDoorProjection,
+    pub projections: ProjectionStatusReport,
+    pub invariants: RuntimeInvariantReport,
+    pub repair_lane: RepairLaneReport,
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct NotaTodoListReport {
-    pub(crate) todo_count: usize,
-    pub(crate) todos: Vec<StoredTodoRecord>,
+pub struct NotaTodoListReport {
+    pub todo_count: usize,
+    pub todos: Vec<StoredTodoRecord>,
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct NotaVisionListReport {
-    pub(crate) vision_count: usize,
-    pub(crate) visions: Vec<StoredVisionRecord>,
+pub struct NotaVisionListReport {
+    pub vision_count: usize,
+    pub visions: Vec<StoredVisionRecord>,
 }
 
-pub(crate) fn build_projection_truth_revision(
+pub fn build_projection_truth_revision(
     current_checkpoint_id: Option<i64>,
     current_human_round_id: Option<i64>,
     current_acceptance_bundle_id: Option<i64>,
@@ -170,7 +170,7 @@ pub(crate) fn build_projection_truth_revision(
     }
 }
 
-pub(crate) fn build_nota_runtime_overview(data_store: &DataStore) -> Result<NotaRuntimeOverview> {
+pub fn build_nota_runtime_overview(data_store: &DataStore) -> Result<NotaRuntimeOverview> {
     let checkpoints = list_runtime_checkpoints(data_store)?;
     let current_checkpoint = checkpoints
         .checkpoints
@@ -314,7 +314,7 @@ pub(crate) fn build_nota_runtime_overview(data_store: &DataStore) -> Result<Nota
     })
 }
 
-pub(crate) fn build_nota_runtime_status(data_store: &DataStore) -> Result<NotaRuntimeStatus> {
+pub fn build_nota_runtime_status(data_store: &DataStore) -> Result<NotaRuntimeStatus> {
     let checkpoints = list_runtime_checkpoints(data_store)?;
     let current_checkpoint = checkpoints
         .checkpoints
@@ -474,7 +474,7 @@ pub(crate) fn build_nota_runtime_status(data_store: &DataStore) -> Result<NotaRu
     })
 }
 
-pub(crate) fn list_nota_todos(data_store: &DataStore) -> Result<NotaTodoListReport> {
+pub fn list_nota_todos(data_store: &DataStore) -> Result<NotaTodoListReport> {
     let todos = data_store.list_todo_records()?;
     Ok(NotaTodoListReport {
         todo_count: todos.len(),
@@ -482,7 +482,7 @@ pub(crate) fn list_nota_todos(data_store: &DataStore) -> Result<NotaTodoListRepo
     })
 }
 
-pub(crate) fn list_nota_visions(data_store: &DataStore) -> Result<NotaVisionListReport> {
+pub fn list_nota_visions(data_store: &DataStore) -> Result<NotaVisionListReport> {
     let visions = data_store.list_vision_records()?;
     Ok(NotaVisionListReport {
         vision_count: visions.len(),

@@ -31,7 +31,7 @@ const vite = spawnChild("pnpm", [
   "exec",
   "vite",
   "--config",
-  "surfaces/gui/vite.config.ts",
+  "shell/gui/vite.config.ts",
   "--host",
   "127.0.0.1",
   "--port",
@@ -63,10 +63,12 @@ await waitForRenderer(rendererUrl);
 
 electron = spawnChild(
   "pnpm",
-  ["exec", "electron", "hosts/desktop/electron/main.mjs"],
+  ["start:electron"],
   {
     env: {
-      ...process.env,
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => key !== "ELECTRON_RUN_AS_NODE"),
+      ),
       ENTRANCE_RENDERER_URL: rendererUrl,
     },
   },

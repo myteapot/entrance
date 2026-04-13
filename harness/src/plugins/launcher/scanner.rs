@@ -6,21 +6,10 @@ use std::{
 };
 
 use anyhow::Result;
-use serde::Serialize;
+use entrance_core::data_store::DiscoveredApp;
 use walkdir::WalkDir;
 
 use super::search::normalize_text;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DiscoveredApp {
-    pub name: String,
-    pub normalized_name: String,
-    pub path: String,
-    pub arguments: Option<String>,
-    pub working_dir: Option<String>,
-    pub icon_path: Option<String>,
-    pub source: String,
-}
 
 pub fn scan_installed_apps() -> Result<Vec<DiscoveredApp>> {
     let mut apps = BTreeMap::<String, DiscoveredApp>::new();

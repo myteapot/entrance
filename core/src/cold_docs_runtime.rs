@@ -105,8 +105,8 @@ pub fn canonicalize_cold_docs_from_repo(
 ) -> Result<NotaColdDocCanonicalizationReport> {
     let cold_root = Path::new(project_dir)
         .join("notes")
-        .join("specs")
-        .join("cold");
+        .join("agents")
+        .join("specs");
     if !cold_root.exists() {
         return Err(anyhow!(
             "cold-doc root `{}` does not exist",
@@ -220,8 +220,8 @@ pub fn export_cold_docs_to_repo(
     Ok(NotaColdDocExportReport {
         export_root: Path::new(project_dir)
             .join("notes")
+            .join("agents")
             .join("specs")
-            .join("cold")
             .to_string_lossy()
             .replace('\\', "/"),
         exported_count: exported_paths.len(),
@@ -352,10 +352,9 @@ mod tests {
         let project_dir = temp_root.root.join("Entrance");
         let cold_doc_path = project_dir
             .join("notes")
+            .join("agents")
             .join("specs")
-            .join("cold")
-            .join("1.1-os-core")
-            .join("projection_boundary.md");
+            .join("projection-boundary.md");
         if let Some(parent) = cold_doc_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -374,7 +373,7 @@ mod tests {
         assert_eq!(import_report.docs[0].category, COLD_DOC_CATEGORY);
         assert_eq!(
             import_report.docs[0].slug,
-            "notes/specs/cold/1.1-os-core/projection_boundary.md"
+            "notes/agents/specs/projection-boundary.md"
         );
 
         fs::remove_file(&cold_doc_path)?;

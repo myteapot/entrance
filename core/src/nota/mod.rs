@@ -36,7 +36,7 @@ use crate::core::supervision::{
     supervision_policy_for_allocation, SupervisionEvent, SupervisionSignalFamily, SupervisorAction,
     SupervisorActionResolution,
 };
-use crate::hosts::plugins::forge::ForgePlugin;
+use crate::dispatch_host::DispatchHost;
 
 use helpers::*;
 use policy::*;
@@ -542,25 +542,25 @@ fn resolve_dev_repair_origin(
     })
 }
 
-pub fn run_nota_do_agent_dispatch(
+pub fn run_nota_do_agent_dispatch<H: DispatchHost>(
     data_store: &DataStore,
-    forge: &ForgePlugin,
+    forge: &H,
     request: NotaDoAgentDispatchRequest,
 ) -> Result<NotaDoDispatchReport> {
     run_nota_dispatch(data_store, forge, request, NotaDispatchLane::Agent)
 }
 
-pub fn run_nota_dev_dispatch(
+pub fn run_nota_dev_dispatch<H: DispatchHost>(
     data_store: &DataStore,
-    forge: &ForgePlugin,
+    forge: &H,
     request: NotaDevDispatchRequest,
 ) -> Result<NotaDevDispatchReport> {
     run_nota_dispatch(data_store, forge, request, NotaDispatchLane::Dev)
 }
 
-fn run_nota_dispatch(
+fn run_nota_dispatch<H: DispatchHost>(
     data_store: &DataStore,
-    forge: &ForgePlugin,
+    forge: &H,
     request: NotaDoAgentDispatchRequest,
     lane: NotaDispatchLane,
 ) -> Result<NotaDoDispatchReport> {
@@ -583,7 +583,7 @@ fn run_nota_dispatch(
             .as_ref()
             .map(|origin| origin.project_dir.clone())
     });
-    let dispatch = lane.prepare_dispatch(data_store, dispatch_project_dir.clone())?;
+    let dispatch = lane.prepare_dispatch(forge, data_store, dispatch_project_dir.clone())?;
     let payload = NotaDoDispatchPayload {
         issue_id: dispatch.issue_id.clone(),
         issue_status: dispatch.issue_status.clone(),
@@ -640,8 +640,12 @@ fn run_nota_dispatch(
     })?;
     receipts.push(accepted_receipt.clone());
 
-    let task_request =
-        lane.build_task_request(&dispatch, model.clone(), request.agent_command.clone())?;
+    let task_request = lane.build_task_request(
+        forge,
+        &dispatch,
+        model.clone(),
+        request.agent_command.clone(),
+    )?;
     let task_id = forge.create_task(task_request)?;
     let allocation_payload = NotaDoAllocationPayload {
         issue_id: dispatch.issue_id.clone(),
@@ -1007,14 +1011,14 @@ fn compile_nota_dispatch_packet() -> TypedActionPacket {
     )
 }
 
-fn launch_forge_task(
-    forge: &ForgePlugin,
+fn launch_forge_task<H: DispatchHost>(
+    forge: &H,
     task_id: i64,
     execution_host: NotaDispatchExecutionHost,
 ) -> Result<()> {
     match execution_host {
         NotaDispatchExecutionHost::InProcess => {
-            forge.engine().spawn_task(task_id)?;
+            forge.spawn_task(task_id)?;
         }
         NotaDispatchExecutionHost::DetachedForgeCliSupervisor => {
             spawn_detached_forge_supervisor_process(task_id)?;
@@ -1038,8 +1042,8 @@ fn spawn_detached_forge_supervisor_process(task_id: i64) -> Result<()> {
     Ok(())
 }
 
-fn wait_for_task_launch_transition(
-    forge: &ForgePlugin,
+fn wait_for_task_launch_transition<H: DispatchHost>(
+    forge: &H,
     task_id: i64,
     timeout: Duration,
 ) -> Result<()> {
@@ -5687,7 +5691,9 @@ mod tests {
     #[test]
     fn build_lowering_context_populates_all_fields() -> Result<()> {
         let _guard = crate::test_env_guard();
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
             surface_action: "dev",
@@ -5727,7 +5733,9 @@ mod tests {
     #[test]
     fn build_lowering_context_uses_active_allocation_budget_and_dedup() -> Result<()> {
         let _guard = crate::test_env_guard();
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
             surface_action: "dev",
@@ -5824,10 +5832,14 @@ mod tests {
         let forge = ForgePlugin::new(store.clone(), EventBus::new());
 
         let project_root = temp_dir.path().join("Entrance");
-        let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+        let bootstrap_skill = project_root
+            .join("notes")
+            .join("harness")
+            .join("bootstrap")
+            .join("duet");
         let dev_role_dir = bootstrap_skill.join("roles");
         fs::create_dir_all(&dev_role_dir)?;
-        fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+        fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
         fs::write(dev_role_dir.join("dev.md"), "# test dev role\n")?;
         fs::write(
             project_root.join("README.md"),
@@ -6136,7 +6148,9 @@ mod tests {
 
     #[test]
     fn clarification_creates_local_next_step_without_active_wake_request() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let checkpoint = write_runtime_checkpoint(
             &store,
@@ -6190,7 +6204,9 @@ mod tests {
 
     #[test]
     fn ask_decide_creates_active_human_wake_request() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let checkpoint = write_runtime_checkpoint(
             &store,
@@ -6238,7 +6254,9 @@ mod tests {
 
     #[test]
     fn ask_unblock_stays_local_and_supersedes_previous_open_intake() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let checkpoint = write_runtime_checkpoint(
             &store,
@@ -6303,7 +6321,9 @@ mod tests {
 
     #[test]
     fn accept_current_round_supersedes_open_boundary_intake() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let checkpoint = write_runtime_checkpoint(
             &store,
@@ -6370,7 +6390,9 @@ mod tests {
 
     #[test]
     fn dev_repair_origin_requires_active_repair_boundary() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let checkpoint = write_runtime_checkpoint(
             &store,
@@ -6476,7 +6498,9 @@ mod tests {
 
     #[test]
     fn runtime_allocation_persists_separately_from_transactions_and_receipts() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
@@ -6533,7 +6557,9 @@ mod tests {
 
     #[test]
     fn allocation_surface_does_not_backfill_terminal_receipt_on_read() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
@@ -6776,7 +6802,9 @@ mod tests {
 
     #[test]
     fn receipt_surface_does_not_materialize_terminal_outcome_without_explicit_sync() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
@@ -6862,7 +6890,9 @@ mod tests {
 
     #[test]
     fn explicit_runtime_sync_persists_terminal_outcome_and_receipt_truth() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
@@ -6978,7 +7008,9 @@ mod tests {
 
     #[test]
     fn checkpoint_write_backfills_dev_return_acceptance_for_current_checkpoint() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
         let task_id = store.insert_forge_task("Dev child", "echo", "[]", None, None, "[]", "{}")?;
 
         let transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
@@ -6998,7 +7030,7 @@ mod tests {
             issue_title: None,
             project_root: "A:/Agent/Entrance".to_string(),
             worktree_path: "C:/Users/test/.entrance/worktrees/Entrance/feat-MYT-1048".to_string(),
-            prompt_source: "Entrance-owned notes/harness/bootstrap dev prompt".to_string(),
+            prompt_source: "Entrance-owned notes/agents dev prompt".to_string(),
             model: "codex".to_string(),
             agent_command: None,
             repair_of_allocation_id: None,
@@ -7617,7 +7649,9 @@ mod tests {
 
     #[test]
     fn checkpoint_write_backfills_agent_return_acceptance_for_current_checkpoint() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
         let task_id =
             store.insert_forge_task("Agent child", "echo", "[]", None, None, "[]", "{}")?;
 
@@ -7638,7 +7672,7 @@ mod tests {
             issue_title: Some("Agent return acceptance".to_string()),
             project_root: "A:/Agent/Entrance".to_string(),
             worktree_path: "A:/Agent/Entrance/worktrees/feat-MYT-48".to_string(),
-            prompt_source: "Entrance-owned notes/harness/bootstrap agent prompt".to_string(),
+            prompt_source: "Entrance-owned notes/agents agent prompt".to_string(),
             model: "codex".to_string(),
             agent_command: None,
             repair_of_allocation_id: None,
@@ -7972,7 +8006,9 @@ mod tests {
 
     #[test]
     fn runtime_closure_recommendation_prefers_newer_dev_return_boundary() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let do_transaction = store.insert_nota_runtime_transaction(NewNotaRuntimeTransaction {
             actor_role: "nota",
@@ -8143,7 +8179,9 @@ mod tests {
 
     #[test]
     fn dev_return_surfaces_stay_pinned_to_requested_checkpoint_scope() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let checkpoint_one = write_runtime_checkpoint(
             &store,
@@ -8365,7 +8403,9 @@ mod tests {
 
     #[test]
     fn runtime_closure_recommendation_respects_requested_checkpoint_scope() -> Result<()> {
-        let store = DataStore::in_memory(MigrationPlan::new(crate::hosts::plugins::forge::migrations()))?;
+        let store = DataStore::in_memory(MigrationPlan::new(
+            crate::hosts::plugins::forge::migrations(),
+        ))?;
 
         let checkpoint_one = write_runtime_checkpoint(
             &store,

@@ -8,10 +8,7 @@ use crate::core::data_store::{
     StoredNotaRuntimeReceipt, StoredNotaRuntimeTransaction,
 };
 use crate::core::supervision::{RuntimeSupervisionIncidentSummary, RuntimeSupervisionProjection};
-use crate::hosts::plugins::forge::{
-    build_agent_task_request, build_dev_task_request, prepare_agent_dispatch_blocking,
-    prepare_dev_dispatch_blocking, CreateTaskRequest, PreparedAgentDispatch, PreparedDevDispatch,
-};
+use crate::dispatch_host::{CreateTaskRequest, DispatchHost, PreparedDispatch};
 
 use super::helpers::*;
 use super::{
@@ -470,53 +467,7 @@ pub struct NotaDoDispatchReport {
 
 pub type NotaDevDispatchReport = NotaDoDispatchReport;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct PreparedNotaDispatch {
-    pub dispatch_role: crate::core::action::ActorRole,
-    pub dispatch_tool_name: String,
-    pub issue_id: String,
-    pub issue_status: String,
-    pub issue_status_source: String,
-    pub issue_title: Option<String>,
-    pub project_root: String,
-    pub worktree_path: String,
-    pub prompt_source: String,
-    pub prompt: String,
-}
-
-impl From<PreparedAgentDispatch> for PreparedNotaDispatch {
-    fn from(dispatch: PreparedAgentDispatch) -> Self {
-        Self {
-            dispatch_role: dispatch.dispatch_role,
-            dispatch_tool_name: dispatch.dispatch_tool_name,
-            issue_id: dispatch.issue_id,
-            issue_status: dispatch.issue_status,
-            issue_status_source: dispatch.issue_status_source,
-            issue_title: dispatch.issue_title,
-            project_root: dispatch.project_root,
-            worktree_path: dispatch.worktree_path,
-            prompt_source: dispatch.prompt_source,
-            prompt: dispatch.prompt,
-        }
-    }
-}
-
-impl From<PreparedDevDispatch> for PreparedNotaDispatch {
-    fn from(dispatch: PreparedDevDispatch) -> Self {
-        Self {
-            dispatch_role: dispatch.dispatch_role,
-            dispatch_tool_name: dispatch.dispatch_tool_name,
-            issue_id: dispatch.issue_id,
-            issue_status: dispatch.issue_status,
-            issue_status_source: dispatch.issue_status_source,
-            issue_title: dispatch.issue_title,
-            project_root: dispatch.project_root,
-            worktree_path: dispatch.worktree_path,
-            prompt_source: dispatch.prompt_source,
-            prompt: dispatch.prompt,
-        }
-    }
-}
+pub type PreparedNotaDispatch = PreparedDispatch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NotaDispatchLane {
@@ -591,44 +542,27 @@ impl NotaDispatchLane {
 
     pub(super) fn prepare_dispatch(
         self,
+        dispatch_host: &impl DispatchHost,
         data_store: &DataStore,
         project_dir: Option<String>,
     ) -> Result<PreparedNotaDispatch> {
         match self {
-            Self::Agent => prepare_agent_dispatch_blocking(data_store.clone(), project_dir)
-                .map(Into::into)
-                .map_err(anyhow::Error::msg),
-            Self::Dev => prepare_dev_dispatch_blocking(data_store.clone(), project_dir)
-                .map(Into::into)
-                .map_err(anyhow::Error::msg),
+            Self::Agent => dispatch_host.prepare_agent_dispatch(data_store, project_dir),
+            Self::Dev => dispatch_host.prepare_dev_dispatch(data_store, project_dir),
         }
     }
 
     pub(super) fn build_task_request(
         self,
+        dispatch_host: &impl DispatchHost,
         dispatch: &PreparedNotaDispatch,
         model: String,
         agent_command: Option<String>,
     ) -> Result<CreateTaskRequest> {
         match self {
-            Self::Agent => build_agent_task_request(
-                dispatch.issue_id.clone(),
-                dispatch.worktree_path.clone(),
-                model,
-                dispatch.prompt.clone(),
-                Vec::new(),
-                agent_command,
-            ),
-            Self::Dev => build_dev_task_request(
-                dispatch.issue_id.clone(),
-                dispatch.worktree_path.clone(),
-                model,
-                dispatch.prompt.clone(),
-                Vec::new(),
-                agent_command,
-            ),
+            Self::Agent => dispatch_host.build_agent_task_request(dispatch, model, agent_command),
+            Self::Dev => dispatch_host.build_dev_task_request(dispatch, model, agent_command),
         }
-        .map_err(anyhow::Error::msg)
     }
 
     pub(super) fn build_checkpoint_landed_items(

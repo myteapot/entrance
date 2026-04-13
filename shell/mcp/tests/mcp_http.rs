@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     io::Read,
     net::TcpListener,
     path::PathBuf,
@@ -493,8 +493,13 @@ fn external_client_can_scope_dispatch_surface_by_actor_role_over_http() -> Resul
     assert!(vault_list["result"]["dispatchRole"].is_null());
 
     let port = reserve_port()?;
-    let mut nota_server =
-        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", Some("test-openai-token"), Some("nota"))?;
+    let mut nota_server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
     let initialize = nota_server.send(json!({
         "jsonrpc": "2.0",
         "id": "initialize-nota",
@@ -639,8 +644,13 @@ fn external_client_can_read_nota_runtime_overview_over_http() -> Result<()> {
     seed_nota_runtime_overview(app_dir.path())?;
 
     let port = reserve_port()?;
-    let mut server =
-        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", Some("test-openai-token"), Some("nota"))?;
+    let mut server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
 
     let initialize = server.send(json!({
         "jsonrpc": "2.0",
@@ -706,8 +716,13 @@ fn external_client_can_read_nota_runtime_status_over_http() -> Result<()> {
     seed_nota_runtime_overview(app_dir.path())?;
 
     let port = reserve_port()?;
-    let mut server =
-        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", Some("test-openai-token"), Some("nota"))?;
+    let mut server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
 
     let initialize = server.send(json!({
         "jsonrpc": "2.0",
@@ -775,8 +790,13 @@ fn external_client_can_write_nota_runtime_checkpoint_over_http() -> Result<()> {
     seed_app_state(app_dir.path())?;
 
     let port = reserve_port()?;
-    let mut server =
-        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", Some("test-openai-token"), Some("nota"))?;
+    let mut server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
 
     let initialize = server.send(json!({
         "jsonrpc": "2.0",
@@ -844,9 +864,9 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     fs::create_dir_all(&bootstrap_skill)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
 
     let managed_worktree = app_dir
         .path()
@@ -859,8 +879,13 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
     let agent_command = write_stub_agent_command(app_dir.path())?;
 
     let port = reserve_port()?;
-    let mut server =
-        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", Some("test-openai-token"), Some("nota"))?;
+    let mut server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
 
     let initialize = server.send(json!({
         "jsonrpc": "2.0",
@@ -1036,9 +1061,10 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
         )?,
         1
     );
-    let baseline_receipt_count = connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
-        row.get::<_, i64>(0)
-    })?;
+    let baseline_receipt_count =
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
     assert!(baseline_receipt_count >= 5);
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM nota_runtime_allocations", [], |row| {
@@ -1046,9 +1072,10 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
         })?,
         1
     );
-    let cadence_object_count = connection.query_row("SELECT COUNT(*) FROM cadence_objects", [], |row| {
-        row.get::<_, i64>(0)
-    })?;
+    let cadence_object_count =
+        connection.query_row("SELECT COUNT(*) FROM cadence_objects", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
     assert!(cadence_object_count >= 1);
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM plugin_forge_tasks", [], |row| {
@@ -1218,9 +1245,10 @@ fn external_client_can_create_nota_do_transaction_over_http() -> Result<()> {
     let stored_payload: Value = serde_json::from_str(&stored_allocation_outcome.1)
         .context("stored allocation payload_json should be valid JSON")?;
     assert!(stored_payload["terminal_outcome"].is_null());
-    let final_receipt_count = connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
-        row.get::<_, i64>(0)
-    })?;
+    let final_receipt_count =
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
     assert!(final_receipt_count >= 5);
     assert_eq!(
         connection.query_row(
@@ -1240,10 +1268,10 @@ fn external_client_can_create_nota_owned_dev_transaction_over_http() -> Result<(
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
     let managed_worktree = app_dir
@@ -1257,8 +1285,13 @@ fn external_client_can_create_nota_owned_dev_transaction_over_http() -> Result<(
     let agent_command = write_stub_agent_command(app_dir.path())?;
 
     let port = reserve_port()?;
-    let mut server =
-        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", Some("test-openai-token"), Some("nota"))?;
+    let mut server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
 
     let initialize = server.send(json!({
         "jsonrpc": "2.0",
@@ -1468,9 +1501,10 @@ fn external_client_can_create_nota_owned_dev_transaction_over_http() -> Result<(
         )?,
         1
     );
-    let final_receipt_count = connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
-        row.get::<_, i64>(0)
-    })?;
+    let final_receipt_count =
+        connection.query_row("SELECT COUNT(*) FROM nota_runtime_receipts", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
     assert!(final_receipt_count >= 5);
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM nota_runtime_allocations", [], |row| {
@@ -1488,10 +1522,10 @@ fn external_client_can_read_dev_review_ready_next_step_over_http() -> Result<()>
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
     let managed_worktree = app_dir
@@ -1550,8 +1584,13 @@ fn external_client_can_read_dev_review_ready_next_step_over_http() -> Result<()>
     run_entrance_cli(app_dir.path(), &["nota", "checkpoint-runtime-closure"])?;
 
     let port = reserve_port()?;
-    let mut server =
-        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", Some("test-openai-token"), Some("nota"))?;
+    let mut server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
     let initialize = server.send(json!({
         "jsonrpc": "2.0",
         "id": "initialize-review-ready",
@@ -1763,10 +1802,10 @@ fn external_client_can_read_dev_integrate_truth_over_http() -> Result<()> {
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
     let managed_worktree = app_dir
@@ -1840,8 +1879,13 @@ fn external_client_can_read_dev_integrate_truth_over_http() -> Result<()> {
     )?;
 
     let port = reserve_port()?;
-    let mut server =
-        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", Some("test-openai-token"), Some("nota"))?;
+    let mut server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
     let initialize = server.send(json!({
         "jsonrpc": "2.0",
         "id": "initialize-integrate",
@@ -2044,10 +2088,10 @@ fn external_client_can_read_dev_finalize_truth_over_http() -> Result<()> {
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
     let managed_worktree = app_dir
@@ -2150,8 +2194,13 @@ fn external_client_can_read_dev_finalize_truth_over_http() -> Result<()> {
     assert_eq!(finalize_report["next_step"], Value::Null);
 
     let port = reserve_port()?;
-    let mut server =
-        spawn_mcp_http_with_actor_role(app_dir.path(), port, "/mcp", Some("test-openai-token"), Some("nota"))?;
+    let mut server = spawn_mcp_http_with_actor_role(
+        app_dir.path(),
+        port,
+        "/mcp",
+        Some("test-openai-token"),
+        Some("nota"),
+    )?;
     let initialize = server.send(json!({
         "jsonrpc": "2.0",
         "id": "initialize-finalize",
@@ -2240,9 +2289,9 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     fs::create_dir_all(&bootstrap_skill)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
 
     let managed_worktree = app_dir
         .path()
@@ -2305,7 +2354,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
     );
     assert_eq!(
         prepare["result"]["structuredContent"]["prompt_source"],
-        "Entrance-owned notes/harness/bootstrap prompt"
+        "Entrance-owned notes/agents prompt"
     );
 
     let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
@@ -2316,7 +2365,7 @@ fn external_client_can_prepare_and_verify_forge_dispatch_over_http_without_agent
         prepare["result"]["structuredContent"]["worktree_path"],
         worktree_path
     );
-    assert!(prompt.contains("notes/harness/bootstrap/duet/SKILL.md"));
+    assert!(prompt.contains("notes/agents/skill.md"));
     assert!(!prompt.contains(".agents"));
 
     let verify = server.send(json!({
@@ -2408,10 +2457,10 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_http_without_a
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
     let managed_worktree = app_dir
@@ -2471,7 +2520,7 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_http_without_a
     );
     assert_eq!(
         prepare["result"]["structuredContent"]["prompt_source"],
-        "Entrance-owned notes/harness/bootstrap dev prompt"
+        "Entrance-owned notes/agents dev prompt"
     );
 
     let worktree_path = managed_worktree.to_string_lossy().replace('\\', "/");
@@ -2482,8 +2531,8 @@ fn external_client_can_prepare_and_verify_forge_dev_dispatch_over_http_without_a
         prepare["result"]["structuredContent"]["worktree_path"],
         worktree_path
     );
-    assert!(prompt.contains("notes/harness/bootstrap/duet/SKILL.md"));
-    assert!(prompt.contains("notes/harness/bootstrap/duet/roles/dev.md"));
+    assert!(prompt.contains("notes/agents/skill.md"));
+    assert!(prompt.contains("notes/agents/roles/dev.md"));
     assert!(!prompt.contains(".agents"));
 
     let verify = server.send(json!({
@@ -2571,9 +2620,9 @@ fn external_client_can_dispatch_agent_over_http_with_agent_lane_runtime() -> Res
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     fs::create_dir_all(&bootstrap_skill)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
 
     let managed_worktree = app_dir
         .path()
@@ -2703,10 +2752,10 @@ fn external_client_can_dispatch_dev_over_http_with_dev_lane_runtime() -> Result<
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
     let managed_worktree = app_dir
@@ -2833,10 +2882,10 @@ fn external_client_can_observe_dispatch_supervision_receipts_over_http() -> Resu
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
     let managed_worktree = app_dir
@@ -3032,10 +3081,10 @@ fn external_client_can_bootstrap_allocator_cycle_over_nota_http_surface() -> Res
     seed_app_state(app_dir.path())?;
 
     let project_root = app_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let role_dir = bootstrap_skill.join("roles");
     fs::create_dir_all(&role_dir)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(role_dir.join("dev.md"), "# test dev role\n")?;
     init_git_repo_with_commit(&project_root)?;
 
@@ -3389,14 +3438,18 @@ fn spawn_mcp_http(
 }
 
 fn run_entrance_cli(app_dir: &PathBuf, args: &[&str]) -> Result<String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_entrance"))
-        .args(args)
-        .env("ENTRANCE_APP_DATA_DIR", app_dir)
-        .env("OPENAI_API_KEY", "test-openai-token")
-        .env_remove("LINEAR_API_KEY")
-        .env_remove("LINEAR_TOKEN")
-        .output()
-        .with_context(|| format!("failed to spawn `entrance {}`", args.join(" ")))?;
+    let output = Command::new(resolve_workspace_binary(
+        "CARGO_BIN_EXE_entrance",
+        "entrance",
+        "entrance-cli",
+    )?)
+    .args(args)
+    .env("ENTRANCE_APP_DATA_DIR", app_dir)
+    .env("OPENAI_API_KEY", "test-openai-token")
+    .env_remove("LINEAR_API_KEY")
+    .env_remove("LINEAR_TOKEN")
+    .output()
+    .with_context(|| format!("failed to spawn `entrance {}`", args.join(" ")))?;
 
     if !output.status.success() {
         bail!(
@@ -3497,9 +3550,12 @@ fn spawn_mcp_http_with_actor_role(
     openai_api_key: Option<&str>,
     actor_role: Option<&str>,
 ) -> Result<SpawnedHttpMcp> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_entrance"));
+    let mut command = Command::new(resolve_workspace_binary(
+        "CARGO_BIN_EXE_entrance-mcp",
+        "entrance-mcp",
+        "entrance-mcp",
+    )?);
     command
-        .arg("mcp")
         .arg("http")
         .arg("--port")
         .arg(port.to_string())
@@ -3523,7 +3579,7 @@ fn spawn_mcp_http_with_actor_role(
 
     let mut child = command
         .spawn()
-        .context("failed to spawn `entrance mcp http`")?;
+        .context("failed to spawn `entrance-mcp http`")?;
 
     let stderr = child
         .stderr
@@ -3536,6 +3592,41 @@ fn spawn_mcp_http_with_actor_role(
         endpoint: endpoint.to_string(),
         port,
     })
+}
+
+fn resolve_workspace_binary(env_var: &str, bin_name: &str, package_name: &str) -> Result<PathBuf> {
+    if let Some(path) = env::var_os(env_var) {
+        return Ok(path.into());
+    }
+
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .context("shell/mcp should live under the Entrance workspace root")?
+        .to_path_buf();
+    let binary_name = if cfg!(windows) {
+        format!("{bin_name}.exe")
+    } else {
+        bin_name.to_string()
+    };
+    let binary_path = workspace_root
+        .join("target")
+        .join("debug")
+        .join(binary_name);
+    if binary_path.is_file() {
+        return Ok(binary_path);
+    }
+
+    let status = Command::new("cargo")
+        .args(["build", "--offline", "-p", package_name, "--bin", bin_name])
+        .current_dir(&workspace_root)
+        .status()
+        .with_context(|| format!("failed to build missing workspace binary `{bin_name}`"))?;
+    if !status.success() {
+        bail!("building workspace binary `{bin_name}` exited with status {status}");
+    }
+
+    Ok(binary_path)
 }
 
 fn post_json_rpc(port: u16, endpoint: &str, request: &Value) -> Result<Value> {

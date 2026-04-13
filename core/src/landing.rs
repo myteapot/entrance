@@ -664,7 +664,11 @@ pub fn apply_landing_reconcile_batch(
             continue;
         }
 
-        let status = item.status.as_deref().map(str::trim).filter(|value| !value.is_empty());
+        let status = item
+            .status
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let reconciliation_status = item
             .reconciliation_status
             .as_deref()
@@ -762,7 +766,10 @@ pub fn landing_reconcile_report(data_store: &DataStore) -> Result<LandingReconci
     });
 
     Ok(LandingReconcileSummaryReport {
-        planning_item_count: reconciliation_status_buckets.iter().map(|bucket| bucket.count).sum(),
+        planning_item_count: reconciliation_status_buckets
+            .iter()
+            .map(|bucket| bucket.count)
+            .sum(),
         unreconciled_count,
         reconciliation_status_buckets,
         status_buckets,
@@ -956,7 +963,10 @@ mod tests {
             Some("critical_path"),
             Some("batch-01 critical path"),
         )?;
-        assert_eq!(updated.planning_item.canonical_key.as_deref(), Some(key_100));
+        assert_eq!(
+            updated.planning_item.canonical_key.as_deref(),
+            Some(key_100)
+        );
         assert_eq!(updated.planning_item.status, "triaged");
         assert_eq!(updated.planning_item.reconciliation_status, "critical_path");
 

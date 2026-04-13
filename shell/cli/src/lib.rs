@@ -1,58 +1,74 @@
+#[path = "commands/compiler_cli.rs"]
 mod compiler_cli;
-mod electron_bridge_cli;
+#[path = "commands/forge_cli.rs"]
 mod forge_cli;
+#[path = "commands/issues_cli.rs"]
 mod issues_cli;
-mod mcp_cli;
+#[path = "commands/memory_cli.rs"]
 mod memory_cli;
+#[path = "commands/nota_cli.rs"]
 mod nota_cli;
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::{
-    core::{
-        bootstrap_for_paths,
-        hygiene::{list_spec_hygiene_v0, run_spec_hygiene_v0},
-        landing::{
-            apply_landing_reconcile_batch, import_linear_entrance_snapshot,
-            landing_reconcile_report, list_landing_ingest_runs, list_landing_mirror_items,
-            list_landing_planning_items, list_landing_unreconciled_items,
-            set_landing_reconcile_status,
-        },
-        recovery::{
-            build_recovery_status_report, import_recovery_seed, list_recovery_seed_rows,
-            list_recovery_seed_runs, RecoverySeedRowsQuery,
-        },
-        resolve_app_data_dir, AppPaths, StartupState,
+#[allow(unused_imports)]
+mod core {
+    pub mod config_store {
+        pub(crate) use entrance_harness::config::*;
+    }
+
+    pub(crate) use entrance_core::nota as nota_runtime;
+    pub(crate) use entrance_core::*;
+    pub(crate) use entrance_harness::{
+        boot_for_paths as bootstrap_for_paths, bootstrap_mcp_cycle, resolve_app_data_dir,
+        HarnessPaths as AppPaths, RuntimeServices as StartupState,
+    };
+}
+
+#[allow(unused_imports)]
+mod hosts {
+    pub mod plugins {
+        pub(crate) use entrance_harness::plugins::*;
+    }
+}
+
+#[allow(unused_imports)]
+mod surfaces {
+    pub mod tauri {
+        pub(crate) use entrance_harness::{rebuild_nota_projections, write_hot_root_projection};
+    }
+}
+
+use crate::core::{
+    bootstrap_for_paths,
+    hygiene::{list_spec_hygiene_v0, run_spec_hygiene_v0},
+    landing::{
+        apply_landing_reconcile_batch, import_linear_entrance_snapshot, landing_reconcile_report,
+        list_landing_ingest_runs, list_landing_mirror_items, list_landing_planning_items,
+        list_landing_unreconciled_items, set_landing_reconcile_status,
     },
-    run_tauri_app,
+    recovery::{
+        build_recovery_status_report, import_recovery_seed, list_recovery_seed_rows,
+        list_recovery_seed_runs, RecoverySeedRowsQuery,
+    },
+    resolve_app_data_dir, AppPaths, StartupState,
 };
 
-#[cfg(test)]
-pub(crate) use forge_cli::{prepare_forge_dispatch_cli, verify_forge_dispatch_cli};
-
 use self::{
-    compiler_cli::run_compiler_cli,
-    electron_bridge_cli::run_electron_bridge_stdio,
-    forge_cli::run_forge_cli,
-    issues_cli::run_issues_cli,
-    mcp_cli::{run_mcp_http, run_mcp_stdio},
-    memory_cli::run_memory_cli,
-    nota_cli::run_nota_cli,
+    compiler_cli::run_compiler_cli, forge_cli::run_forge_cli, issues_cli::run_issues_cli,
+    memory_cli::run_memory_cli, nota_cli::run_nota_cli,
 };
 
 pub(crate) const ROOT_CLI_HELP: &str = r#"Entrance V1 release candidate runtime shell
 
 Usage:
-  entrance
   entrance <command> [args...]
   entrance --help
 
 Commands:
   compiler    Inspect the compiler registry query surface
-  electron-bridge  Serve the Electron shell backend over stdio
   nota       Read or write NOTA runtime continuity surfaces
-  mcp        Serve Entrance as an MCP server over stdio or HTTP
   forge      Run Forge dispatch and bootstrap helpers
   issues     Manage the built-in issue tracker (list, create, update)
   memory     Import NOTA memory store snapshots
@@ -61,7 +77,6 @@ Commands:
   hygiene    Run runtime and spec hygiene checks
 
 Notes:
-  Running `entrance` with no command starts the GUI shell.
   Run `entrance <command> --help` for command-specific usage.
 "#;
 
@@ -159,15 +174,6 @@ pub(crate) const NOTA_CLI_HELP: &str = r#"Usage:
   entrance nota checkpoint-runtime-closure
 "#;
 
-pub(crate) const MCP_CLI_HELP: &str = r#"Usage:
-  entrance mcp stdio [--actor-role <nota|arch|dev>]
-  entrance mcp http [--port <port>] [--endpoint <path>] [--actor-role <nota|arch|dev>]
-"#;
-
-pub(crate) const ELECTRON_BRIDGE_CLI_HELP: &str = r#"Usage:
-  entrance electron-bridge stdio
-"#;
-
 fn is_help_flag(value: &str) -> bool {
     matches!(value, "help" | "-h" | "--help")
 }
@@ -180,9 +186,6 @@ pub(crate) fn cli_help_for_args(args: &[String]) -> Option<&'static str> {
         [command, flag] if command == "hygiene" && is_help_flag(flag) => Some(HYGIENE_CLI_HELP),
         [command, flag] if command == "compiler" && is_help_flag(flag) => Some(COMPILER_CLI_HELP),
         [command, flag] if command == "memory" && is_help_flag(flag) => Some(MEMORY_CLI_HELP),
-        [command, flag] if command == "electron-bridge" && is_help_flag(flag) => {
-            Some(ELECTRON_BRIDGE_CLI_HELP)
-        }
         [command, subcommand, flag]
             if command == "compiler" && subcommand == "registry" && is_help_flag(flag) =>
         {
@@ -191,19 +194,6 @@ pub(crate) fn cli_help_for_args(args: &[String]) -> Option<&'static str> {
         [command, flag] if command == "nota" && is_help_flag(flag) => Some(NOTA_CLI_HELP),
         [command, flag] if command == "forge" && is_help_flag(flag) => Some(FORGE_CLI_HELP),
         [command, flag] if command == "issues" && is_help_flag(flag) => Some(ISSUES_CLI_HELP),
-        [command, flag] if command == "mcp" && is_help_flag(flag) => Some(MCP_CLI_HELP),
-        [command, transport, flag]
-            if command == "electron-bridge" && transport == "stdio" && is_help_flag(flag) =>
-        {
-            Some(ELECTRON_BRIDGE_CLI_HELP)
-        }
-        [command, transport, flag]
-            if command == "mcp"
-                && matches!(transport.as_str(), "stdio" | "http")
-                && is_help_flag(flag) =>
-        {
-            Some(MCP_CLI_HELP)
-        }
         _ => None,
     }
 }
@@ -212,7 +202,7 @@ fn print_cli_help(help: &str) {
     println!("{help}");
 }
 
-pub fn dispatch_cli_or_run() -> Result<()> {
+pub fn dispatch_cli() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if let Some(help) = cli_help_for_args(&args) {
         print_cli_help(help);
@@ -220,6 +210,10 @@ pub fn dispatch_cli_or_run() -> Result<()> {
     }
 
     match args.as_slice() {
+        [] => {
+            print_cli_help(ROOT_CLI_HELP);
+            Ok(())
+        }
         [command, rest @ ..] if command == "landing" => run_landing_cli(rest),
         [command, rest @ ..] if command == "recovery" => run_recovery_cli(rest),
         [command, rest @ ..] if command == "hygiene" => run_hygiene_cli(rest),
@@ -228,25 +222,7 @@ pub fn dispatch_cli_or_run() -> Result<()> {
         [command, rest @ ..] if command == "nota" => run_nota_cli(rest),
         [command, rest @ ..] if command == "forge" => run_forge_cli(rest),
         [command, rest @ ..] if command == "issues" => run_issues_cli(rest),
-        [command, transport, rest @ ..] if command == "electron-bridge" && transport == "stdio" => {
-            run_electron_bridge_stdio(rest)
-        }
-        [command, transport, rest @ ..] if command == "mcp" && transport == "stdio" => {
-            run_mcp_stdio(rest)
-        }
-        [command, transport, rest @ ..] if command == "mcp" && transport == "http" => {
-            run_mcp_http(rest)
-        }
-        [command, ..] if command == "electron-bridge" => {
-            bail!("unsupported Electron bridge transport, expected `entrance electron-bridge stdio`")
-        }
-        [command, ..] if command == "mcp" => {
-            bail!("unsupported MCP transport, expected `entrance mcp stdio` or `entrance mcp http`")
-        }
-        _ => {
-            run_tauri_app();
-            Ok(())
-        }
+        [command, ..] => bail!("unsupported command `{command}`; run `entrance --help`"),
     }
 }
 
@@ -406,16 +382,16 @@ fn parse_landing_reconcile_set_status_args(
     while index < args.len() {
         match args[index].as_str() {
             "--key" => {
-                let value = args.get(index + 1).context(
-                    "`entrance landing reconcile set-status --key` requires a value",
-                )?;
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance landing reconcile set-status --key` requires a value")?;
                 key = Some(value.trim().to_string());
                 index += 2;
             }
             "--status" => {
-                let value = args.get(index + 1).context(
-                    "`entrance landing reconcile set-status --status` requires a value",
-                )?;
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance landing reconcile set-status --status` requires a value")?;
                 status = Some(value.trim().to_string());
                 index += 2;
             }
@@ -427,9 +403,9 @@ fn parse_landing_reconcile_set_status_args(
                 index += 2;
             }
             "--reason" => {
-                let value = args.get(index + 1).context(
-                    "`entrance landing reconcile set-status --reason` requires a value",
-                )?;
+                let value = args
+                    .get(index + 1)
+                    .context("`entrance landing reconcile set-status --reason` requires a value")?;
                 reason = Some(value.trim().to_string());
                 index += 2;
             }
@@ -491,12 +467,6 @@ pub(crate) fn bootstrap_headless() -> Result<StartupState> {
     if !startup.mcp_enabled() {
         bail!("MCP server is disabled in entrance.toml");
     }
-
-    let _logging_system = crate::hosts::desktop::logging::LoggingSystem::init(
-        startup.paths().log_dir(),
-        startup.log_level(),
-        Some(startup.data_store()),
-    )?;
 
     Ok(startup)
 }

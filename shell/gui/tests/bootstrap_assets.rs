@@ -6,19 +6,14 @@ use anyhow::{Context, Result};
 fn forge_bootstrap_skill_points_to_entrance_owned_dispatch_runtime() -> Result<()> {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(3)
-        .context("hosts/desktop/tauri should live under the Entrance repo root")?
+        .nth(2)
+        .context("shell/gui should live under the Entrance repo root")?
         .to_path_buf();
-    let skill_path = repo_root
-        .join("notes")
-        .join("harness")
-        .join("bootstrap")
-        .join("duet")
-        .join("SKILL.md");
+    let skill_path = repo_root.join("notes").join("agents").join("skill.md");
     let contents = fs::read_to_string(&skill_path)
         .with_context(|| format!("failed to read bootstrap skill at {}", skill_path.display()))?;
 
-    assert!(contents.contains("notes/harness/bootstrap/duet/SKILL.md"));
+    assert!(contents.contains("notes/agents/skill.md"));
     assert!(contents.contains("entrance forge prepare-dispatch"));
     assert!(contents.contains("entrance forge verify-dispatch"));
     assert!(contents.contains("~/.entrance/worktrees/{project}/feat-{ISSUE}"));
@@ -39,14 +34,12 @@ fn forge_bootstrap_skill_points_to_entrance_owned_dispatch_runtime() -> Result<(
 fn arch_bootstrap_role_points_to_entrance_owned_dispatch_runtime() -> Result<()> {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(3)
-        .context("hosts/desktop/tauri should live under the Entrance repo root")?
+        .nth(2)
+        .context("shell/gui should live under the Entrance repo root")?
         .to_path_buf();
     let role_path = repo_root
         .join("notes")
-        .join("harness")
-        .join("bootstrap")
-        .join("duet")
+        .join("agents")
         .join("roles")
         .join("arch.md");
     let contents = fs::read_to_string(&role_path).with_context(|| {
@@ -56,8 +49,8 @@ fn arch_bootstrap_role_points_to_entrance_owned_dispatch_runtime() -> Result<()>
         )
     })?;
 
-    assert!(contents.contains("notes/harness/bootstrap/nota/identity.md"));
-    assert!(contents.contains("notes/harness/bootstrap/nota/rules.md"));
+    assert!(contents.contains("notes/agents/identity.md"));
+    assert!(contents.contains("notes/agents/rules.md"));
     assert!(contents.contains("legacy `db.py` bridge"));
     assert!(contents.contains("entrance forge prepare-dispatch"));
     assert!(contents.contains("entrance forge verify-dispatch"));

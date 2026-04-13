@@ -8,8 +8,14 @@ import { _electron as electron } from "playwright";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..", "..");
+const repoRoot = path.resolve(__dirname, "..", "..", "..");
 const rendererUrl = process.env.ENTRANCE_RENDERER_URL ?? "http://127.0.0.1:1420";
+const electronEnv = {
+  ...process.env,
+  ENTRANCE_RENDERER_URL: rendererUrl,
+  ENTRANCE_ELECTRON_NO_DEVTOOLS: "1",
+};
+delete electronEnv.ELECTRON_RUN_AS_NODE;
 
 const spawnChild = (command, args, options = {}) =>
   spawn(command, args, {
@@ -113,7 +119,7 @@ const runSmoke = async () => {
     "exec",
     "vite",
     "--config",
-    "surfaces/gui/vite.config.ts",
+    "shell/gui/vite.config.ts",
     "--host",
     "127.0.0.1",
     "--port",
@@ -126,13 +132,9 @@ const runSmoke = async () => {
     await waitForRenderer(rendererUrl);
 
     electronApp = await electron.launch({
-      args: [path.join(repoRoot, "hosts", "desktop", "electron", "main.mjs")],
+      args: [repoRoot],
       cwd: repoRoot,
-      env: {
-        ...process.env,
-        ENTRANCE_RENDERER_URL: rendererUrl,
-        ENTRANCE_ELECTRON_NO_DEVTOOLS: "1",
-      },
+      env: electronEnv,
     });
 
     const window = await electronApp.firstWindow();

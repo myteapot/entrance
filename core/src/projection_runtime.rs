@@ -395,9 +395,9 @@ mod tests {
             &store,
             ProjectionTargetSpec {
                 projection_class: HOT_ROOT_PROJECTION_CLASS.into(),
-                target_key: "mirror/notes/specs/top".into(),
+                target_key: "mirror/notes/agents/specs".into(),
                 title: "Mirrored repo hot root".into(),
-                target_path: "/tmp/notes/specs/top".into(),
+                target_path: "/tmp/notes/agents/specs".into(),
                 source_scope: "runtime:Entrance".into(),
                 repair_action: "entrance nota export-hot-root --project-dir <path>".into(),
                 projection_policy: OPTIONAL_PROJECTION_POLICY.into(),
@@ -445,7 +445,7 @@ mod tests {
         let mirror = report
             .targets
             .iter()
-            .find(|target| target.target.target_key == "mirror/notes/specs/top")
+            .find(|target| target.target.target_key == "mirror/notes/agents/specs")
             .expect("mirror target should exist");
         assert_eq!(mirror.state, "stale");
         assert!(!mirror.required);

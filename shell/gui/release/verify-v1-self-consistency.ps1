@@ -7,10 +7,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir "..\.."))
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir "..\..\.."))
 
 if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
-    $ManifestPath = Join-Path $repoRoot "scripts\release\reconciliation-batch-01.json"
+    $ManifestPath = Join-Path $repoRoot "shell\gui\release\reconciliation-batch-01.json"
 } elseif (-not [System.IO.Path]::IsPathRooted($ManifestPath)) {
     $ManifestPath = Join-Path $repoRoot $ManifestPath
 }
@@ -32,8 +32,8 @@ $useCargo = $true
 if (-not [string]::IsNullOrWhiteSpace($entranceBin)) {
     $useCargo = $false
 } else {
-    $candidateExe = Join-Path $repoRoot "hosts/desktop/tauri\target\debug\entrance.exe"
-    $candidatePosix = Join-Path $repoRoot "hosts/desktop/tauri/target/debug/entrance"
+    $candidateExe = Join-Path $repoRoot "target\debug\entrance.exe"
+    $candidatePosix = Join-Path $repoRoot "target\debug\entrance"
     if (Test-Path $candidateExe) {
         $entranceBin = $candidateExe
         $useCargo = $false
@@ -47,7 +47,7 @@ function Invoke-Entrance {
     param([string[]]$CommandArgs)
 
     if ($useCargo) {
-        & cargo run --manifest-path (Join-Path $repoRoot "hosts/desktop/tauri/Cargo.toml") -- @CommandArgs
+        & cargo run -p entrance-cli --bin entrance -- @CommandArgs
     } else {
         & $entranceBin @CommandArgs
     }
@@ -88,7 +88,7 @@ if ($repair.open_count -ne 0) {
 }
 
 Write-Host "[verify] applying reconciliation batch"
-$batchPath = Write-JsonSnapshot -FileName "landing-reconcile-batch-apply.json" -CommandArgs @("landing", "reconcile", "batch-apply", "--file", $ManifestPath)
+$null = Write-JsonSnapshot -FileName "landing-reconcile-batch-apply.json" -CommandArgs @("landing", "reconcile", "batch-apply", "--file", $ManifestPath)
 $reportPath = Write-JsonSnapshot -FileName "landing-reconcile-report.json" -CommandArgs @("landing", "reconcile", "report")
 $planningPath = Write-JsonSnapshot -FileName "landing-planning.json" -CommandArgs @("landing", "planning")
 
@@ -116,7 +116,7 @@ foreach ($key in $requiredKeys) {
 }
 
 Write-Host "[verify] running type + rust baselines"
-& cargo test --manifest-path (Join-Path $repoRoot "hosts/desktop/tauri/Cargo.toml") --lib
+& cargo test --workspace --locked
 & pnpm -C $repoRoot check
 
 if (-not $SkipE2E.IsPresent) {

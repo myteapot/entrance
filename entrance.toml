@@ -1,7 +1,5 @@
 [core]
-theme = "dark"
 log_level = "info"
-mcp_enabled = true
 
 [paths]
 runtime_db = "data/entrance.db"
@@ -13,12 +11,25 @@ worktrees = "worktrees"
 
 [plugins.launcher]
 enabled = true
-hotkey = "Alt+Space"
 scan_paths = []
 
 [plugins.forge]
 enabled = true
-http_port = 9721
+http_port = 9315
+project_dir = ""
+agent_command = ""
 
 [plugins.vault]
-enabled = false
+enabled = true
+
+[shell.cli]
+default_output = "json"
+
+[shell.gui]
+theme = "dark"
+global_hotkey = "Alt+Space"
+
+[shell.mcp]
+enabled = true
+mode = "stdio"
+default_actor_role = "nota"

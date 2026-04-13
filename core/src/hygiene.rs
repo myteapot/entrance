@@ -85,24 +85,24 @@ const SPEC_HYGIENE_SEEDS: [SpecHygieneSeed; 9] = [
         id: FINDING_MILESTONES_ARCHIVED,
         title: "Archive lead-model milestones mount residue",
         content: "The mounted milestones doc has decayed into a mojibake-prone V1/V2 roadmap and should no longer steer current Entrance truth.",
-        source_ref: "notes/specs/top/2.2-lead-model-3.md",
+        source_ref: "notes/agents/specs/lead-model.md",
         source_hash: "spec-hygiene-v0:lead-model-milestones",
-        scope_ref: "notes/specs/top/2.2-lead-model-3.md",
-        target_ref: "notes/specs/chore/2.2-lead-model-3/milestones.md",
+        scope_ref: "notes/agents/specs/lead-model.md",
+        target_ref: "notes/human/milestones.md",
         status: "archived",
         triage_status: "accepted",
         tags: "spec_hygiene,mount_decay,lead_model",
-        notes: "Keep as historical residue only; the active roadmap anchor is notes/specs/chore/entrance_v0_headless_system_roadmap.md.",
+        notes: "Keep as historical residue only; the active roadmap anchor is notes/human/roadmap.md.",
         confidence: 0.99,
     },
     SpecHygieneSeed {
         id: FINDING_LEAD_PRD_HISTORICAL,
         title: "Demote lead-model PRD to historical reference",
         content: "The mounted lead-model PRD is still useful as historical recovery material but should not be read as active program truth.",
-        source_ref: "notes/specs/top/2.2-lead-model-3.md",
+        source_ref: "notes/agents/specs/lead-model.md",
         source_hash: "spec-hygiene-v0:lead-model-prd",
-        scope_ref: "notes/specs/top/2.2-lead-model-3.md",
-        target_ref: "notes/specs/cold/2.2-lead-model-3/prd.md",
+        scope_ref: "notes/agents/specs/lead-model.md",
+        target_ref: "notes/archive/prd-legacy.md",
         status: "historical",
         triage_status: "accepted",
         tags: "spec_hygiene,historical_reference,lead_model",
@@ -113,10 +113,10 @@ const SPEC_HYGIENE_SEEDS: [SpecHygieneSeed; 9] = [
         id: FINDING_COMPILER_GOVERNANCE_STALE,
         title: "Mark compiler governance mount as stale residue",
         content: "The GitLab governance draft is process residue and no longer fits as active compiler/action IR detail.",
-        source_ref: "notes/specs/top/1.3-compiler-action-ir.md",
+        source_ref: "notes/agents/specs/compiler.md",
         source_hash: "spec-hygiene-v0:compiler-governance",
-        scope_ref: "notes/specs/top/1.3-compiler-action-ir.md",
-        target_ref: "notes/specs/chore/1.3-compiler-action-ir/gitlab_mr_based_governance.md",
+        scope_ref: "notes/agents/specs/compiler.md",
+        target_ref: "notes/archive/gitlab-mr-governance.md",
         status: "stale",
         triage_status: "accepted",
         tags: "spec_hygiene,mount_decay,compiler",
@@ -127,10 +127,10 @@ const SPEC_HYGIENE_SEEDS: [SpecHygieneSeed; 9] = [
         id: FINDING_OS_AUTH_STALE,
         title: "Mark OS connector-auth mount as stale residue",
         content: "The GitLab connector-auth design note is operational residue rather than current OS/core truth.",
-        source_ref: "notes/specs/top/1.1-os-core.md",
+        source_ref: "notes/agents/specs/os-core.md",
         source_hash: "spec-hygiene-v0:os-auth",
-        scope_ref: "notes/specs/top/1.1-os-core.md",
-        target_ref: "notes/specs/chore/1.1-os-core/gitlab_connector_auth.md",
+        scope_ref: "notes/agents/specs/os-core.md",
+        target_ref: "notes/human/gitlab-connector-auth.md",
         status: "stale",
         triage_status: "accepted",
         tags: "spec_hygiene,mount_decay,os_core",
@@ -141,10 +141,10 @@ const SPEC_HYGIENE_SEEDS: [SpecHygieneSeed; 9] = [
         id: FINDING_HANDOUT_ARCHIVED,
         title: "Archive expired self-cycle handout as historical handoff",
         content: "The top self-cycle handout contains expired operational state and should be treated as historical handoff rather than active execution truth.",
-        source_ref: "notes/specs/chore/README.md",
+        source_ref: "notes/agents/specs/README.md",
         source_hash: "spec-hygiene-v0:top-self-cycle-handout",
-        scope_ref: "notes/specs/chore/README.md",
-        target_ref: "notes/specs/chore/top_self_cycle_handout.md",
+        scope_ref: "notes/agents/specs/README.md",
+        target_ref: "notes/agents/handout.md",
         status: "archived",
         triage_status: "accepted",
         tags: "spec_hygiene,historical_handoff,chore",
@@ -155,10 +155,10 @@ const SPEC_HYGIENE_SEEDS: [SpecHygieneSeed; 9] = [
         id: FINDING_ROADMAP_ACTIVE,
         title: "Keep headless system roadmap as active self-clean anchor",
         content: "The headless Entrance V0 roadmap remains the active execution anchor for current system work.",
-        source_ref: "notes/specs/chore/README.md",
+        source_ref: "notes/agents/specs/README.md",
         source_hash: "spec-hygiene-v0:roadmap-anchor",
-        scope_ref: "notes/specs/chore/README.md",
-        target_ref: "notes/specs/chore/entrance_v0_headless_system_roadmap.md",
+        scope_ref: "notes/agents/specs/README.md",
+        target_ref: "notes/human/roadmap.md",
         status: "active_reference",
         triage_status: "accepted",
         tags: "spec_hygiene,active_anchor,chore",
@@ -169,10 +169,10 @@ const SPEC_HYGIENE_SEEDS: [SpecHygieneSeed; 9] = [
         id: FINDING_TOP_LEAD_ACTIVE,
         title: "Keep lead-model top doc as active mount owner",
         content: "The lead-model top doc remains the active mount owner; only its stale subordinate docs should be demoted.",
-        source_ref: "notes/specs/top/control.md",
+        source_ref: "notes/agents/specs/control.md",
         source_hash: "spec-hygiene-v0:top-lead-owner",
-        scope_ref: "notes/specs/top/control.md",
-        target_ref: "notes/specs/top/2.2-lead-model-3.md",
+        scope_ref: "notes/agents/specs/control.md",
+        target_ref: "notes/agents/specs/lead-model.md",
         status: "active_reference",
         triage_status: "accepted",
         tags: "spec_hygiene,active_anchor,lead_model",
@@ -183,10 +183,10 @@ const SPEC_HYGIENE_SEEDS: [SpecHygieneSeed; 9] = [
         id: FINDING_TOP_COMPILER_ACTIVE,
         title: "Keep compiler top doc as active mount owner",
         content: "The compiler/action IR top doc remains the active mount owner even though one mounted chore doc has decayed.",
-        source_ref: "notes/specs/top/machine.md",
+        source_ref: "notes/agents/specs/machine.md",
         source_hash: "spec-hygiene-v0:top-compiler-owner",
-        scope_ref: "notes/specs/top/machine.md",
-        target_ref: "notes/specs/top/1.3-compiler-action-ir.md",
+        scope_ref: "notes/agents/specs/machine.md",
+        target_ref: "notes/agents/specs/compiler.md",
         status: "active_reference",
         triage_status: "accepted",
         tags: "spec_hygiene,active_anchor,compiler",
@@ -197,10 +197,10 @@ const SPEC_HYGIENE_SEEDS: [SpecHygieneSeed; 9] = [
         id: FINDING_TOP_OS_ACTIVE,
         title: "Keep OS top doc as active mount owner",
         content: "The OS/core top doc remains an active mount owner even though one chore note has decayed into historical residue.",
-        source_ref: "notes/specs/top/machine.md",
+        source_ref: "notes/agents/specs/machine.md",
         source_hash: "spec-hygiene-v0:top-os-owner",
-        scope_ref: "notes/specs/top/machine.md",
-        target_ref: "notes/specs/top/1.1-os-core.md",
+        scope_ref: "notes/agents/specs/machine.md",
+        target_ref: "notes/agents/specs/os-core.md",
         status: "active_reference",
         triage_status: "accepted",
         tags: "spec_hygiene,active_anchor,os_core",
@@ -387,16 +387,17 @@ mod tests {
         assert_eq!(report.workflow, "spec_hygiene_v0");
         assert_eq!(report.finding_count, 9);
         assert_eq!(report.relation_count, 8);
-        assert!(report.findings.iter().any(|finding| finding.target_ref
-            == "notes/specs/chore/top_self_cycle_handout.md"
-            && finding.status == "archived"));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.target_ref == "notes/agents/handout.md"
+                && finding.status == "archived"));
         assert!(report
             .relations
             .iter()
             .any(|relation| relation.relation_type == "superseded_by"
-                && relation.source_target_ref == "notes/specs/chore/top_self_cycle_handout.md"
-                && relation.target_target_ref
-                    == "notes/specs/chore/entrance_v0_headless_system_roadmap.md"));
+                && relation.source_target_ref == "notes/agents/handout.md"
+                && relation.target_target_ref == "notes/human/roadmap.md"));
 
         let listed = list_spec_hygiene_v0(&store)?;
         assert_eq!(listed.finding_count, report.finding_count);

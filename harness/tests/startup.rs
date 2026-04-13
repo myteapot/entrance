@@ -5,10 +5,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use entrance_lib::core::{
-    bootstrap_for_paths,
-    config_store::{render_config, EntranceConfig},
-    AppPaths,
+use entrance_harness::{
+    boot_for_paths,
+    config::{render_config, EntranceConfig},
+    HarnessPaths,
 };
 use rusqlite::Connection;
 
@@ -28,8 +28,8 @@ impl TempAppDir {
         Ok(Self { path })
     }
 
-    fn paths(&self) -> AppPaths {
-        AppPaths::new(self.path.clone())
+    fn paths(&self) -> HarnessPaths {
+        HarnessPaths::new(self.path.clone())
     }
 }
 
@@ -44,7 +44,7 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
     let temp_dir = TempAppDir::new("default")?;
     let paths = temp_dir.paths();
 
-    let startup = bootstrap_for_paths(paths.clone())?;
+    let startup = boot_for_paths(paths.clone())?;
 
     assert!(paths.config_path().exists());
     assert!(paths.db_path().exists());
@@ -54,7 +54,8 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
     assert!(startup.launcher_enabled());
     assert_eq!(startup.launcher_hotkey(), Some("Alt+Space"));
     assert!(startup.forge_enabled());
-    assert_eq!(startup.forge_http_port(), 9721);
+    assert_eq!(startup.forge_http_port(), 9315);
+    assert!(startup.vault_enabled());
 
     let config = fs::read_to_string(paths.config_path())?.replace("\r\n", "\n");
     assert_eq!(
@@ -72,6 +73,8 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
             "plugin_forge_tasks",
             "plugin_forge_task_logs",
             "plugin_forge_dispatch_receipts",
+            "plugin_vault_tokens",
+            "plugin_vault_mcp_configs",
         ],
     )?;
 
@@ -80,7 +83,7 @@ fn first_start_creates_default_config_and_database() -> Result<()> {
 
 #[test]
 fn repository_default_template_matches_generated_default_config() -> Result<()> {
-    let committed_template = include_str!("../../../../entrance.toml").replace("\r\n", "\n");
+    let committed_template = include_str!("../../entrance.toml").replace("\r\n", "\n");
     assert_eq!(
         committed_template,
         render_config(&EntranceConfig::default())?.replace("\r\n", "\n")
@@ -96,25 +99,36 @@ fn startup_only_runs_enabled_plugin_migrations() -> Result<()> {
     fs::write(
         paths.config_path(),
         r#"[core]
-theme = "dark"
 log_level = "info"
-mcp_enabled = false
 
 [plugins.launcher]
 enabled = false
-hotkey = "Alt+Space"
 scan_paths = []
 
 [plugins.forge]
 enabled = false
-http_port = 9721
+http_port = 9315
+project_dir = ""
+agent_command = ""
 
 [plugins.vault]
 enabled = false
+
+[shell.cli]
+default_output = "json"
+
+[shell.gui]
+theme = "dark"
+global_hotkey = "Alt+Space"
+
+[shell.mcp]
+enabled = false
+mode = "stdio"
+default_actor_role = "nota"
 "#,
     )?;
 
-    let startup = bootstrap_for_paths(paths.clone())?;
+    let startup = boot_for_paths(paths.clone())?;
 
     assert!(!startup.mcp_enabled());
     assert!(!startup.launcher_enabled());
@@ -162,7 +176,7 @@ enabled = false
 "#,
     )?;
 
-    let startup = bootstrap_for_paths(paths.clone())?;
+    let startup = boot_for_paths(paths.clone())?;
 
     assert!(startup.forge_enabled());
     assert_tables_exist(
@@ -176,6 +190,9 @@ enabled = false
     let upgraded = fs::read_to_string(paths.config_path())?;
     assert!(upgraded.contains("[plugins.forge]"));
     assert!(upgraded.contains("enabled = true"));
+    assert!(upgraded.contains("[shell.gui]"));
+    assert!(upgraded.contains("global_hotkey = \"Alt+Space\""));
+    assert!(upgraded.contains("[shell.mcp]"));
 
     Ok(())
 }
@@ -188,25 +205,36 @@ fn config_changes_take_effect_after_restart() -> Result<()> {
     fs::write(
         paths.config_path(),
         r#"[core]
-theme = "dark"
 log_level = "info"
-mcp_enabled = false
 
 [plugins.launcher]
 enabled = false
-hotkey = "Alt+Space"
 scan_paths = []
 
 [plugins.forge]
 enabled = false
-http_port = 9721
+http_port = 9315
+project_dir = ""
+agent_command = ""
 
 [plugins.vault]
 enabled = false
+
+[shell.cli]
+default_output = "json"
+
+[shell.gui]
+theme = "dark"
+global_hotkey = "Alt+Space"
+
+[shell.mcp]
+enabled = false
+mode = "stdio"
+default_actor_role = "nota"
 "#,
     )?;
 
-    let first_start = bootstrap_for_paths(paths.clone())?;
+    let first_start = boot_for_paths(paths.clone())?;
     assert_eq!(first_start.theme(), "dark");
     assert!(!first_start.mcp_enabled());
     assert!(!first_start.launcher_enabled());
@@ -215,25 +243,36 @@ enabled = false
     fs::write(
         paths.config_path(),
         r#"[core]
-theme = "light"
 log_level = "debug"
-mcp_enabled = true
 
 [plugins.launcher]
 enabled = true
-hotkey = "Ctrl+Space"
 scan_paths = ["C:\\Tools"]
 
 [plugins.forge]
 enabled = true
 http_port = 9833
+project_dir = ""
+agent_command = ""
 
 [plugins.vault]
 enabled = false
+
+[shell.cli]
+default_output = "json"
+
+[shell.gui]
+theme = "light"
+global_hotkey = "Ctrl+Space"
+
+[shell.mcp]
+enabled = true
+mode = "stdio"
+default_actor_role = "nota"
 "#,
     )?;
 
-    let second_start = bootstrap_for_paths(paths.clone())?;
+    let second_start = boot_for_paths(paths.clone())?;
 
     assert_eq!(second_start.theme(), "light");
     assert_eq!(second_start.log_level(), "debug");
@@ -261,25 +300,36 @@ fn vault_migrations_run_when_plugin_is_enabled() -> Result<()> {
     fs::write(
         paths.config_path(),
         r#"[core]
-theme = "dark"
 log_level = "info"
-mcp_enabled = true
 
 [plugins.launcher]
 enabled = false
-hotkey = "Alt+Space"
 scan_paths = []
 
 [plugins.forge]
 enabled = false
-http_port = 9721
+http_port = 9315
+project_dir = ""
+agent_command = ""
 
 [plugins.vault]
 enabled = true
+
+[shell.cli]
+default_output = "json"
+
+[shell.gui]
+theme = "dark"
+global_hotkey = "Alt+Space"
+
+[shell.mcp]
+enabled = true
+mode = "stdio"
+default_actor_role = "nota"
 "#,
     )?;
 
-    let startup = bootstrap_for_paths(paths.clone())?;
+    let startup = boot_for_paths(paths.clone())?;
 
     assert!(startup.vault_enabled());
     assert_tables_exist(

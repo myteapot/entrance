@@ -1,18 +1,27 @@
 # Entrance
 
-`Entrance` 当前公开姿态是 `V1 RELEASE CANDIDATE`。它是一个以数据库为真相源的连续性运行时，也是一个带原生 GUI 的 `NOTA` 宿主。
+`Entrance` 当前公开姿态是 `V1 RELEASE CANDIDATE`。仓库现已收敛为 Rust workspace，包含 `core`、`harness`、`shell/cli`、`shell/gui`、`shell/mcp` 四类最终形态入口。
 
-> English: `Entrance` is currently published as a `V1 RELEASE CANDIDATE`: a DB-first continuity runtime and native `NOTA` host.
+> English: `Entrance` is currently published as a `V1 RELEASE CANDIDATE`, and the repository now ships as a Rust workspace with dedicated CLI, GUI, desktop bridge, and MCP shells.
 
 ## 安装指南
 
 ### 方式 A：直接使用发布二进制
 
-推荐优先使用发布页提供的 Windows zip。
+推荐优先使用发布页提供的 Windows zip。当前发布包会按构建结果携带这些二进制：
 
-1. 从发布页下载 `v1.0.0-rc.1`。
-2. 解压后运行 `entrance.exe`。
-3. 在终端中先读取运行时状态：
+- `entrance-gui.exe`：桌面 GUI
+- `entrance.exe`：CLI
+- `entrance-mcp.exe`：MCP shell
+- `entrance-desktop-bridge.exe`：Electron 桥接 sidecar
+
+启动桌面 GUI：
+
+```powershell
+.\entrance-gui.exe
+```
+
+读取运行时状态：
 
 ```powershell
 .\entrance.exe nota status
@@ -20,13 +29,11 @@
 .\entrance.exe nota checkpoints
 ```
 
-> English: Preferred path: download the Windows zip release, unzip it, run `entrance.exe`, and start by reading runtime state through `nota status`, `nota overview`, and `nota checkpoints`.
-
 ### 方式 B：从源码构建
 
 如果你希望自己构建：
 
-1. 安装 Node.js、pnpm、Rust stable toolchain 和 Windows C++ build environment。
+1. 安装 Node.js、pnpm、Rust stable toolchain 和对应平台的桌面构建环境。
 2. 安装前端依赖：
 
 ```powershell
@@ -39,56 +46,56 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-4. 构建 Windows 二进制：
+4. 构建全部 Rust 二进制：
 
 ```powershell
-cargo build --manifest-path hosts/desktop/tauri/Cargo.toml --release
+cargo build --workspace --release
 ```
 
-5. 读取运行时：
+5. 运行入口：
 
 ```powershell
-.\hosts/desktop/tauri\target\release\entrance.exe nota status
-.\hosts/desktop/tauri\target\release\entrance.exe nota overview
+.\target\release\entrance-gui.exe
+.\target\release\entrance.exe nota status
+.\target\release\entrance-mcp.exe stdio
 ```
 
-> English: Source builds are supported. Install Node.js, pnpm, Rust, and the Windows build toolchain, then run `pnpm install`, `pnpm build`, and `cargo build --manifest-path hosts/desktop/tauri/Cargo.toml --release`.
+> English: Source builds are supported. Install Node.js, pnpm, Rust, and the desktop build toolchain, then run `pnpm install`, `pnpm build`, and `cargo build --workspace --release`.
 
 ## Runtime Operations
 
-推荐把以下命令当作当前 `V1` release-candidate cut 的主入口：
+当前运行时主契约：
+
+- `entrance`：纯 CLI，不再无参启动 GUI
+- `entrance-gui`：Tauri 桌面 GUI
+- `entrance-desktop-bridge`：Electron 使用的独立桌面桥接二进制
+- `entrance-mcp`：MCP shell，支持 `stdio` 与 `http`
+
+常用命令：
 
 ```powershell
-.\entrance.exe nota status
-.\entrance.exe nota overview
-.\entrance.exe nota invariants
-.\entrance.exe nota repair
-.\entrance.exe nota rebuild-projections --project-dir <repo>
-.\entrance.exe recovery status
+.\target\release\entrance.exe nota status
+.\target\release\entrance.exe nota overview
+.\target\release\entrance.exe nota invariants
+.\target\release\entrance.exe nota repair
+.\target\release\entrance.exe nota rebuild-projections --project-dir <repo>
+.\target\release\entrance.exe recovery status
+.\target\release\entrance-mcp.exe http --port 9720 --endpoint /mcp
 ```
-
-当前运行时约定：
-
-- `status / overview` 读取 DB-first 的连续性真相，而不是重放聊天摘要
-- `invariants / repair` 暴露当前不变量状态和 repair lane
-- `rebuild-projections` 从运行时 DB 反向重建 hot-root 与 cold-doc 投影
-- `recovery status` 明确 recovery 现在只是 import-only 的吸收面，不再拥有 promotion authority
-
-> English: During the current `V1` release-candidate cut, prefer `nota status`, `nota overview`, `nota invariants`, `nota repair`, `nota rebuild-projections`, and `recovery status` as the main operator surfaces.
 
 ## Release Gate
 
 发布级自洽与双端验证入口：
 
 ```bash
-./hosts/release/verify-v1-self-consistency.sh
+./shell/gui/release/verify-v1-self-consistency.sh
 ```
 
 ```powershell
-./hosts/release/verify-v1-self-consistency.ps1
+./shell/gui/release/verify-v1-self-consistency.ps1
 ```
 
-对应检查清单见：`notes/specs/chore/v1_release_gate_checklist.md`。
+对应检查清单见：`notes/human/release-checklist.md`。
 
 双端补充验证命令：
 
@@ -97,7 +104,7 @@ pnpm test:electron-smoke
 ```
 
 ```powershell
-./hosts/release/run-windows-native-smoke.ps1 -Configuration Release
+./shell/gui/release/run-windows-native-smoke.ps1 -Configuration Release
 ```
 
 ## 版权与许可
@@ -107,5 +114,3 @@ pnpm test:electron-smoke
 - 默认代码许可见 [LICENSE](./LICENSE)
 - 简要许可说明见 [LICENSES.md](./LICENSES.md)
 - 名称与标识的使用边界见 [TRADEMARKS.md](./TRADEMARKS.md)
-
-> English: The repository uses a tight source-available license model. See `LICENSE`, `LICENSES.md`, and `TRADEMARKS.md` for the current boundaries.

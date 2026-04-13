@@ -135,9 +135,9 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     seed_forge_app_state(&app_data_dir)?;
 
     let project_root = temp_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     fs::create_dir_all(&bootstrap_skill)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
 
     let managed_worktree = app_data_dir
         .join("worktrees")
@@ -430,7 +430,12 @@ fn nota_do_cli_creates_runtime_transaction_receipts_and_checkpoint() -> Result<(
     )?;
     let blocked_receipts: Value = serde_json::from_str(&blocked_receipts_output)
         .context("blocked nota receipts output should be valid JSON")?;
-    assert!(blocked_receipts["receipt_count"].as_i64().unwrap_or_default() >= 5);
+    assert!(
+        blocked_receipts["receipt_count"]
+            .as_i64()
+            .unwrap_or_default()
+            >= 5
+    );
     if let Some(blocked_receipt) = blocked_receipts["receipts"]
         .as_array()
         .context("blocked receipts should be an array")?
@@ -543,10 +548,10 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
     seed_forge_app_state(&app_data_dir)?;
 
     let project_root = temp_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
     let managed_worktree = app_data_dir
@@ -775,7 +780,12 @@ fn nota_dev_cli_creates_nota_owned_dev_runtime_transaction_receipts_and_checkpoi
     )?;
     let blocked_receipts: Value = serde_json::from_str(&blocked_receipts_output)
         .context("blocked nota receipts output should be valid JSON")?;
-    assert!(blocked_receipts["receipt_count"].as_i64().unwrap_or_default() >= 5);
+    assert!(
+        blocked_receipts["receipt_count"]
+            .as_i64()
+            .unwrap_or_default()
+            >= 5
+    );
     let blocked_receipt_kinds = blocked_receipts["receipts"]
         .as_array()
         .context("blocked receipts should be an array")?
@@ -811,9 +821,9 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     seed_forge_app_state(&app_data_dir)?;
 
     let project_root = temp_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     fs::create_dir_all(&bootstrap_skill)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
 
     let managed_worktree = app_data_dir
         .join("worktrees")
@@ -893,9 +903,7 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
     )?;
     let receipts: Value = serde_json::from_str(&receipts_output)
         .context("do return receipts output should be valid JSON")?;
-    assert!(
-        receipts["receipt_count"].as_i64().unwrap_or_default() >= 5
-    );
+    assert!(receipts["receipt_count"].as_i64().unwrap_or_default() >= 5);
     if let Some(terminal_receipt) = receipts["receipts"]
         .as_array()
         .context("receipts should be an array")?
@@ -905,8 +913,9 @@ fn nota_do_cli_records_agent_return_acceptance_after_runtime_closure() -> Result
         let terminal_receipt_payload_json = terminal_receipt["payload_json"]
             .as_str()
             .context("terminal receipt payload_json should be present")?;
-        let terminal_receipt_payload: Value = serde_json::from_str(terminal_receipt_payload_json)
-            .context("terminal receipt payload_json should be valid JSON")?;
+        let terminal_receipt_payload: Value =
+            serde_json::from_str(terminal_receipt_payload_json)
+                .context("terminal receipt payload_json should be valid JSON")?;
         assert_eq!(terminal_receipt_payload["allocation_id"], allocation_id);
         assert_eq!(terminal_receipt_payload["lineage_ref"], lineage_ref);
         assert_eq!(terminal_receipt_payload["boundary_kind"], "return");
@@ -1080,10 +1089,10 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     seed_forge_app_state(&app_data_dir)?;
 
     let project_root = temp_dir.path().join("Entrance");
-    let bootstrap_skill = project_root.join("notes").join("harness").join("bootstrap").join("duet");
+    let bootstrap_skill = project_root.join("notes").join("agents");
     let dev_role = bootstrap_skill.join("roles");
     fs::create_dir_all(&dev_role)?;
-    fs::write(bootstrap_skill.join("SKILL.md"), "# test skill\n")?;
+    fs::write(bootstrap_skill.join("skill.md"), "# test skill\n")?;
     fs::write(dev_role.join("dev.md"), "# test dev role\n")?;
 
     let managed_worktree = app_data_dir
@@ -1165,9 +1174,7 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
     )?;
     let receipts: Value = serde_json::from_str(&receipts_output)
         .context("detached supervisor receipts should be valid JSON")?;
-    assert!(
-        receipts["receipt_count"].as_i64().unwrap_or_default() >= 5
-    );
+    assert!(receipts["receipt_count"].as_i64().unwrap_or_default() >= 5);
     if let Some(terminal_receipt) = receipts["receipts"]
         .as_array()
         .context("detached supervisor receipts should be an array")?
@@ -1177,8 +1184,9 @@ fn nota_dev_cli_hands_off_silent_child_to_detached_forge_supervisor() -> Result<
         let terminal_receipt_payload_json = terminal_receipt["payload_json"]
             .as_str()
             .context("terminal receipt payload_json should be present")?;
-        let terminal_receipt_payload: Value = serde_json::from_str(terminal_receipt_payload_json)
-            .context("terminal receipt payload_json should be valid JSON")?;
+        let terminal_receipt_payload: Value =
+            serde_json::from_str(terminal_receipt_payload_json)
+                .context("terminal receipt payload_json should be valid JSON")?;
         assert_eq!(terminal_receipt_payload["boundary_kind"], "return");
         assert_eq!(terminal_receipt_payload["child_execution_status"], "Done");
         assert_eq!(
@@ -2514,10 +2522,10 @@ fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result
 
     let project_dir = temp_dir.path().join("Entrance");
     let cold_doc_path = project_dir
-        .join("notes").join("specs")
-        .join("cold")
-        .join("1.1-os-core")
-        .join("projection_boundary.md");
+        .join("notes")
+        .join("agents")
+        .join("specs")
+        .join("projection-boundary.md");
     if let Some(parent) = cold_doc_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -2542,7 +2550,7 @@ fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result
     assert_eq!(canonicalize["imported_count"], 1);
     assert_eq!(
         canonicalize["docs"][0]["slug"],
-        "notes/specs/cold/1.1-os-core/projection_boundary.md"
+        "notes/agents/specs/projection-boundary.md"
     );
 
     fs::remove_file(&cold_doc_path)?;
@@ -2570,7 +2578,7 @@ fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result
     assert_eq!(listed["fresh_projection_count"], 1);
     assert_eq!(
         listed["docs"][0]["slug"],
-        "notes/specs/cold/1.1-os-core/projection_boundary.md"
+        "notes/agents/specs/projection-boundary.md"
     );
     assert_eq!(listed["docs"][0]["projection_state"], "fresh");
 
@@ -2584,7 +2592,7 @@ fn nota_cold_docs_can_be_canonicalized_and_reprojected_from_db_truth() -> Result
         .find(|target| {
             target["target"]["projection_class"] == "cold_doc_projection"
                 && target["target"]["target_key"]
-                    == "cold_doc:notes/specs/cold/1.1-os-core/projection_boundary.md"
+                    == "cold_doc:notes/agents/specs/projection-boundary.md"
         })
         .context("cold-doc projection target should exist")?;
     assert_eq!(cold_doc_target["state"], "fresh");
@@ -2625,10 +2633,10 @@ fn nota_rebuild_projections_rehydrates_retained_exports_from_db_truth() -> Resul
 
     let project_dir = temp_dir.path().join("Entrance");
     let cold_doc_path = project_dir
-        .join("notes").join("specs")
-        .join("cold")
-        .join("1.1-os-core")
-        .join("projection_boundary.md");
+        .join("notes")
+        .join("agents")
+        .join("specs")
+        .join("projection-boundary.md");
     if let Some(parent) = cold_doc_path.parent() {
         fs::create_dir_all(parent)?;
     }
