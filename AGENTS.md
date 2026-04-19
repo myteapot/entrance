@@ -1,64 +1,70 @@
 # Entrance — Agent Context
 
-> **Last updated**: 2026-04-13
-> **Workspace**: Rust workspace + Tauri 2 + Electron + SolidJS
+> **Last updated**: 2026-04-20
+> **Workspace**: Rust workspace + Electron + SolidJS
 
 ## What is Entrance
 
-Agent OS — 面向智能体的操作系统。当前最终入口契约已经拆为：
+Agent OS — 面向智能体的操作系统。当前仓库已经切到 V2 微内核架构：
 
-- `entrance` → CLI
-- `entrance-gui` → Tauri GUI
-- `entrance-desktop-bridge` → Electron bridge sidecar
-- `entrance-mcp` → MCP shell
+- `entrance` → 唯一 Rust binary
+- `shell/gui` → Electron + SolidJS 前端
+- `core` → 微内核能力层
+- `plugins/{drawer,hive,launcher}` → 插件层
 
-核心编译管线仍是：
-`ActionRecord → compile() → TypedActionPacket → lower_dispatch() → admit_dispatch() → resolve_return_route()`
+运行契约已经收敛为：
+- `entrance status`
+- `entrance drawer ...`
+- `entrance hive ...`
+- `entrance launcher ...`
+- `entrance daemon`
+- `entrance mcp stdio`
+- `entrance mcp http`
 
 ## Key Paths
 
 | Subsystem | Path |
 |-----------|------|
-| Compiler pipeline | `core/src/compiler/` |
-| NOTA runtime | `core/src/nota/mod.rs` |
-| Data layer | `core/src/data_store.rs` |
+| Boot + paths | `core/src/boot.rs` |
+| Config | `core/src/config.rs` |
+| Data layer | `core/src/store.rs` |
+| Bus | `core/src/bus.rs` |
 | Supervision | `core/src/supervision.rs` |
-| Harness bootstrap | `harness/src/runtime.rs` |
-| Config + path resolution | `harness/src/config.rs`, `harness/src/runtime.rs` |
-| Projection export | `harness/src/projections.rs` |
-| Forge engine | `harness/src/plugins/forge/` |
+| Plugin API | `core/src/plugin_api.rs` |
+| Drawer plugin | `plugins/drawer/src/lib.rs` |
+| Hive plugin | `plugins/hive/src/lib.rs` |
+| Launcher plugin | `plugins/launcher/src/lib.rs` |
+| Unified app binary | `shell/app/src/main.rs` |
+| Daemon + MCP transport | `shell/app/src/daemon.rs` |
 | Frontend pages | `shell/gui/renderer/pages/` |
-| Design tokens | `shell/gui/renderer/styles/theme.css` |
-| App shell CSS | `shell/gui/renderer/App.css` |
-| Graph component | `shell/gui/renderer/components/ComputeGraph.tsx` |
-| Graph engine | `shell/gui/renderer/features/dashboard/graphEngine.ts` |
-| Graph store | `shell/gui/renderer/features/dashboard/graphStore.ts` |
+| Frontend app | `shell/gui/renderer/App.tsx` |
+| Navigation | `shell/gui/renderer/components/Nav.tsx` |
+| Theme tokens | `shell/gui/renderer/styles/theme.css` |
+| App shell CSS | `shell/gui/renderer/styles/app.css` |
 | Electron shell | `shell/gui/electron/` |
-| Tauri commands | `shell/gui/src/tauri_commands/` |
-| MCP shell | `shell/mcp/src/` |
 
 ## Dev Environment
 
 ```bash
-# Frontend (browser dev, uses mock desktop bridge)
-pnpm dev                    # -> http://localhost:1420
+# Frontend
+pnpm dev
+pnpm dev:electron
 
 # Workspace validation
 cargo check --workspace
 cargo test --workspace
 
-# Main shells
-cargo run -p entrance-cli --bin entrance -- --help
-cargo run -p entrance-gui --bin entrance-gui
-cargo run -p entrance-gui --bin entrance-desktop-bridge -- stdio
-cargo run -p entrance-mcp --bin entrance-mcp -- stdio
+# Main binary
+cargo run -p entrance-app --bin entrance -- --help
+cargo run -p entrance-app --bin entrance -- status
+cargo run -p entrance-app --bin entrance -- daemon
+cargo run -p entrance-app --bin entrance -- mcp stdio
 ```
 
 ## Build
 
 ```bash
 pnpm build
-pnpm tauri build
 cargo build --workspace --release
 ```
 
@@ -67,12 +73,14 @@ cargo build --workspace --release
 1. `cargo check --workspace` → `cargo test --workspace` → commit → push
 2. Test helpers that mutate shared env should use `crate::test_env_guard()`
 3. Branch: `feat/<id>-<slug>`, squash merge to `main`
-4. Do not reintroduce `hosts/desktop/tauri` or `surfaces/` product code
-5. Shells must not depend on each other; shared behavior belongs in `core` or `harness`
+4. Do not reintroduce `harness/`, `shell/cli/`, `shell/mcp/`, or any Tauri product code
+5. Plugin 之间不得互相依赖；共享行为必须进入 `core`
 
 ## Current Shape
 
-- `core` only owns runtime/domain logic, DTOs, schema, and services.
-- `harness` owns config IO, path resolution, DB bootstrap, plugin wiring, and projection exports.
-- `shell/cli`, `shell/gui`, and `shell/mcp` are independent shells over `core + harness`.
-- Electron is maintained under `shell/gui` and talks to Rust through `entrance-desktop-bridge`.
+- `core` owns微内核能力：store、bus、config、fs、crypto、scheduler、supervision、versioning。
+- `plugins/drawer` 负责抽屉式存储与导入。
+- `plugins/hive` 负责任务分发账本。
+- `plugins/launcher` 负责本地启动项索引与搜索。
+- `shell/app` 是唯一 Rust binary，同时暴露 CLI、daemon 与 MCP。
+- `shell/gui` 是纯 Electron + SolidJS 前端，只通过 preload 调用 `entrance daemon`。

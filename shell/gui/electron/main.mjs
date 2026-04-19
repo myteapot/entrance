@@ -8,11 +8,10 @@ import { app, BrowserWindow, dialog, ipcMain } from "electron";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..", "..");
-const packagedBridgeName =
-  process.platform === "win32" ? "entrance-desktop-bridge.exe" : "entrance-desktop-bridge";
+const packagedBinaryName =
+  process.platform === "win32" ? "entrance.exe" : "entrance";
 
 const isDev = Boolean(process.env.ENTRANCE_RENDERER_URL);
-const defaultRendererUrl = "http://127.0.0.1:1420";
 const bridgeReadyTimeoutMs = 180_000;
 const openDevtoolsInDev = process.env.ENTRANCE_ELECTRON_NO_DEVTOOLS !== "1";
 
@@ -23,101 +22,6 @@ let bridgeStdoutBuffer = "";
 let nextBridgeRequestId = 1;
 const pendingBridgeInvocations = new Map();
 
-const resolveRendererTarget = () => {
-  if (process.env.ENTRANCE_RENDERER_URL) {
-    return process.env.ENTRANCE_RENDERER_URL;
-  }
-
-  return new URL("../dist/index.html", import.meta.url).toString();
-};
-
-const resolveWindow = (webContents) =>
-  BrowserWindow.fromWebContents(webContents) ?? mainWindow;
-
-const openDialogResult = (result, options) => {
-  if (result.canceled) {
-    return null;
-  }
-
-  if (options && typeof options === "object" && "multiple" in options && options.multiple) {
-    return result.filePaths;
-  }
-
-  return result.filePaths[0] ?? null;
-};
-
-const toMessageBoxType = (kind) => {
-  if (kind === "error") {
-    return "error";
-  }
-
-  if (kind === "warning") {
-    return "warning";
-  }
-
-  return "info";
-};
-
-const resolveMessageBoxTitle = (options) => {
-  if (typeof options === "string") {
-    return options;
-  }
-
-  return options?.title ?? "Entrance";
-};
-
-const resolveMessageBoxKind = (options) => {
-  if (typeof options === "string") {
-    return "info";
-  }
-
-  return options?.kind;
-};
-
-const normalizeOpenDialogOptions = (options = {}) => {
-  const properties = new Set(Array.isArray(options.properties) ? options.properties : []);
-
-  if (options.directory) {
-    properties.add("openDirectory");
-  } else {
-    properties.add("openFile");
-  }
-
-  if (options.multiple) {
-    properties.add("multiSelections");
-  }
-
-  if (options.showHiddenFiles) {
-    properties.add("showHiddenFiles");
-  }
-
-  if (options.createDirectory) {
-    properties.add("createDirectory");
-  }
-
-  if (options.promptToCreate) {
-    properties.add("promptToCreate");
-  }
-
-  return {
-    title: options.title,
-    defaultPath: options.defaultPath,
-    filters: options.filters,
-    buttonLabel: options.buttonLabel,
-    message: options.message,
-    securityScopedBookmarks: options.securityScopedBookmarks,
-    properties: [...properties],
-  };
-};
-
-const broadcastRendererEvent = (channel, payload) => {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) {
-      window.webContents.send(channel, payload);
-    }
-  }
-};
-
 const failPendingInvocations = (error) => {
   for (const pending of pendingBridgeInvocations.values()) {
     pending.reject(error);
@@ -127,24 +31,24 @@ const failPendingInvocations = (error) => {
 
 const resolveBridgeSpawn = () => {
   if (app.isPackaged) {
-    const packagedBridgePath = path.join(process.resourcesPath, packagedBridgeName);
-    if (existsSync(packagedBridgePath)) {
+    const packagedBinaryPath = path.join(process.resourcesPath, packagedBinaryName);
+    if (existsSync(packagedBinaryPath)) {
       return {
-        command: packagedBridgePath,
-        args: ["stdio"],
+        command: packagedBinaryPath,
+        args: ["daemon"],
       };
     }
   }
 
-  const devBridgeCandidates = [
-    path.join(repoRoot, "target", "debug", packagedBridgeName),
-    path.join(repoRoot, "target", "release", packagedBridgeName),
+  const devBinaryCandidates = [
+    path.join(repoRoot, "target", "debug", packagedBinaryName),
+    path.join(repoRoot, "target", "release", packagedBinaryName),
   ];
-  for (const candidate of devBridgeCandidates) {
+  for (const candidate of devBinaryCandidates) {
     if (existsSync(candidate)) {
       return {
         command: candidate,
-        args: ["stdio"],
+        args: ["daemon"],
       };
     }
   }
@@ -156,11 +60,11 @@ const resolveBridgeSpawn = () => {
       "--quiet",
       "--locked",
       "-p",
-      "entrance-gui",
+      "entrance-app",
       "--bin",
-      "entrance-desktop-bridge",
+      "entrance",
       "--",
-      "stdio",
+      "daemon",
     ],
   };
 };
@@ -201,11 +105,6 @@ const handleBridgeMessage = (line) => {
     }
 
     pending.reject(new Error(payload.error ?? "Electron bridge request failed"));
-    return;
-  }
-
-  if (payload.kind === "event" && typeof payload.topic === "string") {
-    broadcastRendererEvent(`entrance:event:${payload.topic}`, payload.payload ?? null);
     return;
   }
 
@@ -339,79 +238,16 @@ const registerIpc = () => {
   ipcMain.handle("entrance:core:invoke", async (_event, command, args = {}) =>
     invokeRustBridge(command, args),
   );
-
-  ipcMain.handle("entrance:dialog:open", async (event, options = {}) => {
-    const targetWindow = resolveWindow(event.sender);
-    const result = await dialog.showOpenDialog(
-      targetWindow,
-      normalizeOpenDialogOptions(options),
-    );
-    return openDialogResult(result, options);
-  });
-
-  ipcMain.handle("entrance:dialog:ask", async (event, message, options = {}) => {
-    const targetWindow = resolveWindow(event.sender);
-    const result = await dialog.showMessageBox(targetWindow, {
-      type: toMessageBoxType(resolveMessageBoxKind(options)),
-      title: resolveMessageBoxTitle(options),
-      message,
-      buttons: [options.okLabel ?? "Yes", options.cancelLabel ?? "No"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    });
-    return result.response === 0;
-  });
-
-  ipcMain.handle("entrance:dialog:message", async (event, message, options = {}) => {
-    const targetWindow = resolveWindow(event.sender);
-    await dialog.showMessageBox(targetWindow, {
-      type: toMessageBoxType(resolveMessageBoxKind(options)),
-      title: resolveMessageBoxTitle(options),
-      message,
-      buttons: [options.buttons?.ok ?? "OK"],
-      defaultId: 0,
-      noLink: true,
-    });
-    return "Ok";
-  });
-
-  ipcMain.handle("entrance:process:relaunch", async () => {
-    app.relaunch();
-    app.exit(0);
-  });
-
-  ipcMain.handle("entrance:updater:check", async () => null);
-
-  ipcMain.handle("entrance:window:show", async (event) => {
-    resolveWindow(event.sender)?.show();
-  });
-
-  ipcMain.handle("entrance:window:hide", async (event) => {
-    resolveWindow(event.sender)?.hide();
-  });
-
-  ipcMain.handle("entrance:window:center", async (event) => {
-    resolveWindow(event.sender)?.center();
-  });
-
-  ipcMain.handle("entrance:window:set-focus", async (event) => {
-    resolveWindow(event.sender)?.focus();
-  });
-
-  ipcMain.handle("entrance:window:is-visible", async (event) =>
-    resolveWindow(event.sender)?.isVisible() ?? false,
-  );
 };
 
 const createMainWindow = async () => {
   mainWindow = new BrowserWindow({
     width: 1120,
-    height: 720,
-    minWidth: 960,
-    minHeight: 640,
-    backgroundColor: "#111417",
-    title: "Entrance (Electron Adapter)",
+    height: 760,
+    minWidth: 980,
+    minHeight: 680,
+    backgroundColor: "#101216",
+    title: "Entrance",
     webPreferences: {
       preload: path.join(__dirname, "preload.mjs"),
       contextIsolation: true,
@@ -420,24 +256,15 @@ const createMainWindow = async () => {
     },
   });
 
-  mainWindow.on("focus", () => broadcastRendererEvent("entrance:event:window-focus", true));
-  mainWindow.on("blur", () => broadcastRendererEvent("entrance:event:window-focus", false));
-  mainWindow.webContents.on("before-input-event", (_event, input) => {
-    if (input.type === "keyDown" && input.control && input.key.toLowerCase() === "k") {
-      broadcastRendererEvent("entrance:event:launcher:toggle", null);
-    }
-  });
-
-  const target = resolveRendererTarget();
   if (isDev) {
-    await mainWindow.loadURL(target || defaultRendererUrl);
+    await mainWindow.loadURL(process.env.ENTRANCE_RENDERER_URL ?? "http://127.0.0.1:1420");
     if (openDevtoolsInDev) {
       mainWindow.webContents.openDevTools({ mode: "detach" });
     }
     return;
   }
 
-  await mainWindow.loadURL(target);
+  await mainWindow.loadURL(new URL("../dist/index.html", import.meta.url).toString());
 };
 
 app.whenReady().then(async () => {

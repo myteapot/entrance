@@ -5,11 +5,6 @@
     "module": "ESNext",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "skipLibCheck": true,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["shell/gui/renderer/*"],
-      "@desktop/*": ["shell/gui/contracts/desktop/*"]
-    },
     "types": ["vite/client"],
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
@@ -24,8 +19,6 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": [
-    "shell/gui/renderer",
-    "shell/gui/contracts/desktop",
-    "shell/gui/browser/tests/e2e"
+    "shell/gui/renderer"
   ]
 }

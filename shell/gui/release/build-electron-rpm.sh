@@ -95,7 +95,7 @@ prepare_release_stage() {
   cp -a "$renderer_dist_dir/." "$stage_dir/dist/"
   cp -a "$repo_root/shell/gui/electron/." "$stage_dir/electron/"
   cp -a "$repo_root/shell/gui/icons/." "$stage_dir/icons/"
-  cp -a "$repo_root/target/release/entrance-desktop-bridge" "$stage_dir/entrance-desktop-bridge"
+  cp -a "$repo_root/target/release/entrance" "$stage_dir/entrance"
   cp -a "$custom_linux_dir/after-remove.tpl" "$stage_dir/scripts/linux/after-remove.tpl"
 
   cat >"$stage_dir/package.json" <<EOF
@@ -129,8 +129,8 @@ EOF
   ],
   "extraResources": [
     {
-      "from": "entrance-desktop-bridge",
-      "to": "entrance-desktop-bridge"
+      "from": "entrance",
+      "to": "entrance"
     }
   ],
   "linux": {

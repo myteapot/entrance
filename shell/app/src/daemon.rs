@@ -1,0 +1,268 @@
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use axum::{
+    extract::State,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use entrance_core::{AppKernel, LauncherQuery};
+use entrance_drawer::DrawerPlugin;
+use entrance_hive::{HiveDispatchRequest, HivePlugin};
+use entrance_launcher::LauncherPlugin;
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+#[derive(Debug, Clone)]
+struct DaemonState {
+    kernel: AppKernel,
+    drawer: DrawerPlugin,
+    hive: HivePlugin,
+    launcher: LauncherPlugin,
+}
+
+#[derive(Debug, Deserialize)]
+struct InvokeRequest {
+    id: String,
+    command: String,
+    #[serde(default)]
+    args: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct InvokeResponse {
+    kind: &'static str,
+    id: String,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+pub async fn run_stdio(
+    kernel: AppKernel,
+    drawer: DrawerPlugin,
+    hive: HivePlugin,
+    launcher: LauncherPlugin,
+) -> Result<()> {
+    let state = Arc::new(DaemonState {
+        kernel,
+        drawer,
+        hive,
+        launcher,
+    });
+    let mut stdout = tokio::io::stdout();
+    stdout.write_all(br#"{"kind":"ready"}"#).await?;
+    stdout.write_all(b"\n").await?;
+    stdout.flush().await?;
+
+    let stdin = tokio::io::stdin();
+    let mut reader = BufReader::new(stdin).lines();
+
+    while let Some(line) = reader.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let request: InvokeRequest = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(error) => {
+                let response = InvokeResponse {
+                    kind: "response",
+                    id: "parse-error".to_string(),
+                    ok: false,
+                    result: None,
+                    error: Some(error.to_string()),
+                };
+                stdout
+                    .write_all(format!("{}\n", serde_json::to_string(&response)?).as_bytes())
+                    .await?;
+                stdout.flush().await?;
+                continue;
+            }
+        };
+
+        let response = match handle_invoke(state.as_ref(), request.command, request.args).await {
+            Ok(result) => InvokeResponse {
+                kind: "response",
+                id: request.id,
+                ok: true,
+                result: Some(result),
+                error: None,
+            },
+            Err(error) => InvokeResponse {
+                kind: "response",
+                id: request.id,
+                ok: false,
+                result: None,
+                error: Some(error.to_string()),
+            },
+        };
+
+        stdout
+            .write_all(format!("{}\n", serde_json::to_string(&response)?).as_bytes())
+            .await?;
+        stdout.flush().await?;
+    }
+
+    Ok(())
+}
+
+pub async fn run_http(
+    kernel: AppKernel,
+    drawer: DrawerPlugin,
+    hive: HivePlugin,
+    launcher: LauncherPlugin,
+) -> Result<()> {
+    let state = Arc::new(DaemonState {
+        kernel: kernel.clone(),
+        drawer,
+        hive,
+        launcher,
+    });
+    let port = kernel.config.hive.http_port;
+    let router = Router::new()
+        .route("/health", get(http_health))
+        .route("/mcp", post(http_invoke))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .with_context(|| format!("failed to bind MCP HTTP server on port {port}"))?;
+    axum::serve(listener, router).await?;
+    Ok(())
+}
+
+async fn http_health(State(state): State<Arc<DaemonState>>) -> impl IntoResponse {
+    Json(state.kernel.store.app_status(&state.kernel.root).unwrap())
+}
+
+async fn http_invoke(
+    State(state): State<Arc<DaemonState>>,
+    Json(request): Json<InvokeRequest>,
+) -> impl IntoResponse {
+    match handle_invoke(state.as_ref(), request.command, request.args).await {
+        Ok(result) => Json(serde_json::json!({
+            "ok": true,
+            "id": request.id,
+            "result": result
+        })),
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "id": request.id,
+            "error": error.to_string()
+        })),
+    }
+}
+
+async fn handle_invoke(
+    state: &DaemonState,
+    command: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value> {
+    match command.as_str() {
+        "status" => Ok(serde_json::to_value(
+            state.kernel.store.app_status(&state.kernel.root)?,
+        )?),
+        "drawer_summary" => Ok(serde_json::to_value(state.drawer.summary()?)?),
+        "drawer_list" => Ok(serde_json::to_value(
+            state
+                .drawer
+                .list(serde_json::from_value(args).unwrap_or_default())?,
+        )?),
+        "drawer_add_note" => {
+            let title = args
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Untitled Note")
+                .to_string();
+            let body = args
+                .get("body")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let id = state
+                .drawer
+                .add_note(title, body, vec!["ai-generated".to_string()])?;
+            Ok(serde_json::json!({ "id": id }))
+        }
+        "hive_list" => Ok(serde_json::to_value(state.hive.list()?)?),
+        "hive_dispatch" => {
+            let request = HiveDispatchRequest {
+                title: args
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Untitled dispatch")
+                    .to_string(),
+                project_dir: args
+                    .get("projectDir")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                summary: args
+                    .get("summary")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                payload_json: serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string()),
+            };
+            Ok(serde_json::to_value(state.hive.dispatch(request)?)?)
+        }
+        "launcher_hotkey" => Ok(serde_json::json!(state.launcher.hotkey())),
+        "launcher_refresh" => {
+            let scan_paths = args
+                .get("scanPaths")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let indexed = state.launcher.refresh(&scan_paths)?;
+            Ok(serde_json::json!({ "indexed": indexed }))
+        }
+        "launcher_search" => {
+            let query = LauncherQuery {
+                query: args
+                    .get("query")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                limit: args
+                    .get("limit")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(20) as usize,
+            };
+            Ok(serde_json::to_value(state.launcher.search(query)?)?)
+        }
+        "launcher_launch" => {
+            let command = args
+                .get("command")
+                .or_else(|| args.get("path"))
+                .and_then(|value| value.as_str())
+                .context("launcher_launch requires `command`")?;
+            let arguments = args.get("arguments").and_then(|value| value.as_str());
+            let working_dir = args
+                .get("workingDir")
+                .or_else(|| args.get("working_dir"))
+                .and_then(|value| value.as_str());
+            state.launcher.launch(command, arguments, working_dir)?;
+            Ok(serde_json::json!({ "launched": command }))
+        }
+        "launcher_pin" => {
+            let command = args
+                .get("command")
+                .and_then(|value| value.as_str())
+                .context("launcher_pin requires `command`")?;
+            let pinned = args
+                .get("pinned")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            state.launcher.pin(command, pinned)?;
+            Ok(serde_json::json!({ "command": command, "pinned": pinned }))
+        }
+        _ => anyhow::bail!("unsupported daemon command `{command}`"),
+    }
+}

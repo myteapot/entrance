@@ -1,13 +1,13 @@
 {
   "name": "entrance",
-  "version": "1.0.0-rc.1",
+  "version": "2.0.0",
   "private": true,
   "homepage": "http://server:9311/publish/entrance",
   "author": {
     "name": "Entrance Maintainers",
     "email": "maintainers@entrance.local"
   },
-  "description": "Entrance release-candidate workspace with CLI, GUI, MCP, and Electron shells",
+  "description": "Entrance V2 microkernel workspace with one Rust binary and an Electron GUI",
   "main": "shell/gui/electron/main.mjs",
   "type": "module",
   "scripts": {
@@ -15,36 +15,20 @@
     "dev:electron": "node shell/gui/electron/dev.mjs",
     "build": "pnpm check && vite build --config shell/gui/vite.config.ts",
     "start:electron": "node shell/gui/electron/start.mjs",
-    "build:electron:prereq": "pnpm check && vite build --config shell/gui/vite.config.ts && cargo build --locked --release -p entrance-gui --bin entrance-desktop-bridge",
+    "build:electron:prereq": "pnpm check && vite build --config shell/gui/vite.config.ts && cargo build --locked --release -p entrance-app --bin entrance",
     "build:electron:rpm": "bash shell/gui/release/build-electron-rpm.sh rpm",
     "build:electron:dir": "bash shell/gui/release/build-electron-rpm.sh dir",
-    "test:electron-smoke": "node shell/gui/release/electron-smoke.mjs",
     "preview": "vite preview --config shell/gui/vite.config.ts",
-    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "tauri": "tauri -c shell/gui/tauri.conf.json",
-    "test:e2e": "playwright test -c shell/gui/browser/playwright.config.ts",
-    "test:e2e:headed": "playwright test -c shell/gui/browser/playwright.config.ts --headed"
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json"
   },
   "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
-    "@solidjs/router": "^0.16.1",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "~2.6.0",
-    "@tauri-apps/plugin-opener": "^2",
-    "@tauri-apps/plugin-process": "~2.3.1",
-    "@tauri-apps/plugin-updater": "~2.10.0",
-    "d3-force": "^3.0.0",
-    "d3-timer": "^3.0.1",
     "solid-js": "^1.9.3"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
-    "@tauri-apps/cli": "^2",
-    "@types/d3-force": "^3.0.10",
     "@types/node": "^24.0.0",
     "electron": "^41.1.1",
     "electron-builder": "^26.0.12",
-    "playwright": "^1.59.1",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vite-plugin-solid": "^2.11.0"

@@ -8,6 +8,6 @@
   },
   "include": [
     "shell/gui/vite.config.ts",
-    "shell/gui/browser/playwright.config.ts"
+    "shell/gui/electron/*.mjs"
   ]
 }

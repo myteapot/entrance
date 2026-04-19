@@ -1,19 +1,15 @@
 [package]
-name = "entrance-core"
+name = "entrance-launcher"
 version.workspace = true
 edition.workspace = true
 license-file.workspace = true
 authors.workspace = true
 
 [dependencies]
-aes-gcm.workspace = true
 anyhow.workspace = true
-chrono.workspace = true
 dirs.workspace = true
-rusqlite.workspace = true
+entrance-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-toml.workspace = true
 tracing.workspace = true
 walkdir.workspace = true

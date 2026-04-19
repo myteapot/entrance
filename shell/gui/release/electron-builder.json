@@ -12,8 +12,8 @@
   ],
   "extraResources": [
     {
-      "from": "target/release/entrance-desktop-bridge",
-      "to": "entrance-desktop-bridge"
+      "from": "target/release/entrance",
+      "to": "entrance"
     }
   ],
   "linux": {

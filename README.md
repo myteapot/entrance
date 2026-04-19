@@ -1,32 +1,26 @@
 # Entrance
 
-`Entrance` 当前公开姿态是 `V1 RELEASE CANDIDATE`。仓库现已收敛为 Rust workspace，包含 `core`、`harness`、`shell/cli`、`shell/gui`、`shell/mcp` 四类最终形态入口。
+`Entrance` 已切到 V2 微内核重构：`core / plugins / shell`。仓库不再维护 `harness`、独立 CLI shell、独立 MCP shell 或任何 Tauri 代码。
 
-> English: `Entrance` is currently published as a `V1 RELEASE CANDIDATE`, and the repository now ships as a Rust workspace with dedicated CLI, GUI, desktop bridge, and MCP shells.
+> English: `Entrance` now uses a V2 microkernel layout: `core / plugins / shell`, with one Rust binary and one Electron GUI.
 
 ## 安装指南
 
-### 方式 A：直接使用发布二进制
+### 方式 A：运行统一 binary
 
-推荐优先使用发布页提供的 Windows zip。当前发布包会按构建结果携带这些二进制：
+当前 Rust 入口只有一个：
 
-- `entrance-gui.exe`：桌面 GUI
-- `entrance.exe`：CLI
-- `entrance-mcp.exe`：MCP shell
-- `entrance-desktop-bridge.exe`：Electron 桥接 sidecar
+- `entrance`：CLI + daemon + MCP
 
-启动桌面 GUI：
+常用命令：
 
-```powershell
-.\entrance-gui.exe
-```
-
-读取运行时状态：
-
-```powershell
-.\entrance.exe nota status
-.\entrance.exe nota overview
-.\entrance.exe nota checkpoints
+```bash
+./target/release/entrance status
+./target/release/entrance drawer list
+./target/release/entrance hive list
+./target/release/entrance launcher search code
+./target/release/entrance daemon
+./target/release/entrance mcp http
 ```
 
 ### 方式 B：从源码构建
@@ -36,75 +30,64 @@
 1. 安装 Node.js、pnpm、Rust stable toolchain 和对应平台的桌面构建环境。
 2. 安装前端依赖：
 
-```powershell
+```bash
 pnpm install --frozen-lockfile
 ```
 
 3. 构建前端资源：
 
-```powershell
+```bash
 pnpm build
 ```
 
-4. 构建全部 Rust 二进制：
+4. 构建统一 Rust binary：
 
-```powershell
+```bash
 cargo build --workspace --release
 ```
 
 5. 运行入口：
 
-```powershell
-.\target\release\entrance-gui.exe
-.\target\release\entrance.exe nota status
-.\target\release\entrance-mcp.exe stdio
+```bash
+./target/release/entrance status
+./target/release/entrance daemon
+./target/release/entrance mcp stdio
+pnpm dev:electron
 ```
 
-> English: Source builds are supported. Install Node.js, pnpm, Rust, and the desktop build toolchain, then run `pnpm install`, `pnpm build`, and `cargo build --workspace --release`.
+> English: Build the frontend with `pnpm build`, then build the Rust workspace and run `entrance`.
 
 ## Runtime Operations
 
 当前运行时主契约：
 
-- `entrance`：纯 CLI，不再无参启动 GUI
-- `entrance-gui`：Tauri 桌面 GUI
-- `entrance-desktop-bridge`：Electron 使用的独立桌面桥接二进制
-- `entrance-mcp`：MCP shell，支持 `stdio` 与 `http`
+- `entrance`：唯一 Rust binary
+- `entrance daemon`：Electron GUI backend
+- `entrance mcp stdio`：stdio MCP
+- `entrance mcp http`：HTTP MCP
 
 常用命令：
 
-```powershell
-.\target\release\entrance.exe nota status
-.\target\release\entrance.exe nota overview
-.\target\release\entrance.exe nota invariants
-.\target\release\entrance.exe nota repair
-.\target\release\entrance.exe nota rebuild-projections --project-dir <repo>
-.\target\release\entrance.exe recovery status
-.\target\release\entrance-mcp.exe http --port 9720 --endpoint /mcp
+```bash
+./target/release/entrance status
+./target/release/entrance drawer add-note --title "Plan" --body "V2 cutover"
+./target/release/entrance hive dispatch --title "Refactor pass"
+./target/release/entrance launcher refresh
+./target/release/entrance daemon
+./target/release/entrance mcp http
 ```
 
 ## Release Gate
 
-发布级自洽与双端验证入口：
+最小验证顺序：
 
 ```bash
-./shell/gui/release/verify-v1-self-consistency.sh
-```
-
-```powershell
-./shell/gui/release/verify-v1-self-consistency.ps1
-```
-
-对应检查清单见：`notes/human/release-checklist.md`。
-
-双端补充验证命令：
-
-```bash
-pnpm test:electron-smoke
-```
-
-```powershell
-./shell/gui/release/run-windows-native-smoke.ps1 -Configuration Release
+cargo check --workspace
+cargo test --workspace
+pnpm build
+./target/release/entrance status
+./target/release/entrance daemon
+./target/release/entrance mcp stdio
 ```
 
 ## 版权与许可
