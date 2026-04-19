@@ -72,6 +72,54 @@ impl LauncherPlugin {
         arguments: Option<&str>,
         working_dir: Option<&str>,
     ) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            if command.ends_with(".app") {
+                let mut child = Command::new("open");
+                if let Some(working_dir) = working_dir {
+                    child.current_dir(working_dir);
+                }
+                child.arg(command);
+                child
+                    .spawn()
+                    .with_context(|| format!("failed to launch app bundle `{command}`"))?;
+                self.store.record_launcher_launch(command)?;
+                return Ok(());
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if command.ends_with(".desktop") || command.ends_with(".AppImage") {
+                let launcher = if command.ends_with(".desktop") {
+                    "gtk-launch"
+                } else {
+                    command
+                };
+
+                let mut child = if launcher == "gtk-launch" {
+                    let desktop_id = std::path::Path::new(command)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(command);
+                    let mut child = Command::new(launcher);
+                    child.arg(desktop_id);
+                    child
+                } else {
+                    Command::new(launcher)
+                };
+
+                if let Some(working_dir) = working_dir {
+                    child.current_dir(working_dir);
+                }
+                child
+                    .spawn()
+                    .with_context(|| format!("failed to launch desktop entry `{command}`"))?;
+                self.store.record_launcher_launch(command)?;
+                return Ok(());
+            }
+        }
+
         let mut child = Command::new(command);
         if let Some(arguments) = arguments.filter(|value| !value.trim().is_empty()) {
             child.args(arguments.split_whitespace());

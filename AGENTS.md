@@ -36,7 +36,7 @@ Agent OS — 面向智能体的操作系统。当前仓库已经切到 V2 微内
 | Launcher plugin | `plugins/launcher/src/lib.rs` |
 | Unified app binary | `shell/app/src/main.rs` |
 | Daemon + MCP transport | `shell/app/src/daemon.rs` |
-| Frontend pages | `shell/gui/renderer/pages/` |
+| Frontend renderer | `shell/gui/renderer/` |
 | Frontend app | `shell/gui/renderer/App.tsx` |
 | Navigation | `shell/gui/renderer/components/Nav.tsx` |
 | Theme tokens | `shell/gui/renderer/styles/theme.css` |

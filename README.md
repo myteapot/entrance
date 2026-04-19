@@ -31,7 +31,7 @@
 2. 安装前端依赖：
 
 ```bash
-pnpm install --frozen-lockfile
+pnpm install
 ```
 
 3. 构建前端资源：

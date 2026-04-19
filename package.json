@@ -15,7 +15,7 @@
     "dev:electron": "node shell/gui/electron/dev.mjs",
     "build": "pnpm check && vite build --config shell/gui/vite.config.ts",
     "start:electron": "node shell/gui/electron/start.mjs",
-    "build:electron:prereq": "pnpm check && vite build --config shell/gui/vite.config.ts && cargo build --locked --release -p entrance-app --bin entrance",
+    "build:electron:prereq": "pnpm check && vite build --config shell/gui/vite.config.ts && cargo build --release -p entrance-app --bin entrance",
     "build:electron:rpm": "bash shell/gui/release/build-electron-rpm.sh rpm",
     "build:electron:dir": "bash shell/gui/release/build-electron-rpm.sh dir",
     "preview": "vite preview --config shell/gui/vite.config.ts",

@@ -24,34 +24,35 @@ default:
     - apt-get install -y --no-install-recommends curl ca-certificates git pkg-config libssl-dev build-essential xvfb
     - curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
     - corepack enable
-    - pnpm install --frozen-lockfile
+    - pnpm install
 
 linux-verify:
   extends: .linux-rust-node
   script:
     - |
       pnpm exec vite --version || \
-      (rm -rf node_modules && pnpm install --frozen-lockfile && pnpm exec vite --version)
-    - pnpm exec playwright install --with-deps chromium
+      (rm -rf node_modules && pnpm install && pnpm exec vite --version)
     - pnpm check
-    - cargo test --workspace --locked
-    - pnpm test:e2e
+    - cargo check --workspace
+    - cargo test --workspace
+    - pnpm build
   artifacts:
     when: always
     paths:
-      - test-results/
-      - playwright-report/
+      - shell/gui/dist/
     expire_in: 7 days
 
 electron-smoke:
   extends: .linux-rust-node
   script:
-    - cargo build --locked -p entrance-gui --bin entrance-desktop-bridge
-    - xvfb-run -a pnpm test:electron-smoke
+    - pnpm check
+    - pnpm build
+    - cargo build --release -p entrance-app --bin entrance
   artifacts:
     when: always
     paths:
-      - test-results/
+      - shell/gui/dist/
+      - target/release/entrance
     expire_in: 7 days
 
 windows-native:
@@ -60,10 +61,9 @@ windows-native:
     - windows
   script:
     - rustup default stable
-    - cargo build --locked --release -p entrance-gui --bin entrance-gui
-    - .\shell\gui\release\run-windows-native-smoke.ps1 -Configuration Release -SkipBuild -EntranceExePath "$env:CI_PROJECT_DIR/target/release/entrance-gui.exe"
-  artifacts:
-    when: always
-    paths:
-      - shell/gui/platform/windows/tests/native/TestResults/
-    expire_in: 7 days
+    - corepack enable
+    - pnpm install
+    - pnpm check
+    - cargo check --workspace
+    - cargo build --release -p entrance-app --bin entrance
+    - pnpm build

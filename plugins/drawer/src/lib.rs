@@ -58,17 +58,22 @@ impl DrawerPlugin {
             .unwrap_or("entry")
             .to_string();
 
-        let destination = self.root.join(&file_name);
         std::fs::create_dir_all(&self.root)?;
-        if source.is_file() {
+        let storage_path = if source.is_file() {
+            let destination = self.root.join(&file_name);
             std::fs::copy(&source, &destination)?;
-        }
+            Some(destination.display().to_string())
+        } else if source.is_dir() {
+            Some(source.display().to_string())
+        } else {
+            None
+        };
 
         self.store.insert_drawer_entry(DrawerEntryCreate {
             title: file_name,
             kind: "import".to_string(),
             source_path: Some(source.display().to_string()),
-            storage_path: Some(destination.display().to_string()),
+            storage_path,
             tags,
             encrypted: false,
         })

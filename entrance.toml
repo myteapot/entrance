@@ -1,35 +1,12 @@
-[core]
-log_level = "info"
+persona = "operator"
 
-[paths]
-runtime_db = "data/entrance.db"
-logs = "logs"
-cache = "cache"
-exports = "exports"
-snapshots = "snapshots"
-worktrees = "worktrees"
+[drawer]
+mode = "filesystem"
+root = "drawer"
 
-[plugins.launcher]
-enabled = true
+[hive]
+http_port = 9720
+
+[launcher]
+hotkey = "Ctrl+Space"
 scan_paths = []
-
-[plugins.forge]
-enabled = true
-http_port = 9315
-project_dir = ""
-agent_command = ""
-
-[plugins.vault]
-enabled = true
-
-[shell.cli]
-default_output = "json"
-
-[shell.gui]
-theme = "dark"
-global_hotkey = "Alt+Space"
-
-[shell.mcp]
-enabled = true
-mode = "stdio"
-default_actor_role = "nota"

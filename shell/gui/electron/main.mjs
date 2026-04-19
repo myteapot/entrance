@@ -58,7 +58,6 @@ const resolveBridgeSpawn = () => {
     args: [
       "run",
       "--quiet",
-      "--locked",
       "-p",
       "entrance-app",
       "--bin",

@@ -7,19 +7,19 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$resolvedGuiBinaryPath = $BinaryPath
+$resolvedBinaryPath = $BinaryPath
 
-if ([string]::IsNullOrWhiteSpace($resolvedGuiBinaryPath)) {
-    $resolvedGuiBinaryPath = Join-Path $repoRoot "target\release\entrance-gui.exe"
-} elseif (-not [System.IO.Path]::IsPathRooted($resolvedGuiBinaryPath)) {
-    $resolvedGuiBinaryPath = Join-Path $repoRoot $resolvedGuiBinaryPath
+if ([string]::IsNullOrWhiteSpace($resolvedBinaryPath)) {
+    $resolvedBinaryPath = Join-Path $repoRoot "target\release\entrance.exe"
+} elseif (-not [System.IO.Path]::IsPathRooted($resolvedBinaryPath)) {
+    $resolvedBinaryPath = Join-Path $repoRoot $resolvedBinaryPath
 }
 
 if ([string]::IsNullOrWhiteSpace($AssetName)) {
     $AssetName = "entrance-$Version-windows-x64"
 }
 
-$binaryRoot = Split-Path -Parent $resolvedGuiBinaryPath
+$binaryRoot = Split-Path -Parent $resolvedBinaryPath
 $releaseRoot = Join-Path $repoRoot "releases\$Version"
 $stageRoot = Join-Path $releaseRoot "package"
 $assetRoot = Join-Path $stageRoot $AssetName
@@ -27,8 +27,8 @@ $zipPath = Join-Path $releaseRoot "$AssetName.zip"
 $shaPath = Join-Path $releaseRoot "SHA256SUMS.txt"
 $releaseNotesPath = Join-Path $releaseRoot "RELEASE_NOTES.md"
 
-$requiredBinaries = @("entrance-gui.exe")
-$optionalBinaries = @("entrance.exe", "entrance-mcp.exe", "entrance-desktop-bridge.exe")
+$requiredBinaries = @("entrance.exe")
+$optionalBinaries = @()
 
 foreach ($binary in $requiredBinaries) {
     $candidate = Join-Path $binaryRoot $binary
