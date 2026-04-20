@@ -6,10 +6,25 @@ use std::{
 use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
+#[derive(Debug, Clone)]
+pub struct FileChange {
+    pub path: PathBuf,
+    pub kind: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FileSystem;
 
 impl FileSystem {
+    pub fn create_dir_all(&self, path: impl AsRef<Path>) -> Result<()> {
+        fs::create_dir_all(path.as_ref())
+            .with_context(|| format!("failed to create {}", path.as_ref().display()))
+    }
+
+    pub fn exists(&self, path: impl AsRef<Path>) -> bool {
+        path.as_ref().exists()
+    }
+
     pub fn read_to_string(&self, path: impl AsRef<Path>) -> Result<String> {
         fs::read_to_string(path.as_ref())
             .with_context(|| format!("failed to read {}", path.as_ref().display()))
@@ -53,5 +68,21 @@ impl FileSystem {
             }
         }
         Ok(files)
+    }
+
+    pub fn watch_snapshot(&self, root: impl AsRef<Path>) -> Result<Vec<FileChange>> {
+        let root = root.as_ref();
+        if !root.exists() {
+            return Ok(Vec::new());
+        }
+
+        Ok(self
+            .walk_files(root)?
+            .into_iter()
+            .map(|path| FileChange {
+                path,
+                kind: "present".to_string(),
+            })
+            .collect())
     }
 }

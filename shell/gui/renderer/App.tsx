@@ -19,6 +19,13 @@ type DrawerSummary = {
   items: number;
 };
 
+type DrawerHistory = {
+  commits: Array<{
+    id: string;
+    summary: string;
+  }>;
+};
+
 type DrawerItem = {
   id: number;
   title: string;
@@ -35,6 +42,12 @@ type HiveRun = {
   project_dir: string | null;
   summary: string | null;
   updated_at: string;
+};
+
+type HiveSummary = {
+  total_runs: number;
+  ready_runs: number;
+  returned_runs: number;
 };
 
 type LauncherResult = {
@@ -67,8 +80,14 @@ export default function App() {
   const [drawerItems, { refetch: refetchDrawerItems }] = createResource(async () =>
     bridge.invoke<DrawerItem[]>("drawer_list", {}),
   );
+  const [drawerHistory, { refetch: refetchDrawerHistory }] = createResource(async () =>
+    bridge.invoke<DrawerHistory>("drawer_history"),
+  );
   const [hiveRuns, { refetch: refetchHiveRuns }] = createResource(async () =>
     bridge.invoke<HiveRun[]>("hive_list"),
+  );
+  const [hiveSummary, { refetch: refetchHiveSummary }] = createResource(async () =>
+    bridge.invoke<HiveSummary>("hive_summary"),
   );
   const [launcherItems, { refetch: refetchLauncher }] = createResource(launcherQuery, async (query) =>
     bridge.invoke<LauncherResult[]>("launcher_search", { query, limit: 12 }),
@@ -79,7 +98,9 @@ export default function App() {
       refetchStatus(),
       refetchDrawerSummary(),
       refetchDrawerItems(),
+      refetchDrawerHistory(),
       refetchHiveRuns(),
+      refetchHiveSummary(),
       refetchLauncher(),
     ]);
   };
@@ -92,7 +113,7 @@ export default function App() {
     setDrawerTitle("");
     setDrawerBody("");
     setBanner("Drawer note created.");
-    await Promise.all([refetchDrawerSummary(), refetchDrawerItems(), refetchStatus()]);
+    await Promise.all([refetchDrawerSummary(), refetchDrawerItems(), refetchDrawerHistory(), refetchStatus()]);
   };
 
   const dispatchHive = async () => {
@@ -103,7 +124,7 @@ export default function App() {
     setHiveTitle("");
     setHiveProject("");
     setBanner("Hive dispatch persisted.");
-    await Promise.all([refetchHiveRuns(), refetchStatus()]);
+    await Promise.all([refetchHiveRuns(), refetchHiveSummary(), refetchStatus()]);
   };
 
   const refreshLauncherIndex = async () => {
@@ -176,7 +197,7 @@ export default function App() {
                 <p class="panel-kicker">Identity</p>
                 <h3>Microkernel cutover</h3>
                 <p class="muted">
-                  The remaining work is validation and follow-up fixes. The old harness and Tauri command path are removed.
+                  Runtime, daemon, and GUI now share the same single-binary command contract. Legacy harness and Tauri Rust paths are removed.
                 </p>
               </article>
             </section>
@@ -215,6 +236,19 @@ export default function App() {
                   ))}
                 </ul>
               </article>
+
+              <article class="panel panel--list">
+                <p class="panel-kicker">Versioning</p>
+                <h3>Drawer history</h3>
+                <ul class="record-list">
+                  {(drawerHistory()?.commits ?? []).map((commit) => (
+                    <li class="record-card">
+                      <strong>{commit.summary}</strong>
+                      <code>{commit.id}</code>
+                    </li>
+                  ))}
+                </ul>
+              </article>
             </section>
           </Match>
 
@@ -241,6 +275,9 @@ export default function App() {
               <article class="panel panel--list">
                 <p class="panel-kicker">Runs</p>
                 <h3>Dispatch ledger</h3>
+                <p class="muted">
+                  Ready {hiveSummary()?.ready_runs ?? 0} / Total {hiveSummary()?.total_runs ?? 0}
+                </p>
                 <ul class="record-list">
                   {(hiveRuns() ?? []).map((run) => (
                     <li class="record-card">
@@ -267,6 +304,7 @@ export default function App() {
                 <button type="button" class="primary-button" onClick={() => void refreshLauncherIndex()}>
                   Refresh Index
                 </button>
+                <p class="muted">Phase 3 surface now routes through the unified daemon contract.</p>
               </article>
 
               <article class="panel panel--list">

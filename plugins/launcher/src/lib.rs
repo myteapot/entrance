@@ -24,6 +24,7 @@ pub struct LauncherSearchResult {
 pub struct LauncherPlugin {
     store: Store,
     hotkey: String,
+    scan_paths: Vec<String>,
 }
 
 impl LauncherPlugin {
@@ -31,6 +32,7 @@ impl LauncherPlugin {
         Self {
             store: ctx.store(),
             hotkey: ctx.kernel.config.launcher.hotkey.clone(),
+            scan_paths: ctx.kernel.config.launcher.scan_paths.clone(),
         }
     }
 
@@ -39,7 +41,9 @@ impl LauncherPlugin {
     }
 
     pub fn refresh(&self, extra_scan_paths: &[String]) -> Result<usize> {
-        let entries = scanner::scan(extra_scan_paths)?;
+        let mut scan_paths = self.scan_paths.clone();
+        scan_paths.extend(extra_scan_paths.iter().cloned());
+        let entries = scanner::scan(&scan_paths)?;
         self.store.upsert_launcher_entries(&entries)?;
         Ok(entries.len())
     }
@@ -64,6 +68,15 @@ impl LauncherPlugin {
         let limit = if query.limit == 0 { 20 } else { query.limit };
         results.truncate(limit);
         Ok(results)
+    }
+
+    pub fn list(&self) -> Result<Vec<LauncherSearchResult>> {
+        Ok(self
+            .store
+            .list_launcher_entries()?
+            .into_iter()
+            .filter_map(|entry| build_result("", entry))
+            .collect())
     }
 
     pub fn launch(

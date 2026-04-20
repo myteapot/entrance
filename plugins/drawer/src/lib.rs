@@ -1,10 +1,25 @@
+mod landing;
+mod memory;
+mod organizer;
+mod storage;
+mod vault;
+mod versioning;
+
 use std::path::PathBuf;
 
 use anyhow::Result;
 use entrance_core::{
-    DrawerEntry, DrawerEntryCreate, DrawerFilter, DrawerMode, Plugin, PluginContext, Store,
+    CommitSummary, Crypto, DrawerEntry, DrawerFilter, DrawerMode, FileSystem, Plugin,
+    PluginContext, Versioning,
 };
 use serde::{Deserialize, Serialize};
+
+pub use landing::LandingImportReport;
+pub use memory::MemoryImportReport;
+pub use organizer::{DrawerAction, DrawerActionKind, ReorganizationPlan};
+pub use storage::DrawerStorage;
+pub use vault::{VaultSecret, VaultSecretRecord};
+pub use versioning::DrawerHistory;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DrawerSummary {
@@ -15,7 +30,10 @@ pub struct DrawerSummary {
 
 #[derive(Debug, Clone)]
 pub struct DrawerPlugin {
-    store: Store,
+    storage: DrawerStorage,
+    versioning: Versioning,
+    crypto: Crypto,
+    fs: FileSystem,
     root: PathBuf,
     mode: DrawerMode,
 }
@@ -29,14 +47,17 @@ impl DrawerPlugin {
         };
 
         Self {
-            store: ctx.store(),
+            storage: DrawerStorage::new(ctx.store(), ctx.fs(), root.clone(), mode),
+            versioning: ctx.versioning(),
+            crypto: ctx.crypto(),
+            fs: ctx.fs(),
             root,
             mode,
         }
     }
 
     pub fn summary(&self) -> Result<DrawerSummary> {
-        let items = self.list(DrawerFilter::default())?.len();
+        let items = self.storage.list(DrawerFilter::default())?.len();
         Ok(DrawerSummary {
             mode: match self.mode {
                 DrawerMode::FileSystem => "filesystem".to_string(),
@@ -48,51 +69,56 @@ impl DrawerPlugin {
     }
 
     pub fn list(&self, filter: DrawerFilter) -> Result<Vec<DrawerEntry>> {
-        self.store.list_drawer_entries(&filter)
+        self.storage.list(filter)
     }
 
     pub fn import_path(&self, source: PathBuf, tags: Vec<String>) -> Result<i64> {
-        let file_name = source
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("entry")
-            .to_string();
+        Ok(landing::import_path(&self.storage, source, tags)?.id)
+    }
 
-        std::fs::create_dir_all(&self.root)?;
-        let storage_path = if source.is_file() {
-            let destination = self.root.join(&file_name);
-            std::fs::copy(&source, &destination)?;
-            Some(destination.display().to_string())
-        } else if source.is_dir() {
-            Some(source.display().to_string())
-        } else {
-            None
-        };
-
-        self.store.insert_drawer_entry(DrawerEntryCreate {
-            title: file_name,
-            kind: "import".to_string(),
-            source_path: Some(source.display().to_string()),
-            storage_path,
-            tags,
-            encrypted: false,
-        })
+    pub fn import_path_report(&self, source: PathBuf, tags: Vec<String>) -> Result<LandingImportReport> {
+        landing::import_path(&self.storage, source, tags)
     }
 
     pub fn add_note(&self, title: String, body: String, tags: Vec<String>) -> Result<i64> {
-        std::fs::create_dir_all(&self.root)?;
-        let file_name = slugify(&title);
-        let destination = self.root.join(format!("{file_name}.md"));
-        std::fs::write(&destination, body)?;
+        self.storage.create_note(title, body, tags)
+    }
 
-        self.store.insert_drawer_entry(DrawerEntryCreate {
-            title,
-            kind: "note".to_string(),
-            source_path: None,
-            storage_path: Some(destination.display().to_string()),
-            tags,
-            encrypted: false,
-        })
+    pub fn import_memory(
+        &self,
+        title: String,
+        body: String,
+        tags: Vec<String>,
+    ) -> Result<MemoryImportReport> {
+        memory::import_memory(&self.storage, title, body, tags)
+    }
+
+    pub fn plan_reorganization(&self) -> Result<ReorganizationPlan> {
+        organizer::plan(&self.storage)
+    }
+
+    pub fn apply_reorganization(&self, plan: ReorganizationPlan) -> Result<usize> {
+        organizer::apply(&self.storage, &self.fs, plan)
+    }
+
+    pub fn history(&self, limit: usize) -> Result<DrawerHistory> {
+        versioning::history(&self.versioning, limit)
+    }
+
+    pub fn snapshot(&self, summary: &str) -> Result<CommitSummary> {
+        versioning::snapshot(&self.versioning, summary)
+    }
+
+    pub fn rollback(&self, target: &str) -> Result<()> {
+        versioning::rollback(&self.versioning, target)
+    }
+
+    pub fn store_secret(&self, secret: VaultSecret) -> Result<VaultSecretRecord> {
+        vault::store_secret(&self.storage, &self.crypto, secret)
+    }
+
+    pub fn list_secrets(&self) -> Result<Vec<VaultSecretRecord>> {
+        vault::list_secrets(&self.storage)
     }
 }
 
@@ -100,9 +126,15 @@ impl Plugin for DrawerPlugin {
     fn name(&self) -> &'static str {
         "drawer"
     }
+
+    fn init(&self, _ctx: &PluginContext) -> Result<()> {
+        self.fs.create_dir_all(&self.root)?;
+        self.versioning.init()?;
+        Ok(())
+    }
 }
 
-fn slugify(value: &str) -> String {
+pub(crate) fn slugify(value: &str) -> String {
     let normalized = value
         .chars()
         .flat_map(char::to_lowercase)
@@ -113,4 +145,12 @@ fn slugify(value: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+pub(crate) fn secret_tag() -> &'static str {
+    "vault-secret"
+}
+
+pub(crate) fn memory_tag() -> &'static str {
+    "memory"
 }

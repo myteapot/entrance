@@ -7,19 +7,17 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use entrance_core::{AppKernel, LauncherQuery};
-use entrance_drawer::DrawerPlugin;
-use entrance_hive::{HiveDispatchRequest, HivePlugin};
-use entrance_launcher::LauncherPlugin;
+use entrance_core::LauncherQuery;
+use entrance_drawer::VaultSecret;
+use entrance_hive::{HiveCallbackRequest, HiveDispatchRequest, ReviewDecision};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::app::AppServices;
+
 #[derive(Debug, Clone)]
 struct DaemonState {
-    kernel: AppKernel,
-    drawer: DrawerPlugin,
-    hive: HivePlugin,
-    launcher: LauncherPlugin,
+    services: AppServices,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,18 +39,8 @@ struct InvokeResponse {
     error: Option<String>,
 }
 
-pub async fn run_stdio(
-    kernel: AppKernel,
-    drawer: DrawerPlugin,
-    hive: HivePlugin,
-    launcher: LauncherPlugin,
-) -> Result<()> {
-    let state = Arc::new(DaemonState {
-        kernel,
-        drawer,
-        hive,
-        launcher,
-    });
+pub async fn run_stdio(services: AppServices) -> Result<()> {
+    let state = Arc::new(DaemonState { services });
     let mut stdout = tokio::io::stdout();
     stdout.write_all(br#"{"kind":"ready"}"#).await?;
     stdout.write_all(b"\n").await?;
@@ -110,19 +98,9 @@ pub async fn run_stdio(
     Ok(())
 }
 
-pub async fn run_http(
-    kernel: AppKernel,
-    drawer: DrawerPlugin,
-    hive: HivePlugin,
-    launcher: LauncherPlugin,
-) -> Result<()> {
-    let state = Arc::new(DaemonState {
-        kernel: kernel.clone(),
-        drawer,
-        hive,
-        launcher,
-    });
-    let port = kernel.config.hive.http_port;
+pub async fn run_http(services: AppServices) -> Result<()> {
+    let port = services.kernel.config.hive.http_port;
+    let state = Arc::new(DaemonState { services });
     let router = Router::new()
         .route("/health", get(http_health))
         .route("/mcp", post(http_invoke))
@@ -136,7 +114,14 @@ pub async fn run_http(
 }
 
 async fn http_health(State(state): State<Arc<DaemonState>>) -> impl IntoResponse {
-    Json(state.kernel.store.app_status(&state.kernel.root).unwrap())
+    Json(
+        state
+            .services
+            .kernel
+            .store
+            .app_status(&state.services.kernel.root)
+            .unwrap(),
+    )
 }
 
 async fn http_invoke(
@@ -164,11 +149,16 @@ async fn handle_invoke(
 ) -> Result<serde_json::Value> {
     match command.as_str() {
         "status" => Ok(serde_json::to_value(
-            state.kernel.store.app_status(&state.kernel.root)?,
+            state
+                .services
+                .kernel
+                .store
+                .app_status(&state.services.kernel.root)?,
         )?),
-        "drawer_summary" => Ok(serde_json::to_value(state.drawer.summary()?)?),
+        "drawer_summary" => Ok(serde_json::to_value(state.services.drawer.summary()?)?),
         "drawer_list" => Ok(serde_json::to_value(
             state
+                .services
                 .drawer
                 .list(serde_json::from_value(args).unwrap_or_default())?,
         )?),
@@ -184,11 +174,88 @@ async fn handle_invoke(
                 .unwrap_or_default()
                 .to_string();
             let id = state
+                .services
                 .drawer
                 .add_note(title, body, vec!["ai-generated".to_string()])?;
             Ok(serde_json::json!({ "id": id }))
         }
-        "hive_list" => Ok(serde_json::to_value(state.hive.list()?)?),
+        "drawer_memory_import" => {
+            let title = args
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Memory")
+                .to_string();
+            let body = args
+                .get("body")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Ok(serde_json::to_value(
+                state
+                    .services
+                    .drawer
+                    .import_memory(title, body, vec!["ai-generated".to_string()])?,
+            )?)
+        }
+        "drawer_import_path" => {
+            let source = args
+                .get("source")
+                .or_else(|| args.get("path"))
+                .and_then(|value| value.as_str())
+                .context("drawer_import_path requires `source`")?;
+            Ok(serde_json::to_value(
+                state
+                    .services
+                    .drawer
+                    .import_path_report(std::path::PathBuf::from(source), vec!["imported".to_string()])?,
+            )?)
+        }
+        "drawer_organize_plan" => Ok(serde_json::to_value(
+            state.services.drawer.plan_reorganization()?,
+        )?),
+        "drawer_organize_apply" => {
+            let applied = state
+                .services
+                .drawer
+                .apply_reorganization(state.services.drawer.plan_reorganization()?)?;
+            Ok(serde_json::json!({ "applied": applied }))
+        }
+        "drawer_history" => Ok(serde_json::to_value(state.services.drawer.history(20)?)?),
+        "drawer_snapshot" => {
+            let summary = args
+                .get("summary")
+                .and_then(|value| value.as_str())
+                .unwrap_or("drawer snapshot");
+            Ok(serde_json::to_value(
+                state.services.drawer.snapshot(summary)?,
+            )?)
+        }
+        "drawer_rollback" => {
+            let target = args
+                .get("target")
+                .and_then(|value| value.as_str())
+                .context("drawer_rollback requires `target`")?;
+            state.services.drawer.rollback(target)?;
+            Ok(serde_json::json!({ "rolled_back_to": target }))
+        }
+        "drawer_vault_store" => Ok(serde_json::to_value(
+            state.services.drawer.store_secret(VaultSecret {
+                title: args
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("secret")
+                    .to_string(),
+                secret: args
+                    .get("secret")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                tags: vec![],
+            })?,
+        )?),
+        "drawer_vault_list" => Ok(serde_json::to_value(state.services.drawer.list_secrets()?)?),
+        "hive_list" => Ok(serde_json::to_value(state.services.hive.list()?)?),
+        "hive_summary" => Ok(serde_json::to_value(state.services.hive.summary()?)?),
         "hive_dispatch" => {
             let request = HiveDispatchRequest {
                 title: args
@@ -206,9 +273,55 @@ async fn handle_invoke(
                     .map(ToOwned::to_owned),
                 payload_json: serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string()),
             };
-            Ok(serde_json::to_value(state.hive.dispatch(request)?)?)
+            Ok(serde_json::to_value(state.services.hive.dispatch(request)?)?)
         }
-        "launcher_hotkey" => Ok(serde_json::json!(state.launcher.hotkey())),
+        "hive_engine" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_engine requires `id`")?;
+            Ok(serde_json::to_value(state.services.hive.engine_report(id)?)?)
+        }
+        "hive_callback" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_callback requires `id`")?;
+            let status = args
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("ready")
+                .to_string();
+            let summary = args
+                .get("summary")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned);
+            Ok(serde_json::to_value(
+                state.services.hive.callback(HiveCallbackRequest {
+                    run_id: id,
+                    status,
+                    summary,
+                })?,
+            )?)
+        }
+        "hive_review" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_review requires `id`")?;
+            let decision = match args
+                .get("decision")
+                .and_then(|value| value.as_str())
+                .unwrap_or("approve")
+            {
+                "approve" => ReviewDecision::Approve,
+                "return" => ReviewDecision::Return,
+                "integrate" => ReviewDecision::Integrate,
+                other => anyhow::bail!("unsupported hive review decision `{other}`"),
+            };
+            Ok(serde_json::to_value(state.services.hive.review(id, decision)?)?)
+        }
+        "launcher_hotkey" => Ok(serde_json::json!(state.services.launcher.hotkey())),
         "launcher_refresh" => {
             let scan_paths = args
                 .get("scanPaths")
@@ -220,9 +333,10 @@ async fn handle_invoke(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let indexed = state.launcher.refresh(&scan_paths)?;
+            let indexed = state.services.launcher.refresh(&scan_paths)?;
             Ok(serde_json::json!({ "indexed": indexed }))
         }
+        "launcher_list" => Ok(serde_json::to_value(state.services.launcher.list()?)?),
         "launcher_search" => {
             let query = LauncherQuery {
                 query: args
@@ -235,7 +349,7 @@ async fn handle_invoke(
                     .and_then(|value| value.as_u64())
                     .unwrap_or(20) as usize,
             };
-            Ok(serde_json::to_value(state.launcher.search(query)?)?)
+            Ok(serde_json::to_value(state.services.launcher.search(query)?)?)
         }
         "launcher_launch" => {
             let command = args
@@ -248,7 +362,7 @@ async fn handle_invoke(
                 .get("workingDir")
                 .or_else(|| args.get("working_dir"))
                 .and_then(|value| value.as_str());
-            state.launcher.launch(command, arguments, working_dir)?;
+            state.services.launcher.launch(command, arguments, working_dir)?;
             Ok(serde_json::json!({ "launched": command }))
         }
         "launcher_pin" => {
@@ -260,7 +374,7 @@ async fn handle_invoke(
                 .get("pinned")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false);
-            state.launcher.pin(command, pinned)?;
+            state.services.launcher.pin(command, pinned)?;
             Ok(serde_json::json!({ "command": command, "pinned": pinned }))
         }
         _ => anyhow::bail!("unsupported daemon command `{command}`"),

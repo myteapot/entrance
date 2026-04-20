@@ -17,8 +17,11 @@
 ```bash
 ./target/release/entrance status
 ./target/release/entrance drawer list
+./target/release/entrance drawer history
 ./target/release/entrance hive list
+./target/release/entrance hive summary
 ./target/release/entrance launcher search code
+./target/release/entrance launcher list
 ./target/release/entrance daemon
 ./target/release/entrance mcp http
 ```
@@ -71,13 +74,15 @@ pnpm dev:electron
 ```bash
 ./target/release/entrance status
 ./target/release/entrance drawer add-note --title "Plan" --body "V2 cutover"
+./target/release/entrance drawer vault store --title "GitLab" --secret "token"
 ./target/release/entrance hive dispatch --title "Refactor pass"
+./target/release/entrance hive review 1 approve
 ./target/release/entrance launcher refresh
 ./target/release/entrance daemon
 ./target/release/entrance mcp http
 ```
 
-## Release Gate
+## Phase 4 Gate
 
 最小验证顺序：
 

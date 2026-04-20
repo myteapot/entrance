@@ -20,6 +20,12 @@ Agent OS — 面向智能体的操作系统。当前仓库已经切到 V2 微内
 - `entrance daemon`
 - `entrance mcp stdio`
 - `entrance mcp http`
+- `entrance drawer memory import --title ... --body ...`
+- `entrance drawer organize plan|apply`
+- `entrance drawer history|snapshot|rollback`
+- `entrance drawer vault store|list`
+- `entrance hive summary|engine|callback|review`
+- `entrance launcher list`
 
 ## Key Paths
 
@@ -32,8 +38,14 @@ Agent OS — 面向智能体的操作系统。当前仓库已经切到 V2 微内
 | Supervision | `core/src/supervision.rs` |
 | Plugin API | `core/src/plugin_api.rs` |
 | Drawer plugin | `plugins/drawer/src/lib.rs` |
+| Drawer storage | `plugins/drawer/src/storage.rs` |
+| Drawer organizer | `plugins/drawer/src/organizer.rs` |
 | Hive plugin | `plugins/hive/src/lib.rs` |
+| Hive dispatch | `plugins/hive/src/dispatch.rs` |
+| Hive engine | `plugins/hive/src/engine.rs` |
 | Launcher plugin | `plugins/launcher/src/lib.rs` |
+| Shell bootstrap | `shell/app/src/app.rs` |
+| Shell CLI parser | `shell/app/src/cli.rs` |
 | Unified app binary | `shell/app/src/main.rs` |
 | Daemon + MCP transport | `shell/app/src/daemon.rs` |
 | Frontend renderer | `shell/gui/renderer/` |
@@ -79,8 +91,8 @@ cargo build --workspace --release
 ## Current Shape
 
 - `core` owns微内核能力：store、bus、config、fs、crypto、scheduler、supervision、versioning。
-- `plugins/drawer` 负责抽屉式存储与导入。
-- `plugins/hive` 负责任务分发账本。
+- `plugins/drawer` 负责抽屉式存储、memory 导入、整理计划、vault 与版本快照。
+- `plugins/hive` 负责任务分发账本、engine 摘要、callback 与 review。
 - `plugins/launcher` 负责本地启动项索引与搜索。
-- `shell/app` 是唯一 Rust binary，同时暴露 CLI、daemon 与 MCP。
+- `shell/app` 是唯一 Rust binary，同时暴露 CLI、daemon 与 MCP，并已拆成 app/cli/command/commands/daemon 分层。
 - `shell/gui` 是纯 Electron + SolidJS 前端，只通过 preload 调用 `entrance daemon`。

@@ -48,13 +48,16 @@ pub fn boot_at(root: impl AsRef<Path>) -> Result<AppKernel> {
     std::fs::create_dir_all(&root)?;
     let config = AppConfig::load_or_create(root.join("entrance.toml"))?;
     let store = Store::open(root.join("data/entrance.db"))?;
+    let versioning = Versioning::new(config.drawer_root(&root));
+    versioning.init()?;
+    let bus = Bus::with_store(Some(store.clone()));
 
     Ok(AppKernel {
         root: root.clone(),
         config,
         store,
-        bus: Bus::new(),
-        versioning: Versioning::new(&root),
+        bus,
+        versioning,
         crypto: Crypto,
         fs: FileSystem,
         scheduler: Scheduler,

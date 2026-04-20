@@ -14,13 +14,13 @@ pub use boot::{boot, resolve_app_root, AppKernel};
 pub use bus::{Bus, BusEvent, CommandEnvelope};
 pub use config::{AppConfig, DrawerConfig, HiveConfig, LauncherConfig};
 pub use crypto::Crypto;
-pub use fs::FileSystem;
+pub use fs::{FileChange, FileSystem};
 pub use persona::{Persona, PersonaProfile};
 pub use plugin_api::{Plugin, PluginContext};
 pub use scheduler::{RoundState, Scheduler, TaskCheckpoint, TaskState};
 pub use store::{
     AppStatus, DrawerEntry, DrawerEntryCreate, DrawerFilter, DrawerMode, HiveRun, HiveRunCreate,
-    LauncherEntry, LauncherEntryCreate, LauncherQuery, MigrationStep, Store,
+    LauncherEntry, LauncherEntryCreate, LauncherQuery, MigrationStep, PersistedCommand, Store,
 };
 pub use supervision::{RetryPolicy, Supervision};
 pub use versioning::{CommitSummary, Versioning};
