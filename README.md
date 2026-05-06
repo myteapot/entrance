@@ -1,104 +1,121 @@
 # Entrance
 
-`Entrance` 已切到 V2 微内核重构：`core / plugins / shell`。仓库不再维护 `harness`、独立 CLI shell、独立 MCP shell 或任何 Tauri 代码。
+**你的 AI 编程助手的「操作系统」。**
 
-> English: `Entrance` now uses a V2 microkernel layout: `core / plugins / shell`, with one Rust binary and one Electron GUI.
+*The "operating system" for your AI coding agents.*
 
-## 安装指南
+> 如果 Codex CLI 是一个干活的工人，Entrance 就是他的工具箱 + 记忆宫殿 + 保险柜。
+> 工人下班了再上班，打开 Entrance，上次做到哪、密钥在哪、下一步该干嘛 —— 全都还在。
 
-### 方式 A：运行统一 binary
+---
 
-当前 Rust 入口只有一个：
+## 一图看懂 / Architecture
 
-- `entrance`：CLI + daemon + MCP
+![Entrance Architecture](./docs/entrance_architecture.png)
 
-常用命令：
+---
 
-```bash
-./target/release/entrance status
-./target/release/entrance drawer list
-./target/release/entrance drawer history
-./target/release/entrance hive list
-./target/release/entrance hive summary
-./target/release/entrance launcher search code
-./target/release/entrance launcher list
-./target/release/entrance daemon
-./target/release/entrance mcp http
+## 装完能干嘛？三个真实场景 / Real Examples
+
+### 场景 1：给 Codex CLI 装上「记忆」
+
+你用 Codex CLI 重构了一半代码，关掉终端。第二天打开，Codex 什么都不记得了。
+
+用 Entrance：
+
+```powershell
+# Entrance 作为 MCP server 启动，Codex CLI 连上它
+.\entrance.exe mcp stdio
+
+# Codex 现在能读到昨天的进度、决策记录、待办事项
+# 不用你再复述一遍 "昨天我们改到哪了"
 ```
 
-### 方式 B：从源码构建
+*Codex CLI forgets everything after you close the terminal. Entrance gives it persistent memory via MCP.*
 
-如果你希望自己构建：
+### 场景 2：不再到处翻 API Key
 
-1. 安装 Node.js、pnpm、Rust stable toolchain 和对应平台的桌面构建环境。
-2. 安装前端依赖：
+OpenAI key 在 `.env`，Anthropic key 在另一个 `.env`，Linear token 在浏览器里……
 
-```bash
-pnpm install
+用 Entrance：
+
+```powershell
+# 所有 key 加密存在一个地方，agent 按需取用
+.\entrance.exe drawer vault store --title "OpenAI" --secret "sk-..."
+.\entrance.exe drawer vault list
 ```
 
-3. 构建前端资源：
+*All API keys encrypted in one place. Agents fetch them on demand through Vault.*
 
-```bash
+### 场景 3：一条命令派活、全程监管
+
+你想让 agent 去修一个 bug，但想知道它在干嘛、干完没、结果怎么样。
+
+```powershell
+# 派发任务
+.\entrance.exe hive dispatch --title "修复登录页 500 错误"
+
+# 查看进度
+.\entrance.exe hive summary
+
+# 验收完毕
+.\entrance.exe hive review 1 approve
+```
+
+*Dispatch a task, monitor progress, and review the result from the CLI.*
+
+---
+
+## 快速开始 / Quick Start
+
+### 下载即用
+
+1. 从 [Releases](https://github.com/myteapot/Entrance/releases) 下载最新版本
+2. 解压，运行 `entrance.exe`
+3. 试一下：`.\entrance.exe status`
+
+### 接入 AI Agent
+
+```powershell
+# 让 Codex CLI / Claude Code 通过 MCP 连接 Entrance
+.\entrance.exe mcp stdio
+
+# 或者用 HTTP（适合脚本和 CI）
+.\entrance.exe mcp http
+```
+
+### 从源码构建
+
+```powershell
+pnpm install --frozen-lockfile
 pnpm build
-```
-
-4. 构建统一 Rust binary：
-
-```bash
 cargo build --workspace --release
 ```
 
-5. 运行入口：
+---
 
-```bash
-./target/release/entrance status
-./target/release/entrance daemon
-./target/release/entrance mcp stdio
-pnpm dev:electron
-```
+## 三个插件，各管一摊 / Plugins
 
-> English: Build the frontend with `pnpm build`, then build the Rust workspace and run `entrance`.
+| 插件 Plugin | 类比 Analogy | 状态 |
+|---|---|---|
+| **Drawer** | 记忆抽屉 + 保险柜 —— 笔记、文件、密钥、快照 | ✅ |
+| **Hive** | 工头 —— 派活、盯梢、验收 | ✅ |
+| **Launcher** | Spotlight / Raycast —— 本地启动项搜索 | ✅ |
 
-## Runtime Operations
+---
 
-当前运行时主契约：
+## 技术栈 / Tech Stack
 
-- `entrance`：唯一 Rust binary
-- `entrance daemon`：Electron GUI backend
-- `entrance mcp stdio`：stdio MCP
-- `entrance mcp http`：HTTP MCP
+Rust · Electron · SolidJS · SQLite · TOML · MCP
 
-常用命令：
+---
 
-```bash
-./target/release/entrance status
-./target/release/entrance drawer add-note --title "Plan" --body "V2 cutover"
-./target/release/entrance drawer vault store --title "GitLab" --secret "token"
-./target/release/entrance hive dispatch --title "Refactor pass"
-./target/release/entrance hive review 1 approve
-./target/release/entrance launcher refresh
-./target/release/entrance daemon
-./target/release/entrance mcp http
-```
+## 当前阶段 / Status
 
-## Phase 4 Gate
+**V2 Microkernel Preview** — CLI、daemon、MCP Server 可用，Electron GUI 迁移中。
 
-最小验证顺序：
+---
 
-```bash
-cargo check --workspace
-cargo test --workspace
-pnpm build
-./target/release/entrance status
-./target/release/entrance daemon
-./target/release/entrance mcp stdio
-```
+## 许可 / License
 
-## 版权与许可
-
-当前仓库采用收紧的 source-available 许可模式。
-
-- 默认代码许可见 [LICENSE](./LICENSE)
-- 简要许可说明见 [LICENSES.md](./LICENSES.md)
-- 名称与标识的使用边界见 [TRADEMARKS.md](./TRADEMARKS.md)
+[Business Source License 1.1](./LICENSE) · [详情 LICENSES.md](./LICENSES.md) · [商标 TRADEMARKS.md](./TRADEMARKS.md)
