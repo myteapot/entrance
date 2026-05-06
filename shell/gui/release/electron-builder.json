@@ -1,0 +1,32 @@
+{
+  "appId": "com.entrance.desktop",
+  "productName": "Entrance",
+  "artifactName": "Entrance-${version}-${os}-${arch}.${ext}",
+  "directories": {
+    "output": "dist-electron"
+  },
+  "files": [
+    "shell/gui/dist/**/*",
+    "shell/gui/electron/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "target/release/entrance",
+      "to": "entrance"
+    }
+  ],
+  "linux": {
+    "target": [
+      {
+        "target": "rpm",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "category": "Development",
+    "maintainer": "Entrance Maintainers <maintainers@entrance.local>",
+    "icon": "shell/gui/icons"
+  }
+}
