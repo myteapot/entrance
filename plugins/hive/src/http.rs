@@ -20,11 +20,7 @@ pub fn record_callback(store: &Store, request: HiveCallbackRequest) -> Result<Hi
     store
         .get_hive_run(request.run_id)?
         .with_context(|| format!("unknown hive run `{}`", request.run_id))?;
-    store.update_hive_run_status(
-        request.run_id,
-        &request.status,
-        request.summary.as_deref(),
-    )?;
+    store.update_hive_run_status(request.run_id, &request.status, request.summary.as_deref())?;
 
     Ok(HiveCallback {
         run_id: request.run_id,

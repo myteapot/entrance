@@ -4,7 +4,7 @@ mod search;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use entrance_core::{LauncherEntry, LauncherEntryCreate, LauncherQuery, Plugin, PluginContext, Store};
+use entrance_core::{LauncherEntry, LauncherQuery, Plugin, PluginContext, Store};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

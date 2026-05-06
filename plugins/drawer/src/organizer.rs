@@ -38,10 +38,11 @@ pub fn plan(storage: &DrawerStorage) -> Result<ReorganizationPlan> {
                 .extension()
                 .and_then(|value| value.to_str())
                 .unwrap_or("item");
-            let destination = storage
-                .root()
-                .join(entry.kind.clone())
-                .join(format!("{}.{}", slugify(&entry.title), extension));
+            let destination = storage.root().join(entry.kind.clone()).join(format!(
+                "{}.{}",
+                slugify(&entry.title),
+                extension
+            ));
             if destination != path {
                 actions.push(DrawerAction {
                     kind: DrawerActionKind::Move,

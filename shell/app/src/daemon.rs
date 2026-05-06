@@ -173,10 +173,11 @@ async fn handle_invoke(
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let id = state
-                .services
-                .drawer
-                .add_note(title, body, vec!["ai-generated".to_string()])?;
+            let id =
+                state
+                    .services
+                    .drawer
+                    .add_note(title, body, vec!["ai-generated".to_string()])?;
             Ok(serde_json::json!({ "id": id }))
         }
         "drawer_memory_import" => {
@@ -190,12 +191,11 @@ async fn handle_invoke(
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string();
-            Ok(serde_json::to_value(
-                state
-                    .services
-                    .drawer
-                    .import_memory(title, body, vec!["ai-generated".to_string()])?,
-            )?)
+            Ok(serde_json::to_value(state.services.drawer.import_memory(
+                title,
+                body,
+                vec!["ai-generated".to_string()],
+            )?)?)
         }
         "drawer_import_path" => {
             let source = args
@@ -204,10 +204,10 @@ async fn handle_invoke(
                 .and_then(|value| value.as_str())
                 .context("drawer_import_path requires `source`")?;
             Ok(serde_json::to_value(
-                state
-                    .services
-                    .drawer
-                    .import_path_report(std::path::PathBuf::from(source), vec!["imported".to_string()])?,
+                state.services.drawer.import_path_report(
+                    std::path::PathBuf::from(source),
+                    vec!["imported".to_string()],
+                )?,
             )?)
         }
         "drawer_organize_plan" => Ok(serde_json::to_value(
@@ -273,14 +273,18 @@ async fn handle_invoke(
                     .map(ToOwned::to_owned),
                 payload_json: serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string()),
             };
-            Ok(serde_json::to_value(state.services.hive.dispatch(request)?)?)
+            Ok(serde_json::to_value(
+                state.services.hive.dispatch(request)?,
+            )?)
         }
         "hive_engine" => {
             let id = args
                 .get("id")
                 .and_then(|value| value.as_i64())
                 .context("hive_engine requires `id`")?;
-            Ok(serde_json::to_value(state.services.hive.engine_report(id)?)?)
+            Ok(serde_json::to_value(
+                state.services.hive.engine_report(id)?,
+            )?)
         }
         "hive_callback" => {
             let id = args
@@ -296,13 +300,13 @@ async fn handle_invoke(
                 .get("summary")
                 .and_then(|value| value.as_str())
                 .map(ToOwned::to_owned);
-            Ok(serde_json::to_value(
-                state.services.hive.callback(HiveCallbackRequest {
+            Ok(serde_json::to_value(state.services.hive.callback(
+                HiveCallbackRequest {
                     run_id: id,
                     status,
                     summary,
-                })?,
-            )?)
+                },
+            )?)?)
         }
         "hive_review" => {
             let id = args
@@ -319,7 +323,9 @@ async fn handle_invoke(
                 "integrate" => ReviewDecision::Integrate,
                 other => anyhow::bail!("unsupported hive review decision `{other}`"),
             };
-            Ok(serde_json::to_value(state.services.hive.review(id, decision)?)?)
+            Ok(serde_json::to_value(
+                state.services.hive.review(id, decision)?,
+            )?)
         }
         "launcher_hotkey" => Ok(serde_json::json!(state.services.launcher.hotkey())),
         "launcher_refresh" => {
@@ -349,7 +355,9 @@ async fn handle_invoke(
                     .and_then(|value| value.as_u64())
                     .unwrap_or(20) as usize,
             };
-            Ok(serde_json::to_value(state.services.launcher.search(query)?)?)
+            Ok(serde_json::to_value(
+                state.services.launcher.search(query)?,
+            )?)
         }
         "launcher_launch" => {
             let command = args
@@ -362,7 +370,10 @@ async fn handle_invoke(
                 .get("workingDir")
                 .or_else(|| args.get("working_dir"))
                 .and_then(|value| value.as_str());
-            state.services.launcher.launch(command, arguments, working_dir)?;
+            state
+                .services
+                .launcher
+                .launch(command, arguments, working_dir)?;
             Ok(serde_json::json!({ "launched": command }))
         }
         "launcher_pin" => {

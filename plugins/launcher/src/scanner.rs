@@ -33,7 +33,11 @@ fn collect_directory(root: &Path, entries: &mut Vec<LauncherEntryCreate>) {
             Err(_) => continue,
         };
         let path = entry.path();
-        if !is_launchable_entry(entry.file_type().is_file(), entry.file_type().is_dir(), path) {
+        if !is_launchable_entry(
+            entry.file_type().is_file(),
+            entry.file_type().is_dir(),
+            path,
+        ) {
             continue;
         }
 
@@ -114,8 +118,10 @@ fn is_launchable_entry(is_file: bool, is_dir: bool, path: &Path) -> bool {
         return (is_dir || is_file) && is_launchable(path);
     }
 
-    #[allow(unreachable_code)]
-    is_file && is_launchable(path)
+    #[cfg(not(target_os = "macos"))]
+    {
+        is_file && is_launchable(path)
+    }
 }
 
 fn source_name(path: &Path) -> String {

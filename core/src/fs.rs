@@ -43,8 +43,7 @@ impl FileSystem {
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(from.as_ref(), to)
-            .with_context(|| format!("failed to copy into {}", to.display()))
+        fs::copy(from.as_ref(), to).with_context(|| format!("failed to copy into {}", to.display()))
     }
 
     pub fn move_path(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {

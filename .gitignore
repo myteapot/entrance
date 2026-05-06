@@ -1,6 +1,7 @@
 node_modules
 dist
 dist-electron
+.DS_Store
 .vscode
 target/
 hosts/desktop/tauri/.cargo/config.local.toml

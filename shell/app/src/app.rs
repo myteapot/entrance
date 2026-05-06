@@ -1,6 +1,6 @@
 use anyhow::Result;
-use entrance_core::{boot, AppKernel, PluginContext};
 use entrance_core::Plugin;
+use entrance_core::{boot, AppKernel, PluginContext};
 use entrance_drawer::DrawerPlugin;
 use entrance_hive::HivePlugin;
 use entrance_launcher::LauncherPlugin;

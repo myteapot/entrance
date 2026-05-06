@@ -1,14 +1,8 @@
 use anyhow::Result;
-use entrance_core::{
-    Bus, Scheduler, Store, Supervision, TaskState,
-};
+use entrance_core::{Bus, Scheduler, Store, Supervision, TaskState};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    engine,
-    preset::HivePreset,
-    EngineReport, HiveDispatchReport, HiveDispatchRequest,
-};
+use crate::{engine, preset::HivePreset, HiveDispatchReport, HiveDispatchRequest};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchSummary {

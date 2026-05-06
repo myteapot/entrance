@@ -29,7 +29,13 @@ pub fn store_secret(
     }
 
     let body = crypto.encrypt(&secret.secret)?;
-    let id = storage.create_record(secret.title.clone(), body, "vault".to_string(), secret.tags, true)?;
+    let id = storage.create_record(
+        secret.title.clone(),
+        body,
+        "vault".to_string(),
+        secret.tags,
+        true,
+    )?;
     Ok(VaultSecretRecord {
         id,
         title: secret.title,

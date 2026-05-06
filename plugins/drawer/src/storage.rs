@@ -1,9 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use entrance_core::{
-    DrawerEntry, DrawerEntryCreate, DrawerFilter, DrawerMode, FileSystem, Store,
-};
+use entrance_core::{DrawerEntry, DrawerEntryCreate, DrawerFilter, DrawerMode, FileSystem, Store};
 
 use crate::slugify;
 

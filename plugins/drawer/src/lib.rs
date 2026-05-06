@@ -76,7 +76,11 @@ impl DrawerPlugin {
         Ok(landing::import_path(&self.storage, source, tags)?.id)
     }
 
-    pub fn import_path_report(&self, source: PathBuf, tags: Vec<String>) -> Result<LandingImportReport> {
+    pub fn import_path_report(
+        &self,
+        source: PathBuf,
+        tags: Vec<String>,
+    ) -> Result<LandingImportReport> {
         landing::import_path(&self.storage, source, tags)
     }
 

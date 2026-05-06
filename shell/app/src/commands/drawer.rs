@@ -16,13 +16,17 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         }
         [flag] if cli::is_help(flag) => run(services, &[]),
         [command] if command == "summary" => print_json(&services.drawer.summary()?),
-        [command] if command == "list" => print_json(&services.drawer.list(DrawerFilter::default())?),
+        [command] if command == "list" => {
+            print_json(&services.drawer.list(DrawerFilter::default())?)
+        }
         [command, flag, title, flag2, body]
             if command == "add-note" && flag == "--title" && flag2 == "--body" =>
         {
-            let id = services
-                .drawer
-                .add_note(title.clone(), body.clone(), vec!["ai-generated".to_string()])?;
+            let id = services.drawer.add_note(
+                title.clone(),
+                body.clone(),
+                vec!["ai-generated".to_string()],
+            )?;
             print_json(&serde_json::json!({ "id": id }))
         }
         [command, path] if command == "import" => {
@@ -32,7 +36,10 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             print_json(&report)
         }
         [domain, command, flag, title, flag2, body]
-            if domain == "memory" && command == "import" && flag == "--title" && flag2 == "--body" =>
+            if domain == "memory"
+                && command == "import"
+                && flag == "--title"
+                && flag2 == "--body" =>
         {
             print_json(&services.drawer.import_memory(
                 title.clone(),
@@ -50,13 +57,18 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             print_json(&serde_json::json!({ "applied": applied }))
         }
         [command] if command == "history" => print_json(&services.drawer.history(20)?),
-        [command, summary] if command == "snapshot" => print_json(&services.drawer.snapshot(summary)?),
+        [command, summary] if command == "snapshot" => {
+            print_json(&services.drawer.snapshot(summary)?)
+        }
         [command, target] if command == "rollback" => {
             services.drawer.rollback(target)?;
             print_json(&serde_json::json!({ "rolled_back_to": target }))
         }
         [domain, command, flag, title, flag2, secret]
-            if domain == "vault" && command == "store" && flag == "--title" && flag2 == "--secret" =>
+            if domain == "vault"
+                && command == "store"
+                && flag == "--title"
+                && flag2 == "--secret" =>
         {
             print_json(&services.drawer.store_secret(VaultSecret {
                 title: title.clone(),

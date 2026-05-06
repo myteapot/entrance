@@ -45,7 +45,11 @@ impl Versioning {
 
     pub fn history(&self, limit: usize) -> Result<Vec<CommitSummary>> {
         let ledger = self.load_ledger()?;
-        let take = if limit == 0 { ledger.commits.len() } else { limit };
+        let take = if limit == 0 {
+            ledger.commits.len()
+        } else {
+            limit
+        };
         Ok(ledger
             .commits
             .into_iter()
@@ -108,8 +112,12 @@ impl Versioning {
 
     fn save_ledger(&self, ledger: &VersionLedger) -> Result<()> {
         fs::create_dir_all(self.ledger_root())?;
-        fs::write(self.ledger_path(), serde_json::to_string_pretty(ledger)?)
-            .with_context(|| format!("failed to write version ledger under {}", self.root.display()))
+        fs::write(self.ledger_path(), serde_json::to_string_pretty(ledger)?).with_context(|| {
+            format!(
+                "failed to write version ledger under {}",
+                self.root.display()
+            )
+        })
     }
 
     fn write_snapshot_manifest(&self, commit_id: &str) -> Result<()> {
