@@ -1,125 +1,104 @@
 # Entrance
 
-**你的 AI 编程助手的「操作系统」。**
+`Entrance` 已切到 V2 微内核重构：`core / plugins / shell`。仓库不再维护 `harness`、独立 CLI shell、独立 MCP shell 或任何 Tauri 代码。
 
-*The "operating system" for your AI coding agents.*
+> English: `Entrance` now uses a V2 microkernel layout: `core / plugins / shell`, with one Rust binary and one Electron GUI.
 
-> 如果 Codex CLI 是一个干活的工人，Entrance 就是他的工具箱 + 记忆宫殿 + 保险柜。
-> 工人下班了再上班，打开 Entrance，上次做到哪、密钥在哪、下一步该干嘛 —— 全都还在。
+## 安装指南
 
----
+### 方式 A：运行统一 binary
 
-## 一图看懂 / Architecture
+当前 Rust 入口只有一个：
 
-![Entrance Architecture](./docs/entrance_architecture.png)
+- `entrance`：CLI + daemon + MCP
 
----
+常用命令：
 
-## 装完能干嘛？三个真实场景 / Real Examples
-
-### 场景 1：给 Codex CLI 装上「记忆」
-
-你用 Codex CLI 重构了一半代码，关掉终端。第二天打开，Codex 什么都不记得了。
-
-用 Entrance：
-
-```powershell
-# Entrance 作为 MCP server 启动，Codex CLI 连上它
-.\entrance.exe mcp stdio
-
-# Codex 现在能读到昨天的进度、决策记录、待办事项
-# 不用你再复述一遍 "昨天我们改到哪了"
+```bash
+./target/release/entrance status
+./target/release/entrance drawer list
+./target/release/entrance drawer history
+./target/release/entrance hive list
+./target/release/entrance hive summary
+./target/release/entrance launcher search code
+./target/release/entrance launcher list
+./target/release/entrance daemon
+./target/release/entrance mcp http
 ```
 
-*Codex CLI forgets everything after you close the terminal. Entrance gives it persistent memory via MCP.*
+### 方式 B：从源码构建
 
-### 场景 2：不再到处翻 API Key
+如果你希望自己构建：
 
-OpenAI key 在 `.env`，Anthropic key 在另一个 `.env`，Linear token 在浏览器里……
+1. 安装 Node.js、pnpm、Rust stable toolchain 和对应平台的桌面构建环境。
+2. 安装前端依赖：
 
-用 Entrance：
-
-```powershell
-# 所有 key 加密存在一个地方，agent 按需取用
-.\entrance.exe nota status
-# → token_count: 5, mcp_config_count: 3
+```bash
+pnpm install
 ```
 
-*All API keys encrypted in one place. Agents fetch them on demand through Vault.*
+3. 构建前端资源：
 
-### 场景 3：一条命令派活、全程监管
-
-你想让 agent 去修一个 bug，但想知道它在干嘛、干完没、结果怎么样。
-
-```powershell
-# 派发任务
-.\entrance.exe nota do --title "修复登录页 500 错误"
-
-# 查看进度
-.\entrance.exe nota overview
-
-# 验收完毕，存个档
-.\entrance.exe nota checkpoint --stable-level "login-fix-done" \
-  --landed "修复了 auth middleware 的空指针"  \
-  --remaining "需要补集成测试"  \
-  --human-continuity-bus "下次从测试开始"
+```bash
+pnpm build
 ```
 
-*Dispatch a task, monitor progress, save a checkpoint — all from the CLI.*
+4. 构建统一 Rust binary：
 
----
-
-## 快速开始 / Quick Start
-
-### 下载即用
-
-1. 从 [Releases](https://github.com/myteapot/Entrance/releases) 下载最新 Windows zip
-2. 解压，运行 `entrance.exe`
-3. 试一下：`.\entrance.exe nota status`
-
-### 接入 AI Agent
-
-```powershell
-# 让 Codex CLI / Claude Code 通过 MCP 连接 Entrance
-.\entrance.exe mcp stdio
-
-# 或者用 HTTP（适合脚本和 CI）
-.\entrance.exe mcp http --port 9720
+```bash
+cargo build --workspace --release
 ```
 
-### 从源码构建
+5. 运行入口：
 
-```powershell
-pnpm install --frozen-lockfile && pnpm build
-cargo build --manifest-path src-tauri/Cargo.toml --release
+```bash
+./target/release/entrance status
+./target/release/entrance daemon
+./target/release/entrance mcp stdio
+pnpm dev:electron
 ```
 
----
+> English: Build the frontend with `pnpm build`, then build the Rust workspace and run `entrance`.
 
-## 五个插件，各管一摊 / Plugins
+## Runtime Operations
 
-| 插件 Plugin | 类比 Analogy | 状态 |
-|---|---|---|
-| **Launcher** | Spotlight / Raycast —— 全局快捷键搜索启动 | ✅ |
-| **Forge** | 工头 —— 派活、盯梢、收工 | ✅ |
-| **Vault** | 保险柜 —— API key 加密存取 | ✅ |
-| **Board** | 看板 —— 对接 Linear 的任务面板 | 🚧 |
-| **Connector** | 插线板 —— 打通 Obsidian / Slack / 任意服务 | 🚧 |
+当前运行时主契约：
 
----
+- `entrance`：唯一 Rust binary
+- `entrance daemon`：Electron GUI backend
+- `entrance mcp stdio`：stdio MCP
+- `entrance mcp http`：HTTP MCP
 
-## 技术栈 / Tech Stack
+常用命令：
 
-Rust · Tauri 2 · SolidJS · SQLite · TOML · MCP
+```bash
+./target/release/entrance status
+./target/release/entrance drawer add-note --title "Plan" --body "V2 cutover"
+./target/release/entrance drawer vault store --title "GitLab" --secret "token"
+./target/release/entrance hive dispatch --title "Refactor pass"
+./target/release/entrance hive review 1 approve
+./target/release/entrance launcher refresh
+./target/release/entrance daemon
+./target/release/entrance mcp http
+```
 
----
+## Phase 4 Gate
 
-## 当前阶段 / Status
+最小验证顺序：
 
-**V0 Headless Alpha** — 运行时、CLI、MCP Server 可用，GUI 开发中。
+```bash
+cargo check --workspace
+cargo test --workspace
+pnpm build
+./target/release/entrance status
+./target/release/entrance daemon
+./target/release/entrance mcp stdio
+```
 
----
+## 版权与许可
 
-## 许可 / License
+当前仓库采用收紧的 source-available 许可模式。
 
-[Business Source License 1.1](./LICENSE) · [详情 LICENSES.md](./LICENSES.md) · [商标 TRADEMARKS.md](./TRADEMARKS.md)
+- 默认代码许可见 [LICENSE](./LICENSE)
+- 简要许可说明见 [LICENSES.md](./LICENSES.md)
+- 名称与标识的使用边界见 [TRADEMARKS.md](./TRADEMARKS.md)
