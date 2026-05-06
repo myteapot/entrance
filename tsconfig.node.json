@@ -6,5 +6,8 @@
     "allowSyntheticDefaultImports": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts"]
+  "include": [
+    "shell/gui/vite.config.ts",
+    "shell/gui/electron/*.mjs"
+  ]
 }

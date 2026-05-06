@@ -1,0 +1,12 @@
+persona = "operator"
+
+[drawer]
+mode = "filesystem"
+root = "drawer"
+
+[hive]
+http_port = 9720
+
+[launcher]
+hotkey = "Ctrl+Space"
+scan_paths = []

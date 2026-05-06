@@ -1,0 +1,51 @@
+[workspace]
+members = [
+    "core",
+    "plugins/drawer",
+    "plugins/hive",
+    "plugins/launcher",
+    "shell/app",
+]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+license-file = "LICENSE"
+authors = ["Entrance Contributors"]
+
+[workspace.dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+axum = { version = "0.7", features = ["http1", "json", "tokio"] }
+chrono = { version = "0.4", features = ["clock", "serde"] }
+dirs = "5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.50.0", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+walkdir = "2"
+entrance-core = { path = "core" }
+entrance-drawer = { path = "plugins/drawer" }
+entrance-hive = { path = "plugins/hive" }
+entrance-launcher = { path = "plugins/launcher" }
+
+[profile.dev]
+debug = 1
+codegen-units = 256
+incremental = true
+
+[profile.test]
+debug = 1
+codegen-units = 256
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.test.package."*"]
+opt-level = 1
