@@ -1,0 +1,69 @@
+stages:
+  - verify
+
+default:
+  interruptible: true
+
+.linux-rust-node:
+  image: node:22-bookworm
+  stage: verify
+  variables:
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+    RUSTUP_HOME: "$CI_PROJECT_DIR/.rustup"
+    PNPM_HOME: "$CI_PROJECT_DIR/.pnpm"
+    PATH: "$PNPM_HOME:$CARGO_HOME/bin:$PATH"
+  cache:
+    key: "$CI_JOB_NAME"
+    paths:
+      - .cargo/
+      - .rustup/
+      - .pnpm/
+      - node_modules/
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends curl ca-certificates git pkg-config libssl-dev build-essential xvfb
+    - curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+    - corepack enable
+    - pnpm install
+
+linux-verify:
+  extends: .linux-rust-node
+  script:
+    - |
+      pnpm exec vite --version || \
+      (rm -rf node_modules && pnpm install && pnpm exec vite --version)
+    - pnpm check
+    - cargo check --workspace
+    - cargo test --workspace
+    - pnpm build
+  artifacts:
+    when: always
+    paths:
+      - shell/gui/dist/
+    expire_in: 7 days
+
+electron-smoke:
+  extends: .linux-rust-node
+  script:
+    - pnpm check
+    - pnpm build
+    - cargo build --release -p entrance-app --bin entrance
+  artifacts:
+    when: always
+    paths:
+      - shell/gui/dist/
+      - target/release/entrance
+    expire_in: 7 days
+
+windows-native:
+  stage: verify
+  tags:
+    - windows
+  script:
+    - rustup default stable
+    - corepack enable
+    - pnpm install
+    - pnpm check
+    - cargo check --workspace
+    - cargo build --release -p entrance-app --bin entrance
+    - pnpm build
