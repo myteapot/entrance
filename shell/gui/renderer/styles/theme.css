@@ -1,0 +1,18 @@
+:root {
+  color-scheme: dark;
+  --font-sans: "IBM Plex Sans", "PingFang SC", "Noto Sans SC", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", monospace;
+  --bg: #0f1114;
+  --bg-elevated: #171b20;
+  --bg-panel: rgba(20, 24, 30, 0.92);
+  --bg-accent: linear-gradient(135deg, #18273a 0%, #103129 48%, #2b1f12 100%);
+  --text: #f4f1e8;
+  --text-dim: rgba(244, 241, 232, 0.68);
+  --border: rgba(244, 241, 232, 0.1);
+  --accent: #e6b84f;
+  --accent-strong: #ffcd61;
+  --ok: #79d7a7;
+  --danger: #ff866e;
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+  --radius: 22px;
+}

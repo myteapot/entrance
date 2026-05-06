@@ -1,0 +1,23 @@
+[package]
+name = "entrance-app"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "entrance"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+entrance-core.workspace = true
+entrance-drawer.workspace = true
+entrance-hive.workspace = true
+entrance-launcher.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
