@@ -1,13 +1,13 @@
 # Entrance
 
-**你的 AI 编程助手的「操作系统」。**
+**Local control plane for coding automation.**
 
-*The "operating system" for your AI coding agents.*
+*One Rust binary for durable state, task ledgers, secrets, launchers, and a desktop bridge.*
 
-> 如果 Codex CLI 是一个干活的工人，Entrance 就是他的工具箱 + 记忆宫殿 + 保险柜。
-> 工人下班了再上班，打开 Entrance，上次做到哪、密钥在哪、下一步该干嘛 —— 全都还在。
+> Entrance keeps project-side state close to the machine:
+> persistent notes, a small task ledger, encrypted secrets, app indexing, and a GUI bridge over one runtime.
 
-当前版本是 **V2 Microkernel Preview**：一个 `entrance` 程序同时提供 CLI、后台 daemon 和 MCP 入口；桌面端正在迁移到 Electron + SolidJS。
+当前版本是 **V2 Microkernel Preview**：一个 `entrance` 程序提供 CLI 和后台 daemon；桌面端正在迁移到 Electron + SolidJS。Agent connector / MCP surface 仍在整理中。
 
 ---
 
@@ -17,28 +17,23 @@
 
 ---
 
-## 装完能干嘛？三个真实场景 / Real Examples
+## 装完能干嘛？三个本地工作流 / Local Workflows
 
-### 场景 1：给 Codex CLI 装上「记忆」
+### 场景 1：把上下文落盘
 
-你用 Codex CLI 重构了一半代码，关掉终端。第二天打开，Codex 什么都不记得了。
+重构做到一半，先把当前判断、剩余工作、踩过的坑写进 Drawer。下次继续时不用翻聊天记录。
 
 用 Entrance：
 
 ```powershell
-# 先把进度写进 Entrance 的记忆抽屉
 .\entrance.exe drawer memory import --title "登录页重构进度" --body "auth middleware 已修，下一步补集成测试"
-
-# 再让 Codex CLI / Claude Code 通过 MCP 连上 Entrance
-.\entrance.exe mcp stdio
-
-# agent 现在有一个稳定入口读取进度、决策记录、待办事项
-# 不用你再复述一遍 "昨天我们改到哪了"
+.\entrance.exe drawer list
+.\entrance.exe drawer history
 ```
 
-*Codex CLI forgets everything after you close the terminal. Entrance gives it persistent memory via MCP.*
+*Durable notes and snapshots for long-running local work.*
 
-### 场景 2：不再到处翻 API Key
+### 场景 2：本地 secret vault
 
 OpenAI key 在 `.env`，Anthropic key 在另一个 `.env`，Linear token 在浏览器里……
 
@@ -50,11 +45,11 @@ OpenAI key 在 `.env`，Anthropic key 在另一个 `.env`，Linear token 在浏�
 .\entrance.exe drawer vault list
 ```
 
-*All API keys encrypted in one place. Agents fetch them on demand through Vault.*
+*Encrypted local secrets without spreading tokens across project folders.*
 
-### 场景 3：一条命令派活、全程监管
+### 场景 3：任务账本与验收回路
 
-你想让 agent 去修一个 bug，但想知道它在干嘛、干完没、结果怎么样。
+把一次修复、重构、实验记录成可查询的 run，保留状态、engine report 和 review 决策。
 
 ```powershell
 # 派发任务
@@ -68,7 +63,7 @@ OpenAI key 在 `.env`，Anthropic key 在另一个 `.env`，Linear token 在浏�
 .\entrance.exe hive review 1 approve
 ```
 
-*Dispatch a task, monitor progress, and review the result from the CLI.*
+*A small task ledger for dispatch, callbacks, and review state.*
 
 ---
 
@@ -84,14 +79,12 @@ cargo build --workspace --release
 .\target\release\entrance.exe status
 ```
 
-### 接入 AI Agent
+### CLI smoke
 
 ```powershell
-# 让 Codex CLI / Claude Code 通过 MCP 连接 Entrance
-.\entrance.exe mcp stdio
-
-# 或者用 HTTP（适合脚本和 CI）
-.\entrance.exe mcp http
+.\target\release\entrance.exe drawer add-note --title "Plan" --body "Ship README"
+.\target\release\entrance.exe hive dispatch --title "Refactor pass"
+.\target\release\entrance.exe launcher refresh
 ```
 
 ### 启动桌面端
@@ -106,21 +99,21 @@ pnpm dev:electron
 
 | 插件 Plugin | 类比 Analogy | 状态 |
 |---|---|---|
-| **Drawer** | 记忆抽屉 + 保险柜 —— 笔记、文件、密钥、快照 | ✅ |
-| **Hive** | 工头 —— 派活、盯梢、验收 | ✅ |
-| **Launcher** | Spotlight / Raycast —— 本地启动项搜索 | ✅ |
+| **Drawer** | Durable storage: notes, imports, vault, snapshots | ✅ |
+| **Hive** | Task ledger: dispatch, engine reports, callbacks, review | ✅ |
+| **Launcher** | Local app index and launch surface | ✅ |
 
 ---
 
 ## 技术栈 / Tech Stack
 
-Rust · Electron · SolidJS · SQLite · TOML · MCP
+Rust · Electron · SolidJS · SQLite · TOML
 
 ---
 
 ## 当前阶段 / Status
 
-**V2 Microkernel Preview** — CLI、daemon、MCP Server 可用，Electron GUI 迁移中。
+**V2 Microkernel Preview** — CLI 和 daemon bridge 可用，Electron GUI 迁移中；Agent connector / MCP surface 仍在整理中。
 
 ---
 
