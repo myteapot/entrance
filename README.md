@@ -7,6 +7,8 @@
 > 如果 Codex CLI 是一个干活的工人，Entrance 就是他的工具箱 + 记忆宫殿 + 保险柜。
 > 工人下班了再上班，打开 Entrance，上次做到哪、密钥在哪、下一步该干嘛 —— 全都还在。
 
+当前版本是 **V2 Microkernel Preview**：一个 `entrance` 程序同时提供 CLI、后台 daemon 和 MCP 入口；桌面端正在迁移到 Electron + SolidJS。
+
 ---
 
 ## 一图看懂 / Architecture
@@ -24,10 +26,13 @@
 用 Entrance：
 
 ```powershell
-# Entrance 作为 MCP server 启动，Codex CLI 连上它
+# 先把进度写进 Entrance 的记忆抽屉
+.\entrance.exe drawer memory import --title "登录页重构进度" --body "auth middleware 已修，下一步补集成测试"
+
+# 再让 Codex CLI / Claude Code 通过 MCP 连上 Entrance
 .\entrance.exe mcp stdio
 
-# Codex 现在能读到昨天的进度、决策记录、待办事项
+# agent 现在有一个稳定入口读取进度、决策记录、待办事项
 # 不用你再复述一遍 "昨天我们改到哪了"
 ```
 
@@ -55,8 +60,9 @@ OpenAI key 在 `.env`，Anthropic key 在另一个 `.env`，Linear token 在浏�
 # 派发任务
 .\entrance.exe hive dispatch --title "修复登录页 500 错误"
 
-# 查看进度
+# 查看任务账本
 .\entrance.exe hive summary
+.\entrance.exe hive engine 1
 
 # 验收完毕
 .\entrance.exe hive review 1 approve
@@ -68,11 +74,15 @@ OpenAI key 在 `.env`，Anthropic key 在另一个 `.env`，Linear token 在浏�
 
 ## 快速开始 / Quick Start
 
-### 下载即用
+### 当前推荐：从源码试用
 
-1. 从 [Releases](https://github.com/myteapot/Entrance/releases) 下载最新版本
-2. 解压，运行 `entrance.exe`
-3. 试一下：`.\entrance.exe status`
+```powershell
+pnpm install --frozen-lockfile
+pnpm build
+cargo build --workspace --release
+
+.\target\release\entrance.exe status
+```
 
 ### 接入 AI Agent
 
@@ -84,12 +94,10 @@ OpenAI key 在 `.env`，Anthropic key 在另一个 `.env`，Linear token 在浏�
 .\entrance.exe mcp http
 ```
 
-### 从源码构建
+### 启动桌面端
 
 ```powershell
-pnpm install --frozen-lockfile
-pnpm build
-cargo build --workspace --release
+pnpm dev:electron
 ```
 
 ---
