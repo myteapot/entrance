@@ -6,7 +6,7 @@ Electron 现在只作为 `shell/gui` 的一部分维护，renderer 直接通过 
 
 - Renderer 只依赖 `window.__ENTRANCE_ELECTRON__.invoke()`.
 - Electron main 启动统一 Rust binary：`entrance daemon`.
-- GUI、CLI、MCP 都收敛到 `shell/app` 提供的一个入口。
+- GUI and CLI both converge on the single `shell/app` binary and its daemon protocol.
 
 ## Dev Flow
 

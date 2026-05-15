@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "v1.0.0-rc.1",
+    [string]$Version = "v2.0.0-preview",
     [string]$BinaryPath = "",
     [string]$AssetName = ""
 )
@@ -27,7 +27,10 @@ $stageRoot = Join-Path $releaseRoot "package"
 $assetRoot = Join-Path $stageRoot $AssetName
 $zipPath = Join-Path $releaseRoot "$AssetName.zip"
 $shaPath = Join-Path $releaseRoot "SHA256SUMS.txt"
-$releaseNotesPath = Join-Path $workspaceRoot "entrance-wiki\release-$Version\RELEASE_NOTES.md"
+$releaseNotesPath = Join-Path $workspaceRoot "entrance-wiki\releases\$Version\RELEASE_NOTES.md"
+if (-not (Test-Path $releaseNotesPath)) {
+    $releaseNotesPath = Join-Path $workspaceRoot "entrance-wiki\current\release.md"
+}
 
 $requiredBinaries = @("entrance.exe")
 $optionalBinaries = @()

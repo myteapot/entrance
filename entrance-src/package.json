@@ -2,7 +2,7 @@
   "name": "entrance",
   "version": "2.0.0",
   "private": true,
-  "homepage": "http://server:9311/publish/entrance",
+  "homepage": "https://github.com/myteapot/entrance",
   "author": {
     "name": "Entrance Maintainers",
     "email": "maintainers@entrance.local"

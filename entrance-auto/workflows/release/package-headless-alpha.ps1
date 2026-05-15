@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "v0.3.1-headless-alpha.1",
+    [string]$Version = "v2.0.0-preview",
     [string]$BinaryPath = ""
 )
 

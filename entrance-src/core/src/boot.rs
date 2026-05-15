@@ -51,6 +51,7 @@ pub fn boot_at(root: impl AsRef<Path>) -> Result<AppKernel> {
     let versioning = Versioning::new(config.drawer_root(&root));
     versioning.init()?;
     let bus = Bus::with_store(Some(store.clone()));
+    let crypto = Crypto::load_or_create(root.join("vault.key"))?;
 
     Ok(AppKernel {
         root: root.clone(),
@@ -58,7 +59,7 @@ pub fn boot_at(root: impl AsRef<Path>) -> Result<AppKernel> {
         store,
         bus,
         versioning,
-        crypto: Crypto,
+        crypto,
         fs: FileSystem,
         scheduler: Scheduler,
         supervision: Supervision,

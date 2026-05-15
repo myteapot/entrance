@@ -19,7 +19,7 @@ default:
       - .cargo/
       - .rustup/
       - .pnpm/
-      - node_modules/
+      - entrance-src/node_modules/
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends curl ca-certificates git pkg-config libssl-dev build-essential xvfb

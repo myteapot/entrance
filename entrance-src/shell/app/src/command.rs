@@ -5,7 +5,6 @@ pub enum Command {
     Drawer(Vec<String>),
     Hive(Vec<String>),
     Launcher(Vec<String>),
-    Daemon,
-    McpStdio,
-    McpHttp,
+    DaemonStdio,
+    DaemonHttp,
 }

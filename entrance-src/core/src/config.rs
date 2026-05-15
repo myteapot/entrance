@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,7 +82,8 @@ impl AppConfig {
         let path = path.as_ref();
         if path.exists() {
             let content = fs::read_to_string(path)?;
-            return Ok(toml::from_str(&content).unwrap_or_default());
+            return toml::from_str(&content)
+                .with_context(|| format!("failed to parse config at {}", path.display()));
         }
 
         let config = Self::default();
@@ -95,6 +96,33 @@ impl AppConfig {
 
     pub fn drawer_root(&self, app_root: &Path) -> PathBuf {
         app_root.join(&self.drawer.root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::AppConfig;
+
+    #[test]
+    fn invalid_config_fails_instead_of_defaulting() {
+        let path = std::env::temp_dir().join(format!(
+            "entrance-invalid-config-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, "persona = [").unwrap();
+
+        let result = AppConfig::load_or_create(&path);
+
+        assert!(result.is_err());
+        let _ = fs::remove_file(path);
     }
 }
 

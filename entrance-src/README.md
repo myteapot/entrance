@@ -2,12 +2,12 @@
 
 **Local control plane for coding automation.**
 
-*One Rust binary for durable state, task ledgers, secrets, launchers, and a desktop bridge.*
+*One Rust binary for durable notes, task ledgers, local secrets, launchers, and a desktop bridge.*
 
 > Entrance keeps project-side state close to the machine:
-> persistent notes, a small task ledger, encrypted secrets, app indexing, and a GUI bridge over one runtime.
+> persistent notes, a small task ledger, local AES-GCM vault records, app indexing, and a GUI bridge over one runtime.
 
-当前版本是 **V2 Microkernel Preview**：一个 `entrance` 程序提供 CLI 和后台 daemon；桌面端正在迁移到 Electron + SolidJS。Agent connector / MCP surface 仍在整理中。
+当前版本是 **V2 Microkernel Preview**：一个 `entrance` 程序提供 CLI 和后台 daemon；桌面端使用 Electron + SolidJS，并通过同一个 daemon 协议调用 Rust runtime。
 
 ---
 
@@ -75,6 +75,7 @@ cargo build --workspace --release
 .\target\release\entrance.exe drawer add-note --title "Plan" --body "Ship README"
 .\target\release\entrance.exe hive dispatch --title "Refactor pass"
 .\target\release\entrance.exe launcher refresh
+.\target\release\entrance.exe daemon http
 ```
 
 ### 启动桌面端
@@ -103,7 +104,7 @@ Rust · Electron · SolidJS · SQLite · TOML
 
 ## 当前阶段 / Status
 
-**V2 Microkernel Preview** — CLI 和 daemon bridge 可用，Electron GUI 迁移中；Agent connector / MCP surface 仍在整理中。
+**V2 Microkernel Preview** — CLI、daemon bridge 和 Electron GUI 共用同一套 Rust runtime。当前没有独立 MCP server；外部集成应先走 daemon stdio/http invoke 协议。
 
 ---
 

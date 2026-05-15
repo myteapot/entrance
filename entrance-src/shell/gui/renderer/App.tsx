@@ -161,7 +161,7 @@ export default function App() {
             <p class="hero-kicker">Refactor target</p>
             <h2>Core / Plugins / Shell</h2>
             <p class="hero-copy">
-              This GUI only talks to the unified `entrance daemon` protocol. Tauri and legacy Rust shells are gone.
+              This GUI talks only to the unified `entrance daemon` protocol.
             </p>
           </div>
           <button type="button" class="hero-action" onClick={() => void refreshAll()}>
@@ -197,7 +197,7 @@ export default function App() {
                 <p class="panel-kicker">Identity</p>
                 <h3>Microkernel cutover</h3>
                 <p class="muted">
-                  Runtime, daemon, and GUI now share the same single-binary command contract. Legacy harness and Tauri Rust paths are removed.
+                  Runtime, daemon, and GUI now share the same single-binary command contract.
                 </p>
               </article>
             </section>
@@ -304,7 +304,7 @@ export default function App() {
                 <button type="button" class="primary-button" onClick={() => void refreshLauncherIndex()}>
                   Refresh Index
                 </button>
-                <p class="muted">Phase 3 surface now routes through the unified daemon contract.</p>
+                <p class="muted">Launcher routes through the unified daemon contract.</p>
               </article>
 
               <article class="panel panel--list">

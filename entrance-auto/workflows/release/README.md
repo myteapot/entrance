@@ -9,6 +9,8 @@ These scripts are workspace automation, not product source.
   asset naming convention.
 - `export-public-snapshot.ps1` exports a filtered snapshot of `entrance-src/`.
 
-Release notes live in `entrance-wiki/release-<version>/RELEASE_NOTES.md`.
-Generated packages, zips, checksums, and installer binaries stay under ignored
-artifact paths unless a human explicitly asks to commit them.
+Release notes live in `entrance-wiki/releases/<version>/RELEASE_NOTES.md`.
+When version-specific notes are missing, packaging falls back to
+`entrance-wiki/current/release.md`. Generated packages, zips, checksums, and
+installer binaries stay under ignored artifact paths unless a human explicitly
+asks to commit them.

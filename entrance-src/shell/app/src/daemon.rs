@@ -103,12 +103,12 @@ pub async fn run_http(services: AppServices) -> Result<()> {
     let state = Arc::new(DaemonState { services });
     let router = Router::new()
         .route("/health", get(http_health))
-        .route("/mcp", post(http_invoke))
+        .route("/invoke", post(http_invoke))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
-        .with_context(|| format!("failed to bind MCP HTTP server on port {port}"))?;
+        .with_context(|| format!("failed to bind daemon HTTP server on port {port}"))?;
     axum::serve(listener, router).await?;
     Ok(())
 }

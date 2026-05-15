@@ -53,5 +53,6 @@ entrance-auto/**/*.webm
 .env
 .env.*
 !.env.example
+vault.key
 .DS_Store
 .vscode

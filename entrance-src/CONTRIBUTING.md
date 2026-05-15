@@ -2,9 +2,9 @@
 
 Thank you for wanting to help.
 
-During the `V1 RELEASE CANDIDATE` cut, this repository is still stabilizing its runtime,
-licensing, and commercial boundaries. Because of that, unsolicited external code
-contributions are not being broadly accepted yet.
+During the `V2 Microkernel Preview`, this repository is still stabilizing its
+runtime, licensing, and commercial boundaries. Because of that, unsolicited
+external code contributions are not being broadly accepted yet.
 
 ## What is welcome right now
 

@@ -18,8 +18,8 @@ Agent OS — 面向智能体的操作系统。当前仓库已经切到 V2 微内
 - `entrance hive ...`
 - `entrance launcher ...`
 - `entrance daemon`
-- `entrance mcp stdio`
-- `entrance mcp http`
+- `entrance daemon stdio`
+- `entrance daemon http`
 - `entrance drawer memory import --title ... --body ...`
 - `entrance drawer organize plan|apply`
 - `entrance drawer history|snapshot|rollback`
@@ -47,7 +47,7 @@ Agent OS — 面向智能体的操作系统。当前仓库已经切到 V2 微内
 | Shell bootstrap | `shell/app/src/app.rs` |
 | Shell CLI parser | `shell/app/src/cli.rs` |
 | Unified app binary | `shell/app/src/main.rs` |
-| Daemon + MCP transport | `shell/app/src/daemon.rs` |
+| Daemon transport | `shell/app/src/daemon.rs` |
 | Frontend renderer | `shell/gui/renderer/` |
 | Frontend app | `shell/gui/renderer/App.tsx` |
 | Navigation | `shell/gui/renderer/components/Nav.tsx` |
@@ -70,7 +70,7 @@ cargo test --workspace
 cargo run -p entrance-app --bin entrance -- --help
 cargo run -p entrance-app --bin entrance -- status
 cargo run -p entrance-app --bin entrance -- daemon
-cargo run -p entrance-app --bin entrance -- mcp stdio
+cargo run -p entrance-app --bin entrance -- daemon http
 ```
 
 ## Build
@@ -94,5 +94,5 @@ cargo build --workspace --release
 - `plugins/drawer` 负责抽屉式存储、memory 导入、整理计划、vault 与版本快照。
 - `plugins/hive` 负责任务分发账本、engine 摘要、callback 与 review。
 - `plugins/launcher` 负责本地启动项索引与搜索。
-- `shell/app` 是唯一 Rust binary，同时暴露 CLI、daemon 与 MCP，并已拆成 app/cli/command/commands/daemon 分层。
+- `shell/app` 是唯一 Rust binary，同时暴露 CLI 与 daemon，并已拆成 app/cli/command/commands/daemon 分层。
 - `shell/gui` 是纯 Electron + SolidJS 前端，只通过 preload 调用 `entrance daemon`。

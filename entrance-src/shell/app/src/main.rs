@@ -27,8 +27,8 @@ async fn run() -> Result<()> {
             Ok(())
         }
         Command::Status => print_json(&services.kernel.store.app_status(&services.kernel.root)?),
-        Command::Daemon | Command::McpStdio => daemon::run_stdio(services).await,
-        Command::McpHttp => daemon::run_http(services).await,
+        Command::DaemonStdio => daemon::run_stdio(services).await,
+        Command::DaemonHttp => daemon::run_http(services).await,
         Command::Drawer(args) => commands::drawer::run(&services, &args),
         Command::Hive(args) => commands::hive::run(&services, &args),
         Command::Launcher(args) => commands::launcher::run(&services, &args),
@@ -37,7 +37,7 @@ async fn run() -> Result<()> {
 
 fn print_help() {
     println!(
-        "Entrance V2\n\nUsage:\n  entrance status\n  entrance drawer <subcommand>\n  entrance hive <subcommand>\n  entrance launcher <subcommand>\n  entrance daemon\n  entrance mcp stdio\n  entrance mcp http"
+        "Entrance V2\n\nUsage:\n  entrance status\n  entrance drawer <subcommand>\n  entrance hive <subcommand>\n  entrance launcher <subcommand>\n  entrance daemon\n  entrance daemon stdio\n  entrance daemon http"
     );
 }
 
