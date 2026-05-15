@@ -4,7 +4,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$workspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\.."))
+$sourceRootPath = Join-Path $workspaceRoot "entrance-src"
 
 function Normalize-RelativePath {
     param(
@@ -30,28 +31,23 @@ function Get-RelativePath {
 }
 
 $excludedDirectories = @(
-    ".git",
     "node_modules",
     "dist",
     "dist-electron",
     "shell\gui\dist",
-    "target",
-    "releases\v0.3.1-headless-alpha.1\package"
+    "target"
 )
 
 $excludedFiles = @(
     "entrance.key",
     "entrance.toml",
-    "shell\gui\.cargo\config.local.toml",
-    "releases\export-public-snapshot.ps1"
+    "shell\gui\.cargo\config.local.toml"
 )
 
 $excludedPatterns = @(
-    "releases\*.zip",
-    "releases\*\*.zip",
-    "releases\*SHA256SUMS.txt",
-    "releases\*\SHA256SUMS.txt",
-    "releases\*\package\*"
+    "*.zip",
+    "*SHA256SUMS.txt",
+    "package\*"
 )
 
 function Test-ExcludedRelativePath {
@@ -84,7 +80,7 @@ function Test-ExcludedRelativePath {
     return $false
 }
 
-$sourceRoot = [System.IO.Path]::GetFullPath($repoRoot)
+$sourceRoot = [System.IO.Path]::GetFullPath($sourceRootPath)
 $destinationRoot = [System.IO.Path]::GetFullPath($Destination)
 
 if ($sourceRoot -eq $destinationRoot) {

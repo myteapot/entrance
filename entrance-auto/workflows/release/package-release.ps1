@@ -6,13 +6,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$workspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\.."))
+$sourceRoot = Join-Path $workspaceRoot "entrance-src"
+$artifactRoot = Join-Path $workspaceRoot "entrance-auto\artifacts\releases"
 $resolvedBinaryPath = $BinaryPath
 
 if ([string]::IsNullOrWhiteSpace($resolvedBinaryPath)) {
-    $resolvedBinaryPath = Join-Path $repoRoot "target\release\entrance.exe"
+    $resolvedBinaryPath = Join-Path $sourceRoot "target\release\entrance.exe"
 } elseif (-not [System.IO.Path]::IsPathRooted($resolvedBinaryPath)) {
-    $resolvedBinaryPath = Join-Path $repoRoot $resolvedBinaryPath
+    $resolvedBinaryPath = Join-Path $sourceRoot $resolvedBinaryPath
 }
 
 if ([string]::IsNullOrWhiteSpace($AssetName)) {
@@ -20,12 +22,12 @@ if ([string]::IsNullOrWhiteSpace($AssetName)) {
 }
 
 $binaryRoot = Split-Path -Parent $resolvedBinaryPath
-$releaseRoot = Join-Path $repoRoot "releases\$Version"
+$releaseRoot = Join-Path $artifactRoot $Version
 $stageRoot = Join-Path $releaseRoot "package"
 $assetRoot = Join-Path $stageRoot $AssetName
 $zipPath = Join-Path $releaseRoot "$AssetName.zip"
 $shaPath = Join-Path $releaseRoot "SHA256SUMS.txt"
-$releaseNotesPath = Join-Path $releaseRoot "RELEASE_NOTES.md"
+$releaseNotesPath = Join-Path $workspaceRoot "entrance-wiki\release-$Version\RELEASE_NOTES.md"
 
 $requiredBinaries = @("entrance.exe")
 $optionalBinaries = @()
@@ -58,11 +60,11 @@ foreach ($binary in ($requiredBinaries + $optionalBinaries)) {
     }
 }
 
-Copy-Item (Join-Path $repoRoot "README.md") (Join-Path $assetRoot "README.md")
-Copy-Item (Join-Path $repoRoot "LICENSE") (Join-Path $assetRoot "LICENSE")
-Copy-Item (Join-Path $repoRoot "LICENSES.md") (Join-Path $assetRoot "LICENSES.md")
-Copy-Item (Join-Path $repoRoot "TRADEMARKS.md") (Join-Path $assetRoot "TRADEMARKS.md")
-Copy-Item (Join-Path $repoRoot "CONTRIBUTING.md") (Join-Path $assetRoot "CONTRIBUTING.md")
+Copy-Item (Join-Path $sourceRoot "README.md") (Join-Path $assetRoot "README.md")
+Copy-Item (Join-Path $sourceRoot "LICENSE") (Join-Path $assetRoot "LICENSE")
+Copy-Item (Join-Path $sourceRoot "LICENSES.md") (Join-Path $assetRoot "LICENSES.md")
+Copy-Item (Join-Path $sourceRoot "TRADEMARKS.md") (Join-Path $assetRoot "TRADEMARKS.md")
+Copy-Item (Join-Path $sourceRoot "CONTRIBUTING.md") (Join-Path $assetRoot "CONTRIBUTING.md")
 Copy-Item $releaseNotesPath (Join-Path $assetRoot "RELEASE_NOTES.md")
 
 Compress-Archive -Path (Join-Path $assetRoot "*") -DestinationPath $zipPath -Force

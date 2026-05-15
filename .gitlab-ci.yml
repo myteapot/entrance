@@ -11,6 +11,7 @@ default:
     CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
     RUSTUP_HOME: "$CI_PROJECT_DIR/.rustup"
     PNPM_HOME: "$CI_PROJECT_DIR/.pnpm"
+    SOURCE_ROOT: "$CI_PROJECT_DIR/entrance-src"
     PATH: "$PNPM_HOME:$CARGO_HOME/bin:$PATH"
   cache:
     key: "$CI_JOB_NAME"
@@ -24,6 +25,7 @@ default:
     - apt-get install -y --no-install-recommends curl ca-certificates git pkg-config libssl-dev build-essential xvfb
     - curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
     - corepack enable
+    - cd "$SOURCE_ROOT"
     - pnpm install
 
 linux-verify:
@@ -39,7 +41,7 @@ linux-verify:
   artifacts:
     when: always
     paths:
-      - shell/gui/dist/
+      - entrance-src/shell/gui/dist/
     expire_in: 7 days
 
 electron-smoke:
@@ -51,17 +53,20 @@ electron-smoke:
   artifacts:
     when: always
     paths:
-      - shell/gui/dist/
-      - target/release/entrance
+      - entrance-src/shell/gui/dist/
+      - entrance-src/target/release/entrance
     expire_in: 7 days
 
 windows-native:
   stage: verify
   tags:
     - windows
+  variables:
+    SOURCE_ROOT: "$CI_PROJECT_DIR/entrance-src"
   script:
     - rustup default stable
     - corepack enable
+    - cd "$env:SOURCE_ROOT"
     - pnpm install
     - pnpm check
     - cargo check --workspace
