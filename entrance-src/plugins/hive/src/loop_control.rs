@@ -1041,7 +1041,8 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
     ));
     let issue_surface = issue_surface_audit(store, loop_id, &issues, &evidence)?;
 
-    let stage_evidence_errors = stage_evidence_audit_errors(&contract, &stages, &evidence);
+    let mut stage_evidence_errors = stage_evidence_audit_errors(&contract, &stages, &evidence);
+    stage_evidence_errors.extend(evidence_worker_policy_audit_errors(&stages, &evidence));
     let checks = vec![
         audit_check(
             "contract_loaded",
@@ -1857,6 +1858,62 @@ fn stage_evidence_audit_errors(
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string(),
+        )
+    });
+    errors
+}
+
+fn evidence_worker_policy_audit_errors(
+    stages: &[HiveLoopStage],
+    evidence: &[HiveLoopEvidence],
+) -> Vec<serde_json::Value> {
+    let registry = runtime_policy_registry();
+    let stages_by_id = stages
+        .iter()
+        .map(|stage| (stage.id, stage))
+        .collect::<HashMap<_, _>>();
+    let mut errors = Vec::new();
+
+    for row in evidence.iter().filter(|row| {
+        matches!(
+            row.kind.as_str(),
+            "exploration_packet" | "execution_packet" | "verdict_packet"
+        )
+    }) {
+        let Some(stage) = row.stage_id.and_then(|stage_id| stages_by_id.get(&stage_id)) else {
+            continue;
+        };
+        let row_errors = match row.payload.get("worker") {
+            Some(worker) => runtime_worker_policy_errors(&registry, worker, &stage.role),
+            None => vec!["worker".to_string()],
+        };
+        if !row_errors.is_empty() {
+            errors.push(serde_json::json!({
+                "scope": "evidence_worker",
+                "evidence_id": row.id,
+                "stage_id": stage.id,
+                "round": row.round,
+                "role": stage.role,
+                "kind": row.kind,
+                "errors": row_errors
+            }));
+        }
+    }
+
+    errors.sort_by_key(|error| {
+        (
+            error
+                .get("round")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
+            error
+                .get("stage_id")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
+            error
+                .get("evidence_id")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
         )
     });
     errors
@@ -7614,6 +7671,108 @@ mod tests {
         assert!(audit_failure_details(&audit_report)
             .iter()
             .any(|detail| detail == "runtime_policy:worker_receipt:context.command"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stage_evidence_audit_rejects_codex_evidence_missing_command_context() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-codex-evidence-context-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Codex evidence context loop".to_string(),
+                goal: "Catch codex evidence context drift".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let doer_stage = report
+            .stages
+            .iter()
+            .find(|stage| stage.role == "doer")
+            .expect("doer stage should exist");
+        store
+            .insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+                loop_id: report.contract.id,
+                stage_id: Some(doer_stage.id),
+                round: report.contract.current_round,
+                kind: "execution_packet".to_string(),
+                summary: "Drifted codex evidence without command context.".to_string(),
+                path: None,
+                payload: serde_json::json!({
+                    "runtime": "codex",
+                    "worker": {
+                        "ok": true,
+                        "kind": "codex",
+                        "mode": "codex-exec",
+                        "role": "doer",
+                        "timeout_secs": 60,
+                        "attempt_count": 1,
+                        "max_attempts": 1,
+                        "receipt_ok": true,
+                        "receipt": {
+                            "ok": true,
+                            "role": "doer",
+                            "action": "record-local-loop-ledger",
+                            "evidence_summary": "codex evidence drifted",
+                            "gates": { "packet_received": true }
+                        }
+                    }
+                }),
+            })
+            .expect("drifted evidence should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let evidence_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "stage_evidence")
+            .expect("stage evidence audit should exist");
+
+        assert!(!evidence_check.passed);
+        assert!(evidence_check
+            .details
+            .pointer("/stage_evidence_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .get("scope")
+                .and_then(|value| value.as_str())
+                == Some("evidence_worker")
+                && error
+                    .pointer("/errors")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|fields| fields
+                        .iter()
+                        .any(|field| field.as_str() == Some("context.command"))))));
+        assert!(audit_failure_details(&audit_report)
+            .iter()
+            .any(|detail| detail == "stage_evidence:evidence_worker:context.command"));
 
         let _ = fs::remove_dir_all(root);
     }
