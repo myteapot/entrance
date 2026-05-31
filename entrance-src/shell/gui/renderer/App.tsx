@@ -3,6 +3,11 @@ import Nav from "./components/Nav";
 import { bridge } from "./lib/bridge";
 
 type View = "status" | "drawer" | "hive" | "panel" | "launcher";
+type CommentSurface = "detail" | "board";
+type ActiveCommentComposer = {
+  issueId: number;
+  surface: CommentSurface;
+};
 
 type AppStatus = {
   app_root: string;
@@ -287,7 +292,8 @@ export default function App() {
   const [loopWorkerTimeoutSecs, setLoopWorkerTimeoutSecs] = createSignal("");
   const [loopWorkerAttempts, setLoopWorkerAttempts] = createSignal("");
   const [selectedIssueId, setSelectedIssueId] = createSignal<number | null>(null);
-  const [activeCommentIssue, setActiveCommentIssue] = createSignal<number | null>(null);
+  const [activeCommentComposer, setActiveCommentComposer] =
+    createSignal<ActiveCommentComposer | null>(null);
   const [commentBody, setCommentBody] = createSignal("");
   const [pendingLoopActions, setPendingLoopActions] = createSignal<Record<number, string>>({});
   const [pendingIssueActions, setPendingIssueActions] = createSignal<Record<number, string>>({});
@@ -408,12 +414,16 @@ export default function App() {
   const loopPendingLabel = (loopId: number) => pendingLoopActions()[loopId] ?? null;
   const issuePendingLabel = (issueId: number) => pendingIssueActions()[issueId] ?? null;
   const issueDecisionNote = (issueId: number) =>
-    activeCommentIssue() === issueId ? commentBody().trim() : "";
+    activeCommentComposer()?.issueId === issueId ? commentBody().trim() : "";
   const clearIssueComposer = (issueId: number) => {
-    if (activeCommentIssue() === issueId) {
+    if (activeCommentComposer()?.issueId === issueId) {
       setCommentBody("");
-      setActiveCommentIssue(null);
+      setActiveCommentComposer(null);
     }
+  };
+  const commentComposerActive = (issueId: number, surface: CommentSurface) => {
+    const active = activeCommentComposer();
+    return active?.issueId === issueId && active.surface === surface;
   };
   const actionErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
@@ -509,9 +519,9 @@ export default function App() {
     }
   };
 
-  const openIssueComment = (issueId: number) => {
+  const openIssueComment = (issueId: number, surface: CommentSurface) => {
     setSelectedIssueId(issueId);
-    setActiveCommentIssue(issueId);
+    setActiveCommentComposer({ issueId, surface });
   };
 
   const closeIssueComment = (issueId: number) => {
@@ -529,7 +539,7 @@ export default function App() {
         body: commentBody(),
       });
       setCommentBody("");
-      setActiveCommentIssue(null);
+      setActiveCommentComposer(null);
       setBanner(`Commented on issue #${issueId}.`);
       await refetchIssueCards();
     } catch (error) {
@@ -591,7 +601,7 @@ export default function App() {
   const runIssueOption = (card: IssueCard, option: string) => {
     setSelectedIssueId(card.issue.id);
     if (option === "comment") {
-      openIssueComment(card.issue.id);
+      openIssueComment(card.issue.id, "detail");
       return;
     }
     if (option === "retry") {
@@ -1163,9 +1173,11 @@ export default function App() {
                             ))}
                           </div>
                         ) : null}
-                        {activeCommentIssue() === card.issue.id ? (
+                        {commentComposerActive(card.issue.id, "detail") ? (
                           <div class="comment-box comment-box--detail">
                             <textarea
+                              aria-label={`Detail issue #${card.issue.id} comment`}
+                              data-testid={`issue-comment-detail-${card.issue.id}`}
                               value={commentBody()}
                               onInput={(event) => setCommentBody(event.currentTarget.value)}
                               placeholder="Comment"
@@ -1461,9 +1473,11 @@ export default function App() {
                                   </div>
                                 ))}
                               </div>
-                              {activeCommentIssue() === card.issue.id ? (
+                              {commentComposerActive(card.issue.id, "board") ? (
                                 <div class="comment-box">
                                   <textarea
+                                    aria-label={`Board issue #${card.issue.id} comment`}
+                                    data-testid={`issue-comment-board-${card.issue.id}`}
                                     value={commentBody()}
                                     onInput={(event) => setCommentBody(event.currentTarget.value)}
                                     placeholder="Comment"
@@ -1543,7 +1557,7 @@ export default function App() {
                                   <button
                                     type="button"
                                     disabled={Boolean(issuePendingLabel(card.issue.id))}
-                                    onClick={() => openIssueComment(card.issue.id)}
+                                    onClick={() => openIssueComment(card.issue.id, "board")}
                                   >
                                     Comment
                                   </button>
