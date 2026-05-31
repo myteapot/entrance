@@ -22,6 +22,7 @@ const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
 const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
+const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
 const DEFAULT_WORKER_TIMEOUT_SECS: u64 = 60;
 const MAX_WORKER_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_WORKER_ATTEMPTS: u64 = 1;
@@ -155,6 +156,57 @@ pub struct HiveLoopAuditCheck {
     pub passed: bool,
     pub summary: String,
     pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDoctorReport {
+    pub schema_version: String,
+    pub loop_id: i64,
+    pub health: String,
+    pub summary: String,
+    pub next_actions: Vec<String>,
+    pub status: String,
+    pub active_phase: String,
+    pub current_round: i64,
+    pub runtime: String,
+    pub issue_id: Option<i64>,
+    pub issue_status: Option<String>,
+    pub decision: Option<String>,
+    pub reason_code: Option<String>,
+    pub counts: HiveLoopDoctorCounts,
+    pub failed_checks: Vec<String>,
+    pub missing_receipts: Vec<String>,
+    pub worker_failures: Vec<String>,
+    pub checks: Vec<HiveLoopDoctorCheck>,
+    pub trace: IssueTraceSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDoctorCounts {
+    pub packet_count: usize,
+    pub admission_count: usize,
+    pub evidence_count: usize,
+    pub verdict_count: usize,
+    pub round_packet_count: usize,
+    pub round_admission_count: usize,
+    pub round_evidence_count: usize,
+    pub round_verdict_count: usize,
+    pub receipt_required_count: usize,
+    pub receipt_missing_count: usize,
+    pub round_receipt_required_count: usize,
+    pub round_receipt_missing_count: usize,
+    pub role_worker_count: usize,
+    pub role_worker_ok_count: usize,
+    pub round_role_worker_count: usize,
+    pub round_role_worker_ok_count: usize,
+    pub audit_failed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDoctorCheck {
+    pub name: String,
+    pub passed: bool,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -849,6 +901,277 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         failed_count,
         checks,
     })
+}
+
+pub fn doctor(store: &Store, loop_id: i64) -> Result<HiveLoopDoctorReport> {
+    let trace_report = trace(store, loop_id)?;
+    let audit_report = audit(store, loop_id)?;
+    let contract = trace_report.contract;
+    let issue_id = trace_report.issue.as_ref().map(|issue| issue.id);
+    let issue_status = trace_report
+        .issue
+        .as_ref()
+        .map(|issue| issue.status.clone());
+    let trace_summary = trace_report.trace;
+    let counts = doctor_counts(&trace_summary);
+    let failed_checks = audit_report
+        .checks
+        .iter()
+        .filter(|check| !check.passed)
+        .map(|check| check.name.clone())
+        .collect::<Vec<_>>();
+    let missing_receipts = doctor_missing_receipts(&trace_summary);
+    let worker_failures = doctor_worker_failures(&trace_summary);
+    let health = doctor_health(
+        &contract.status,
+        issue_status.as_deref(),
+        trace_summary.last_decision.as_deref(),
+        audit_report.passed,
+    )
+    .to_string();
+    let summary = doctor_summary(
+        &contract,
+        issue_status.as_deref(),
+        &trace_summary,
+        &audit_report,
+        &health,
+    );
+    let next_actions = doctor_next_actions(
+        &health,
+        contract.id,
+        issue_id,
+        &contract.runtime,
+        audit_report.passed,
+    );
+    let checks = audit_report
+        .checks
+        .into_iter()
+        .map(|check| HiveLoopDoctorCheck {
+            name: check.name,
+            passed: check.passed,
+            summary: check.summary,
+        })
+        .collect();
+
+    Ok(HiveLoopDoctorReport {
+        schema_version: DOCTOR_SCHEMA_VERSION.to_string(),
+        loop_id: contract.id,
+        health,
+        summary,
+        next_actions,
+        status: contract.status,
+        active_phase: contract.active_phase,
+        current_round: contract.current_round,
+        runtime: contract.runtime,
+        issue_id,
+        issue_status,
+        decision: trace_summary.last_decision.clone(),
+        reason_code: trace_summary.reason_code.clone(),
+        counts,
+        failed_checks,
+        missing_receipts,
+        worker_failures,
+        checks,
+        trace: trace_summary,
+    })
+}
+
+fn doctor_counts(trace: &IssueTraceSummary) -> HiveLoopDoctorCounts {
+    HiveLoopDoctorCounts {
+        packet_count: trace.packet_count,
+        admission_count: trace.admission_count,
+        evidence_count: trace.evidence_count,
+        verdict_count: trace.verdict_count,
+        round_packet_count: trace.round_packet_count,
+        round_admission_count: trace.round_admission_count,
+        round_evidence_count: trace.round_evidence_count,
+        round_verdict_count: trace.round_verdict_count,
+        receipt_required_count: trace.receipt_required_count,
+        receipt_missing_count: trace.receipt_missing_count,
+        round_receipt_required_count: trace.round_receipt_required_count,
+        round_receipt_missing_count: trace.round_receipt_missing_count,
+        role_worker_count: trace.role_worker_count,
+        role_worker_ok_count: trace.role_worker_ok_count,
+        round_role_worker_count: trace.round_role_worker_count,
+        round_role_worker_ok_count: trace.round_role_worker_ok_count,
+        audit_failed_count: trace.audit_failed_count,
+    }
+}
+
+fn doctor_missing_receipts(trace: &IssueTraceSummary) -> Vec<String> {
+    let mut receipts = trace
+        .evidence
+        .iter()
+        .flat_map(|evidence| evidence.missing_receipts.iter().cloned())
+        .collect::<Vec<_>>();
+    receipts.sort();
+    receipts.dedup();
+    receipts
+}
+
+fn doctor_worker_failures(trace: &IssueTraceSummary) -> Vec<String> {
+    trace
+        .evidence
+        .iter()
+        .filter(|evidence| {
+            evidence.worker_ok == Some(false)
+                || evidence.worker_receipt_ok == Some(false)
+                || evidence.worker_timed_out == Some(true)
+                || evidence.worker_retry_exhausted == Some(true)
+        })
+        .map(|evidence| {
+            format!(
+                "{}:{} worker={} ok={} receipt={}{}",
+                evidence.stage_role.as_deref().unwrap_or("loop"),
+                evidence.kind,
+                evidence.worker_kind.as_deref().unwrap_or("unknown"),
+                doctor_bool_label(evidence.worker_ok),
+                doctor_bool_label(evidence.worker_receipt_ok),
+                if evidence.worker_retry_exhausted == Some(true) {
+                    " retry_exhausted"
+                } else if evidence.worker_timed_out == Some(true) {
+                    " timeout"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect()
+}
+
+fn doctor_bool_label(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    }
+}
+
+fn doctor_health(
+    contract_status: &str,
+    issue_status: Option<&str>,
+    decision: Option<&str>,
+    audit_passed: bool,
+) -> &'static str {
+    if contract_status == "blocked"
+        || issue_status == Some("Blocked")
+        || decision == Some("blocked")
+    {
+        return "blocked";
+    }
+    if contract_status == "rejected"
+        || issue_status == Some("Canceled")
+        || decision == Some("reject")
+    {
+        return "rejected";
+    }
+    if contract_status == "needs-review"
+        || issue_status == Some("Needs Review")
+        || decision == Some("needs-review")
+    {
+        return "needs_review";
+    }
+    if !audit_passed {
+        return "audit_failed";
+    }
+    if contract_status == "kept" && decision == Some("keep") {
+        return "ok";
+    }
+    if contract_status == "todo" || decision.is_none() {
+        return "pending";
+    }
+    "unknown"
+}
+
+fn doctor_summary(
+    contract: &HiveLoopContract,
+    issue_status: Option<&str>,
+    trace: &IssueTraceSummary,
+    audit: &HiveLoopAuditReport,
+    health: &str,
+) -> String {
+    let audit_state = if audit.passed {
+        "audit ok".to_string()
+    } else {
+        format!("audit failed {} checks", audit.failed_count)
+    };
+    format!(
+        "Loop #{} is {health} at {} round {}; issue {}; decision {}; {}; workers {}/{} current round; receipts missing {}/{} current round.",
+        contract.id,
+        contract.active_phase,
+        contract.current_round,
+        issue_status.unwrap_or("none"),
+        trace.last_decision.as_deref().unwrap_or("pending"),
+        audit_state,
+        trace.round_role_worker_ok_count,
+        trace.round_role_worker_count,
+        trace.round_receipt_missing_count,
+        trace.round_receipt_required_count
+    )
+}
+
+fn doctor_next_actions(
+    health: &str,
+    loop_id: i64,
+    issue_id: Option<i64>,
+    runtime: &str,
+    audit_passed: bool,
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    if !audit_passed {
+        actions.push(format!("entrance hive loop audit {loop_id}"));
+        actions.push(format!("entrance hive loop evidence {loop_id}"));
+    }
+    match health {
+        "ok" => {
+            actions.push(format!("entrance hive loop trace {loop_id}"));
+            actions.push(format!("entrance hive loop evidence {loop_id}"));
+        }
+        "pending" => {
+            actions.push(format!(
+                "entrance hive loop run {loop_id} --runtime {runtime}"
+            ));
+        }
+        "blocked" => {
+            actions.push(format!("entrance hive loop evidence {loop_id}"));
+            if let Some(issue_id) = issue_id {
+                actions.push(format!(
+                    "entrance hive issue decide {issue_id} retry --body <note>"
+                ));
+                actions.push(format!(
+                    "entrance hive issue decide {issue_id} request-review --body <note>"
+                ));
+            }
+        }
+        "needs_review" => {
+            if let Some(issue_id) = issue_id {
+                actions.push(format!("entrance hive issue show {issue_id}"));
+                actions.push(format!(
+                    "entrance hive issue decide {issue_id} retry --body <note>"
+                ));
+            }
+        }
+        "rejected" => {
+            if let Some(issue_id) = issue_id {
+                actions.push(format!("entrance hive issue show {issue_id}"));
+            }
+        }
+        "audit_failed" => {
+            actions.push(format!("entrance hive loop audit {loop_id}"));
+            actions.push(format!("entrance hive loop evidence {loop_id}"));
+        }
+        _ => {
+            actions.push(format!("entrance hive loop show {loop_id}"));
+            actions.push(format!("entrance hive loop trace {loop_id}"));
+        }
+    }
+    let mut deduped = Vec::new();
+    for action in actions {
+        if !deduped.contains(&action) {
+            deduped.push(action);
+        }
+    }
+    deduped
 }
 
 fn audit_check(
@@ -3561,6 +3884,22 @@ mod tests {
                     .and_then(|value| value.as_array())
                     .is_some_and(|errors| errors.is_empty())
         }));
+        let doctor_report =
+            super::doctor(&store, created.contract.id).expect("loop doctor should resolve");
+        assert_eq!(doctor_report.schema_version, DOCTOR_SCHEMA_VERSION);
+        assert_eq!(doctor_report.health, "ok");
+        assert_eq!(doctor_report.status, "kept");
+        assert_eq!(doctor_report.decision.as_deref(), Some("keep"));
+        assert_eq!(doctor_report.counts.round_packet_count, 3);
+        assert_eq!(doctor_report.counts.round_role_worker_ok_count, 3);
+        assert_eq!(doctor_report.counts.round_receipt_missing_count, 0);
+        assert_eq!(doctor_report.counts.audit_failed_count, 0);
+        assert!(doctor_report.failed_checks.is_empty());
+        assert!(doctor_report.missing_receipts.is_empty());
+        assert!(doctor_report.worker_failures.is_empty());
+        assert!(doctor_report.next_actions.iter().any(
+            |action| action == &format!("entrance hive loop evidence {}", created.contract.id)
+        ));
 
         let rerun = run(
             &store,
@@ -3869,6 +4208,24 @@ mod tests {
             .operator_options
             .iter()
             .any(|option| option == "request-human-review"));
+        let doctor_report =
+            super::doctor(&store, created.contract.id).expect("blocked doctor should resolve");
+        assert_eq!(doctor_report.health, "blocked");
+        assert_eq!(doctor_report.status, "blocked");
+        assert_eq!(doctor_report.issue_status.as_deref(), Some("Blocked"));
+        assert_eq!(doctor_report.decision.as_deref(), Some("blocked"));
+        assert!(doctor_report
+            .missing_receipts
+            .iter()
+            .any(|receipt| receipt == "role_worker"));
+        assert!(doctor_report
+            .worker_failures
+            .iter()
+            .any(|failure| failure.contains("worker=unsupported")));
+        assert!(doctor_report
+            .next_actions
+            .iter()
+            .any(|action| action.contains("retry --body")));
 
         let _ = fs::remove_dir_all(root);
     }

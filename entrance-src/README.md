@@ -55,6 +55,7 @@ Local agent-loop MVP:
 .\entrance.exe hive loop trace 1
 .\entrance.exe hive loop evidence 1
 .\entrance.exe hive loop audit 1
+.\entrance.exe hive loop doctor 1
 .\entrance.exe hive loop policies 1
 .\entrance.exe hive policy registry
 .\entrance.exe hive issue list
@@ -76,6 +77,9 @@ operator options, and short transcript excerpts.
 `hive loop audit <id>` returns a compiler-style audit over the loop contract,
 active policies, typed packets, admission receipts, verdict packets, and linked
 issue surface.
+`hive loop doctor <id>` is the first CLI stop after a run: it combines trace and
+audit state into one health summary with counts, failed checks, missing
+receipts, worker failures, and suggested next commands.
 `hive issue comment <id> --body <text>` records a local issue comment and, when
 the issue is bound to a loop, mirrors it into the loop ledger as
 `operator_comment` evidence.
