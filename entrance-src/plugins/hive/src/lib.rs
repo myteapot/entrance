@@ -15,9 +15,9 @@ pub use dispatch::DispatchSummary;
 pub use engine::{EngineEvent, EngineReport};
 pub use http::{HiveCallback, HiveCallbackRequest};
 pub use loop_control::{
-    HiveLoopCreateRequest, HiveLoopEvidenceReport, HiveLoopPolicyReport, HiveLoopReport,
-    HiveLoopRunRequest, HiveLoopTraceReport, IssueCard, IssueCommentRequest, IssueDecisionRequest,
-    PolicyRegistryReport,
+    HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopEvidenceReport, HiveLoopPolicyReport,
+    HiveLoopReport, HiveLoopRunRequest, HiveLoopTraceReport, IssueCard, IssueCommentRequest,
+    IssueDecisionRequest, PolicyRegistryReport,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};
@@ -119,6 +119,10 @@ impl HivePlugin {
 
     pub fn loop_evidence(&self, id: i64) -> Result<HiveLoopEvidenceReport> {
         loop_control::evidence_report(&self.store, id)
+    }
+
+    pub fn loop_audit(&self, id: i64) -> Result<HiveLoopAuditReport> {
+        loop_control::audit(&self.store, id)
     }
 
     pub fn panel(&self) -> Result<Vec<IssueCard>> {

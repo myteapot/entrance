@@ -375,6 +375,13 @@ async fn handle_invoke(
                 state.services.hive.loop_evidence(id)?,
             )?)
         }
+        "hive_loop_audit" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_audit requires `id`")?;
+            Ok(serde_json::to_value(state.services.hive.loop_audit(id)?)?)
+        }
         "hive_loop_policies" => {
             let id = args
                 .get("id")

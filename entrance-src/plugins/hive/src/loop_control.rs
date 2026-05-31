@@ -21,6 +21,7 @@ const ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.admission.v1";
 const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
 const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
+const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 
 #[derive(Debug, Clone, Copy)]
 struct GateSpec {
@@ -131,6 +132,23 @@ pub struct HiveLoopEvidenceReport {
     pub contract: HiveLoopContract,
     pub current_round: i64,
     pub evidence: Vec<IssueEvidenceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopAuditReport {
+    pub schema_version: String,
+    pub loop_id: i64,
+    pub passed: bool,
+    pub failed_count: usize,
+    pub checks: Vec<HiveLoopAuditCheck>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopAuditCheck {
+    pub name: String,
+    pub passed: bool,
+    pub summary: String,
+    pub details: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -655,6 +673,304 @@ pub fn evidence_report(store: &Store, loop_id: i64) -> Result<HiveLoopEvidenceRe
         contract,
         evidence,
     })
+}
+
+pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
+    let contract = store
+        .get_hive_loop_contract(loop_id)?
+        .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
+    let policies = store.list_hive_loop_policies(loop_id)?;
+    let packets = store.list_hive_loop_packets(loop_id)?;
+    let admissions = store.list_hive_loop_admissions(loop_id)?;
+    let verdicts = store.list_hive_loop_verdicts(loop_id)?;
+    let issues = store.list_hive_issues_for_loop(loop_id)?;
+    let packet_by_id = packets
+        .iter()
+        .map(|packet| (packet.id, packet))
+        .collect::<HashMap<_, _>>();
+
+    let active_policies = policies
+        .iter()
+        .filter(|policy| policy.status == "active")
+        .collect::<Vec<_>>();
+    let policy_unknown_gates = active_policies
+        .iter()
+        .filter(|policy| gate_spec(&policy.gate).is_none())
+        .map(|policy| format!("{}:{}", policy.id, policy.gate))
+        .collect::<Vec<_>>();
+    let packet_errors = packets
+        .iter()
+        .filter_map(|packet| {
+            let mut errors = typed_packet_envelope_errors(&packet.payload);
+            errors.extend(packet_row_binding_errors(packet));
+            if errors.is_empty() {
+                None
+            } else {
+                Some(serde_json::json!({
+                    "packet_id": packet.id,
+                    "object_kind": packet.object_kind,
+                    "errors": errors
+                }))
+            }
+        })
+        .collect::<Vec<_>>();
+    let admission_errors = admissions
+        .iter()
+        .filter_map(|admission| admission_audit_errors(admission, &packet_by_id))
+        .collect::<Vec<_>>();
+    let verdict_errors = verdicts
+        .iter()
+        .filter_map(verdict_audit_errors)
+        .collect::<Vec<_>>();
+
+    let checks = vec![
+        audit_check(
+            "contract_loaded",
+            true,
+            format!("Loop #{} `{}` loaded.", contract.id, contract.title),
+            serde_json::json!({
+                "status": contract.status,
+                "active_phase": contract.active_phase,
+                "current_round": contract.current_round
+            }),
+        ),
+        audit_check(
+            "active_policy_registry",
+            active_policies.len() == 3 && policy_unknown_gates.is_empty(),
+            format!(
+                "{} active policies inspected; {} unknown gates.",
+                active_policies.len(),
+                policy_unknown_gates.len()
+            ),
+            serde_json::json!({
+                "active_policy_count": active_policies.len(),
+                "unknown_gates": policy_unknown_gates
+            }),
+        ),
+        audit_check(
+            "packet_envelopes",
+            packet_errors.is_empty(),
+            format!(
+                "{} packets inspected; {} envelope or row-binding issues.",
+                packets.len(),
+                packet_errors.len()
+            ),
+            serde_json::json!({ "packet_errors": packet_errors }),
+        ),
+        audit_check(
+            "admission_receipts",
+            admission_errors.is_empty(),
+            format!(
+                "{} admissions inspected; {} receipt issues.",
+                admissions.len(),
+                admission_errors.len()
+            ),
+            serde_json::json!({ "admission_errors": admission_errors }),
+        ),
+        audit_check(
+            "verdict_packets",
+            verdict_errors.is_empty(),
+            format!(
+                "{} verdicts inspected; {} verdict issues.",
+                verdicts.len(),
+                verdict_errors.len()
+            ),
+            serde_json::json!({ "verdict_errors": verdict_errors }),
+        ),
+        audit_check(
+            "issue_surface",
+            !issues.is_empty(),
+            format!("{} linked issues inspected.", issues.len()),
+            serde_json::json!({
+                "issue_ids": issues.iter().map(|issue| issue.id).collect::<Vec<_>>()
+            }),
+        ),
+    ];
+    let failed_count = checks.iter().filter(|check| !check.passed).count();
+    Ok(HiveLoopAuditReport {
+        schema_version: AUDIT_SCHEMA_VERSION.to_string(),
+        loop_id,
+        passed: failed_count == 0,
+        failed_count,
+        checks,
+    })
+}
+
+fn audit_check(
+    name: &str,
+    passed: bool,
+    summary: String,
+    details: serde_json::Value,
+) -> HiveLoopAuditCheck {
+    HiveLoopAuditCheck {
+        name: name.to_string(),
+        passed,
+        summary,
+        details,
+    }
+}
+
+fn packet_row_binding_errors(packet: &HiveLoopPacket) -> Vec<String> {
+    let payload = &packet.payload;
+    let mut errors = Vec::new();
+    if payload
+        .get("loop_id")
+        .and_then(|value| value.as_i64())
+        .is_some_and(|value| value != packet.loop_id)
+    {
+        errors.push("row.loop_id".to_string());
+    }
+    if payload
+        .get("round")
+        .and_then(|value| value.as_i64())
+        .is_some_and(|value| value != packet.round)
+    {
+        errors.push("row.round".to_string());
+    }
+    if packet_object_kind(payload).is_some_and(|value| value != packet.object_kind.as_str()) {
+        errors.push("row.object_kind".to_string());
+    }
+    if payload
+        .pointer("/writer/role")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value != packet.writer_role.as_str())
+    {
+        errors.push("row.writer_role".to_string());
+    }
+    if payload
+        .pointer("/route/from")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value != packet.route_from.as_str())
+    {
+        errors.push("row.route_from".to_string());
+    }
+    if payload
+        .pointer("/route/to")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value != packet.route_to.as_str())
+    {
+        errors.push("row.route_to".to_string());
+    }
+    if payload
+        .get("state_code")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value != packet.state_code.as_str())
+    {
+        errors.push("row.state_code".to_string());
+    }
+    errors
+}
+
+fn admission_audit_errors(
+    admission: &HiveLoopAdmission,
+    packet_by_id: &HashMap<i64, &HiveLoopPacket>,
+) -> Option<serde_json::Value> {
+    let mut errors = Vec::new();
+    if admission
+        .policy
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        != Some(ADMISSION_SCHEMA_VERSION)
+    {
+        errors.push("schema_version".to_string());
+    }
+    if !packet_by_id.contains_key(&admission.packet_id) {
+        errors.push("packet.link".to_string());
+    }
+    if admission
+        .policy
+        .pointer("/packet/envelope/valid")
+        .and_then(|value| value.as_bool())
+        != Some(true)
+    {
+        errors.push("packet.envelope".to_string());
+    }
+    if admission
+        .policy
+        .get("result")
+        .and_then(|value| value.as_str())
+        != Some(admission.result.as_str())
+    {
+        errors.push("result.binding".to_string());
+    }
+    if let Some(gate_name) = admission
+        .policy
+        .pointer("/gate/name")
+        .and_then(|value| value.as_str())
+    {
+        if gate_spec(gate_name).is_none() {
+            errors.push("gate.unknown".to_string());
+        }
+    }
+    let policy_missing = admission
+        .policy
+        .get("policy")
+        .map_or(true, serde_json::Value::is_null);
+    if policy_missing && admission.result == "admitted" {
+        errors.push("policy.missing".to_string());
+    }
+
+    if errors.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "admission_id": admission.id,
+            "packet_id": admission.packet_id,
+            "errors": errors
+        }))
+    }
+}
+
+fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> {
+    let mut errors = Vec::new();
+    if verdict
+        .score
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        != Some(VERDICT_SCHEMA_VERSION)
+    {
+        errors.push("score.schema_version".to_string());
+    }
+    if !decision_label_allowed(&verdict.decision) {
+        errors.push("decision".to_string());
+    }
+    if verdict
+        .score
+        .get("decision")
+        .and_then(|value| value.as_str())
+        != Some(verdict.decision.as_str())
+    {
+        errors.push("score.decision_binding".to_string());
+    }
+    if !verdict
+        .score
+        .get("score_vector")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        errors.push("score.score_vector".to_string());
+    }
+    if verdict
+        .evidence
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        != Some(VERDICT_SCHEMA_VERSION)
+    {
+        errors.push("evidence.schema_version".to_string());
+    }
+
+    if errors.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "verdict_id": verdict.id,
+            "round": verdict.round,
+            "errors": errors
+        }))
+    }
+}
+
+fn decision_label_allowed(value: &str) -> bool {
+    matches!(value, "keep" | "reject" | "needs-review" | "blocked")
 }
 
 pub fn panel(store: &Store) -> Result<Vec<IssueCard>> {
@@ -2875,6 +3191,20 @@ mod tests {
                 && evidence.kind == "verdict_packet"
                 && evidence.worker_ok == Some(true)
         }));
+        let audit_report =
+            super::audit(&store, created.contract.id).expect("loop audit should resolve");
+        assert_eq!(audit_report.schema_version, AUDIT_SCHEMA_VERSION);
+        assert!(audit_report.passed);
+        assert_eq!(audit_report.failed_count, 0);
+        assert!(audit_report.checks.iter().any(|check| {
+            check.name == "packet_envelopes"
+                && check.passed
+                && check
+                    .details
+                    .pointer("/packet_errors")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|errors| errors.is_empty())
+        }));
 
         let rerun = run(
             &store,
@@ -3404,6 +3734,17 @@ mod tests {
             .comments
             .iter()
             .any(|comment| comment.body.contains("Compiler admission blocked at doer")));
+        let audit_report =
+            super::audit(&store, created.contract.id).expect("loop audit should resolve");
+        assert!(!audit_report.passed);
+        assert!(audit_report
+            .checks
+            .iter()
+            .any(|check| check.name == "active_policy_registry" && !check.passed));
+        assert!(audit_report
+            .checks
+            .iter()
+            .any(|check| check.name == "admission_receipts" && !check.passed));
 
         let _ = fs::remove_dir_all(root);
     }
