@@ -155,6 +155,10 @@ type IssueCard = {
       worker_attempt_count: number | null;
       worker_max_attempts: number | null;
       worker_retry_exhausted: boolean | null;
+      worker_action: string | null;
+      worker_evidence_summary: string | null;
+      worker_gate_count: number | null;
+      worker_receipt_errors: string[];
       transcript_excerpt: string | null;
     }>;
     stages: Array<{
@@ -1282,6 +1286,12 @@ export default function App() {
                                   {workerAttemptLabel(evidence) ? (
                                     <span class="trace-pill">{workerAttemptLabel(evidence)}</span>
                                   ) : null}
+                                  {evidence.worker_action ? (
+                                    <span class="trace-pill">{evidence.worker_action}</span>
+                                  ) : null}
+                                  {evidence.worker_gate_count !== null ? (
+                                    <span class="trace-pill">gates {evidence.worker_gate_count}</span>
+                                  ) : null}
                                   {evidence.worker_retry_exhausted === true ? (
                                     <span class="trace-pill trace-pill--warn">retry exhausted</span>
                                   ) : null}
@@ -1294,6 +1304,9 @@ export default function App() {
                                   {evidence.packet_envelope_errors.map((field) => (
                                     <span class="trace-pill trace-pill--warn">invalid {field}</span>
                                   ))}
+                                  {evidence.worker_receipt_errors.map((field) => (
+                                    <span class="trace-pill trace-pill--warn">receipt {field}</span>
+                                  ))}
                                   {evidence.operator_options.map((option) => (
                                     <span class="trace-pill">{option}</span>
                                   ))}
@@ -1304,6 +1317,9 @@ export default function App() {
                                     <span class="trace-pill">{evidence.operator_action}</span>
                                   ) : null}
                                 </div>
+                                {evidence.worker_evidence_summary ? (
+                                  <p class="muted">{evidence.worker_evidence_summary}</p>
+                                ) : null}
                                 {evidence.transcript_excerpt ? (
                                   <p class="muted">{evidence.transcript_excerpt}</p>
                                 ) : null}

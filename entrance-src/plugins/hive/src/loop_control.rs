@@ -19,6 +19,7 @@ const PACKET_SCHEMA_VERSION: &str = "entrance.hive.packet.v1";
 const POLICY_SCHEMA_VERSION: &str = "entrance.hive.policy.v1";
 const ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.admission.v1";
 const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
+const WORKER_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.worker_receipt.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
 const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
@@ -405,6 +406,10 @@ pub struct IssueEvidenceSummary {
     pub worker_attempt_count: Option<u64>,
     pub worker_max_attempts: Option<u64>,
     pub worker_retry_exhausted: Option<bool>,
+    pub worker_action: Option<String>,
+    pub worker_evidence_summary: Option<String>,
+    pub worker_gate_count: Option<usize>,
+    pub worker_receipt_errors: Vec<String>,
     pub transcript_excerpt: Option<String>,
 }
 
@@ -907,6 +912,11 @@ fn runtime_policy_registry() -> RuntimePolicyRegistry {
                 "timeout_secs".to_string(),
                 "attempt_count".to_string(),
                 "max_attempts".to_string(),
+                "receipt.ok".to_string(),
+                "receipt.role".to_string(),
+                "receipt.action".to_string(),
+                "receipt.evidence_summary".to_string(),
+                "receipt.gates".to_string(),
             ],
         },
     }
@@ -2249,6 +2259,16 @@ fn worker_receipt_audit_errors(packet: &HiveLoopPacket) -> Option<serde_json::Va
         (Some(count), Some(max)) if count <= max => {}
         _ => errors.push("attempt_count".to_string()),
     }
+    if worker.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+        match worker_structured_receipt(worker) {
+            Some(receipt) => errors.extend(
+                worker_receipt_contract_errors(&receipt, Some(&packet.writer_role))
+                    .into_iter()
+                    .map(|field| format!("receipt.{field}")),
+            ),
+            None => errors.push("receipt".to_string()),
+        }
+    }
 
     if errors.is_empty() {
         None
@@ -2353,6 +2373,16 @@ fn runtime_worker_policy_errors(
     match (attempt_count, max_attempts) {
         (Some(count), Some(max)) if count <= max => {}
         _ => errors.push("attempt_count".to_string()),
+    }
+    if worker.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+        match worker_structured_receipt(worker) {
+            Some(receipt) => errors.extend(
+                worker_receipt_contract_errors(&receipt, Some(expected_role))
+                    .into_iter()
+                    .map(|field| format!("receipt.{field}")),
+            ),
+            None => errors.push("receipt".to_string()),
+        }
     }
     errors
 }
@@ -3773,12 +3803,17 @@ fn issue_evidence_summary(
     stage_roles: &HashMap<i64, String>,
 ) -> IssueEvidenceSummary {
     let worker = row.payload.get("worker");
+    let worker_receipt = worker.and_then(worker_structured_receipt);
+    let stage_role = row
+        .stage_id
+        .and_then(|stage_id| stage_roles.get(&stage_id).cloned());
+    let worker_receipt_errors = worker
+        .map(|worker| worker_receipt_errors_for_summary(worker, stage_role.as_deref()))
+        .unwrap_or_default();
     IssueEvidenceSummary {
         id: row.id,
         round: row.round,
-        stage_role: row
-            .stage_id
-            .and_then(|stage_id| stage_roles.get(&stage_id).cloned()),
+        stage_role,
         kind: row.kind.clone(),
         summary: row.summary.clone(),
         schema_version: schema_version(&row.payload),
@@ -3836,9 +3871,47 @@ fn issue_evidence_summary(
         worker_retry_exhausted: worker
             .and_then(|value| value.get("retry_exhausted"))
             .and_then(|value| value.as_bool()),
+        worker_action: worker_receipt
+            .as_ref()
+            .and_then(|receipt| receipt.get("action"))
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                worker
+                    .and_then(|value| value.pointer("/packet/action"))
+                    .and_then(|value| value.as_str())
+            })
+            .map(ToOwned::to_owned),
+        worker_evidence_summary: worker_receipt
+            .as_ref()
+            .and_then(|receipt| receipt.get("evidence_summary"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        worker_gate_count: worker_receipt
+            .as_ref()
+            .and_then(|receipt| receipt.get("gates"))
+            .and_then(|value| value.as_object())
+            .map(serde_json::Map::len),
+        worker_receipt_errors,
         transcript_excerpt: worker
             .and_then(worker_transcript_excerpt)
             .map(|value| truncate_text(&value, 240)),
+    }
+}
+
+fn worker_receipt_errors_for_summary(
+    worker: &serde_json::Value,
+    expected_role: Option<&str>,
+) -> Vec<String> {
+    let stored_errors = string_array_at(worker, "/receipt_errors");
+    if !stored_errors.is_empty() {
+        return stored_errors;
+    }
+    match worker_structured_receipt(worker) {
+        Some(receipt) => worker_receipt_contract_errors(&receipt, expected_role),
+        None if worker.get("ok").and_then(|value| value.as_bool()) == Some(true) => {
+            vec!["receipt".to_string()]
+        }
+        None => Vec::new(),
     }
 }
 
@@ -5073,6 +5146,8 @@ fn run_role_worker(
             "kind": "local",
             "mode": "deterministic-worker",
             "role": role,
+            "receipt_schema_version": WORKER_RECEIPT_SCHEMA_VERSION,
+            "receipt_ok": true,
             "duration_ms": 0,
             "timeout_secs": timeout_secs,
             "attempt_count": 1,
@@ -5087,6 +5162,21 @@ fn run_role_worker(
                 "round": contract.current_round,
                 "role": role,
                 "action": role_worker_action(role)
+            },
+            "receipt": {
+                "ok": true,
+                "role": role,
+                "action": role_worker_action(role),
+                "evidence_summary": format!(
+                    "Local {role} worker accepted loop #{} round {}.",
+                    contract.id,
+                    contract.current_round
+                ),
+                "gates": {
+                    "packet_received": true,
+                    "role_bound": true,
+                    "deterministic_runtime": true
+                }
             }
         }),
         "codex" => {
@@ -5220,6 +5310,11 @@ fn run_codex_worker_attempt(
 
     match result {
         Ok(output) => {
+            let receipt = parse_worker_receipt(&last_message);
+            let receipt_errors = receipt
+                .as_ref()
+                .map(|receipt| worker_receipt_contract_errors(receipt, None))
+                .unwrap_or_else(|| vec!["receipt.parse".to_string()]);
             let receipt_ok = worker_receipt_ok(&last_message);
             let worker_ok = codex_worker_success(&output, receipt_ok);
             serde_json::json!({
@@ -5227,6 +5322,7 @@ fn run_codex_worker_attempt(
                 "kind": "codex",
                 "mode": "codex-exec",
                 "role": role,
+                "receipt_schema_version": WORKER_RECEIPT_SCHEMA_VERSION,
                 "attempt": attempt,
                 "started_at": started_at,
                 "completed_at": chrono::Utc::now().to_rfc3339(),
@@ -5235,6 +5331,8 @@ fn run_codex_worker_attempt(
                 "duration_ms": output.duration_ms,
                 "timeout_secs": timeout_secs,
                 "receipt_ok": receipt_ok,
+                "receipt": receipt,
+                "receipt_errors": receipt_errors,
                 "stdout": truncate_text(&output.stdout, 12000),
                 "stderr": truncate_text(&output.stderr, 4000),
                 "last_message": truncate_text(&last_message, 4000)
@@ -5347,11 +5445,19 @@ Accepted candidate: Run the local Hive loop MVP packet and report whether the ru
 }
 
 fn worker_receipt_ok(value: &str) -> Option<bool> {
+    let receipt = parse_worker_receipt(value)?;
+    if receipt.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        return Some(false);
+    }
+    Some(worker_receipt_contract_errors(&receipt, None).is_empty())
+}
+
+fn parse_worker_receipt(value: &str) -> Option<serde_json::Value> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let json_value = serde_json::from_str::<serde_json::Value>(trimmed)
+    serde_json::from_str::<serde_json::Value>(trimmed)
         .or_else(|_| {
             let start = trimmed.find('{').unwrap_or(0);
             let end = trimmed
@@ -5360,8 +5466,60 @@ fn worker_receipt_ok(value: &str) -> Option<bool> {
                 .unwrap_or(trimmed.len());
             serde_json::from_str::<serde_json::Value>(&trimmed[start..end])
         })
-        .ok()?;
-    json_value.get("ok").and_then(|value| value.as_bool())
+        .ok()
+}
+
+fn worker_structured_receipt(worker: &serde_json::Value) -> Option<serde_json::Value> {
+    worker
+        .get("receipt")
+        .filter(|value| value.is_object())
+        .cloned()
+        .or_else(|| {
+            worker
+                .get("last_message")
+                .and_then(|value| value.as_str())
+                .and_then(parse_worker_receipt)
+        })
+}
+
+fn worker_receipt_contract_errors(
+    receipt: &serde_json::Value,
+    expected_role: Option<&str>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if receipt
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .is_none()
+    {
+        errors.push("ok".to_string());
+    }
+    let role = receipt.get("role").and_then(|value| value.as_str());
+    if role.map_or(true, |value| value.trim().is_empty()) {
+        errors.push("role".to_string());
+    }
+    if expected_role.is_some_and(|expected| role.is_some_and(|role| role != expected)) {
+        errors.push("role_binding".to_string());
+    }
+    if receipt
+        .get("action")
+        .and_then(|value| value.as_str())
+        .map_or(true, |value| value.trim().is_empty())
+    {
+        errors.push("action".to_string());
+    }
+    if receipt
+        .get("evidence_summary")
+        .and_then(|value| value.as_str())
+        .map_or(true, |value| value.trim().is_empty())
+    {
+        errors.push("evidence_summary".to_string());
+    }
+    match receipt.get("gates") {
+        Some(serde_json::Value::Object(gates)) if !gates.is_empty() => {}
+        _ => errors.push("gates".to_string()),
+    }
+    errors
 }
 
 fn truncate_text(value: &str, max_chars: usize) -> String {
@@ -5445,6 +5603,18 @@ mod tests {
             .required_receipt_fields
             .iter()
             .any(|field| field == "role"));
+        assert!(registry
+            .runtime
+            .worker
+            .required_receipt_fields
+            .iter()
+            .any(|field| field == "receipt.action"));
+        assert!(registry
+            .runtime
+            .worker
+            .required_receipt_fields
+            .iter()
+            .any(|field| field == "receipt.gates"));
         let verdict_gate = registry
             .gates
             .iter()
@@ -5709,6 +5879,20 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("local")
         );
+        assert_eq!(
+            execution_evidence
+                .payload
+                .pointer("/worker/receipt/action")
+                .and_then(|value| value.as_str()),
+            Some("record-local-loop-ledger")
+        );
+        assert_eq!(
+            execution_evidence
+                .payload
+                .pointer("/worker/receipt/gates/role_bound")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
         assert_eq!(report.verdicts.len(), 1);
         assert_eq!(report.verdicts[0].decision, "keep");
         let trace = report.issues[0]
@@ -5789,6 +5973,16 @@ mod tests {
         assert_eq!(doer_evidence.worker_attempt_count, Some(1));
         assert_eq!(doer_evidence.worker_max_attempts, Some(2));
         assert_eq!(doer_evidence.worker_retry_exhausted, None);
+        assert_eq!(
+            doer_evidence.worker_action.as_deref(),
+            Some("record-local-loop-ledger")
+        );
+        assert!(doer_evidence
+            .worker_evidence_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("Local doer worker")));
+        assert_eq!(doer_evidence.worker_gate_count, Some(3));
+        assert!(doer_evidence.worker_receipt_errors.is_empty());
         assert!(doer_evidence
             .transcript_excerpt
             .as_deref()
@@ -5984,7 +6178,13 @@ mod tests {
 
     #[test]
     fn worker_receipt_ok_reads_final_json_receipt() {
-        assert_eq!(worker_receipt_ok(r#"{"ok":true}"#), Some(true));
+        assert_eq!(
+            worker_receipt_ok(
+                r#"{"ok":true,"role":"doer","action":"execute","evidence_summary":"done","gates":{"accepted":true}}"#
+            ),
+            Some(true)
+        );
+        assert_eq!(worker_receipt_ok(r#"{"ok":true}"#), Some(false));
         assert_eq!(
             worker_receipt_ok("prefix {\"ok\":false,\"reason\":\"blocked\"} suffix"),
             Some(false)
@@ -6848,6 +7048,88 @@ mod tests {
             .audit_failure_details
             .iter()
             .any(|detail| detail == "runtime_policy:worker_receipt:role_binding"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_receipt_audit_rejects_missing_structured_receipt_fields() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-worker-receipt-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Worker receipt audit loop".to_string(),
+                goal: "Catch incomplete structured worker receipts".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let doer_packet = report
+            .packets
+            .iter()
+            .find(|packet| packet.object_kind == "EXECUTION_PACKET")
+            .expect("doer packet should exist");
+        let mut payload = doer_packet.payload.clone();
+        payload
+            .pointer_mut("/body/role_worker/receipt")
+            .and_then(|value| value.as_object_mut())
+            .expect("role worker receipt should be an object")
+            .remove("action");
+        store
+            .insert_hive_loop_packet(HiveLoopPacketCreate {
+                loop_id: report.contract.id,
+                round: report.contract.current_round,
+                object_kind: "EXECUTION_PACKET".to_string(),
+                writer_role: "doer".to_string(),
+                route_from: "doer".to_string(),
+                route_to: "evaluator".to_string(),
+                state_code: "submitted".to_string(),
+                payload,
+            })
+            .expect("drifted packet should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let worker_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "worker_receipts")
+            .expect("worker receipt audit should exist");
+        assert!(!worker_check.passed);
+        assert!(worker_check
+            .details
+            .pointer("/worker_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("receipt.action"))))));
 
         let _ = fs::remove_dir_all(root);
     }
