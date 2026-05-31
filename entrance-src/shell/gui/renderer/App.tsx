@@ -826,6 +826,18 @@ export default function App() {
       : `cmd ${command.split(/\s+/).slice(0, 2).join(" ")}`;
   };
 
+  const shouldShowTranscriptExcerpt = (
+    evidence: NonNullable<IssueCard["trace"]>["evidence"][number],
+  ) =>
+    Boolean(
+      evidence.transcript_excerpt &&
+        (evidence.worker_ok === false ||
+          evidence.worker_receipt_ok === false ||
+          evidence.worker_timed_out === true ||
+          evidence.worker_retry_exhausted === true ||
+          evidence.worker_receipt_errors.length > 0),
+    );
+
   const scoreMetricLabel = (name: string) =>
     ({
       stage_completeness: "stage",
@@ -1471,7 +1483,7 @@ export default function App() {
                                 {evidence.worker_cwd ? (
                                   <p class="muted">cwd {evidence.worker_cwd}</p>
                                 ) : null}
-                                {evidence.transcript_excerpt ? (
+                                {shouldShowTranscriptExcerpt(evidence) ? (
                                   <p class="muted">{evidence.transcript_excerpt}</p>
                                 ) : null}
                               </div>
