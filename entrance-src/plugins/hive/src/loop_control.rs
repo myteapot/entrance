@@ -84,9 +84,13 @@ pub struct IssueTraceSummary {
     pub admission_count: usize,
     pub evidence_count: usize,
     pub verdict_count: usize,
+    pub receipt_required_count: usize,
+    pub receipt_missing_count: usize,
     pub packet_schema: Option<String>,
     pub admission_schema: Option<String>,
     pub verdict_schema: Option<String>,
+    pub last_admission_gate: Option<String>,
+    pub last_admission_passed: Option<bool>,
     pub last_decision: Option<String>,
     pub reason_code: Option<String>,
     pub worker_kind: Option<String>,
@@ -578,6 +582,7 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
     let admissions = store.list_hive_loop_admissions(loop_id)?;
     let evidence = store.list_hive_loop_evidence(loop_id)?;
     let verdicts = store.list_hive_loop_verdicts(loop_id)?;
+    let last_admission = admissions.last();
     let last_verdict = verdicts.last();
     let execution_evidence = evidence
         .iter()
@@ -590,6 +595,14 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
         admission_count: admissions.len(),
         evidence_count: evidence.len(),
         verdict_count: verdicts.len(),
+        receipt_required_count: admissions
+            .iter()
+            .map(|admission| receipt_array_len(&admission.policy, "/receipt/required"))
+            .sum(),
+        receipt_missing_count: admissions
+            .iter()
+            .map(|admission| receipt_array_len(&admission.policy, "/receipt/missing"))
+            .sum(),
         packet_schema: packets
             .last()
             .and_then(|packet| schema_version(&packet.payload)),
@@ -597,6 +610,13 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
             .last()
             .and_then(|admission| schema_version(&admission.policy)),
         verdict_schema: last_verdict.and_then(|verdict| schema_version(&verdict.score)),
+        last_admission_gate: last_admission
+            .and_then(|admission| admission.policy.pointer("/gate/name"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        last_admission_passed: last_admission
+            .and_then(|admission| admission.policy.pointer("/gate/passed"))
+            .and_then(|value| value.as_bool()),
         last_decision: last_verdict.map(|verdict| verdict.decision.clone()),
         reason_code: last_verdict
             .and_then(|verdict| {
@@ -631,6 +651,14 @@ fn schema_version(value: &serde_json::Value) -> Option<String> {
         .get("schema_version")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
+}
+
+fn receipt_array_len(value: &serde_json::Value, pointer: &str) -> usize {
+    value
+        .pointer(pointer)
+        .and_then(|value| value.as_array())
+        .map(Vec::len)
+        .unwrap_or_default()
 }
 
 fn add_system_comment(
@@ -1063,21 +1091,21 @@ fn seed_default_policies(store: &Store, loop_id: i64) -> Result<()> {
             "explorer",
             "explorer",
             "doer",
-            "candidate_present",
+            "candidate_receipts_present",
         ),
         (
             "EXECUTION_PACKET",
             "doer",
             "doer",
             "evaluator",
-            "runtime_probe_present",
+            "runtime_receipts_present",
         ),
         (
             "VERDICT_PACKET",
             "evaluator",
             "evaluator",
             "complete",
-            "decision_present",
+            "verdict_receipts_present",
         ),
     ] {
         store.insert_hive_loop_policy(HiveLoopPolicyCreate {
@@ -1221,6 +1249,8 @@ fn typed_admission_receipt(
     gate_name: Option<&str>,
     gate_passed: Option<bool>,
 ) -> serde_json::Value {
+    let (required_receipts, missing_receipts) = receipt_requirement_status(packet_payload);
+    let receipt_satisfied = missing_receipts.is_empty();
     serde_json::json!({
         "schema_version": ADMISSION_SCHEMA_VERSION,
         "result": result,
@@ -1249,6 +1279,11 @@ fn typed_admission_receipt(
         "gate": {
             "name": gate_name,
             "passed": gate_passed
+        },
+        "receipt": {
+            "required": required_receipts,
+            "missing": missing_receipts,
+            "satisfied": receipt_satisfied
         }
     })
 }
@@ -1259,6 +1294,18 @@ fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
     }
     let body = packet_body(payload);
     match gate {
+        "candidate_receipts_present" => {
+            packet_object_kind(payload) == Some("EXPLORATION_PACKET")
+                && receipt_requirements_satisfied(payload)
+        }
+        "runtime_receipts_present" => {
+            packet_object_kind(payload) == Some("EXECUTION_PACKET")
+                && receipt_requirements_satisfied(payload)
+        }
+        "verdict_receipts_present" => {
+            packet_object_kind(payload) == Some("VERDICT_PACKET")
+                && receipt_requirements_satisfied(payload)
+        }
         "candidate_present" => body
             .get("candidate")
             .and_then(|value| value.as_str())
@@ -1270,6 +1317,59 @@ fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
             .is_some_and(|value| matches!(value, "keep" | "reject" | "needs-review" | "blocked")),
         _ => false,
     }
+}
+
+fn receipt_requirements_satisfied(payload: &serde_json::Value) -> bool {
+    let (_required, missing) = receipt_requirement_status(payload);
+    missing.is_empty()
+}
+
+fn receipt_requirement_status(payload: &serde_json::Value) -> (Vec<String>, Vec<String>) {
+    let required = packet_receipt_requirements(payload);
+    let body = packet_body(payload);
+    let missing = required
+        .iter()
+        .filter(|requirement| !receipt_value_present(body, requirement))
+        .cloned()
+        .collect::<Vec<_>>();
+    (required, missing)
+}
+
+fn packet_receipt_requirements(payload: &serde_json::Value) -> Vec<String> {
+    let declared = payload
+        .get("receipt_requirements")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !declared.is_empty() {
+        return declared;
+    }
+    packet_object_kind(payload)
+        .map(receipt_requirements_for_packet)
+        .unwrap_or_default()
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn receipt_value_present(body: &serde_json::Value, requirement: &str) -> bool {
+    body.get(requirement).is_some_and(|value| match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(text) => !text.trim().is_empty(),
+        serde_json::Value::Array(values) => !values.is_empty(),
+        serde_json::Value::Object(values) => !values.is_empty(),
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => true,
+    })
+}
+
+fn packet_object_kind(payload: &serde_json::Value) -> Option<&str> {
+    payload.get("object_kind").and_then(|value| value.as_str())
 }
 
 fn typed_packet_envelope_valid(payload: &serde_json::Value) -> bool {
@@ -1612,6 +1712,9 @@ mod tests {
         assert_eq!(report.contract.status, "kept");
         assert_eq!(report.contract.active_phase, "complete");
         assert_eq!(report.policies.len(), 3);
+        assert_eq!(report.policies[0].gate, "candidate_receipts_present");
+        assert_eq!(report.policies[1].gate, "runtime_receipts_present");
+        assert_eq!(report.policies[2].gate, "verdict_receipts_present");
         assert_eq!(report.packets.len(), 3);
         assert!(report.packets.iter().all(|packet| packet
             .payload
@@ -1656,6 +1759,26 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some(PACKET_SCHEMA_VERSION)
         );
+        assert!(report.admissions.iter().all(|admission| admission
+            .policy
+            .pointer("/receipt/satisfied")
+            .and_then(|value| value.as_bool())
+            == Some(true)));
+        assert_eq!(
+            report.admissions[1]
+                .policy
+                .pointer("/receipt/required/1")
+                .and_then(|value| value.as_str()),
+            Some("runtime_worker")
+        );
+        assert_eq!(
+            report.admissions[1]
+                .policy
+                .pointer("/receipt/missing")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
         assert_eq!(report.stages.len(), 3);
         assert_eq!(report.evidence.len(), 3);
         let execution_evidence = report
@@ -1679,6 +1802,8 @@ mod tests {
         assert_eq!(trace.packet_count, 3);
         assert_eq!(trace.admission_count, 3);
         assert_eq!(trace.verdict_count, 1);
+        assert_eq!(trace.receipt_required_count, 8);
+        assert_eq!(trace.receipt_missing_count, 0);
         assert_eq!(trace.packet_schema.as_deref(), Some(PACKET_SCHEMA_VERSION));
         assert_eq!(
             trace.admission_schema.as_deref(),
@@ -1688,6 +1813,11 @@ mod tests {
             trace.verdict_schema.as_deref(),
             Some(VERDICT_SCHEMA_VERSION)
         );
+        assert_eq!(
+            trace.last_admission_gate.as_deref(),
+            Some("verdict_receipts_present")
+        );
+        assert_eq!(trace.last_admission_passed, Some(true));
         assert_eq!(trace.last_decision.as_deref(), Some("keep"));
         assert_eq!(trace.worker_kind.as_deref(), Some("local"));
         assert_eq!(trace.worker_ok, Some(true));
@@ -1726,6 +1856,70 @@ mod tests {
             Some(false)
         );
         assert_eq!(worker_receipt_ok("not json"), None);
+    }
+
+    #[test]
+    fn admission_rejects_packets_missing_required_receipts() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-receipt-gate-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Receipt gate loop".to_string(),
+                goal: "Reject incomplete execution packets".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+
+        let admission = emit_and_admit(
+            &store,
+            &created.contract,
+            "EXECUTION_PACKET",
+            "doer",
+            "doer",
+            "evaluator",
+            serde_json::json!({
+                "runtime_probe": {
+                    "ok": true,
+                    "kind": "local"
+                },
+                "artifact": "hive-loop-ledger"
+            }),
+        )
+        .expect("admission should be recorded");
+
+        assert_eq!(admission.result, "rejected");
+        assert_eq!(admission.reason, "runtime_receipts_present failed");
+        assert_eq!(
+            admission
+                .policy
+                .pointer("/receipt/satisfied")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            admission
+                .policy
+                .pointer("/receipt/missing/0")
+                .and_then(|value| value.as_str()),
+            Some("runtime_worker")
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

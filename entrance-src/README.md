@@ -57,8 +57,8 @@ Local agent-loop MVP:
 ```
 
 `hive loop run` records a minimal compiler path in SQLite: active policies,
-versioned typed packets, versioned admission receipts, stage evidence, and the
-versioned final verdict.
+versioned typed packets, receipt-aware admission gates, versioned admission
+receipts, stage evidence, and the versioned final verdict.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker and stores the worker transcript in execution evidence.
 Unknown runtimes return a blocked verdict instead of being silently kept.

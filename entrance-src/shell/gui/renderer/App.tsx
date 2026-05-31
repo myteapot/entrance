@@ -81,9 +81,13 @@ type IssueCard = {
     admission_count: number;
     evidence_count: number;
     verdict_count: number;
+    receipt_required_count: number;
+    receipt_missing_count: number;
     packet_schema: string | null;
     admission_schema: string | null;
     verdict_schema: string | null;
+    last_admission_gate: string | null;
+    last_admission_passed: boolean | null;
     last_decision: string | null;
     reason_code: string | null;
     worker_kind: string | null;
@@ -291,6 +295,18 @@ export default function App() {
     if (!card.trace?.worker_kind) return null;
     const state = card.trace.worker_ok === true ? "ok" : "blocked";
     return `${card.trace.worker_kind}/${state}`;
+  };
+
+  const receiptLabel = (card: IssueCard) => {
+    if (!card.trace) return null;
+    if (card.trace.receipt_required_count === 0) return "receipts pending";
+    return card.trace.receipt_missing_count === 0 ? "receipts ok" : `missing ${card.trace.receipt_missing_count}`;
+  };
+
+  const gateLabel = (card: IssueCard) => {
+    if (!card.trace?.last_admission_gate) return null;
+    const state = card.trace.last_admission_passed === true ? "ok" : "blocked";
+    return `gate ${state}`;
   };
 
   return (
@@ -507,6 +523,28 @@ export default function App() {
                                   <span class="trace-pill">E {card.trace.evidence_count}</span>
                                   <span class="trace-pill">V {card.trace.verdict_count}</span>
                                   <span class="trace-pill">{schemaLabel(card.trace.verdict_schema)}</span>
+                                  {receiptLabel(card) ? (
+                                    <span
+                                      class={
+                                        card.trace.receipt_missing_count === 0
+                                          ? "trace-pill"
+                                          : "trace-pill trace-pill--warn"
+                                      }
+                                    >
+                                      {receiptLabel(card)}
+                                    </span>
+                                  ) : null}
+                                  {gateLabel(card) ? (
+                                    <span
+                                      class={
+                                        card.trace.last_admission_passed === true
+                                          ? "trace-pill"
+                                          : "trace-pill trace-pill--warn"
+                                      }
+                                    >
+                                      {gateLabel(card)}
+                                    </span>
+                                  ) : null}
                                   {card.trace.last_decision ? (
                                     <span class="trace-pill">{card.trace.last_decision}</span>
                                   ) : null}

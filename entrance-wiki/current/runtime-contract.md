@@ -19,6 +19,9 @@ cargo run -p entrance-app --bin entrance -- launcher list
 `hive loop run` returns the local compiler trace for the round: policy rows,
 versioned typed packet envelopes, versioned admission receipts, evidence, and
 versioned verdict receipts.
+Admission receipts include the packet receipt requirements, missing receipt
+fields, and a boolean satisfied flag. Default MVP gates admit packets only when
+their typed receipt requirements are present.
 Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
