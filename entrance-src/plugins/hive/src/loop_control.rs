@@ -75,6 +75,7 @@ pub struct RuntimePolicySpec {
     pub mode: String,
     pub description: String,
     pub command: Option<String>,
+    pub required_worker_context: Vec<String>,
     pub sandbox: RuntimeSandboxSpec,
 }
 
@@ -881,6 +882,7 @@ fn runtime_policy_registry() -> RuntimePolicyRegistry {
                 description: "In-process deterministic worker for local loop smoke tests."
                     .to_string(),
                 command: None,
+                required_worker_context: Vec::new(),
                 sandbox: RuntimeSandboxSpec {
                     filesystem: "in-process".to_string(),
                     network: "none".to_string(),
@@ -893,6 +895,12 @@ fn runtime_policy_registry() -> RuntimePolicyRegistry {
                 description: "External codex exec role worker with read-only filesystem sandbox."
                     .to_string(),
                 command: Some("codex exec --sandbox read-only -".to_string()),
+                required_worker_context: vec![
+                    "command".to_string(),
+                    "cwd".to_string(),
+                    "output_last_message_path".to_string(),
+                    "prompt_chars".to_string(),
+                ],
                 sandbox: RuntimeSandboxSpec {
                     filesystem: "read-only".to_string(),
                     network: "codex-runtime-default".to_string(),
@@ -2453,6 +2461,11 @@ fn runtime_worker_policy_errors(
             if worker.get("mode").and_then(|value| value.as_str()) != Some(spec.mode.as_str()) {
                 errors.push("mode".to_string());
             }
+            for field in &spec.required_worker_context {
+                if !worker_context_field_present(worker, field) {
+                    errors.push(format!("context.{field}"));
+                }
+            }
         }
         None if kind.is_some() => errors.push("kind.unsupported".to_string()),
         None => errors.push("kind".to_string()),
@@ -2491,6 +2504,20 @@ fn runtime_worker_policy_errors(
         }
     }
     errors
+}
+
+fn worker_context_field_present(worker: &serde_json::Value, field: &str) -> bool {
+    match field {
+        "command" | "cwd" | "output_last_message_path" => worker
+            .get(field)
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty()),
+        "prompt_chars" => worker
+            .get(field)
+            .and_then(|value| value.as_u64())
+            .is_some_and(|value| value > 0),
+        _ => worker.get(field).is_some_and(|value| !value.is_null()),
+    }
 }
 
 fn runtime_policy_spec<'a>(
@@ -5758,6 +5785,14 @@ mod tests {
             .expect("codex runtime policy should be registered");
         assert_eq!(codex_runtime.mode, "codex-exec");
         assert_eq!(codex_runtime.sandbox.filesystem, "read-only");
+        assert!(codex_runtime
+            .required_worker_context
+            .iter()
+            .any(|field| field == "command"));
+        assert!(codex_runtime
+            .required_worker_context
+            .iter()
+            .any(|field| field == "cwd"));
         assert!(registry
             .runtime
             .worker
@@ -7490,6 +7525,95 @@ mod tests {
                 .is_some_and(|fields| fields
                     .iter()
                     .any(|field| field.as_str() == Some("receipt.action"))))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_policy_audit_rejects_codex_workers_missing_command_context() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-codex-context-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Codex context audit loop".to_string(),
+                goal: "Catch codex worker context drift".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let doer_packet = report
+            .packets
+            .iter()
+            .find(|packet| packet.object_kind == "EXECUTION_PACKET")
+            .expect("doer packet should exist");
+        let mut payload = doer_packet.payload.clone();
+        for pointer in ["/body/role_worker", "/body/runtime_worker"] {
+            let worker = payload
+                .pointer_mut(pointer)
+                .and_then(|value| value.as_object_mut())
+                .expect("worker should be an object");
+            worker.insert("kind".to_string(), serde_json::json!("codex"));
+            worker.insert("mode".to_string(), serde_json::json!("codex-exec"));
+        }
+        store
+            .insert_hive_loop_packet(HiveLoopPacketCreate {
+                loop_id: report.contract.id,
+                round: report.contract.current_round,
+                object_kind: "EXECUTION_PACKET".to_string(),
+                writer_role: "doer".to_string(),
+                route_from: "doer".to_string(),
+                route_to: "evaluator".to_string(),
+                state_code: "submitted".to_string(),
+                payload,
+            })
+            .expect("drifted packet should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let runtime_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "runtime_policy")
+            .expect("runtime policy audit should exist");
+
+        assert!(!runtime_check.passed);
+        assert!(runtime_check
+            .details
+            .pointer("/runtime_policy_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("context.command"))))));
+        assert!(audit_failure_details(&audit_report)
+            .iter()
+            .any(|detail| detail == "runtime_policy:worker_receipt:context.command"));
 
         let _ = fs::remove_dir_all(root);
     }
