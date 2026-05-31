@@ -214,6 +214,7 @@ pub struct IssueCard {
     pub issue: HiveIssue,
     pub comments: Vec<HiveComment>,
     pub trace: Option<IssueTraceSummary>,
+    pub doctor: Option<IssueDoctorSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +257,19 @@ pub struct IssueTraceSummary {
     pub audit_failed_checks: Vec<String>,
     pub evidence: Vec<IssueEvidenceSummary>,
     pub stages: Vec<IssueStageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueDoctorSummary {
+    pub schema_version: String,
+    pub health: String,
+    pub summary: String,
+    pub next_actions: Vec<String>,
+    pub current_round: i64,
+    pub counts: HiveLoopDoctorCounts,
+    pub failed_checks: Vec<String>,
+    pub missing_receipts: Vec<String>,
+    pub worker_failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -933,7 +947,8 @@ pub fn doctor(store: &Store, loop_id: i64) -> Result<HiveLoopDoctorReport> {
         &contract,
         issue_status.as_deref(),
         &trace_summary,
-        &audit_report,
+        audit_report.passed,
+        audit_report.failed_count,
         &health,
     );
     let next_actions = doctor_next_actions(
@@ -1087,13 +1102,14 @@ fn doctor_summary(
     contract: &HiveLoopContract,
     issue_status: Option<&str>,
     trace: &IssueTraceSummary,
-    audit: &HiveLoopAuditReport,
+    audit_passed: bool,
+    audit_failed_count: usize,
     health: &str,
 ) -> String {
-    let audit_state = if audit.passed {
+    let audit_state = if audit_passed {
         "audit ok".to_string()
     } else {
-        format!("audit failed {} checks", audit.failed_count)
+        format!("audit failed {audit_failed_count} checks")
     };
     format!(
         "Loop #{} is {health} at {} round {}; issue {}; decision {}; {}; workers {}/{} current round; receipts missing {}/{} current round.",
@@ -1644,10 +1660,59 @@ fn issue_card_from_issue(store: &Store, issue: HiveIssue) -> Result<IssueCard> {
         .loop_id
         .map(|loop_id| issue_trace_summary(store, loop_id, Some(&issue)))
         .transpose()?;
+    let doctor = issue
+        .loop_id
+        .zip(trace.as_ref())
+        .map(|(loop_id, trace)| issue_doctor_summary(store, loop_id, &issue, trace))
+        .transpose()?;
     Ok(IssueCard {
         issue,
         comments,
         trace,
+        doctor,
+    })
+}
+
+fn issue_doctor_summary(
+    store: &Store,
+    loop_id: i64,
+    issue: &HiveIssue,
+    trace: &IssueTraceSummary,
+) -> Result<IssueDoctorSummary> {
+    let contract = store
+        .get_hive_loop_contract(loop_id)?
+        .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
+    let audit_passed = trace.audit_passed.unwrap_or(false);
+    let health = doctor_health(
+        &contract.status,
+        Some(issue.status.as_str()),
+        trace.last_decision.as_deref(),
+        audit_passed,
+    )
+    .to_string();
+    Ok(IssueDoctorSummary {
+        schema_version: DOCTOR_SCHEMA_VERSION.to_string(),
+        health: health.clone(),
+        summary: doctor_summary(
+            &contract,
+            Some(issue.status.as_str()),
+            trace,
+            audit_passed,
+            trace.audit_failed_count,
+            &health,
+        ),
+        current_round: contract.current_round,
+        next_actions: doctor_next_actions(
+            &health,
+            loop_id,
+            Some(issue.id),
+            &contract.runtime,
+            audit_passed,
+        ),
+        counts: doctor_counts(trace),
+        failed_checks: trace.audit_failed_checks.clone(),
+        missing_receipts: doctor_missing_receipts(trace),
+        worker_failures: doctor_worker_failures(trace),
     })
 }
 
@@ -3829,6 +3894,13 @@ mod tests {
         );
         assert_eq!(report.issues[0].issue.status, "Done");
         assert!(report.issues[0].comments.len() >= 3);
+        let issue_doctor = report.issues[0]
+            .doctor
+            .as_ref()
+            .expect("issue card should include doctor summary");
+        assert_eq!(issue_doctor.health, "ok");
+        assert_eq!(issue_doctor.counts.round_role_worker_ok_count, 3);
+        assert!(issue_doctor.worker_failures.is_empty());
         let trace_report =
             super::trace(&store, created.contract.id).expect("loop trace report should resolve");
         assert_eq!(trace_report.contract.status, "kept");
@@ -4164,6 +4236,15 @@ mod tests {
             Some(0.0)
         );
         assert_eq!(report.issues[0].issue.status, "Blocked");
+        let issue_doctor = report.issues[0]
+            .doctor
+            .as_ref()
+            .expect("blocked issue should include doctor summary");
+        assert_eq!(issue_doctor.health, "blocked");
+        assert!(issue_doctor
+            .missing_receipts
+            .iter()
+            .any(|receipt| receipt == "role_worker"));
         assert!(report
             .issues
             .first()
