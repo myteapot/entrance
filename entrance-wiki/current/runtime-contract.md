@@ -10,6 +10,7 @@ cargo run -p entrance-app --bin entrance -- drawer summary
 cargo run -p entrance-app --bin entrance -- hive summary
 cargo run -p entrance-app --bin entrance -- hive loop create --title "Local loop" --goal "Run the Hive loop MVP" --runtime codex
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex
+cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex --worker-timeout-secs 20
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime local --decision reject
 cargo run -p entrance-app --bin entrance -- hive issue list
 cargo run -p entrance-app --bin entrance -- hive issue show 1
@@ -32,6 +33,9 @@ reported as blocked verdicts. The `codex` runtime uses a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 records stdout, stderr, and last-message transcript data in the stage evidence
 for that role.
+Worker timeout defaults to 60 seconds, can be overridden with
+`--worker-timeout-secs <n>` or `ENTRANCE_HIVE_WORKER_TIMEOUT_SECS`, and is
+recorded on worker evidence so slow or timed-out codex runs are reviewable.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 Human decisions are available through `hive issue decide <id>

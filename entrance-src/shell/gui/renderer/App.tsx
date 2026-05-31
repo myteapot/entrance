@@ -137,6 +137,7 @@ type IssueCard = {
       worker_timed_out: boolean | null;
       worker_status: number | null;
       worker_duration_ms: number | null;
+      worker_timeout_secs: number | null;
       transcript_excerpt: string | null;
     }>;
     stages: Array<{
@@ -173,6 +174,7 @@ export default function App() {
   const [loopTitle, setLoopTitle] = createSignal("");
   const [loopGoal, setLoopGoal] = createSignal("");
   const [loopRuntime, setLoopRuntime] = createSignal("codex");
+  const [loopWorkerTimeoutSecs, setLoopWorkerTimeoutSecs] = createSignal("");
   const [selectedIssueId, setSelectedIssueId] = createSignal<number | null>(null);
   const [activeCommentIssue, setActiveCommentIssue] = createSignal<number | null>(null);
   const [commentBody, setCommentBody] = createSignal("");
@@ -303,14 +305,24 @@ export default function App() {
   };
   const actionErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
+  const loopRunArgs = () => {
+    const timeoutText = loopWorkerTimeoutSecs().trim();
+    const workerTimeoutSecs = timeoutText ? Number.parseInt(timeoutText, 10) : undefined;
+    return {
+      runtime: loopRuntime(),
+      workerTimeoutSecs: workerTimeoutSecs && workerTimeoutSecs > 0 ? workerTimeoutSecs : undefined,
+    };
+  };
 
   const runHiveLoop = async (loop: HiveLoop) => {
     if (loopPendingLabel(loop.id)) return;
     setPendingLoop(loop.id, "Running");
     try {
+      const runArgs = loopRunArgs();
       await bridge.invoke("hive_loop_run", {
         id: loop.id,
-        runtime: loop.runtime || loopRuntime(),
+        ...runArgs,
+        runtime: loop.runtime || runArgs.runtime,
       });
       setBanner(`Loop #${loop.id} finished.`);
       await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
@@ -328,7 +340,7 @@ export default function App() {
     try {
       await bridge.invoke("hive_loop_run", {
         id: card.issue.loop_id,
-        runtime: loopRuntime(),
+        ...loopRunArgs(),
       });
       setBanner(`Loop #${card.issue.loop_id} finished.`);
       await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
@@ -375,7 +387,7 @@ export default function App() {
       if (card.issue.loop_id) {
         await bridge.invoke("hive_loop_run", {
           id: card.issue.loop_id,
-          runtime: loopRuntime(),
+          ...loopRunArgs(),
         });
       }
       setBanner(`Issue #${card.issue.id} retried.`);
@@ -549,6 +561,9 @@ export default function App() {
     }
     return `${evidence.worker_duration_ms}ms`;
   };
+
+  const workerTimeoutLabel = (evidence: NonNullable<IssueCard["trace"]>["evidence"][number]) =>
+    evidence.worker_timeout_secs === null ? null : `limit ${evidence.worker_timeout_secs}s`;
 
   const scoreMetricLabel = (name: string) =>
     ({
@@ -812,6 +827,13 @@ export default function App() {
                     <option value="codex">codex</option>
                     <option value="local">local</option>
                   </select>
+                  <input
+                    type="number"
+                    min="1"
+                    value={loopWorkerTimeoutSecs()}
+                    onInput={(event) => setLoopWorkerTimeoutSecs(event.currentTarget.value)}
+                    placeholder="Worker timeout seconds"
+                  />
                   <button type="button" class="primary-button" onClick={() => void createHiveLoop()}>
                     Create Loop
                   </button>
@@ -939,6 +961,9 @@ export default function App() {
                                   ) : null}
                                   {workerDurationLabel(evidence) ? (
                                     <span class="trace-pill">{workerDurationLabel(evidence)}</span>
+                                  ) : null}
+                                  {workerTimeoutLabel(evidence) ? (
+                                    <span class="trace-pill">{workerTimeoutLabel(evidence)}</span>
                                   ) : null}
                                   {evidence.blocked_phase ? (
                                     <span class="trace-pill trace-pill--warn">blocked {evidence.blocked_phase}</span>

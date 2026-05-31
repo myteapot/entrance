@@ -457,6 +457,10 @@ async fn handle_invoke(
                         .get("decision")
                         .and_then(|value| value.as_str())
                         .map(ToOwned::to_owned),
+                    worker_timeout_secs: args
+                        .get("workerTimeoutSecs")
+                        .or_else(|| args.get("worker_timeout_secs"))
+                        .and_then(|value| value.as_u64()),
                 })?,
             )?)
         }

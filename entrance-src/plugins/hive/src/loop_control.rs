@@ -22,6 +22,8 @@ const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
 const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
+const DEFAULT_WORKER_TIMEOUT_SECS: u64 = 60;
+const MAX_WORKER_TIMEOUT_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Copy)]
 struct GateSpec {
@@ -66,6 +68,7 @@ pub struct HiveLoopRunRequest {
     pub loop_id: i64,
     pub runtime: Option<String>,
     pub decision: Option<String>,
+    pub worker_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +231,7 @@ pub struct IssueEvidenceSummary {
     pub worker_timed_out: Option<bool>,
     pub worker_status: Option<i64>,
     pub worker_duration_ms: Option<u64>,
+    pub worker_timeout_secs: Option<u64>,
     pub transcript_excerpt: Option<String>,
 }
 
@@ -309,6 +313,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         .get_hive_loop_contract(request.loop_id)?
         .with_context(|| format!("unknown hive loop `{}`", request.loop_id))?;
     let runtime = request.runtime.unwrap_or_else(|| contract.runtime.clone());
+    let worker_timeout_secs = worker_timeout_secs(request.worker_timeout_secs)?;
     let issues = store.list_hive_issues_for_loop(contract.id)?;
     let issue_id = issues.first().map(|issue| issue.id);
 
@@ -338,7 +343,13 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "explorer",
         contract.current_round,
     )?;
-    let explorer_worker = run_role_worker(&runtime, "explorer", &contract, &runtime_probe);
+    let explorer_worker = run_role_worker(
+        &runtime,
+        "explorer",
+        &contract,
+        &runtime_probe,
+        worker_timeout_secs,
+    );
     let explorer_stage = insert_stage(
         store,
         &contract,
@@ -407,7 +418,13 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "doer",
         contract.current_round,
     )?;
-    let runtime_worker = run_role_worker(&runtime, "doer", &contract, &runtime_probe);
+    let runtime_worker = run_role_worker(
+        &runtime,
+        "doer",
+        &contract,
+        &runtime_probe,
+        worker_timeout_secs,
+    );
     let doer_stage = insert_stage(
         store,
         &contract,
@@ -471,7 +488,13 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         contract.current_round,
     )?;
     let evidence = store.list_hive_loop_evidence(contract.id)?;
-    let evaluator_worker = run_role_worker(&runtime, "evaluator", &contract, &runtime_probe);
+    let evaluator_worker = run_role_worker(
+        &runtime,
+        "evaluator",
+        &contract,
+        &runtime_probe,
+        worker_timeout_secs,
+    );
     let runtime_ready = runtime_probe
         .get("ok")
         .and_then(|value| value.as_bool())
@@ -1495,6 +1518,9 @@ fn issue_evidence_summary(
         worker_duration_ms: worker
             .and_then(|value| value.get("duration_ms"))
             .and_then(|value| value.as_u64()),
+        worker_timeout_secs: worker
+            .and_then(|value| value.get("timeout_secs"))
+            .and_then(|value| value.as_u64()),
         transcript_excerpt: worker
             .and_then(worker_transcript_excerpt)
             .map(|value| truncate_text(&value, 240)),
@@ -1706,6 +1732,11 @@ fn block_on_admission_rejection(
         "Compiler admission blocked at {phase}: {}.",
         admission.reason
     );
+    let rejected_packet = store.get_hive_loop_packet(admission.packet_id)?;
+    let rejected_worker = rejected_packet
+        .as_ref()
+        .and_then(|packet| packet_role_worker(&packet.payload))
+        .cloned();
     let evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
         stage_id,
@@ -1719,6 +1750,7 @@ fn block_on_admission_rejection(
             "packet_id": admission.packet_id,
             "result": admission.result,
             "reason": admission.reason,
+            "worker": rejected_worker,
             "admission_receipt": admission.policy.clone(),
             "operator_options": ["fix-policy", "retry", "request-human-review"]
         }),
@@ -2144,6 +2176,29 @@ fn worker_ok(worker: &serde_json::Value) -> bool {
         .get("ok")
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
+}
+
+fn worker_timeout_secs(requested: Option<u64>) -> Result<u64> {
+    let value = match requested {
+        Some(value) => value,
+        None => match std::env::var("ENTRANCE_HIVE_WORKER_TIMEOUT_SECS") {
+            Ok(value) if !value.trim().is_empty() => value
+                .trim()
+                .parse::<u64>()
+                .with_context(|| "ENTRANCE_HIVE_WORKER_TIMEOUT_SECS must be a positive integer")?,
+            _ => DEFAULT_WORKER_TIMEOUT_SECS,
+        },
+    };
+    if value == 0 {
+        anyhow::bail!("worker timeout must be at least 1 second");
+    }
+    if value > MAX_WORKER_TIMEOUT_SECS {
+        anyhow::bail!(
+            "worker timeout must be <= {} seconds",
+            MAX_WORKER_TIMEOUT_SECS
+        );
+    }
+    Ok(value)
 }
 
 fn seed_default_policies(store: &Store, loop_id: i64) -> Result<()> {
@@ -2653,6 +2708,7 @@ fn run_role_worker(
     role: &str,
     contract: &HiveLoopContract,
     runtime_probe: &serde_json::Value,
+    timeout_secs: u64,
 ) -> serde_json::Value {
     match runtime {
         "local" => serde_json::json!({
@@ -2661,6 +2717,7 @@ fn run_role_worker(
             "mode": "deterministic-worker",
             "role": role,
             "duration_ms": 0,
+            "timeout_secs": timeout_secs,
             "last_message": format!(
                 "Local {role} worker accepted loop #{} round {}.",
                 contract.id,
@@ -2684,10 +2741,11 @@ fn run_role_worker(
                     "kind": "codex",
                     "role": role,
                     "skipped": true,
+                    "timeout_secs": timeout_secs,
                     "error": "codex probe failed"
                 });
             }
-            run_codex_worker(contract, role)
+            run_codex_worker(contract, role, timeout_secs)
         }
         other => serde_json::json!({
             "ok": false,
@@ -2695,6 +2753,7 @@ fn run_role_worker(
             "role": role,
             "runtime": other,
             "skipped": true,
+            "timeout_secs": timeout_secs,
             "error": "unsupported runtime"
         }),
     }
@@ -2709,7 +2768,11 @@ fn role_worker_action(role: &str) -> &'static str {
     }
 }
 
-fn run_codex_worker(contract: &HiveLoopContract, role: &str) -> serde_json::Value {
+fn run_codex_worker(
+    contract: &HiveLoopContract,
+    role: &str,
+    timeout_secs: u64,
+) -> serde_json::Value {
     let output_path = std::env::temp_dir().join(format!(
         "entrance-hive-codex-worker-{}-{}-{}.txt",
         contract.id,
@@ -2741,7 +2804,7 @@ fn run_codex_worker(contract: &HiveLoopContract, role: &str) -> serde_json::Valu
         .stderr(Stdio::piped());
 
     let started_at = chrono::Utc::now().to_rfc3339();
-    let result = run_command_with_timeout(command, Duration::from_secs(60));
+    let result = run_command_with_timeout(command, Duration::from_secs(timeout_secs));
     let last_message = std::fs::read_to_string(&output_path).unwrap_or_default();
     let _ = std::fs::remove_file(&output_path);
 
@@ -2759,6 +2822,7 @@ fn run_codex_worker(contract: &HiveLoopContract, role: &str) -> serde_json::Valu
                 "timed_out": output.timed_out,
                 "status": output.status_code,
                 "duration_ms": output.duration_ms,
+                "timeout_secs": timeout_secs,
                 "receipt_ok": receipt_ok,
                 "stdout": truncate_text(&output.stdout, 12000),
                 "stderr": truncate_text(&output.stderr, 4000),
@@ -2772,6 +2836,7 @@ fn run_codex_worker(contract: &HiveLoopContract, role: &str) -> serde_json::Valu
             "role": role,
             "started_at": started_at,
             "completed_at": chrono::Utc::now().to_rfc3339(),
+            "timeout_secs": timeout_secs,
             "error": error.to_string(),
             "last_message": truncate_text(&last_message, 4000)
         }),
@@ -3028,6 +3093,7 @@ mod tests {
                 loop_id: created.contract.id,
                 runtime: Some("local".to_string()),
                 decision: None,
+                worker_timeout_secs: Some(7),
             },
         )
         .expect("loop should run");
@@ -3228,6 +3294,7 @@ mod tests {
         assert_eq!(doer_evidence.worker_kind.as_deref(), Some("local"));
         assert_eq!(doer_evidence.worker_ok, Some(true));
         assert_eq!(doer_evidence.worker_duration_ms, Some(0));
+        assert_eq!(doer_evidence.worker_timeout_secs, Some(7));
         assert!(doer_evidence
             .transcript_excerpt
             .as_deref()
@@ -3340,6 +3407,7 @@ mod tests {
                 loop_id: created.contract.id,
                 runtime: Some("local".to_string()),
                 decision: None,
+                worker_timeout_secs: None,
             },
         )
         .expect("completed loop run should be idempotent");
@@ -3570,6 +3638,7 @@ mod tests {
                 loop_id: created.contract.id,
                 runtime: Some("unsupported-agent".to_string()),
                 decision: None,
+                worker_timeout_secs: Some(5),
             },
         )
         .expect("blocked loop should still return a report");
@@ -3627,6 +3696,9 @@ mod tests {
             .expect("admission rejection evidence should be summarized");
         assert_eq!(blocked_evidence.blocked_phase.as_deref(), Some("explorer"));
         assert_eq!(blocked_evidence.missing_receipts, vec!["role_worker"]);
+        assert_eq!(blocked_evidence.worker_kind.as_deref(), Some("unsupported"));
+        assert_eq!(blocked_evidence.worker_ok, Some(false));
+        assert_eq!(blocked_evidence.worker_timeout_secs, Some(5));
         assert!(blocked_evidence
             .operator_options
             .iter()
@@ -3667,6 +3739,7 @@ mod tests {
                 loop_id: rejected.contract.id,
                 runtime: Some("local".to_string()),
                 decision: Some("reject".to_string()),
+                worker_timeout_secs: None,
             },
         )
         .expect("reject loop should run");
@@ -3724,6 +3797,7 @@ mod tests {
                 loop_id: review.contract.id,
                 runtime: Some("local".to_string()),
                 decision: Some("needs-review".to_string()),
+                worker_timeout_secs: None,
             },
         )
         .expect("review loop should run");
@@ -3799,6 +3873,7 @@ mod tests {
                 loop_id: created.contract.id,
                 runtime: Some("local".to_string()),
                 decision: None,
+                worker_timeout_secs: None,
             },
         )
         .expect("admission rejection should still return a report");
@@ -3951,6 +4026,7 @@ mod tests {
                 loop_id: created.contract.id,
                 runtime: Some("unsupported-agent".to_string()),
                 decision: None,
+                worker_timeout_secs: None,
             },
         )
         .expect("loop should block");
@@ -4145,6 +4221,7 @@ mod tests {
                 loop_id: created.contract.id,
                 runtime: Some("unsupported-agent".to_string()),
                 decision: None,
+                worker_timeout_secs: None,
             },
         )
         .expect("loop should block");
