@@ -94,6 +94,9 @@ type IssueCard = {
     role_worker_ok_count: number;
     round_role_worker_count: number;
     round_role_worker_ok_count: number;
+    round_worker_duration_ms: number;
+    round_worker_timeout_count: number;
+    round_worker_retry_exhausted_count: number;
     packet_schema: string | null;
     policy_schema: string | null;
     admission_schema: string | null;
@@ -169,6 +172,9 @@ type IssueDoctorSummary = {
     round_receipt_missing_count: number;
     round_role_worker_count: number;
     round_role_worker_ok_count: number;
+    round_worker_duration_ms: number;
+    round_worker_timeout_count: number;
+    round_worker_retry_exhausted_count: number;
     audit_failed_count: number;
   };
   failed_checks: string[];
@@ -584,6 +590,23 @@ export default function App() {
     return `${evidence.worker_duration_ms}ms`;
   };
 
+  const runtimeDurationLabel = (durationMs: number) =>
+    durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${durationMs}ms`;
+
+  const traceRuntimeLabel = (trace: NonNullable<IssueCard["trace"]>) => {
+    if (trace.round_role_worker_count === 0) return null;
+    return `runtime ${runtimeDurationLabel(trace.round_worker_duration_ms)}`;
+  };
+
+  const traceRuntimeWarnLabel = (trace: NonNullable<IssueCard["trace"]>) => {
+    const warnings = [];
+    if (trace.round_worker_timeout_count) warnings.push(`timeouts ${trace.round_worker_timeout_count}`);
+    if (trace.round_worker_retry_exhausted_count) {
+      warnings.push(`retry exhausted ${trace.round_worker_retry_exhausted_count}`);
+    }
+    return warnings.length ? warnings.join(" / ") : null;
+  };
+
   const workerTimeoutLabel = (evidence: NonNullable<IssueCard["trace"]>["evidence"][number]) =>
     evidence.worker_timeout_secs === null ? null : `limit ${evidence.worker_timeout_secs}s`;
 
@@ -644,6 +667,11 @@ export default function App() {
     return `workers ${doctor.counts.round_role_worker_ok_count}/${total}`;
   };
 
+  const doctorRuntimeLabel = (doctor: IssueDoctorSummary) => {
+    if (doctor.counts.round_role_worker_count === 0) return "runtime pending";
+    return `runtime ${runtimeDurationLabel(doctor.counts.round_worker_duration_ms)}`;
+  };
+
   const cardDoctor = (card: IssueCard) => card.doctor;
 
   const issueDetailRows = (card: IssueCard) => {
@@ -671,6 +699,13 @@ export default function App() {
       [
         "Workers",
         trace ? `${trace.round_role_worker_ok_count}/${trace.round_role_worker_count}` : "pending",
+      ],
+      ["Runtime", trace ? runtimeDurationLabel(trace.round_worker_duration_ms) : "pending"],
+      [
+        "Timeouts",
+        trace
+          ? `${trace.round_worker_timeout_count} timeout / ${trace.round_worker_retry_exhausted_count} exhausted`
+          : "pending",
       ],
       ["Gate", trace?.last_admission_gate ?? "pending"],
       ["Gate Rule", trace?.last_gate_description ?? "pending"],
@@ -932,6 +967,14 @@ export default function App() {
                                 <span class="trace-pill">{schemaLabel(doctor.schema_version)}</span>
                                 <span class="trace-pill">round {doctor.current_round}</span>
                                 <span class="trace-pill">{doctorWorkerLabel(doctor)}</span>
+                                <span class="trace-pill">{doctorRuntimeLabel(doctor)}</span>
+                                {doctor.counts.round_worker_timeout_count ||
+                                doctor.counts.round_worker_retry_exhausted_count ? (
+                                  <span class="trace-pill trace-pill--warn">
+                                    {doctor.counts.round_worker_timeout_count} timeout /{" "}
+                                    {doctor.counts.round_worker_retry_exhausted_count} exhausted
+                                  </span>
+                                ) : null}
                                 <span
                                   class={
                                     doctor.counts.round_receipt_missing_count === 0
@@ -1243,6 +1286,14 @@ export default function App() {
                                     <span class="trace-pill">{card.trace.last_decision}</span>
                                   ) : null}
                                   {workerLabel(card) ? <span class="trace-pill">{workerLabel(card)}</span> : null}
+                                  {traceRuntimeLabel(card.trace) ? (
+                                    <span class="trace-pill">{traceRuntimeLabel(card.trace)}</span>
+                                  ) : null}
+                                  {traceRuntimeWarnLabel(card.trace) ? (
+                                    <span class="trace-pill trace-pill--warn">
+                                      {traceRuntimeWarnLabel(card.trace)}
+                                    </span>
+                                  ) : null}
                                 </div>
                               ) : null}
                               <div class="comment-stack">

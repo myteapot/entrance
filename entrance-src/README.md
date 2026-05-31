@@ -71,7 +71,8 @@ policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
 and required worker receipt fields. `hive loop policies <id>` shows the active
 policy rows loaded into a specific loop contract.
 `hive loop trace <id>` returns the compact round-aware health view, including
-the evaluator score vector, without packet transcripts.
+the evaluator score vector and current-round worker duration/timeout totals,
+without packet transcripts.
 `hive loop evidence <id>` returns the compact evidence ledger with stage role,
 admission result, worker receipt, packet envelope diagnostics, missing receipts,
 operator options, and short transcript excerpts.
@@ -90,7 +91,8 @@ the issue is bound to a loop, mirrors it into the loop ledger as
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in
-stage evidence, along with runtime duration for each worker. Codex workers must
+stage evidence, along with runtime duration for each worker and aggregated
+round duration in trace/doctor/card views. Codex workers must
 return an `{ "ok": true }` JSON receipt to be admitted.
 Unknown runtimes return a blocked verdict instead of being silently kept.
 The evaluator decision can be overridden for local simulation with

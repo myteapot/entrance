@@ -35,7 +35,9 @@ The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as blocked verdicts. The `codex` runtime uses a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 records stdout, stderr, and last-message transcript data in the stage evidence
-for that role.
+for that role. Trace, Doctor, and Panel card summaries aggregate current-round
+worker duration, timeouts, and retry exhaustion so slow codex runs are visible
+without opening full transcripts.
 Worker timeout defaults to 60 seconds, can be overridden with
 `--worker-timeout-secs <n>` or `ENTRANCE_HIVE_WORKER_TIMEOUT_SECS`, and is
 recorded on worker evidence so slow or timed-out codex runs are reviewable.
@@ -63,8 +65,9 @@ duplicate packets, admissions, evidence, verdicts, or comments.
 Issue panel trace summaries are round-aware: they expose the current round,
 current-round packet/admission/evidence/verdict counts, and total historical
 counts so retries do not look like stale verdicts from the previous round.
-Trace summaries also expose role-worker coverage so the Panel can show whether
-all role receipts in the current round were produced successfully.
+Trace summaries also expose role-worker coverage and current-round worker
+runtime totals so the Panel can show whether all role receipts in the current
+round were produced successfully and how long the runtime spent.
 Issue human options are status-aware: `Blocked` issues can retry, request
 review, or cancel; `Needs Review` issues can retry or cancel; `Todo` issues can
 be canceled before running; terminal human-canceled issues only allow comments.

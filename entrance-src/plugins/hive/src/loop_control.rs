@@ -235,6 +235,9 @@ pub struct HiveLoopDoctorCounts {
     pub role_worker_ok_count: usize,
     pub round_role_worker_count: usize,
     pub round_role_worker_ok_count: usize,
+    pub round_worker_duration_ms: u64,
+    pub round_worker_timeout_count: usize,
+    pub round_worker_retry_exhausted_count: usize,
     pub audit_failed_count: usize,
 }
 
@@ -272,6 +275,9 @@ pub struct IssueTraceSummary {
     pub role_worker_ok_count: usize,
     pub round_role_worker_count: usize,
     pub round_role_worker_ok_count: usize,
+    pub round_worker_duration_ms: u64,
+    pub round_worker_timeout_count: usize,
+    pub round_worker_retry_exhausted_count: usize,
     pub packet_schema: Option<String>,
     pub policy_schema: Option<String>,
     pub admission_schema: Option<String>,
@@ -1143,6 +1149,9 @@ fn doctor_counts(trace: &IssueTraceSummary) -> HiveLoopDoctorCounts {
         role_worker_ok_count: trace.role_worker_ok_count,
         round_role_worker_count: trace.round_role_worker_count,
         round_role_worker_ok_count: trace.round_role_worker_ok_count,
+        round_worker_duration_ms: trace.round_worker_duration_ms,
+        round_worker_timeout_count: trace.round_worker_timeout_count,
+        round_worker_retry_exhausted_count: trace.round_worker_retry_exhausted_count,
         audit_failed_count: trace.audit_failed_count,
     }
 }
@@ -1246,7 +1255,7 @@ fn doctor_summary(
         format!("audit failed {audit_failed_count} checks")
     };
     format!(
-        "Loop #{} is {health} at {} round {}; issue {}; decision {}; {}; workers {}/{} current round; receipts missing {}/{} current round.",
+        "Loop #{} is {health} at {} round {}; issue {}; decision {}; {}; workers {}/{} current round; receipts missing {}/{} current round; worker time {} current round.",
         contract.id,
         contract.active_phase,
         contract.current_round,
@@ -1256,8 +1265,17 @@ fn doctor_summary(
         trace.round_role_worker_ok_count,
         trace.round_role_worker_count,
         trace.round_receipt_missing_count,
-        trace.round_receipt_required_count
+        trace.round_receipt_required_count,
+        worker_duration_summary(trace.round_worker_duration_ms)
     )
+}
+
+fn worker_duration_summary(duration_ms: u64) -> String {
+    if duration_ms >= 1000 {
+        format!("{:.1}s", duration_ms as f64 / 1000.0)
+    } else {
+        format!("{duration_ms}ms")
+    }
 }
 
 fn doctor_next_actions(
@@ -2284,6 +2302,18 @@ fn issue_trace_summary(
         .filter(|row| row.round == current_round)
         .map(|row| issue_evidence_summary(row, &stage_roles))
         .collect::<Vec<_>>();
+    let round_worker_duration_ms = round_evidence
+        .iter()
+        .filter_map(|row| row.worker_duration_ms)
+        .sum();
+    let round_worker_timeout_count = round_evidence
+        .iter()
+        .filter(|row| row.worker_timed_out == Some(true))
+        .count();
+    let round_worker_retry_exhausted_count = round_evidence
+        .iter()
+        .filter(|row| row.worker_retry_exhausted == Some(true))
+        .count();
     let verdict_human_options = last_verdict
         .map(|verdict| human_options(&verdict.score))
         .unwrap_or_default();
@@ -2327,6 +2357,9 @@ fn issue_trace_summary(
         role_worker_ok_count,
         round_role_worker_count,
         round_role_worker_ok_count,
+        round_worker_duration_ms,
+        round_worker_timeout_count,
+        round_worker_retry_exhausted_count,
         packet_schema: packets
             .iter()
             .rev()
@@ -4322,6 +4355,9 @@ mod tests {
         assert_eq!(trace.role_worker_ok_count, 3);
         assert_eq!(trace.round_role_worker_count, 3);
         assert_eq!(trace.round_role_worker_ok_count, 3);
+        assert_eq!(trace.round_worker_duration_ms, 0);
+        assert_eq!(trace.round_worker_timeout_count, 0);
+        assert_eq!(trace.round_worker_retry_exhausted_count, 0);
         assert_eq!(trace.packet_schema.as_deref(), Some(PACKET_SCHEMA_VERSION));
         assert_eq!(trace.policy_schema.as_deref(), Some(POLICY_SCHEMA_VERSION));
         assert_eq!(
@@ -4531,6 +4567,9 @@ mod tests {
         assert_eq!(doctor_report.counts.round_packet_count, 3);
         assert_eq!(doctor_report.counts.round_role_worker_ok_count, 3);
         assert_eq!(doctor_report.counts.round_receipt_missing_count, 0);
+        assert_eq!(doctor_report.counts.round_worker_duration_ms, 0);
+        assert_eq!(doctor_report.counts.round_worker_timeout_count, 0);
+        assert_eq!(doctor_report.counts.round_worker_retry_exhausted_count, 0);
         assert_eq!(doctor_report.counts.audit_failed_count, 0);
         assert!(doctor_report.failed_checks.is_empty());
         assert!(doctor_report.missing_receipts.is_empty());
@@ -5326,6 +5365,9 @@ mod tests {
         assert_eq!(retry_trace.role_worker_ok_count, 0);
         assert_eq!(retry_trace.round_role_worker_count, 0);
         assert_eq!(retry_trace.round_role_worker_ok_count, 0);
+        assert_eq!(retry_trace.round_worker_duration_ms, 0);
+        assert_eq!(retry_trace.round_worker_timeout_count, 0);
+        assert_eq!(retry_trace.round_worker_retry_exhausted_count, 0);
         assert_eq!(retry_trace.verdict_schema, None);
         assert_eq!(retry_trace.last_decision, None);
         assert_eq!(retry_trace.worker_kind, None);
