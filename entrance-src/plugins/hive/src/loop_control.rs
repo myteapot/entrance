@@ -2118,6 +2118,7 @@ fn issue_surface_audit(
     evidence: &[HiveLoopEvidence],
 ) -> Result<IssueSurfaceAudit> {
     let mut audit = IssueSurfaceAudit::default();
+    let mut comments_by_id = HashMap::new();
     if issues.is_empty() {
         audit.errors.push(serde_json::json!({
             "scope": "loop",
@@ -2151,7 +2152,8 @@ fn issue_surface_audit(
             }));
         }
 
-        for comment in comments {
+        for comment in &comments {
+            comments_by_id.insert(comment.id, comment.clone());
             if let Some(error) = issue_comment_audit_error(&comment, issue, evidence) {
                 audit.errors.push(error);
             }
@@ -2163,7 +2165,7 @@ fn issue_surface_audit(
         .filter(|row| row.kind == "operator_comment" || row.kind == "operator_decision")
     {
         audit.operator_evidence_count += 1;
-        if let Some(error) = operator_evidence_audit_error(row, issues) {
+        if let Some(error) = operator_evidence_audit_error(row, issues, &comments_by_id) {
             audit.errors.push(error);
         }
     }
@@ -2255,6 +2257,7 @@ fn issue_comment_audit_error(
 fn operator_evidence_audit_error(
     row: &HiveLoopEvidence,
     issues: &[HiveIssue],
+    comments_by_id: &HashMap<i64, HiveComment>,
 ) -> Option<serde_json::Value> {
     let mut errors = Vec::new();
     let expected_schema = match row.kind.as_str() {
@@ -2262,6 +2265,9 @@ fn operator_evidence_audit_error(
         "operator_decision" => OPERATOR_DECISION_SCHEMA_VERSION,
         _ => return None,
     };
+    if row.payload.get("source").and_then(|value| value.as_str()) != Some("issue/status/comment") {
+        errors.push("evidence.source".to_string());
+    }
     if schema_version(&row.payload).as_deref() != Some(expected_schema) {
         errors.push("evidence.schema_version".to_string());
     }
@@ -2272,13 +2278,75 @@ fn operator_evidence_audit_error(
     if !issue_id.is_some_and(|issue_id| issues.iter().any(|issue| issue.id == issue_id)) {
         errors.push("evidence.issue_id".to_string());
     }
-    if row
+    let comment_id = row
         .payload
         .pointer("/issue/comment_id")
-        .and_then(|value| value.as_i64())
-        .is_none()
-    {
+        .and_then(|value| value.as_i64());
+    if comment_id.is_none() {
         errors.push("evidence.comment_id".to_string());
+    }
+    let linked_comment = comment_id.and_then(|comment_id| comments_by_id.get(&comment_id));
+    if comment_id.is_some() && linked_comment.is_none() {
+        errors.push("evidence.comment_link".to_string());
+    }
+
+    if let Some(comment) = linked_comment {
+        if issue_id != Some(comment.issue_id) {
+            errors.push("evidence.comment_issue_id".to_string());
+        }
+        if expected_comment_schema(comment) != Some(expected_schema) {
+            errors.push("evidence.comment_schema_binding".to_string());
+        }
+        if row
+            .payload
+            .pointer("/operator/author")
+            .and_then(|value| value.as_str())
+            != Some(comment.author.as_str())
+        {
+            errors.push("evidence.author_binding".to_string());
+        }
+        if row
+            .payload
+            .pointer("/operator/comment_body")
+            .and_then(|value| value.as_str())
+            != Some(comment.body.as_str())
+        {
+            errors.push("evidence.comment_body_binding".to_string());
+        }
+        if row.kind == "operator_decision" {
+            let evidence_action = row
+                .payload
+                .pointer("/operator/action")
+                .and_then(|value| value.as_str());
+            let comment_action = comment
+                .payload
+                .get("action")
+                .and_then(|value| value.as_str());
+            if evidence_action != comment_action {
+                errors.push("evidence.action_binding".to_string());
+            }
+            match evidence_action.map(parse_issue_decision_action) {
+                Some(Ok(action)) => {
+                    if row
+                        .payload
+                        .pointer("/issue/to_status")
+                        .and_then(|value| value.as_str())
+                        != Some(action.issue_status())
+                    {
+                        errors.push("evidence.issue_status_binding".to_string());
+                    }
+                    if row
+                        .payload
+                        .pointer("/loop/next_status")
+                        .and_then(|value| value.as_str())
+                        != Some(action.contract_status())
+                    {
+                        errors.push("evidence.loop_status_binding".to_string());
+                    }
+                }
+                _ => errors.push("evidence.action".to_string()),
+            }
+        }
     }
 
     if errors.is_empty() {
@@ -6443,6 +6511,163 @@ mod tests {
                 .is_some_and(|fields| fields
                     .iter()
                     .any(|field| field.as_str() == Some("comment.payload.schema_version"))))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_surface_audit_rejects_operator_evidence_drift() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-operator-evidence-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Operator evidence audit loop".to_string(),
+                goal: "Detect drift between operator comments and evidence".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let issue_id = created.issues[0].issue.id;
+
+        let comment_card = add_comment(
+            &store,
+            IssueCommentRequest {
+                issue_id,
+                author: "human".to_string(),
+                body: "Keep the operator trail honest".to_string(),
+            },
+        )
+        .expect("operator comment should be recorded");
+        let operator_comment = comment_card
+            .comments
+            .iter()
+            .find(|comment| comment.author == "human")
+            .expect("operator comment should be visible");
+        store
+            .insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+                loop_id: created.contract.id,
+                stage_id: None,
+                round: created.contract.current_round,
+                kind: "operator_comment".to_string(),
+                summary: "drifted comment evidence".to_string(),
+                path: None,
+                payload: serde_json::json!({
+                    "schema_version": OPERATOR_COMMENT_SCHEMA_VERSION,
+                    "source": "issue/status/comment",
+                    "issue": {
+                        "id": issue_id,
+                        "status": comment_card.issue.status,
+                        "comment_id": operator_comment.id
+                    },
+                    "loop": {
+                        "id": created.contract.id,
+                        "status": created.contract.status,
+                        "phase": created.contract.active_phase,
+                        "round": created.contract.current_round
+                    },
+                    "operator": {
+                        "author": "different-human",
+                        "comment_body": "drifted body"
+                    }
+                }),
+            })
+            .expect("drifted operator comment evidence should insert");
+
+        let cancel_card = decide_issue(
+            &store,
+            IssueDecisionRequest {
+                issue_id,
+                action: "cancel".to_string(),
+                author: "human".to_string(),
+                body: Some("No longer needed".to_string()),
+            },
+        )
+        .expect("todo issue should cancel");
+        let cancel_comment = cancel_card
+            .comments
+            .iter()
+            .find(|comment| {
+                comment
+                    .payload
+                    .get("action")
+                    .and_then(|value| value.as_str())
+                    == Some("cancel")
+            })
+            .expect("cancel decision comment should be visible");
+        store
+            .insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+                loop_id: created.contract.id,
+                stage_id: None,
+                round: created.contract.current_round,
+                kind: "operator_decision".to_string(),
+                summary: "drifted decision evidence".to_string(),
+                path: None,
+                payload: serde_json::json!({
+                    "schema_version": OPERATOR_DECISION_SCHEMA_VERSION,
+                    "source": "issue/status/comment",
+                    "issue": {
+                        "id": issue_id,
+                        "comment_id": cancel_comment.id,
+                        "from_status": "Todo",
+                        "to_status": "Todo"
+                    },
+                    "loop": {
+                        "id": created.contract.id,
+                        "next_status": "todo",
+                        "next_phase": "explorer",
+                        "round": created.contract.current_round
+                    },
+                    "operator": {
+                        "author": "human",
+                        "action": "retry",
+                        "note": "wrong action",
+                        "comment_body": cancel_comment.body
+                    }
+                }),
+            })
+            .expect("drifted operator decision evidence should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let issue_surface_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "issue_surface")
+            .expect("issue surface audit should exist");
+        assert!(!issue_surface_check.passed);
+        let errors = issue_surface_check
+            .details
+            .pointer("/issue_surface_errors")
+            .and_then(|value| value.as_array())
+            .expect("issue surface errors should be listed");
+        assert!(errors.iter().any(|error| error
+            .pointer("/errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|fields| fields
+                .iter()
+                .any(|field| field.as_str() == Some("evidence.author_binding"))
+                && fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("evidence.comment_body_binding")))));
+        assert!(errors.iter().any(|error| error
+            .pointer("/errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|fields| fields
+                .iter()
+                .any(|field| field.as_str() == Some("evidence.action_binding")))));
 
         let _ = fs::remove_dir_all(root);
     }

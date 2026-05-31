@@ -84,9 +84,10 @@ admission check verifies that the recorded packet, policy, gate spec, receipt
 requirements, missing receipts, gate result, and final admission result still
 bind to each other. The verdict check verifies decision bindings, score-vector
 metrics, gate booleans, human options, and reason-code evidence bindings. The
-issue surface check verifies issue status, typed comments, and operator
-comment/decision evidence. Runtime policy checks the current round so a
-successful retry can replace a previously blocked runtime attempt.
+issue surface check verifies issue status, typed comments, operator
+comment/decision evidence, and the author/action/body bindings between evidence
+and its linked comment. Runtime policy checks the current round so a successful
+retry can replace a previously blocked runtime attempt.
 `hive loop doctor <id>` is the first CLI stop after a run: it combines trace and
 audit state into one health summary with counts, failed checks, missing
 receipts, worker failures, and suggested next commands.

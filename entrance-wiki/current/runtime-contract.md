@@ -55,8 +55,9 @@ receipt list, missing receipt list, gate result, and final admitted/rejected
 result. The `verdict_packets` check verifies decision bindings, required
 score-vector metrics, gate booleans, human options, and reason-code evidence
 bindings. The `issue_surface` check verifies linked issue status, typed
-comments, and operator comment/decision evidence so the control plane is
-auditable instead of only visible.
+comments, operator comment/decision evidence, and evidence-to-comment
+author/action/body bindings so the control plane is auditable instead of only
+visible.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 Human decisions are available through `hive issue decide <id>
