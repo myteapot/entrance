@@ -50,6 +50,7 @@ Local agent-loop MVP:
 ```powershell
 .\entrance.exe hive loop create --title "README loop" --goal "Run a constrained agent loop" --runtime codex
 .\entrance.exe hive loop run 1 --runtime codex
+.\entrance.exe hive loop run 1 --runtime local --decision needs-review
 .\entrance.exe hive loop show 1
 .\entrance.exe hive issue list
 .\entrance.exe hive issue comment 1 --body "Reviewed from the local panel"
@@ -59,6 +60,8 @@ Local agent-loop MVP:
 typed packets, admission receipts, stage evidence, and the final verdict.
 Supported MVP runtimes are `local` and `codex`; unknown runtimes return a
 blocked verdict instead of being silently kept.
+The evaluator decision can be overridden for local simulation with
+`--decision keep|reject|needs-review|blocked`.
 
 ### Launcher
 

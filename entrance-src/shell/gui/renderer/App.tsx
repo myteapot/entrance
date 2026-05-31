@@ -428,7 +428,7 @@ export default function App() {
                 <p class="panel-kicker">Issues</p>
                 <h3>Status board</h3>
                 <div class="board-columns">
-                  {["Todo", "Doing", "Blocked", "Done"].map((statusName) => (
+                  {["Todo", "Doing", "Needs Review", "Blocked", "Done", "Canceled"].map((statusName) => (
                     <section class="board-column">
                       <div class="board-column-head">
                         <strong>{statusName}</strong>
@@ -465,7 +465,7 @@ export default function App() {
                                 </div>
                               ) : (
                                 <div class="record-actions">
-                                  {card.issue.loop_id && card.issue.status !== "Done" ? (
+                                  {card.issue.loop_id && ["Todo", "Blocked"].includes(card.issue.status) ? (
                                     <button type="button" onClick={() => void runIssueLoop(card.issue.loop_id!)}>
                                       {card.issue.status === "Blocked" ? "Retry" : "Run"}
                                     </button>

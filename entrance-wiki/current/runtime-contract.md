@@ -10,6 +10,7 @@ cargo run -p entrance-app --bin entrance -- drawer summary
 cargo run -p entrance-app --bin entrance -- hive summary
 cargo run -p entrance-app --bin entrance -- hive loop create --title "Local loop" --goal "Run the Hive loop MVP" --runtime codex
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex
+cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime local --decision reject
 cargo run -p entrance-app --bin entrance -- hive issue list
 cargo run -p entrance-app --bin entrance -- launcher list
 ```
@@ -18,6 +19,8 @@ cargo run -p entrance-app --bin entrance -- launcher list
 typed packets, admission receipts, evidence, and verdict.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as blocked verdicts.
+For evaluator-path testing, `hive loop run` accepts
+`--decision keep|reject|needs-review|blocked`.
 
 ## Daemon
 

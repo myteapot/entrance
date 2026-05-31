@@ -420,6 +420,10 @@ async fn handle_invoke(
                         .get("runtime")
                         .and_then(|value| value.as_str())
                         .map(ToOwned::to_owned),
+                    decision: args
+                        .get("decision")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned),
                 })?,
             )?)
         }

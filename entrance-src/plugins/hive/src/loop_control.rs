@@ -26,6 +26,23 @@ pub struct HiveLoopCreateRequest {
 pub struct HiveLoopRunRequest {
     pub loop_id: i64,
     pub runtime: Option<String>,
+    pub decision: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerdictDecision {
+    Keep,
+    Reject,
+    NeedsReview,
+    Blocked,
+}
+
+struct TypedVerdict {
+    decision: VerdictDecision,
+    reason_code: &'static str,
+    summary: String,
+    runtime_ready: bool,
+    evidence_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,27 +244,23 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         .get("ok")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let decision = if !runtime_ready { "blocked" } else { "keep" };
-    let verdict_summary = if decision == "keep" {
-        "Evaluator kept the candidate: all MVP gates passed.".to_string()
-    } else {
-        format!("Evaluator blocked the candidate: `{runtime}` runtime probe failed.")
-    };
+    let decision_override = parse_decision_override(request.decision.as_deref())?;
+    let typed_verdict = build_verdict(decision_override, runtime_ready, &runtime, evidence.len());
     let evaluator_stage = insert_stage(
         store,
         &contract,
         "evaluator",
-        &verdict_summary,
+        &typed_verdict.summary,
         serde_json::json!({
             "evidence_count": evidence.len(),
             "eval_space": contract.eval_space
         }),
         serde_json::json!({
-            "decision": decision,
+            "decision": typed_verdict.decision.as_str(),
             "gates": {
                 "three_stages_recorded": true,
                 "evidence_recorded": !evidence.is_empty(),
-                "runtime_ready": runtime_ready
+                "runtime_ready": typed_verdict.runtime_ready
             }
         }),
     )?;
@@ -258,57 +271,33 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "evaluator",
         "evaluator",
         "complete",
-        serde_json::json!({
-            "decision": decision,
-            "summary": verdict_summary.clone(),
-            "score": {
-                "gates_passed": decision == "keep",
-                "stage_completeness": 1.0,
-                "runtime_readiness": if runtime_ready { 1.0 } else { 0.0 },
-                "operator_review_needed": decision != "keep"
-            }
-        }),
+        typed_verdict.packet_payload(),
     )?;
     store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
         stage_id: Some(evaluator_stage),
         round: contract.current_round,
         kind: "verdict_packet".to_string(),
-        summary: verdict_summary.clone(),
+        summary: typed_verdict.summary.clone(),
         path: None,
         payload: serde_json::json!({
-            "decision": decision,
-            "runtime_ready": runtime_ready,
+            "decision": typed_verdict.decision.as_str(),
+            "reason_code": typed_verdict.reason_code,
+            "runtime_ready": typed_verdict.runtime_ready,
             "admission": evaluator_admission.result
         }),
     })?;
     store.insert_hive_loop_verdict(HiveLoopVerdictCreate {
         loop_id: contract.id,
         round: contract.current_round,
-        decision: decision.to_string(),
-        summary: verdict_summary.clone(),
-        score: serde_json::json!({
-            "gates_passed": decision == "keep",
-            "stage_completeness": 1.0,
-            "runtime_readiness": if runtime_ready { 1.0 } else { 0.0 },
-            "operator_review_needed": decision != "keep"
-        }),
-        evidence: serde_json::json!({
-            "evidence_count": evidence.len() + 1,
-            "runtime": runtime
-        }),
+        decision: typed_verdict.decision.as_str().to_string(),
+        summary: typed_verdict.summary.clone(),
+        score: typed_verdict.score_payload(),
+        evidence: typed_verdict.evidence_payload(&runtime),
     })?;
 
-    let final_status = if decision == "keep" {
-        "kept"
-    } else {
-        "blocked"
-    };
-    let issue_status = if decision == "keep" {
-        "Done"
-    } else {
-        "Blocked"
-    };
+    let final_status = typed_verdict.decision.contract_status();
+    let issue_status = typed_verdict.decision.issue_status();
     store.update_hive_loop_contract_state(
         contract.id,
         final_status,
@@ -316,10 +305,10 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         contract.current_round,
     )?;
     if let Some(issue_id) = issue_id {
-        store.update_hive_issue_status(issue_id, issue_status, Some(&verdict_summary))?;
+        store.update_hive_issue_status(issue_id, issue_status, Some(&typed_verdict.summary))?;
         let admission_summary = format!(
             "{} Admissions: explorer={}, doer={}, evaluator={}.",
-            verdict_summary,
+            typed_verdict.summary,
             explorer_admission.result,
             doer_admission.result,
             evaluator_admission.result
@@ -330,7 +319,8 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             &admission_summary,
             serde_json::json!({
                 "loop_id": contract.id,
-                "decision": decision,
+                "decision": typed_verdict.decision.as_str(),
+                "reason_code": typed_verdict.reason_code,
                 "phase": "evaluator",
                 "admissions": {
                     "explorer": explorer_admission.result,
@@ -441,6 +431,134 @@ fn add_system_comment(
         payload,
     })?;
     Ok(())
+}
+
+impl VerdictDecision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Reject => "reject",
+            Self::NeedsReview => "needs-review",
+            Self::Blocked => "blocked",
+        }
+    }
+
+    fn contract_status(self) -> &'static str {
+        match self {
+            Self::Keep => "kept",
+            Self::Reject => "rejected",
+            Self::NeedsReview => "needs-review",
+            Self::Blocked => "blocked",
+        }
+    }
+
+    fn issue_status(self) -> &'static str {
+        match self {
+            Self::Keep => "Done",
+            Self::Reject => "Canceled",
+            Self::NeedsReview => "Needs Review",
+            Self::Blocked => "Blocked",
+        }
+    }
+
+    fn operator_review_required(self) -> bool {
+        !matches!(self, Self::Keep)
+    }
+
+    fn gates_passed(self) -> bool {
+        matches!(self, Self::Keep)
+    }
+}
+
+impl TypedVerdict {
+    fn score_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "gates_passed": self.decision.gates_passed(),
+            "stage_completeness": 1.0,
+            "runtime_readiness": if self.runtime_ready { 1.0 } else { 0.0 },
+            "operator_review_needed": self.decision.operator_review_required(),
+            "reason_code": self.reason_code
+        })
+    }
+
+    fn evidence_payload(&self, runtime: &str) -> serde_json::Value {
+        serde_json::json!({
+            "evidence_count": self.evidence_count + 1,
+            "runtime": runtime,
+            "reason_code": self.reason_code
+        })
+    }
+
+    fn packet_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "decision": self.decision.as_str(),
+            "summary": self.summary,
+            "reason_code": self.reason_code,
+            "score": self.score_payload()
+        })
+    }
+}
+
+fn parse_decision_override(value: Option<&str>) -> Result<Option<VerdictDecision>> {
+    value
+        .map(|value| match value {
+            "keep" => Ok(VerdictDecision::Keep),
+            "reject" => Ok(VerdictDecision::Reject),
+            "needs-review" => Ok(VerdictDecision::NeedsReview),
+            "blocked" => Ok(VerdictDecision::Blocked),
+            other => anyhow::bail!(
+                "unsupported evaluator decision `{other}`; expected keep, reject, needs-review, or blocked"
+            ),
+        })
+        .transpose()
+}
+
+fn build_verdict(
+    decision_override: Option<VerdictDecision>,
+    runtime_ready: bool,
+    runtime: &str,
+    evidence_count: usize,
+) -> TypedVerdict {
+    if !runtime_ready {
+        return TypedVerdict {
+            decision: VerdictDecision::Blocked,
+            reason_code: "runtime_unavailable",
+            summary: format!("Evaluator blocked the candidate: `{runtime}` runtime probe failed."),
+            runtime_ready,
+            evidence_count,
+        };
+    }
+
+    match decision_override.unwrap_or(VerdictDecision::Keep) {
+        VerdictDecision::Keep => TypedVerdict {
+            decision: VerdictDecision::Keep,
+            reason_code: "all_gates_passed",
+            summary: "Evaluator kept the candidate: all MVP gates passed.".to_string(),
+            runtime_ready,
+            evidence_count,
+        },
+        VerdictDecision::Reject => TypedVerdict {
+            decision: VerdictDecision::Reject,
+            reason_code: "quality_gate_failed",
+            summary: "Evaluator rejected the candidate: quality gate failed.".to_string(),
+            runtime_ready,
+            evidence_count,
+        },
+        VerdictDecision::NeedsReview => TypedVerdict {
+            decision: VerdictDecision::NeedsReview,
+            reason_code: "human_review_required",
+            summary: "Evaluator requested human review for this candidate.".to_string(),
+            runtime_ready,
+            evidence_count,
+        },
+        VerdictDecision::Blocked => TypedVerdict {
+            decision: VerdictDecision::Blocked,
+            reason_code: "operator_blocked",
+            summary: "Evaluator blocked the candidate by operator decision.".to_string(),
+            runtime_ready,
+            evidence_count,
+        },
+    }
 }
 
 fn seed_default_policies(store: &Store, loop_id: i64) -> Result<()> {
@@ -664,6 +782,7 @@ mod tests {
             HiveLoopRunRequest {
                 loop_id: created.contract.id,
                 runtime: Some("local".to_string()),
+                decision: None,
             },
         )
         .expect("loop should run");
@@ -719,6 +838,7 @@ mod tests {
             HiveLoopRunRequest {
                 loop_id: created.contract.id,
                 runtime: Some("unsupported-agent".to_string()),
+                decision: None,
             },
         )
         .expect("blocked loop should still return a report");
@@ -740,6 +860,91 @@ mod tests {
             .admissions
             .iter()
             .all(|admission| admission.result == "admitted"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn decision_override_records_reject_and_needs_review_verdicts() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-decision-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let rejected = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Rejected loop".to_string(),
+                goal: "Reject a candidate".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let rejected_report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: rejected.contract.id,
+                runtime: Some("local".to_string()),
+                decision: Some("reject".to_string()),
+            },
+        )
+        .expect("reject loop should run");
+
+        assert_eq!(rejected_report.contract.status, "rejected");
+        assert_eq!(rejected_report.verdicts[0].decision, "reject");
+        assert_eq!(rejected_report.issues[0].issue.status, "Canceled");
+        assert_eq!(
+            rejected_report.verdicts[0]
+                .score
+                .get("reason_code")
+                .and_then(|value| value.as_str()),
+            Some("quality_gate_failed")
+        );
+
+        let review = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Review loop".to_string(),
+                goal: "Ask for human review".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let review_report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: review.contract.id,
+                runtime: Some("local".to_string()),
+                decision: Some("needs-review".to_string()),
+            },
+        )
+        .expect("review loop should run");
+
+        assert_eq!(review_report.contract.status, "needs-review");
+        assert_eq!(review_report.verdicts[0].decision, "needs-review");
+        assert_eq!(review_report.issues[0].issue.status, "Needs Review");
+        assert_eq!(
+            review_report.verdicts[0]
+                .score
+                .get("operator_review_needed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
 
         let _ = fs::remove_dir_all(root);
     }
