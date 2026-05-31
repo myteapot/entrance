@@ -1149,7 +1149,7 @@ export default function App() {
                                       {issuePendingLabel(card.issue.id) ?? "Retry"}
                                     </button>
                                   ) : null}
-                                  {["Blocked", "Needs Review"].includes(card.issue.status) ? (
+                                  {["Todo", "Blocked", "Needs Review"].includes(card.issue.status) ? (
                                     <button
                                       type="button"
                                       disabled={Boolean(issuePendingLabel(card.issue.id))}

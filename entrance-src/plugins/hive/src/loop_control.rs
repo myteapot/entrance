@@ -659,7 +659,7 @@ pub fn trace(store: &Store, loop_id: i64) -> Result<HiveLoopTraceReport> {
         .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
     let issue = store.list_hive_issues_for_loop(loop_id)?.into_iter().next();
     Ok(HiveLoopTraceReport {
-        trace: issue_trace_summary(store, loop_id)?,
+        trace: issue_trace_summary(store, loop_id, issue.as_ref())?,
         contract,
         issue,
     })
@@ -1022,6 +1022,7 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
     let issue = store
         .get_hive_issue(request.issue_id)?
         .with_context(|| format!("unknown hive issue `{}`", request.issue_id))?;
+    ensure_issue_decision_allowed(store, &issue, action)?;
     let author = default_text(request.author, "human");
     let note = request.body.as_deref().unwrap_or_default().trim();
     let mut next_round = None;
@@ -1073,6 +1074,31 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
     )?;
 
     issue_card(store, issue.id)
+}
+
+fn ensure_issue_decision_allowed(
+    store: &Store,
+    issue: &HiveIssue,
+    action: IssueDecisionAction,
+) -> Result<()> {
+    let options = issue
+        .loop_id
+        .map(|loop_id| {
+            issue_trace_summary(store, loop_id, Some(issue)).map(|trace| trace.human_options)
+        })
+        .transpose()?
+        .unwrap_or_else(|| issue_human_options(Some(issue), &[], &[]));
+    if options.iter().any(|option| option == action.as_str()) {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "issue decision `{}` is not allowed when issue #{} is `{}`; allowed options: {}",
+        action.as_str(),
+        issue.id,
+        issue.status,
+        options.join(", ")
+    )
 }
 
 fn record_operator_decision_evidence(
@@ -1205,7 +1231,7 @@ fn issue_card_from_issue(store: &Store, issue: HiveIssue) -> Result<IssueCard> {
     let comments = store.list_hive_comments(issue.id)?;
     let trace = issue
         .loop_id
-        .map(|loop_id| issue_trace_summary(store, loop_id))
+        .map(|loop_id| issue_trace_summary(store, loop_id, Some(&issue)))
         .transpose()?;
     Ok(IssueCard {
         issue,
@@ -1214,7 +1240,11 @@ fn issue_card_from_issue(store: &Store, issue: HiveIssue) -> Result<IssueCard> {
     })
 }
 
-fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary> {
+fn issue_trace_summary(
+    store: &Store,
+    loop_id: i64,
+    issue: Option<&HiveIssue>,
+) -> Result<IssueTraceSummary> {
     let current_round = store
         .get_hive_loop_contract(loop_id)?
         .map(|contract| contract.current_round)
@@ -1283,6 +1313,14 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
                 .map(|check| check.name.clone())
                 .collect::<Vec<_>>()
         })
+        .unwrap_or_default();
+    let round_evidence = evidence
+        .iter()
+        .filter(|row| row.round == current_round)
+        .map(|row| issue_evidence_summary(row, &stage_roles))
+        .collect::<Vec<_>>();
+    let verdict_human_options = last_verdict
+        .map(|verdict| human_options(&verdict.score))
         .unwrap_or_default();
 
     Ok(IssueTraceSummary {
@@ -1368,9 +1406,7 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
         score_vector: last_verdict
             .map(|verdict| score_vector(&verdict.score))
             .unwrap_or_default(),
-        human_options: last_verdict
-            .map(|verdict| human_options(&verdict.score))
-            .unwrap_or_default(),
+        human_options: issue_human_options(issue, &verdict_human_options, &round_evidence),
         worker_kind: worker
             .and_then(|value| value.get("kind"))
             .and_then(|value| value.as_str())
@@ -1391,11 +1427,7 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
             .map(|report| report.failed_count)
             .unwrap_or_default(),
         audit_failed_checks,
-        evidence: evidence
-            .iter()
-            .filter(|row| row.round == current_round)
-            .map(|row| issue_evidence_summary(row, &stage_roles))
-            .collect(),
+        evidence: round_evidence,
         stages: issue_stage_summaries(&stages, &evidence, current_round),
     })
 }
@@ -1573,6 +1605,43 @@ fn human_options(value: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn issue_human_options(
+    issue: Option<&HiveIssue>,
+    verdict_options: &[String],
+    evidence: &[IssueEvidenceSummary],
+) -> Vec<String> {
+    let Some(issue) = issue else {
+        return verdict_options.to_vec();
+    };
+    match issue.status.as_str() {
+        "Todo" => option_list(&["comment", "cancel"]),
+        "Doing" | "Done" => option_list(&["comment"]),
+        "Blocked" => option_list(&["comment", "retry", "request-review", "cancel"]),
+        "Needs Review" => option_list(&["comment", "retry", "cancel"]),
+        "Canceled" if latest_operator_action(evidence) == Some("cancel") => {
+            option_list(&["comment"])
+        }
+        "Canceled" if verdict_options.iter().any(|option| option == "retry") => {
+            option_list(&["comment", "retry"])
+        }
+        "Canceled" => option_list(&["comment"]),
+        _ if verdict_options.is_empty() => option_list(&["comment"]),
+        _ => verdict_options.to_vec(),
+    }
+}
+
+fn latest_operator_action(evidence: &[IssueEvidenceSummary]) -> Option<&str> {
+    evidence
+        .iter()
+        .rev()
+        .find(|row| row.kind == "operator_decision")
+        .and_then(|row| row.operator_action.as_deref())
+}
+
+fn option_list(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
 }
 
 fn score_vector(value: &serde_json::Value) -> Vec<ScoreVectorMetric> {
@@ -3626,6 +3695,14 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("retry")
         );
+        assert_eq!(
+            rejected_report.issues[0]
+                .trace
+                .as_ref()
+                .expect("rejected issue trace should exist")
+                .human_options,
+            vec!["comment", "retry"]
+        );
 
         let review = create(
             &store,
@@ -3976,6 +4053,7 @@ mod tests {
         assert_eq!(retry_trace.verdict_schema, None);
         assert_eq!(retry_trace.last_decision, None);
         assert_eq!(retry_trace.worker_kind, None);
+        assert_eq!(retry_trace.human_options, vec!["comment", "cancel"]);
 
         let cancel_card = decide_issue(
             &store,
@@ -3994,6 +4072,14 @@ mod tests {
         assert_eq!(cancel_card.issue.status, "Canceled");
         assert_eq!(cancel_contract.status, "rejected");
         assert_eq!(cancel_contract.active_phase, "complete");
+        assert_eq!(
+            cancel_card
+                .trace
+                .as_ref()
+                .expect("cancel card should retain trace")
+                .human_options,
+            vec!["comment"]
+        );
         assert!(cancel_card
             .comments
             .iter()
@@ -4010,6 +4096,19 @@ mod tests {
                     .and_then(|value| value.as_str())
                     == Some("cancel")
         }));
+        let retry_after_cancel = decide_issue(
+            &store,
+            IssueDecisionRequest {
+                issue_id,
+                action: "retry".to_string(),
+                author: "human".to_string(),
+                body: None,
+            },
+        );
+        assert!(retry_after_cancel
+            .expect_err("human-canceled issue should not retry")
+            .to_string()
+            .contains("not allowed"));
 
         let _ = fs::remove_dir_all(root);
     }

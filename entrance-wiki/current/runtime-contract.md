@@ -45,6 +45,9 @@ current-round packet/admission/evidence/verdict counts, and total historical
 counts so retries do not look like stale verdicts from the previous round.
 Trace summaries also expose role-worker coverage so the Panel can show whether
 all role receipts in the current round were produced successfully.
+Issue human options are status-aware: `Blocked` issues can retry, request
+review, or cancel; `Needs Review` issues can retry or cancel; `Todo` issues can
+be canceled before running; terminal human-canceled issues only allow comments.
 
 ## Daemon
 
