@@ -828,20 +828,27 @@ export default function App() {
                   <p class="panel-kicker">Loop</p>
                   <h3>Contract</h3>
                   <input
+                    aria-label="Loop title"
                     value={loopTitle()}
                     onInput={(event) => setLoopTitle(event.currentTarget.value)}
                     placeholder="Title"
                   />
                   <textarea
+                    aria-label="Loop goal"
                     value={loopGoal()}
                     onInput={(event) => setLoopGoal(event.currentTarget.value)}
                     placeholder="Goal"
                   />
-                  <select value={loopRuntime()} onChange={(event) => setLoopRuntime(event.currentTarget.value)}>
+                  <select
+                    aria-label="Loop runtime"
+                    value={loopRuntime()}
+                    onChange={(event) => setLoopRuntime(event.currentTarget.value)}
+                  >
                     <option value="codex">codex</option>
                     <option value="local">local</option>
                   </select>
                   <input
+                    aria-label="Worker timeout seconds"
                     type="number"
                     min="1"
                     value={loopWorkerTimeoutSecs()}
@@ -849,6 +856,7 @@ export default function App() {
                     placeholder="Worker timeout seconds"
                   />
                   <input
+                    aria-label="Worker attempts"
                     type="number"
                     min="1"
                     max="3"

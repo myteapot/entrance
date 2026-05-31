@@ -223,6 +223,10 @@
   grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
 }
 
+.panel-grid--board > * {
+  min-width: 0;
+}
+
 .panel-stack {
   display: grid;
   gap: 18px;
@@ -231,18 +235,20 @@
 
 .panel--board {
   min-height: 620px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .board-columns {
   display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
   gap: 12px;
   align-items: start;
-  overflow-x: auto;
+  overflow-x: visible;
 }
 
 .board-column {
-  min-width: 180px;
+  min-width: 0;
 }
 
 .board-column-head {
@@ -263,6 +269,7 @@
 
 .issue-card {
   margin-top: 10px;
+  min-width: 0;
 }
 
 .issue-card--selected {
