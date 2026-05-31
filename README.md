@@ -1,14 +1,6 @@
 
 
-## Workspace Layout
 
-This repository is formatted as a Microt workspace:
-
-- [`entrance-src/`](./entrance-src/) contains the Rust workspace, Electron shell, SolidJS renderer, product README, and source-level agent instructions.
-- [`entrance-wiki/`](./entrance-wiki/) contains committed project knowledge. Current truth starts at [`entrance-wiki/current/`](./entrance-wiki/current/), while historical design material lives under `entrance-wiki/archive/`.
-- [`entrance-auto/`](./entrance-auto/) contains reusable validation workflows, fixtures, templates, report output, screenshots, traces, logs, and generated release artifacts.
-
-For current product usage, commands, and architecture, start with [`entrance-src/README.md`](./entrance-src/README.md).
 
 ## Current State vs Target State
 
@@ -35,4 +27,14 @@ pnpm build
 
 
 ```
+
+## Workspace Layout
+
+This repository is formatted as a Microt workspace:
+
+- [`entrance-src/`](./entrance-src/) contains the Rust workspace, Electron shell, SolidJS renderer, product README, and source-level agent instructions.
+- [`entrance-wiki/`](./entrance-wiki/) contains committed project knowledge. Current truth starts at [`entrance-wiki/current/`](./entrance-wiki/current/), while historical design material lives under `entrance-wiki/archive/`.
+- [`entrance-auto/`](./entrance-auto/) contains reusable validation workflows, fixtures, templates, report output, screenshots, traces, logs, and generated release artifacts.
+
+For current product usage, commands, and architecture, start with [`entrance-src/README.md`](./entrance-src/README.md).
 
