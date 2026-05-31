@@ -21,7 +21,9 @@ typed packets, admission receipts, evidence, and verdict.
 Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
-reported as blocked verdicts.
+reported as blocked verdicts. The `codex` runtime uses a read-only
+`codex exec` worker and records stdout, stderr, and last-message transcript
+data inside execution evidence.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 Human decisions are available through `hive issue decide <id>

@@ -1,4 +1,8 @@
-use std::process::Command;
+use std::{
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use entrance_core::{
@@ -35,6 +39,12 @@ enum VerdictDecision {
     Reject,
     NeedsReview,
     Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeFailure {
+    Probe,
+    Worker,
 }
 
 struct TypedVerdict {
@@ -217,6 +227,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         contract.current_round,
     )?;
     let runtime_probe = probe_runtime(&runtime);
+    let runtime_worker = run_runtime_worker(&runtime, &contract, &runtime_probe);
     let doer_stage = insert_stage(
         store,
         &contract,
@@ -228,6 +239,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         }),
         serde_json::json!({
             "runtime_probe": runtime_probe,
+            "runtime_worker": runtime_worker,
             "artifact": "hive-loop-ledger"
         }),
     )?;
@@ -241,6 +253,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         serde_json::json!({
             "runtime": runtime,
             "runtime_probe": runtime_probe,
+            "runtime_worker": runtime_worker,
             "artifact": "hive-loop-ledger"
         }),
     )?;
@@ -259,11 +272,12 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         stage_id: Some(doer_stage),
         round: contract.current_round,
         kind: "execution_packet".to_string(),
-        summary: format!("Doer probed `{runtime}` runtime."),
+        summary: format!("Doer ran `{runtime}` runtime worker."),
         path: None,
         payload: serde_json::json!({
             "runtime": runtime,
             "probe": runtime_probe,
+            "worker": runtime_worker,
             "admission": doer_admission.result
         }),
     })?;
@@ -278,9 +292,20 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
     let runtime_ready = runtime_probe
         .get("ok")
         .and_then(|value| value.as_bool())
-        .unwrap_or(false);
+        .unwrap_or(false)
+        && runtime_worker
+            .get("ok")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+    let runtime_failure = runtime_failure(&runtime_probe, &runtime_worker);
     let decision_override = parse_decision_override(request.decision.as_deref())?;
-    let typed_verdict = build_verdict(decision_override, runtime_ready, &runtime, evidence.len());
+    let typed_verdict = build_verdict(
+        decision_override,
+        runtime_ready,
+        runtime_failure,
+        &runtime,
+        evidence.len(),
+    );
     let evaluator_stage = insert_stage(
         store,
         &contract,
@@ -352,8 +377,9 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
     if let Some(issue_id) = issue_id {
         store.update_hive_issue_status(issue_id, issue_status, Some(&typed_verdict.summary))?;
         let admission_summary = format!(
-            "{} Admissions: explorer={}, doer={}, evaluator={}.",
+            "{} Worker: {}. Admissions: explorer={}, doer={}, evaluator={}.",
             typed_verdict.summary,
+            runtime_worker_summary(&runtime_worker),
             explorer_admission.result,
             doer_admission.result,
             evaluator_admission.result
@@ -367,6 +393,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
                 "decision": typed_verdict.decision.as_str(),
                 "reason_code": typed_verdict.reason_code,
                 "phase": "evaluator",
+                "runtime_worker": runtime_worker,
                 "admissions": {
                     "explorer": explorer_admission.result,
                     "doer": doer_admission.result,
@@ -771,14 +798,23 @@ fn parse_decision_override(value: Option<&str>) -> Result<Option<VerdictDecision
 fn build_verdict(
     decision_override: Option<VerdictDecision>,
     runtime_ready: bool,
+    runtime_failure: Option<RuntimeFailure>,
     runtime: &str,
     evidence_count: usize,
 ) -> TypedVerdict {
     if !runtime_ready {
+        let reason_code = runtime_failure
+            .unwrap_or(RuntimeFailure::Worker)
+            .reason_code();
         return TypedVerdict {
             decision: VerdictDecision::Blocked,
-            reason_code: "runtime_unavailable",
-            summary: format!("Evaluator blocked the candidate: `{runtime}` runtime probe failed."),
+            reason_code,
+            summary: format!(
+                "Evaluator blocked the candidate: `{runtime}` {}.",
+                runtime_failure
+                    .unwrap_or(RuntimeFailure::Worker)
+                    .summary_fragment()
+            ),
             runtime_ready,
             evidence_count,
         };
@@ -814,6 +850,59 @@ fn build_verdict(
             evidence_count,
         },
     }
+}
+
+impl RuntimeFailure {
+    fn reason_code(self) -> &'static str {
+        match self {
+            Self::Probe => "runtime_probe_failed",
+            Self::Worker => "runtime_worker_failed",
+        }
+    }
+
+    fn summary_fragment(self) -> &'static str {
+        match self {
+            Self::Probe => "runtime probe failed",
+            Self::Worker => "worker execution failed",
+        }
+    }
+}
+
+fn runtime_failure(
+    runtime_probe: &serde_json::Value,
+    runtime_worker: &serde_json::Value,
+) -> Option<RuntimeFailure> {
+    if !runtime_probe
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        Some(RuntimeFailure::Probe)
+    } else if !runtime_worker
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        Some(RuntimeFailure::Worker)
+    } else {
+        None
+    }
+}
+
+fn runtime_worker_summary(runtime_worker: &serde_json::Value) -> String {
+    let kind = runtime_worker
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let mode = runtime_worker
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let ok = runtime_worker
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    format!("{kind}/{mode} ok={ok}")
 }
 
 fn seed_default_policies(store: &Store, loop_id: i64) -> Result<()> {
@@ -968,6 +1057,215 @@ fn probe_runtime(runtime: &str) -> serde_json::Value {
     }
 }
 
+fn run_runtime_worker(
+    runtime: &str,
+    contract: &HiveLoopContract,
+    runtime_probe: &serde_json::Value,
+) -> serde_json::Value {
+    match runtime {
+        "local" => serde_json::json!({
+            "ok": true,
+            "kind": "local",
+            "mode": "deterministic-worker",
+            "last_message": format!(
+                "Local worker accepted loop #{} and recorded the task packet.",
+                contract.id
+            ),
+            "packet": {
+                "loop_id": contract.id,
+                "round": contract.current_round,
+                "role": "doer",
+                "action": "record-local-loop-ledger"
+            }
+        }),
+        "codex" => {
+            if !runtime_probe
+                .get("ok")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                return serde_json::json!({
+                    "ok": false,
+                    "kind": "codex",
+                    "skipped": true,
+                    "error": "codex probe failed"
+                });
+            }
+            run_codex_worker(contract)
+        }
+        other => serde_json::json!({
+            "ok": false,
+            "kind": "unsupported",
+            "runtime": other,
+            "skipped": true,
+            "error": "unsupported runtime"
+        }),
+    }
+}
+
+fn run_codex_worker(contract: &HiveLoopContract) -> serde_json::Value {
+    let output_path = std::env::temp_dir().join(format!(
+        "entrance-hive-codex-worker-{}-{}.txt",
+        contract.id,
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let prompt = codex_worker_prompt(contract);
+    let cwd = std::env::current_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+
+    let mut command = Command::new("codex");
+    command
+        .arg("-a")
+        .arg("never")
+        .arg("exec")
+        .arg("--ephemeral")
+        .arg("--skip-git-repo-check")
+        .arg("--sandbox")
+        .arg("read-only")
+        .arg("-C")
+        .arg(&cwd)
+        .arg("--output-last-message")
+        .arg(&output_path)
+        .arg("--json")
+        .arg(prompt)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let result = run_command_with_timeout(command, Duration::from_secs(60));
+    let last_message = std::fs::read_to_string(&output_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&output_path);
+
+    match result {
+        Ok(output) => {
+            let receipt_ok = worker_receipt_ok(&last_message);
+            serde_json::json!({
+                "ok": output.status_success && !output.timed_out && receipt_ok.unwrap_or(true),
+                "kind": "codex",
+                "mode": "codex-exec",
+                "started_at": started_at,
+                "completed_at": chrono::Utc::now().to_rfc3339(),
+                "timed_out": output.timed_out,
+                "status": output.status_code,
+                "receipt_ok": receipt_ok,
+                "stdout": truncate_text(&output.stdout, 12000),
+                "stderr": truncate_text(&output.stderr, 4000),
+                "last_message": truncate_text(&last_message, 4000)
+            })
+        }
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "kind": "codex",
+            "mode": "codex-exec",
+            "started_at": started_at,
+            "completed_at": chrono::Utc::now().to_rfc3339(),
+            "error": error.to_string(),
+            "last_message": truncate_text(&last_message, 4000)
+        }),
+    }
+}
+
+struct TimedCommandOutput {
+    status_success: bool,
+    status_code: Option<i32>,
+    timed_out: bool,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<TimedCommandOutput> {
+    let mut child = command.spawn().context("failed to spawn runtime worker")?;
+    let started = Instant::now();
+    let mut timed_out = false;
+
+    loop {
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        if started.elapsed() >= timeout {
+            timed_out = true;
+            let _ = child.kill();
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let output = child.wait_with_output()?;
+    Ok(TimedCommandOutput {
+        status_success: output.status.success(),
+        status_code: output.status.code(),
+        timed_out,
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+fn codex_worker_prompt(contract: &HiveLoopContract) -> String {
+    format!(
+        r#"Entrance Hive Doer worker packet.
+
+You are the Doer role inside a constrained Explorer -> Doer -> Evaluator loop.
+Rules:
+- Do not modify files.
+- Do not make network calls.
+- Keep the response compact.
+- Return only JSON with keys: ok, role, action, evidence_summary, gates.
+- The MVP execution is this receipt: validate that you received the typed packet,
+  summarize the accepted action, and set ok=true unless you cannot process it.
+- Do not set ok=false merely because the surrounding Hive runtime persists the
+  evidence after you return.
+
+Loop id: {id}
+Round: {round}
+Title: {title}
+Goal: {goal}
+Boundary: {boundary}
+Approach space: {approach}
+Eval space: {eval}
+Accepted candidate: Run the local Hive loop MVP packet and report whether the runtime can execute it.
+"#,
+        id = contract.id,
+        round = contract.current_round,
+        title = contract.title,
+        goal = contract.goal,
+        boundary = contract.boundary,
+        approach = serde_json::to_string(&contract.approach_space).unwrap_or_default(),
+        eval = serde_json::to_string(&contract.eval_space).unwrap_or_default()
+    )
+}
+
+fn worker_receipt_ok(value: &str) -> Option<bool> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let json_value = serde_json::from_str::<serde_json::Value>(trimmed)
+        .or_else(|_| {
+            let start = trimmed.find('{').unwrap_or(0);
+            let end = trimmed
+                .rfind('}')
+                .map(|index| index + 1)
+                .unwrap_or(trimmed.len());
+            serde_json::from_str::<serde_json::Value>(&trimmed[start..end])
+        })
+        .ok()?;
+    json_value.get("ok").and_then(|value| value.as_bool())
+}
+
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    let mut output = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if index >= max_chars {
+            output.push_str("...");
+            break;
+        }
+        output.push(ch);
+    }
+    output
+}
+
 fn default_text(value: String, fallback: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1049,12 +1347,34 @@ mod tests {
             .all(|admission| admission.result == "admitted"));
         assert_eq!(report.stages.len(), 3);
         assert_eq!(report.evidence.len(), 3);
+        let execution_evidence = report
+            .evidence
+            .iter()
+            .find(|evidence| evidence.kind == "execution_packet")
+            .expect("execution evidence should exist");
+        assert_eq!(
+            execution_evidence
+                .payload
+                .pointer("/worker/kind")
+                .and_then(|value| value.as_str()),
+            Some("local")
+        );
         assert_eq!(report.verdicts.len(), 1);
         assert_eq!(report.verdicts[0].decision, "keep");
         assert_eq!(report.issues[0].issue.status, "Done");
         assert!(report.issues[0].comments.len() >= 3);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_receipt_ok_reads_final_json_receipt() {
+        assert_eq!(worker_receipt_ok(r#"{"ok":true}"#), Some(true));
+        assert_eq!(
+            worker_receipt_ok("prefix {\"ok\":false,\"reason\":\"blocked\"} suffix"),
+            Some(false)
+        );
+        assert_eq!(worker_receipt_ok("not json"), None);
     }
 
     #[test]
