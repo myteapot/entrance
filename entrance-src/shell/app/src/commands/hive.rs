@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
 use entrance_hive::{
-    HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest, IssueCard,
-    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, ReviewDecision,
+    HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck, HiveLoopAuditReport,
+    HiveLoopCreateRequest, HiveLoopRunRequest, IssueCard, IssueCommentRequest,
+    IssueDecisionRequest, IssueRunRequest, ReviewDecision,
 };
 
 use crate::{app::AppServices, cli, print_json};
@@ -10,7 +11,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -93,8 +94,13 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action, id] if scope == "loop" && action == "evidence" => {
             print_json(&services.hive.loop_evidence(id.parse::<i64>()?)?)
         }
-        [scope, action, id] if scope == "loop" && action == "audit" => {
-            print_json(&services.hive.loop_audit(id.parse::<i64>()?)?)
+        [scope, action, id, rest @ ..] if scope == "loop" && action == "audit" => {
+            let report = services.hive.loop_audit(id.parse::<i64>()?)?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_loop_audit(&report))
+            } else {
+                print_json(&report)
+            }
         }
         [scope, action, id] if scope == "loop" && action == "doctor" => {
             print_json(&services.hive.loop_doctor(id.parse::<i64>()?)?)
@@ -284,6 +290,87 @@ fn compact_issue_detail(card: &IssueCard) -> serde_json::Value {
         "recent_evidence": compact_recent_evidence(card, 5),
         "stages": compact_stage_rows(card)
     })
+}
+
+fn compact_loop_audit(report: &HiveLoopAuditReport) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "entrance.hive.audit.compact.v1",
+        "loop_id": report.loop_id,
+        "passed": report.passed,
+        "failed_count": report.failed_count,
+        "failed_checks": report
+            .checks
+            .iter()
+            .filter(|check| !check.passed)
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>(),
+        "checks": report
+            .checks
+            .iter()
+            .map(compact_audit_check)
+            .collect::<Vec<_>>(),
+        "actions": [
+            compact_loop_action("doctor", "Doctor", format!("entrance hive loop doctor {}", report.loop_id)),
+            compact_loop_action("trace", "Trace", format!("entrance hive loop trace {}", report.loop_id)),
+            compact_loop_action("evidence", "Evidence", format!("entrance hive loop evidence {}", report.loop_id)),
+            compact_loop_action("full-audit", "Full audit", format!("entrance hive loop audit {}", report.loop_id))
+        ]
+    })
+}
+
+fn compact_audit_check(check: &HiveLoopAuditCheck) -> serde_json::Value {
+    let errors = compact_audit_errors(&check.details);
+    serde_json::json!({
+        "name": check.name,
+        "passed": check.passed,
+        "summary": compact_text(&check.summary, 180),
+        "error_count": compact_audit_error_count(&check.details),
+        "errors": errors,
+        "counts": compact_audit_counts(&check.details)
+    })
+}
+
+fn compact_audit_error_count(details: &serde_json::Value) -> usize {
+    let Some(object) = details.as_object() else {
+        return 0;
+    };
+    object
+        .iter()
+        .filter(|(key, _)| key.contains("error"))
+        .filter_map(|(_, value)| value.as_array().map(Vec::len))
+        .sum()
+}
+
+fn compact_audit_errors(details: &serde_json::Value) -> Vec<String> {
+    let Some(object) = details.as_object() else {
+        return Vec::new();
+    };
+    object
+        .iter()
+        .filter(|(key, _)| key.contains("error"))
+        .filter_map(|(key, value)| value.as_array().map(|items| (key, items)))
+        .flat_map(|(key, items)| {
+            items.iter().map(move |item| {
+                format!("{}: {}", key, compact_text(&compact_json_value(item), 220))
+            })
+        })
+        .take(8)
+        .collect()
+}
+
+fn compact_audit_counts(details: &serde_json::Value) -> serde_json::Value {
+    let Some(object) = details.as_object() else {
+        return serde_json::json!({});
+    };
+    let mut counts = serde_json::Map::new();
+    for (key, value) in object {
+        if key.ends_with("_count") || key == "current_round" {
+            counts.insert(key.clone(), value.clone());
+        } else if let Some(items) = value.as_array() {
+            counts.insert(format!("{key}_count"), serde_json::json!(items.len()));
+        }
+    }
+    serde_json::Value::Object(counts)
 }
 
 fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
@@ -488,6 +575,21 @@ fn compact_issue_action(action: &str, label: &str, command: String) -> serde_jso
     })
 }
 
+fn compact_loop_action(action: &str, label: &str, command: String) -> serde_json::Value {
+    serde_json::json!({
+        "action": action,
+        "label": label,
+        "command": command
+    })
+}
+
+fn compact_json_value(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| value.to_string())
+}
+
 fn compact_text(value: &str, limit: usize) -> String {
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.len() <= limit {
@@ -503,9 +605,11 @@ fn compact_text(value: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_issue_board, compact_issue_detail, flag_present, flag_value};
+    use super::{
+        compact_issue_board, compact_issue_detail, compact_loop_audit, flag_present, flag_value,
+    };
     use entrance_core::{HiveComment, HiveIssue};
-    use entrance_hive::IssueCard;
+    use entrance_hive::{HiveLoopAuditCheck, HiveLoopAuditReport, IssueCard};
 
     #[test]
     fn flags_read_values_and_presence_independently() {
@@ -705,6 +809,83 @@ mod tests {
                 .pointer("/issue/actions/1/command")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue comment 9 --body <text> --compact")
+        );
+    }
+
+    #[test]
+    fn compact_loop_audit_surfaces_failed_checks_and_actions() {
+        let compact = compact_loop_audit(&HiveLoopAuditReport {
+            schema_version: "entrance.hive.audit.v1".to_string(),
+            loop_id: 42,
+            passed: false,
+            failed_count: 1,
+            checks: vec![
+                HiveLoopAuditCheck {
+                    name: "runtime_policy".to_string(),
+                    passed: false,
+                    summary: "Runtime `codex` inspected; 1 runtime policy issues.".to_string(),
+                    details: serde_json::json!({
+                        "current_round": 2,
+                        "runtime_policy_errors": [
+                            "runtime_policy:worker_receipt:context.command"
+                        ],
+                        "supported_runtimes": ["local", "codex"]
+                    }),
+                },
+                HiveLoopAuditCheck {
+                    name: "issue_surface".to_string(),
+                    passed: true,
+                    summary: "1 linked issues, 6 comments, and 0 operator evidence rows inspected; 0 issue surface issues.".to_string(),
+                    details: serde_json::json!({
+                        "comment_count": 6,
+                        "operator_evidence_count": 0,
+                        "issue_surface_errors": []
+                    }),
+                },
+            ],
+        });
+
+        assert_eq!(
+            compact
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.audit.compact.v1")
+        );
+        assert_eq!(
+            compact
+                .pointer("/failed_checks/0")
+                .and_then(|value| value.as_str()),
+            Some("runtime_policy")
+        );
+        assert_eq!(
+            compact
+                .pointer("/checks/0/error_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            compact
+                .pointer("/checks/0/counts/current_round")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            compact
+                .pointer("/checks/0/errors/0")
+                .and_then(|value| value.as_str()),
+            Some("runtime_policy_errors: runtime_policy:worker_receipt:context.command")
+        );
+        assert_eq!(
+            compact
+                .pointer("/actions/0/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive loop doctor 42")
+        );
+        assert_eq!(
+            compact
+                .pointer("/actions/3/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive loop audit 42")
         );
     }
 }
