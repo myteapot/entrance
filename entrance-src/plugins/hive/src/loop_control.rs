@@ -24,6 +24,8 @@ const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DEFAULT_WORKER_TIMEOUT_SECS: u64 = 60;
 const MAX_WORKER_TIMEOUT_SECS: u64 = 600;
+const DEFAULT_WORKER_ATTEMPTS: u64 = 1;
+const MAX_WORKER_ATTEMPTS: u64 = 3;
 
 #[derive(Debug, Clone, Copy)]
 struct GateSpec {
@@ -69,6 +71,7 @@ pub struct HiveLoopRunRequest {
     pub runtime: Option<String>,
     pub decision: Option<String>,
     pub worker_timeout_secs: Option<u64>,
+    pub worker_attempts: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +235,8 @@ pub struct IssueEvidenceSummary {
     pub worker_status: Option<i64>,
     pub worker_duration_ms: Option<u64>,
     pub worker_timeout_secs: Option<u64>,
+    pub worker_attempt_count: Option<u64>,
+    pub worker_max_attempts: Option<u64>,
     pub transcript_excerpt: Option<String>,
 }
 
@@ -314,6 +319,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         .with_context(|| format!("unknown hive loop `{}`", request.loop_id))?;
     let runtime = request.runtime.unwrap_or_else(|| contract.runtime.clone());
     let worker_timeout_secs = worker_timeout_secs(request.worker_timeout_secs)?;
+    let worker_attempts = worker_attempts(request.worker_attempts)?;
     let issues = store.list_hive_issues_for_loop(contract.id)?;
     let issue_id = issues.first().map(|issue| issue.id);
 
@@ -349,6 +355,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         &contract,
         &runtime_probe,
         worker_timeout_secs,
+        worker_attempts,
     );
     let explorer_stage = insert_stage(
         store,
@@ -424,6 +431,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         &contract,
         &runtime_probe,
         worker_timeout_secs,
+        worker_attempts,
     );
     let doer_stage = insert_stage(
         store,
@@ -494,6 +502,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         &contract,
         &runtime_probe,
         worker_timeout_secs,
+        worker_attempts,
     );
     let runtime_ready = runtime_probe
         .get("ok")
@@ -1521,6 +1530,12 @@ fn issue_evidence_summary(
         worker_timeout_secs: worker
             .and_then(|value| value.get("timeout_secs"))
             .and_then(|value| value.as_u64()),
+        worker_attempt_count: worker
+            .and_then(|value| value.get("attempt_count"))
+            .and_then(|value| value.as_u64()),
+        worker_max_attempts: worker
+            .and_then(|value| value.get("max_attempts"))
+            .and_then(|value| value.as_u64()),
         transcript_excerpt: worker
             .and_then(worker_transcript_excerpt)
             .map(|value| truncate_text(&value, 240)),
@@ -2201,6 +2216,26 @@ fn worker_timeout_secs(requested: Option<u64>) -> Result<u64> {
     Ok(value)
 }
 
+fn worker_attempts(requested: Option<u64>) -> Result<u64> {
+    let value = match requested {
+        Some(value) => value,
+        None => match std::env::var("ENTRANCE_HIVE_WORKER_ATTEMPTS") {
+            Ok(value) if !value.trim().is_empty() => value
+                .trim()
+                .parse::<u64>()
+                .with_context(|| "ENTRANCE_HIVE_WORKER_ATTEMPTS must be a positive integer")?,
+            _ => DEFAULT_WORKER_ATTEMPTS,
+        },
+    };
+    if value == 0 {
+        anyhow::bail!("worker attempts must be at least 1");
+    }
+    if value > MAX_WORKER_ATTEMPTS {
+        anyhow::bail!("worker attempts must be <= {}", MAX_WORKER_ATTEMPTS);
+    }
+    Ok(value)
+}
+
 fn seed_default_policies(store: &Store, loop_id: i64) -> Result<()> {
     for policy in [
         (
@@ -2709,6 +2744,7 @@ fn run_role_worker(
     contract: &HiveLoopContract,
     runtime_probe: &serde_json::Value,
     timeout_secs: u64,
+    max_attempts: u64,
 ) -> serde_json::Value {
     match runtime {
         "local" => serde_json::json!({
@@ -2718,6 +2754,8 @@ fn run_role_worker(
             "role": role,
             "duration_ms": 0,
             "timeout_secs": timeout_secs,
+            "attempt_count": 1,
+            "max_attempts": max_attempts,
             "last_message": format!(
                 "Local {role} worker accepted loop #{} round {}.",
                 contract.id,
@@ -2742,10 +2780,12 @@ fn run_role_worker(
                     "role": role,
                     "skipped": true,
                     "timeout_secs": timeout_secs,
+                    "attempt_count": 0,
+                    "max_attempts": max_attempts,
                     "error": "codex probe failed"
                 });
             }
-            run_codex_worker(contract, role, timeout_secs)
+            run_codex_worker(contract, role, timeout_secs, max_attempts)
         }
         other => serde_json::json!({
             "ok": false,
@@ -2754,6 +2794,8 @@ fn run_role_worker(
             "runtime": other,
             "skipped": true,
             "timeout_secs": timeout_secs,
+            "attempt_count": 0,
+            "max_attempts": max_attempts,
             "error": "unsupported runtime"
         }),
     }
@@ -2772,11 +2814,56 @@ fn run_codex_worker(
     contract: &HiveLoopContract,
     role: &str,
     timeout_secs: u64,
+    max_attempts: u64,
+) -> serde_json::Value {
+    let mut attempts = Vec::new();
+    for attempt in 1..=max_attempts {
+        let attempt_result = run_codex_worker_attempt(contract, role, timeout_secs, attempt);
+        let attempt_ok = worker_ok(&attempt_result);
+        attempts.push(attempt_result);
+        if attempt_ok {
+            break;
+        }
+    }
+
+    let mut worker = attempts.last().cloned().unwrap_or_else(|| {
+        serde_json::json!({
+            "ok": false,
+            "kind": "codex",
+            "mode": "codex-exec",
+            "role": role,
+            "timeout_secs": timeout_secs,
+            "error": "no worker attempts were recorded"
+        })
+    });
+    let attempt_count = attempts.len() as u64;
+    let ok = worker_ok(&worker);
+    if let Some(payload) = worker.as_object_mut() {
+        payload.insert(
+            "attempt_count".to_string(),
+            serde_json::json!(attempt_count),
+        );
+        payload.insert("max_attempts".to_string(), serde_json::json!(max_attempts));
+        payload.insert("attempts".to_string(), serde_json::json!(attempts));
+        payload.insert(
+            "retry_exhausted".to_string(),
+            serde_json::json!(!ok && attempt_count >= max_attempts),
+        );
+    }
+    worker
+}
+
+fn run_codex_worker_attempt(
+    contract: &HiveLoopContract,
+    role: &str,
+    timeout_secs: u64,
+    attempt: u64,
 ) -> serde_json::Value {
     let output_path = std::env::temp_dir().join(format!(
-        "entrance-hive-codex-worker-{}-{}-{}.txt",
+        "entrance-hive-codex-worker-{}-{}-{}-{}.txt",
         contract.id,
         role,
+        attempt,
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     ));
     let prompt = codex_worker_prompt(contract, role);
@@ -2817,6 +2904,7 @@ fn run_codex_worker(
                 "kind": "codex",
                 "mode": "codex-exec",
                 "role": role,
+                "attempt": attempt,
                 "started_at": started_at,
                 "completed_at": chrono::Utc::now().to_rfc3339(),
                 "timed_out": output.timed_out,
@@ -2834,6 +2922,7 @@ fn run_codex_worker(
             "kind": "codex",
             "mode": "codex-exec",
             "role": role,
+            "attempt": attempt,
             "started_at": started_at,
             "completed_at": chrono::Utc::now().to_rfc3339(),
             "timeout_secs": timeout_secs,
@@ -3094,6 +3183,7 @@ mod tests {
                 runtime: Some("local".to_string()),
                 decision: None,
                 worker_timeout_secs: Some(7),
+                worker_attempts: Some(2),
             },
         )
         .expect("loop should run");
@@ -3295,6 +3385,8 @@ mod tests {
         assert_eq!(doer_evidence.worker_ok, Some(true));
         assert_eq!(doer_evidence.worker_duration_ms, Some(0));
         assert_eq!(doer_evidence.worker_timeout_secs, Some(7));
+        assert_eq!(doer_evidence.worker_attempt_count, Some(1));
+        assert_eq!(doer_evidence.worker_max_attempts, Some(2));
         assert!(doer_evidence
             .transcript_excerpt
             .as_deref()
@@ -3408,6 +3500,7 @@ mod tests {
                 runtime: Some("local".to_string()),
                 decision: None,
                 worker_timeout_secs: None,
+                worker_attempts: None,
             },
         )
         .expect("completed loop run should be idempotent");
@@ -3639,6 +3732,7 @@ mod tests {
                 runtime: Some("unsupported-agent".to_string()),
                 decision: None,
                 worker_timeout_secs: Some(5),
+                worker_attempts: Some(2),
             },
         )
         .expect("blocked loop should still return a report");
@@ -3699,6 +3793,8 @@ mod tests {
         assert_eq!(blocked_evidence.worker_kind.as_deref(), Some("unsupported"));
         assert_eq!(blocked_evidence.worker_ok, Some(false));
         assert_eq!(blocked_evidence.worker_timeout_secs, Some(5));
+        assert_eq!(blocked_evidence.worker_attempt_count, Some(0));
+        assert_eq!(blocked_evidence.worker_max_attempts, Some(2));
         assert!(blocked_evidence
             .operator_options
             .iter()
@@ -3740,6 +3836,7 @@ mod tests {
                 runtime: Some("local".to_string()),
                 decision: Some("reject".to_string()),
                 worker_timeout_secs: None,
+                worker_attempts: None,
             },
         )
         .expect("reject loop should run");
@@ -3798,6 +3895,7 @@ mod tests {
                 runtime: Some("local".to_string()),
                 decision: Some("needs-review".to_string()),
                 worker_timeout_secs: None,
+                worker_attempts: None,
             },
         )
         .expect("review loop should run");
@@ -3874,6 +3972,7 @@ mod tests {
                 runtime: Some("local".to_string()),
                 decision: None,
                 worker_timeout_secs: None,
+                worker_attempts: None,
             },
         )
         .expect("admission rejection should still return a report");
@@ -4027,6 +4126,7 @@ mod tests {
                 runtime: Some("unsupported-agent".to_string()),
                 decision: None,
                 worker_timeout_secs: None,
+                worker_attempts: None,
             },
         )
         .expect("loop should block");
@@ -4222,6 +4322,7 @@ mod tests {
                 runtime: Some("unsupported-agent".to_string()),
                 decision: None,
                 worker_timeout_secs: None,
+                worker_attempts: None,
             },
         )
         .expect("loop should block");

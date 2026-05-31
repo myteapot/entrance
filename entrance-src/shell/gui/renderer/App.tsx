@@ -138,6 +138,8 @@ type IssueCard = {
       worker_status: number | null;
       worker_duration_ms: number | null;
       worker_timeout_secs: number | null;
+      worker_attempt_count: number | null;
+      worker_max_attempts: number | null;
       transcript_excerpt: string | null;
     }>;
     stages: Array<{
@@ -175,6 +177,7 @@ export default function App() {
   const [loopGoal, setLoopGoal] = createSignal("");
   const [loopRuntime, setLoopRuntime] = createSignal("codex");
   const [loopWorkerTimeoutSecs, setLoopWorkerTimeoutSecs] = createSignal("");
+  const [loopWorkerAttempts, setLoopWorkerAttempts] = createSignal("");
   const [selectedIssueId, setSelectedIssueId] = createSignal<number | null>(null);
   const [activeCommentIssue, setActiveCommentIssue] = createSignal<number | null>(null);
   const [commentBody, setCommentBody] = createSignal("");
@@ -308,9 +311,12 @@ export default function App() {
   const loopRunArgs = () => {
     const timeoutText = loopWorkerTimeoutSecs().trim();
     const workerTimeoutSecs = timeoutText ? Number.parseInt(timeoutText, 10) : undefined;
+    const attemptsText = loopWorkerAttempts().trim();
+    const workerAttempts = attemptsText ? Number.parseInt(attemptsText, 10) : undefined;
     return {
       runtime: loopRuntime(),
       workerTimeoutSecs: workerTimeoutSecs && workerTimeoutSecs > 0 ? workerTimeoutSecs : undefined,
+      workerAttempts: workerAttempts && workerAttempts > 0 ? workerAttempts : undefined,
     };
   };
 
@@ -564,6 +570,13 @@ export default function App() {
 
   const workerTimeoutLabel = (evidence: NonNullable<IssueCard["trace"]>["evidence"][number]) =>
     evidence.worker_timeout_secs === null ? null : `limit ${evidence.worker_timeout_secs}s`;
+
+  const workerAttemptLabel = (evidence: NonNullable<IssueCard["trace"]>["evidence"][number]) => {
+    if (evidence.worker_attempt_count === null) return null;
+    return evidence.worker_max_attempts === null
+      ? `attempts ${evidence.worker_attempt_count}`
+      : `attempts ${evidence.worker_attempt_count}/${evidence.worker_max_attempts}`;
+  };
 
   const scoreMetricLabel = (name: string) =>
     ({
@@ -834,6 +847,14 @@ export default function App() {
                     onInput={(event) => setLoopWorkerTimeoutSecs(event.currentTarget.value)}
                     placeholder="Worker timeout seconds"
                   />
+                  <input
+                    type="number"
+                    min="1"
+                    max="3"
+                    value={loopWorkerAttempts()}
+                    onInput={(event) => setLoopWorkerAttempts(event.currentTarget.value)}
+                    placeholder="Worker attempts"
+                  />
                   <button type="button" class="primary-button" onClick={() => void createHiveLoop()}>
                     Create Loop
                   </button>
@@ -964,6 +985,9 @@ export default function App() {
                                   ) : null}
                                   {workerTimeoutLabel(evidence) ? (
                                     <span class="trace-pill">{workerTimeoutLabel(evidence)}</span>
+                                  ) : null}
+                                  {workerAttemptLabel(evidence) ? (
+                                    <span class="trace-pill">{workerAttemptLabel(evidence)}</span>
                                   ) : null}
                                   {evidence.blocked_phase ? (
                                     <span class="trace-pill trace-pill--warn">blocked {evidence.blocked_phase}</span>

@@ -461,6 +461,10 @@ async fn handle_invoke(
                         .get("workerTimeoutSecs")
                         .or_else(|| args.get("worker_timeout_secs"))
                         .and_then(|value| value.as_u64()),
+                    worker_attempts: args
+                        .get("workerAttempts")
+                        .or_else(|| args.get("worker_attempts"))
+                        .and_then(|value| value.as_u64()),
                 })?,
             )?)
         }
