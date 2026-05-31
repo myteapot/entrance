@@ -322,6 +322,43 @@
   opacity: 0.58;
 }
 
+.operator-trail {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.operator-trail h4 {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--text-muted);
+}
+
+.operator-event {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.operator-event strong,
+.operator-event span {
+  display: inline-block;
+}
+
+.operator-event span {
+  margin-left: 8px;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+.operator-event p {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+}
+
 .doctor-summary {
   margin-top: 14px;
   padding: 12px 0;

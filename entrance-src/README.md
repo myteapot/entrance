@@ -109,7 +109,10 @@ blocks at the compiler boundary instead of being treated as valid evidence.
 linked loop. `hive issue run <id>` runs a `Todo` issue without requiring the
 operator to look up its loop id.
 Issue cards expose round-aware trace chips so a retry shows the new current
-round separately from the loop's accumulated history.
+round separately from the loop's accumulated history. They also expose an
+operator trail derived from typed `operator_comment` and `operator_decision`
+evidence so the latest human comment, retry, review, or cancel action is visible
+without opening raw evidence.
 
 ### Launcher
 

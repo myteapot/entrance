@@ -74,7 +74,10 @@ current-round packet/admission/evidence/verdict counts, and total historical
 counts so retries do not look like stale verdicts from the previous round.
 Trace summaries also expose role-worker coverage and current-round worker
 runtime totals so the Panel can show whether all role receipts in the current
-round were produced successfully and how long the runtime spent.
+round were produced successfully and how long the runtime spent. Operator
+comments and decisions are summarized into a current-round operator trail plus
+total operator event counts, making human retry, review, cancel, and comment
+actions visible without opening the raw evidence stream.
 Issue human options are status-aware: `Blocked` issues can retry, request
 review, or cancel; `Needs Review` issues can retry or cancel; `Todo` issues can
 be canceled before running; terminal human-canceled issues only allow comments.

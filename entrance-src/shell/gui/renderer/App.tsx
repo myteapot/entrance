@@ -113,6 +113,10 @@ type IssueCard = {
       value: number | null;
     }>;
     human_options: string[];
+    operator_event_count: number;
+    round_operator_event_count: number;
+    last_operator_event: OperatorEvent | null;
+    operator_events: OperatorEvent[];
     worker_kind: string | null;
     worker_mode: string | null;
     worker_ok: boolean | null;
@@ -160,6 +164,18 @@ type IssueCard = {
     }>;
   } | null;
   doctor: IssueDoctorSummary | null;
+};
+
+type OperatorEvent = {
+  id: number;
+  round: number;
+  kind: string;
+  author: string | null;
+  action: string | null;
+  issue_status: string | null;
+  loop_status: string | null;
+  note: string | null;
+  summary: string;
 };
 
 type IssueDoctorSummary = {
@@ -242,6 +258,20 @@ const commentPreview = (comment: IssueComment, limit: number) => {
     return comment.body;
   }
   return compactText(comment.body, limit);
+};
+
+const operatorActionLabel = (action: string | null) =>
+  action ? COMMENT_ACTION_LABELS[action] ?? action : "comment";
+
+const operatorEventLabel = (event: OperatorEvent | null) => {
+  if (!event) return null;
+  const author = event.author ?? "operator";
+  return `${author} ${operatorActionLabel(event.action)}`;
+};
+
+const operatorEventStatusLabel = (event: OperatorEvent) => {
+  const status = event.issue_status ?? event.loop_status;
+  return status ? `-> ${status}` : `round ${event.round}`;
 };
 
 export default function App() {
@@ -767,6 +797,16 @@ export default function App() {
         "Options",
         trace?.human_options.length ? trace.human_options.join(", ") : "pending",
       ],
+      [
+        "Operator",
+        operatorEventLabel(trace?.last_operator_event ?? null) ?? "none",
+      ],
+      [
+        "Operator Events",
+        trace
+          ? `${trace.round_operator_event_count}/${trace.operator_event_count}`
+          : "pending",
+      ],
       ["Packet", schemaLabel(trace?.packet_schema)],
       ["Policy", schemaLabel(trace?.policy_schema)],
       ["Admission", schemaLabel(trace?.admission_schema)],
@@ -1077,6 +1117,18 @@ export default function App() {
                             </div>
                           ))}
                         </dl>
+                        {card.trace?.operator_events.length ? (
+                          <div class="operator-trail">
+                            <h4>Operator Trail</h4>
+                            {card.trace.operator_events.map((event) => (
+                              <div class="operator-event">
+                                <strong>{operatorEventLabel(event)}</strong>
+                                <span>{operatorEventStatusLabel(event)}</span>
+                                <p>{event.note ?? event.summary}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                         {card.trace?.human_options.length ? (
                           <div class="decision-options">
                             {card.trace.human_options.map((option) => (
@@ -1341,6 +1393,11 @@ export default function App() {
                                   ) : null}
                                   {card.trace.last_decision ? (
                                     <span class="trace-pill">{card.trace.last_decision}</span>
+                                  ) : null}
+                                  {operatorEventLabel(card.trace.last_operator_event) ? (
+                                    <span class="trace-pill">
+                                      {operatorEventLabel(card.trace.last_operator_event)}
+                                    </span>
                                   ) : null}
                                   {workerLabel(card) ? <span class="trace-pill">{workerLabel(card)}</span> : null}
                                   {traceRuntimeLabel(card.trace) ? (

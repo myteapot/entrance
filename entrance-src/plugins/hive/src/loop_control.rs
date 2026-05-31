@@ -329,6 +329,10 @@ pub struct IssueTraceSummary {
     pub reason_code: Option<String>,
     pub score_vector: Vec<ScoreVectorMetric>,
     pub human_options: Vec<String>,
+    pub operator_event_count: usize,
+    pub round_operator_event_count: usize,
+    pub last_operator_event: Option<IssueOperatorSummary>,
+    pub operator_events: Vec<IssueOperatorSummary>,
     pub worker_kind: Option<String>,
     pub worker_mode: Option<String>,
     pub worker_ok: Option<bool>,
@@ -357,6 +361,19 @@ pub struct IssueDoctorSummary {
 pub struct ScoreVectorMetric {
     pub name: String,
     pub value: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueOperatorSummary {
+    pub id: i64,
+    pub round: i64,
+    pub kind: String,
+    pub author: Option<String>,
+    pub action: Option<String>,
+    pub issue_status: Option<String>,
+    pub loop_status: Option<String>,
+    pub note: Option<String>,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2759,6 +2776,17 @@ fn issue_trace_summary(
     let verdict_human_options = last_verdict
         .map(|verdict| human_options(&verdict.score))
         .unwrap_or_default();
+    let operator_events = evidence
+        .iter()
+        .filter(|row| row.kind == "operator_comment" || row.kind == "operator_decision")
+        .map(issue_operator_summary)
+        .collect::<Vec<_>>();
+    let round_operator_events = operator_events
+        .iter()
+        .filter(|event| event.round == current_round)
+        .cloned()
+        .collect::<Vec<_>>();
+    let last_operator_event = operator_events.last().cloned();
 
     Ok(IssueTraceSummary {
         current_round,
@@ -2847,6 +2875,10 @@ fn issue_trace_summary(
             .map(|verdict| score_vector(&verdict.score))
             .unwrap_or_default(),
         human_options: issue_human_options(issue, &verdict_human_options, &round_evidence),
+        operator_event_count: operator_events.len(),
+        round_operator_event_count: round_operator_events.len(),
+        last_operator_event,
+        operator_events: round_operator_events,
         worker_kind: worker
             .and_then(|value| value.get("kind"))
             .and_then(|value| value.as_str())
@@ -2950,6 +2982,24 @@ fn issue_evidence_summary(
         transcript_excerpt: worker
             .and_then(worker_transcript_excerpt)
             .map(|value| truncate_text(&value, 240)),
+    }
+}
+
+fn issue_operator_summary(row: &HiveLoopEvidence) -> IssueOperatorSummary {
+    IssueOperatorSummary {
+        id: row.id,
+        round: row.round,
+        kind: row.kind.clone(),
+        author: string_at(&row.payload, "/operator/author"),
+        action: string_at(&row.payload, "/operator/action"),
+        issue_status: string_at(&row.payload, "/issue/to_status")
+            .or_else(|| string_at(&row.payload, "/issue/status")),
+        loop_status: string_at(&row.payload, "/loop/next_status")
+            .or_else(|| string_at(&row.payload, "/loop/status")),
+        note: string_at(&row.payload, "/operator/note")
+            .or_else(|| string_at(&row.payload, "/operator/comment_body"))
+            .map(|value| truncate_text(&value, 180)),
+        summary: truncate_text(&row.summary, 180),
     }
 }
 
@@ -4853,6 +4903,10 @@ mod tests {
             Some(1.0)
         );
         assert_eq!(trace.human_options, vec!["comment"]);
+        assert_eq!(trace.operator_event_count, 0);
+        assert_eq!(trace.round_operator_event_count, 0);
+        assert!(trace.last_operator_event.is_none());
+        assert!(trace.operator_events.is_empty());
         assert_eq!(trace.worker_kind.as_deref(), Some("local"));
         assert_eq!(trace.worker_ok, Some(true));
         assert_eq!(trace.evidence.len(), 3);
@@ -5902,10 +5956,27 @@ mod tests {
                     .and_then(|value| value.as_str())
                     == Some("request-review")
         }));
-        let review_decision_summary = review_card
+        let review_trace = review_card
             .trace
             .as_ref()
-            .expect("review card should retain loop trace")
+            .expect("review card should retain loop trace");
+        assert_eq!(review_trace.operator_event_count, 1);
+        assert_eq!(review_trace.round_operator_event_count, 1);
+        assert_eq!(
+            review_trace
+                .last_operator_event
+                .as_ref()
+                .and_then(|event| event.action.as_deref()),
+            Some("request-review")
+        );
+        assert_eq!(
+            review_trace
+                .operator_events
+                .first()
+                .and_then(|event| event.issue_status.as_deref()),
+            Some("Needs Review")
+        );
+        let review_decision_summary = review_trace
             .evidence
             .iter()
             .find(|evidence| evidence.kind == "operator_decision")
@@ -5966,6 +6037,15 @@ mod tests {
         assert_eq!(retry_trace.last_decision, None);
         assert_eq!(retry_trace.worker_kind, None);
         assert_eq!(retry_trace.human_options, vec!["comment", "cancel"]);
+        assert_eq!(retry_trace.operator_event_count, 2);
+        assert_eq!(retry_trace.round_operator_event_count, 1);
+        assert_eq!(
+            retry_trace
+                .last_operator_event
+                .as_ref()
+                .and_then(|event| event.action.as_deref()),
+            Some("retry")
+        );
 
         let cancel_card = decide_issue(
             &store,
@@ -5991,6 +6071,27 @@ mod tests {
                 .expect("cancel card should retain trace")
                 .human_options,
             vec!["comment"]
+        );
+        let cancel_trace = cancel_card
+            .trace
+            .as_ref()
+            .expect("cancel card should retain trace");
+        assert_eq!(cancel_trace.operator_event_count, 3);
+        assert_eq!(cancel_trace.round_operator_event_count, 2);
+        assert_eq!(
+            cancel_trace
+                .last_operator_event
+                .as_ref()
+                .and_then(|event| event.action.as_deref()),
+            Some("cancel")
+        );
+        assert_eq!(
+            cancel_trace
+                .operator_events
+                .iter()
+                .filter_map(|event| event.action.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["retry", "cancel"]
         );
         assert!(cancel_card
             .comments
