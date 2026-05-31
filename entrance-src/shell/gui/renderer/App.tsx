@@ -293,6 +293,14 @@ export default function App() {
 
   const loopPendingLabel = (loopId: number) => pendingLoopActions()[loopId] ?? null;
   const issuePendingLabel = (issueId: number) => pendingIssueActions()[issueId] ?? null;
+  const issueDecisionNote = (issueId: number) =>
+    activeCommentIssue() === issueId ? commentBody().trim() : "";
+  const clearIssueComposer = (issueId: number) => {
+    if (activeCommentIssue() === issueId) {
+      setCommentBody("");
+      setActiveCommentIssue(null);
+    }
+  };
   const actionErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
 
@@ -340,7 +348,9 @@ export default function App() {
         issueId,
         action,
         author: "human",
+        body: issueDecisionNote(issueId) || undefined,
       });
+      clearIssueComposer(issueId);
       setBanner(`Issue #${issueId} ${issueActionLabel(action)}.`);
       await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
     } catch (error) {
@@ -359,7 +369,9 @@ export default function App() {
         issueId: card.issue.id,
         action: "retry",
         author: "human",
+        body: issueDecisionNote(card.issue.id) || undefined,
       });
+      clearIssueComposer(card.issue.id);
       if (card.issue.loop_id) {
         await bridge.invoke("hive_loop_run", {
           id: card.issue.loop_id,
@@ -378,6 +390,10 @@ export default function App() {
   const openIssueComment = (issueId: number) => {
     setSelectedIssueId(issueId);
     setActiveCommentIssue(issueId);
+  };
+
+  const closeIssueComment = (issueId: number) => {
+    clearIssueComposer(issueId);
   };
 
   const addIssueComment = async (issueId: number) => {
@@ -843,6 +859,13 @@ export default function App() {
                             >
                               {issuePendingLabel(card.issue.id) ?? "Send"}
                             </button>
+                            <button
+                              type="button"
+                              disabled={Boolean(issuePendingLabel(card.issue.id))}
+                              onClick={() => closeIssueComment(card.issue.id)}
+                            >
+                              Close
+                            </button>
                           </div>
                         ) : null}
                         {card.trace?.stages.length ? (
@@ -1072,6 +1095,24 @@ export default function App() {
                                     onClick={() => void addIssueComment(card.issue.id)}
                                   >
                                     {issuePendingLabel(card.issue.id) ?? "Send"}
+                                  </button>
+                                  {card.trace?.human_options
+                                    .filter((option) => option !== "comment")
+                                    .map((option) => (
+                                      <button
+                                        type="button"
+                                        disabled={issueOptionDisabled(card, option)}
+                                        onClick={() => runIssueOption(card, option)}
+                                      >
+                                        {issuePendingLabel(card.issue.id) ?? issueOptionLabel(option)}
+                                      </button>
+                                    ))}
+                                  <button
+                                    type="button"
+                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                    onClick={() => closeIssueComment(card.issue.id)}
+                                  >
+                                    Close
                                   </button>
                                 </div>
                               ) : (

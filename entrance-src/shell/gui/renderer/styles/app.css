@@ -424,6 +424,7 @@
 
 .comment-box button {
   margin-top: 8px;
+  margin-right: 8px;
 }
 
 @media (max-width: 960px) {
