@@ -55,6 +55,40 @@ pub struct PolicyGateSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimePolicyRegistry {
+    pub schema_version: String,
+    pub supported: Vec<RuntimePolicySpec>,
+    pub worker: WorkerPolicySpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimePolicySpec {
+    pub name: String,
+    pub mode: String,
+    pub description: String,
+    pub command: Option<String>,
+    pub sandbox: RuntimeSandboxSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeSandboxSpec {
+    pub filesystem: String,
+    pub network: String,
+    pub writes_artifacts: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerPolicySpec {
+    pub default_timeout_secs: u64,
+    pub max_timeout_secs: u64,
+    pub timeout_env: String,
+    pub default_attempts: u64,
+    pub max_attempts: u64,
+    pub attempts_env: String,
+    pub required_receipt_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopCreateRequest {
     pub title: String,
     pub goal: String,
@@ -113,6 +147,7 @@ pub struct HiveLoopReport {
 pub struct PolicyRegistryReport {
     pub schema_version: String,
     pub gates: Vec<PolicyGateSpec>,
+    pub runtime: RuntimePolicyRegistry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -734,6 +769,54 @@ pub fn policy_registry() -> PolicyRegistryReport {
             .into_iter()
             .map(PolicyGateSpec::from)
             .collect(),
+        runtime: runtime_policy_registry(),
+    }
+}
+
+fn runtime_policy_registry() -> RuntimePolicyRegistry {
+    RuntimePolicyRegistry {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        supported: vec![
+            RuntimePolicySpec {
+                name: "local".to_string(),
+                mode: "deterministic-worker".to_string(),
+                description: "In-process deterministic worker for local loop smoke tests."
+                    .to_string(),
+                command: None,
+                sandbox: RuntimeSandboxSpec {
+                    filesystem: "in-process".to_string(),
+                    network: "none".to_string(),
+                    writes_artifacts: false,
+                },
+            },
+            RuntimePolicySpec {
+                name: "codex".to_string(),
+                mode: "codex-exec".to_string(),
+                description: "External codex exec role worker with read-only filesystem sandbox."
+                    .to_string(),
+                command: Some("codex exec --sandbox read-only -".to_string()),
+                sandbox: RuntimeSandboxSpec {
+                    filesystem: "read-only".to_string(),
+                    network: "codex-runtime-default".to_string(),
+                    writes_artifacts: true,
+                },
+            },
+        ],
+        worker: WorkerPolicySpec {
+            default_timeout_secs: DEFAULT_WORKER_TIMEOUT_SECS,
+            max_timeout_secs: MAX_WORKER_TIMEOUT_SECS,
+            timeout_env: "ENTRANCE_HIVE_WORKER_TIMEOUT_SECS".to_string(),
+            default_attempts: DEFAULT_WORKER_ATTEMPTS,
+            max_attempts: MAX_WORKER_ATTEMPTS,
+            attempts_env: "ENTRANCE_HIVE_WORKER_ATTEMPTS".to_string(),
+            required_receipt_fields: vec![
+                "kind".to_string(),
+                "ok".to_string(),
+                "timeout_secs".to_string(),
+                "attempt_count".to_string(),
+                "max_attempts".to_string(),
+            ],
+        },
     }
 }
 
@@ -3538,6 +3621,30 @@ mod tests {
         let registry = policy_registry();
         assert_eq!(registry.schema_version, POLICY_SCHEMA_VERSION);
         assert!(registry.gates.len() >= 6);
+        assert_eq!(registry.runtime.schema_version, POLICY_SCHEMA_VERSION);
+        assert_eq!(
+            registry.runtime.worker.default_timeout_secs,
+            DEFAULT_WORKER_TIMEOUT_SECS
+        );
+        assert_eq!(
+            registry.runtime.worker.max_timeout_secs,
+            MAX_WORKER_TIMEOUT_SECS
+        );
+        assert_eq!(registry.runtime.worker.max_attempts, MAX_WORKER_ATTEMPTS);
+        let codex_runtime = registry
+            .runtime
+            .supported
+            .iter()
+            .find(|runtime| runtime.name == "codex")
+            .expect("codex runtime policy should be registered");
+        assert_eq!(codex_runtime.mode, "codex-exec");
+        assert_eq!(codex_runtime.sandbox.filesystem, "read-only");
+        assert!(registry
+            .runtime
+            .worker
+            .required_receipt_fields
+            .iter()
+            .any(|field| field == "timeout_secs"));
         let verdict_gate = registry
             .gates
             .iter()

@@ -26,6 +26,9 @@ fields, and a boolean satisfied flag. Default MVP gates admit packets only when
 their typed receipt requirements are present. Worker receipts are stricter than
 plain presence checks: `role_worker` and `runtime_worker` must have `ok=true`
 before the packet can pass admission.
+`hive policy registry` is the current source for both typed admission gate
+specs and runtime worker policy: supported runtimes, sandbox mode, timeout and
+attempt bounds, env overrides, and required worker receipt metadata.
 Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are

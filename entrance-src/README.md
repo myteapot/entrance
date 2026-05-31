@@ -66,9 +66,10 @@ Local agent-loop MVP:
 `hive loop run` records a minimal compiler path in SQLite: active policies,
 versioned typed packets, receipt-aware admission gates, versioned admission
 receipts, stage evidence, and the versioned final verdict.
-`hive policy registry` exposes the typed gate registry, while
-`hive loop policies <id>` shows the active policy rows loaded into a specific
-loop contract.
+`hive policy registry` exposes the typed gate registry plus runtime worker
+policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
+and required worker receipt fields. `hive loop policies <id>` shows the active
+policy rows loaded into a specific loop contract.
 `hive loop trace <id>` returns the compact round-aware health view, including
 the evaluator score vector, without packet transcripts.
 `hive loop evidence <id>` returns the compact evidence ledger with stage role,
