@@ -251,6 +251,23 @@
   margin-top: 10px;
 }
 
+.trace-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.trace-pill {
+  padding: 4px 8px;
+  border: 1px solid rgba(121, 215, 167, 0.2);
+  border-radius: 999px;
+  color: var(--text-dim);
+  background: rgba(121, 215, 167, 0.08);
+  font-size: 0.78rem;
+  line-height: 1.15;
+}
+
 .comment-stack {
   display: grid;
   gap: 8px;

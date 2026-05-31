@@ -75,6 +75,23 @@ pub struct HiveLoopReport {
 pub struct IssueCard {
     pub issue: HiveIssue,
     pub comments: Vec<HiveComment>,
+    pub trace: Option<IssueTraceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTraceSummary {
+    pub packet_count: usize,
+    pub admission_count: usize,
+    pub evidence_count: usize,
+    pub verdict_count: usize,
+    pub packet_schema: Option<String>,
+    pub admission_schema: Option<String>,
+    pub verdict_schema: Option<String>,
+    pub last_decision: Option<String>,
+    pub reason_code: Option<String>,
+    pub worker_kind: Option<String>,
+    pub worker_mode: Option<String>,
+    pub worker_ok: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -422,10 +439,7 @@ pub fn report(store: &Store, loop_id: i64) -> Result<HiveLoopReport> {
     let issues = store
         .list_hive_issues_for_loop(loop_id)?
         .into_iter()
-        .map(|issue| {
-            let comments = store.list_hive_comments(issue.id)?;
-            Ok(IssueCard { issue, comments })
-        })
+        .map(|issue| issue_card_from_issue(store, issue))
         .collect::<Result<Vec<_>>>()?;
 
     Ok(HiveLoopReport {
@@ -448,10 +462,7 @@ pub fn panel(store: &Store) -> Result<Vec<IssueCard>> {
     store
         .list_hive_issues()?
         .into_iter()
-        .map(|issue| {
-            let comments = store.list_hive_comments(issue.id)?;
-            Ok(IssueCard { issue, comments })
-        })
+        .map(|issue| issue_card_from_issue(store, issue))
         .collect()
 }
 
@@ -468,8 +479,7 @@ pub fn add_comment(store: &Store, request: IssueCommentRequest) -> Result<IssueC
         .into_iter()
         .find(|issue| issue.id == request.issue_id)
         .with_context(|| format!("unknown hive issue `{}`", request.issue_id))?;
-    let comments = store.list_hive_comments(issue.id)?;
-    Ok(IssueCard { issue, comments })
+    issue_card_from_issue(store, issue)
 }
 
 pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<IssueCard> {
@@ -547,8 +557,80 @@ fn issue_card(store: &Store, issue_id: i64) -> Result<IssueCard> {
     let issue = store
         .get_hive_issue(issue_id)?
         .with_context(|| format!("unknown hive issue `{issue_id}`"))?;
+    issue_card_from_issue(store, issue)
+}
+
+fn issue_card_from_issue(store: &Store, issue: HiveIssue) -> Result<IssueCard> {
     let comments = store.list_hive_comments(issue.id)?;
-    Ok(IssueCard { issue, comments })
+    let trace = issue
+        .loop_id
+        .map(|loop_id| issue_trace_summary(store, loop_id))
+        .transpose()?;
+    Ok(IssueCard {
+        issue,
+        comments,
+        trace,
+    })
+}
+
+fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary> {
+    let packets = store.list_hive_loop_packets(loop_id)?;
+    let admissions = store.list_hive_loop_admissions(loop_id)?;
+    let evidence = store.list_hive_loop_evidence(loop_id)?;
+    let verdicts = store.list_hive_loop_verdicts(loop_id)?;
+    let last_verdict = verdicts.last();
+    let execution_evidence = evidence
+        .iter()
+        .rev()
+        .find(|row| row.kind == "execution_packet");
+    let worker = execution_evidence.and_then(|row| row.payload.get("worker"));
+
+    Ok(IssueTraceSummary {
+        packet_count: packets.len(),
+        admission_count: admissions.len(),
+        evidence_count: evidence.len(),
+        verdict_count: verdicts.len(),
+        packet_schema: packets
+            .last()
+            .and_then(|packet| schema_version(&packet.payload)),
+        admission_schema: admissions
+            .last()
+            .and_then(|admission| schema_version(&admission.policy)),
+        verdict_schema: last_verdict.and_then(|verdict| schema_version(&verdict.score)),
+        last_decision: last_verdict.map(|verdict| verdict.decision.clone()),
+        reason_code: last_verdict
+            .and_then(|verdict| {
+                verdict
+                    .score
+                    .get("reason_code")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| {
+                        verdict
+                            .evidence
+                            .get("reason_code")
+                            .and_then(|value| value.as_str())
+                    })
+            })
+            .map(ToOwned::to_owned),
+        worker_kind: worker
+            .and_then(|value| value.get("kind"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        worker_mode: worker
+            .and_then(|value| value.get("mode"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        worker_ok: worker
+            .and_then(|value| value.get("ok"))
+            .and_then(|value| value.as_bool()),
+    })
+}
+
+fn schema_version(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
 }
 
 fn add_system_comment(
@@ -1590,6 +1672,25 @@ mod tests {
         );
         assert_eq!(report.verdicts.len(), 1);
         assert_eq!(report.verdicts[0].decision, "keep");
+        let trace = report.issues[0]
+            .trace
+            .as_ref()
+            .expect("issue trace should be present");
+        assert_eq!(trace.packet_count, 3);
+        assert_eq!(trace.admission_count, 3);
+        assert_eq!(trace.verdict_count, 1);
+        assert_eq!(trace.packet_schema.as_deref(), Some(PACKET_SCHEMA_VERSION));
+        assert_eq!(
+            trace.admission_schema.as_deref(),
+            Some(ADMISSION_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            trace.verdict_schema.as_deref(),
+            Some(VERDICT_SCHEMA_VERSION)
+        );
+        assert_eq!(trace.last_decision.as_deref(), Some("keep"));
+        assert_eq!(trace.worker_kind.as_deref(), Some("local"));
+        assert_eq!(trace.worker_ok, Some(true));
         assert_eq!(
             report.verdicts[0]
                 .score

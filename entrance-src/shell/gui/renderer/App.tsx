@@ -76,6 +76,20 @@ type IssueCard = {
     body: string;
     created_at: string;
   }>;
+  trace: {
+    packet_count: number;
+    admission_count: number;
+    evidence_count: number;
+    verdict_count: number;
+    packet_schema: string | null;
+    admission_schema: string | null;
+    verdict_schema: string | null;
+    last_decision: string | null;
+    reason_code: string | null;
+    worker_kind: string | null;
+    worker_mode: string | null;
+    worker_ok: boolean | null;
+  } | null;
 };
 
 type LauncherResult = {
@@ -269,6 +283,15 @@ export default function App() {
       "request-review": "sent to review",
       cancel: "canceled",
     })[action] ?? action;
+
+  const schemaLabel = (schema: string | null | undefined) =>
+    schema ? schema.split(".").slice(-2).join(".") : "pending";
+
+  const workerLabel = (card: IssueCard) => {
+    if (!card.trace?.worker_kind) return null;
+    const state = card.trace.worker_ok === true ? "ok" : "blocked";
+    return `${card.trace.worker_kind}/${state}`;
+  };
 
   return (
     <div class="app-shell">
@@ -477,6 +500,19 @@ export default function App() {
                                 <span>#{card.issue.id}</span>
                               </div>
                               <p class="muted">{card.issue.summary ?? "No summary"}</p>
+                              {card.trace ? (
+                                <div class="trace-strip">
+                                  <span class="trace-pill">P {card.trace.packet_count}</span>
+                                  <span class="trace-pill">A {card.trace.admission_count}</span>
+                                  <span class="trace-pill">E {card.trace.evidence_count}</span>
+                                  <span class="trace-pill">V {card.trace.verdict_count}</span>
+                                  <span class="trace-pill">{schemaLabel(card.trace.verdict_schema)}</span>
+                                  {card.trace.last_decision ? (
+                                    <span class="trace-pill">{card.trace.last_decision}</span>
+                                  ) : null}
+                                  {workerLabel(card) ? <span class="trace-pill">{workerLabel(card)}</span> : null}
+                                </div>
+                              ) : null}
                               <div class="comment-stack">
                                 {card.comments.slice(-3).map((comment) => (
                                   <div class="comment-line">
