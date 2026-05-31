@@ -341,6 +341,30 @@
   opacity: 0.58;
 }
 
+.action-contracts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.action-contract {
+  padding: 4px 7px;
+  border: 1px solid rgba(121, 215, 167, 0.2);
+  border-radius: 999px;
+  background: rgba(121, 215, 167, 0.06);
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.action-contract--destructive {
+  border-color: rgba(255, 111, 97, 0.32);
+  background: rgba(255, 111, 97, 0.08);
+  color: #ffb4a8;
+}
+
 .operator-trail {
   display: grid;
   gap: 8px;

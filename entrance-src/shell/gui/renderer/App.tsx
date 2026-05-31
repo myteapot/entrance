@@ -830,6 +830,50 @@ export default function App() {
     action.action === "retry"
       ? issueRuntimeActionLabel(card, true)
       : issuePendingLabel(card.issue.id) ?? action.label;
+  const issueActionContractLabel = (action: IssueAction) =>
+    [
+      action.action,
+      action.source,
+      action.input,
+      action.runtime ?? "no-runtime",
+      action.destructive ? "destructive" : "non-destructive",
+    ].join(" / ");
+  const issueActionTitle = (action: IssueAction) =>
+    [
+      `schema=${action.schema_version}`,
+      `source=${action.source}`,
+      `input=${action.input}`,
+      `runtime=${action.runtime ?? "none"}`,
+      `destructive=${action.destructive ? "true" : "false"}`,
+      action.command,
+    ].join(" | ");
+  const issueActionButtonAttrs = (action: IssueAction | undefined) =>
+    action
+      ? {
+          "data-action-destructive": action.destructive ? "true" : "false",
+          "data-action-input": action.input,
+          "data-action-runtime": action.runtime ?? "",
+          "data-action-schema-version": action.schema_version,
+          "data-action-source": action.source,
+          title: issueActionTitle(action),
+        }
+      : {};
+  const issueActionContractChips = (card: IssueCard, surface: string) => (
+    <div
+      class="action-contracts"
+      data-testid={`issue-action-contracts-${surface}-${card.issue.id}`}
+    >
+      {card.actions.map((action) => (
+        <span
+          class={`action-contract${action.destructive ? " action-contract--destructive" : ""}`}
+          data-testid={`issue-action-contract-${surface}-${action.action}-${card.issue.id}`}
+          title={issueActionTitle(action)}
+        >
+          {issueActionContractLabel(action)}
+        </span>
+      ))}
+    </div>
+  );
 
   const issueOptionDisabled = (card: IssueCard, action: IssueAction) =>
     Boolean(issuePendingLabel(card.issue.id)) ||
@@ -1422,6 +1466,7 @@ export default function App() {
                               <button
                                 type="button"
                                 aria-label={issueRuntimeActionAriaLabel(card, false, "detail")}
+                                {...issueActionButtonAttrs(issueActionByName(card, "run"))}
                                 data-testid={`issue-action-detail-run-${card.issue.id}`}
                                 disabled={Boolean(issuePendingLabel(card.issue.id))}
                                 onClick={() => void runIssueLoop(card)}
@@ -1440,12 +1485,14 @@ export default function App() {
                                 data-testid={`issue-action-detail-${action.action}-${card.issue.id}`}
                                 disabled={issueOptionDisabled(card, action)}
                                 onClick={() => runIssueAction(card, action)}
+                                {...issueActionButtonAttrs(action)}
                               >
                                 {issueDecisionButtonLabel(card, action)}
                               </button>
                             ))}
                           </div>
                         ) : null}
+                        {card.actions.length ? issueActionContractChips(card, "detail") : null}
                         {commentComposerActive(card.issue.id, "detail") ? (
                           <div class="comment-box comment-box--detail">
                             <textarea
@@ -1476,6 +1523,7 @@ export default function App() {
                                 data-testid={`issue-action-detail-composer-${action.action}-${card.issue.id}`}
                                 disabled={issueOptionDisabled(card, action)}
                                 onClick={() => runIssueAction(card, action)}
+                                {...issueActionButtonAttrs(action)}
                               >
                                 {issueDecisionButtonLabel(card, action)}
                               </button>
@@ -1843,6 +1891,7 @@ export default function App() {
                                       data-testid={`issue-action-board-composer-${action.action}-${card.issue.id}`}
                                       disabled={issueOptionDisabled(card, action)}
                                       onClick={() => runIssueAction(card, action)}
+                                      {...issueActionButtonAttrs(action)}
                                     >
                                       {issueDecisionButtonLabel(card, action)}
                                     </button>
@@ -1870,6 +1919,7 @@ export default function App() {
                                       data-testid={`issue-action-board-run-${card.issue.id}`}
                                       disabled={Boolean(issuePendingLabel(card.issue.id))}
                                       onClick={() => void runIssueLoop(card)}
+                                      {...issueActionButtonAttrs(issueActionByName(card, "run"))}
                                     >
                                       {issueRuntimeActionLabel(card, false)}
                                     </button>
@@ -1885,6 +1935,7 @@ export default function App() {
                                       data-testid={`issue-action-board-${action.action}-${card.issue.id}`}
                                       disabled={issueOptionDisabled(card, action)}
                                       onClick={() => runIssueAction(card, action)}
+                                      {...issueActionButtonAttrs(action)}
                                     >
                                       {issueDecisionButtonLabel(card, action)}
                                     </button>
@@ -1906,6 +1957,7 @@ export default function App() {
                                     data-testid={`issue-action-board-comment-${card.issue.id}`}
                                     disabled={Boolean(issuePendingLabel(card.issue.id))}
                                     onClick={() => openIssueComment(card.issue.id, "board")}
+                                    {...issueActionButtonAttrs(issueActionByName(card, "comment"))}
                                   >
                                     Comment
                                   </button>
