@@ -10,7 +10,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked]\n  entrance hive loop show <id>\n  entrance hive loop list\n  entrance hive issue list\n  entrance hive issue show <id>\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked]\n  entrance hive loop show <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list\n  entrance hive issue show <id>\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]"
             );
             Ok(())
         }
@@ -86,6 +86,12 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         }
         [scope, action, id] if scope == "loop" && action == "show" => {
             print_json(&services.hive.loop_report(id.parse::<i64>()?)?)
+        }
+        [scope, action, id] if scope == "loop" && action == "policies" => {
+            print_json(&services.hive.loop_policies(id.parse::<i64>()?)?)
+        }
+        [scope, action] if scope == "policy" && action == "registry" => {
+            print_json(&services.hive.policy_registry())
         }
         [scope, action, id, rest @ ..] if scope == "loop" && action == "run" => {
             print_json(&services.hive.loop_run(HiveLoopRunRequest {

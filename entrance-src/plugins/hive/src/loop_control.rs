@@ -38,6 +38,16 @@ enum GateCheck {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyGateSpec {
+    pub schema_version: String,
+    pub name: String,
+    pub description: String,
+    pub expected_object_kind: Option<String>,
+    pub required_receipts: Vec<String>,
+    pub check: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopCreateRequest {
     pub title: String,
     pub goal: String,
@@ -88,6 +98,24 @@ pub struct HiveLoopReport {
     pub evidence: Vec<HiveLoopEvidence>,
     pub verdicts: Vec<HiveLoopVerdict>,
     pub issues: Vec<IssueCard>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyRegistryReport {
+    pub schema_version: String,
+    pub gates: Vec<PolicyGateSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopPolicyReport {
+    pub loop_id: i64,
+    pub policies: Vec<HiveLoopPolicyCard>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopPolicyCard {
+    pub policy: HiveLoopPolicy,
+    pub gate_spec: Option<PolicyGateSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -528,6 +556,31 @@ pub fn report(store: &Store, loop_id: i64) -> Result<HiveLoopReport> {
 
 pub fn list(store: &Store) -> Result<Vec<HiveLoopContract>> {
     store.list_hive_loop_contracts()
+}
+
+pub fn policy_registry() -> PolicyRegistryReport {
+    PolicyRegistryReport {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        gates: all_gate_specs()
+            .into_iter()
+            .map(PolicyGateSpec::from)
+            .collect(),
+    }
+}
+
+pub fn policies(store: &Store, loop_id: i64) -> Result<HiveLoopPolicyReport> {
+    store
+        .get_hive_loop_contract(loop_id)?
+        .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
+    let policies = store
+        .list_hive_loop_policies(loop_id)?
+        .into_iter()
+        .map(|policy| HiveLoopPolicyCard {
+            gate_spec: gate_spec(&policy.gate).map(PolicyGateSpec::from),
+            policy,
+        })
+        .collect();
+    Ok(HiveLoopPolicyReport { loop_id, policies })
 }
 
 pub fn panel(store: &Store) -> Result<Vec<IssueCard>> {
@@ -1345,6 +1398,23 @@ impl GateCheck {
     }
 }
 
+impl From<GateSpec> for PolicyGateSpec {
+    fn from(spec: GateSpec) -> Self {
+        Self {
+            schema_version: POLICY_SCHEMA_VERSION.to_string(),
+            name: spec.name.to_string(),
+            description: spec.description.to_string(),
+            expected_object_kind: spec.expected_object_kind.map(ToOwned::to_owned),
+            required_receipts: spec
+                .required_receipts
+                .iter()
+                .map(|receipt| (*receipt).to_string())
+                .collect(),
+            check: spec.check.as_str().to_string(),
+        }
+    }
+}
+
 fn runtime_failure(
     runtime_probe: &serde_json::Value,
     runtime_worker: &serde_json::Value,
@@ -1599,6 +1669,20 @@ fn gate_spec(gate: &str) -> Option<GateSpec> {
         }),
         _ => None,
     }
+}
+
+fn all_gate_specs() -> Vec<GateSpec> {
+    [
+        "candidate_receipts_present",
+        "runtime_receipts_present",
+        "verdict_receipts_present",
+        "candidate_present",
+        "runtime_probe_present",
+        "decision_present",
+    ]
+    .into_iter()
+    .filter_map(gate_spec)
+    .collect()
 }
 
 fn gate_spec_payload(gate: &str) -> serde_json::Value {
@@ -2102,6 +2186,69 @@ mod tests {
     use entrance_core::Store;
 
     use super::*;
+
+    #[test]
+    fn policy_registry_and_loop_policies_expose_typed_gate_specs() {
+        let registry = policy_registry();
+        assert_eq!(registry.schema_version, POLICY_SCHEMA_VERSION);
+        assert!(registry.gates.len() >= 6);
+        let verdict_gate = registry
+            .gates
+            .iter()
+            .find(|gate| gate.name == "verdict_receipts_present")
+            .expect("verdict gate should be registered");
+        assert_eq!(
+            verdict_gate.expected_object_kind.as_deref(),
+            Some("VERDICT_PACKET")
+        );
+        assert_eq!(verdict_gate.check, "receipt_requirements_satisfied");
+        assert!(verdict_gate
+            .required_receipts
+            .iter()
+            .any(|receipt| receipt == "score"));
+
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-policy-registry-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Policy loop".to_string(),
+                goal: "Expose active loop policies".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+
+        let report = policies(&store, created.contract.id).expect("loop policies should resolve");
+        assert_eq!(report.loop_id, created.contract.id);
+        assert_eq!(report.policies.len(), 3);
+        assert!(report.policies.iter().all(|card| card
+            .gate_spec
+            .as_ref()
+            .is_some_and(|spec| spec.schema_version == POLICY_SCHEMA_VERSION)));
+        assert_eq!(
+            report.policies[0]
+                .gate_spec
+                .as_ref()
+                .expect("candidate gate spec should exist")
+                .required_receipts,
+            vec!["candidate", "constraints", "role_worker"]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn local_loop_records_stages_evidence_verdict_and_issue() {

@@ -52,6 +52,8 @@ Local agent-loop MVP:
 .\entrance.exe hive loop run 1 --runtime codex
 .\entrance.exe hive loop run 1 --runtime local --decision needs-review
 .\entrance.exe hive loop show 1
+.\entrance.exe hive loop policies 1
+.\entrance.exe hive policy registry
 .\entrance.exe hive issue list
 .\entrance.exe hive issue show 1
 .\entrance.exe hive issue comment 1 --body "Reviewed from the local panel"
@@ -60,6 +62,9 @@ Local agent-loop MVP:
 `hive loop run` records a minimal compiler path in SQLite: active policies,
 versioned typed packets, receipt-aware admission gates, versioned admission
 receipts, stage evidence, and the versioned final verdict.
+`hive policy registry` exposes the typed gate registry, while
+`hive loop policies <id>` shows the active policy rows loaded into a specific
+loop contract.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcripts in stage evidence.
