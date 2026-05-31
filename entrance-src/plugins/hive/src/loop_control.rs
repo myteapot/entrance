@@ -224,6 +224,9 @@ pub struct IssueEvidenceSummary {
     pub worker_kind: Option<String>,
     pub worker_mode: Option<String>,
     pub worker_ok: Option<bool>,
+    pub worker_receipt_ok: Option<bool>,
+    pub worker_timed_out: Option<bool>,
+    pub worker_status: Option<i64>,
     pub transcript_excerpt: Option<String>,
 }
 
@@ -1447,6 +1450,15 @@ fn issue_evidence_summary(
         worker_ok: worker
             .and_then(|value| value.get("ok"))
             .and_then(|value| value.as_bool()),
+        worker_receipt_ok: worker
+            .and_then(|value| value.get("receipt_ok"))
+            .and_then(|value| value.as_bool()),
+        worker_timed_out: worker
+            .and_then(|value| value.get("timed_out"))
+            .and_then(|value| value.as_bool()),
+        worker_status: worker
+            .and_then(|value| value.get("status"))
+            .and_then(|value| value.as_i64()),
         transcript_excerpt: worker
             .and_then(worker_transcript_excerpt)
             .map(|value| truncate_text(&value, 240)),
@@ -2662,8 +2674,9 @@ fn run_codex_worker(contract: &HiveLoopContract, role: &str) -> serde_json::Valu
     match result {
         Ok(output) => {
             let receipt_ok = worker_receipt_ok(&last_message);
+            let worker_ok = codex_worker_success(&output, receipt_ok);
             serde_json::json!({
-                "ok": output.status_success && !output.timed_out && receipt_ok.unwrap_or(true),
+                "ok": worker_ok,
                 "kind": "codex",
                 "mode": "codex-exec",
                 "role": role,
@@ -2688,6 +2701,10 @@ fn run_codex_worker(contract: &HiveLoopContract, role: &str) -> serde_json::Valu
             "last_message": truncate_text(&last_message, 4000)
         }),
     }
+}
+
+fn codex_worker_success(output: &TimedCommandOutput, receipt_ok: Option<bool>) -> bool {
+    output.status_success && !output.timed_out && receipt_ok == Some(true)
 }
 
 struct TimedCommandOutput {
@@ -3268,6 +3285,26 @@ mod tests {
             Some(false)
         );
         assert_eq!(worker_receipt_ok("not json"), None);
+    }
+
+    #[test]
+    fn codex_worker_requires_explicit_ok_receipt() {
+        let output = TimedCommandOutput {
+            status_success: true,
+            status_code: Some(0),
+            timed_out: false,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        assert!(codex_worker_success(&output, Some(true)));
+        assert!(!codex_worker_success(&output, Some(false)));
+        assert!(!codex_worker_success(&output, None));
+
+        let timed_out = TimedCommandOutput {
+            timed_out: true,
+            ..output
+        };
+        assert!(!codex_worker_success(&timed_out, Some(true)));
     }
 
     #[test]

@@ -133,6 +133,9 @@ type IssueCard = {
       worker_kind: string | null;
       worker_mode: string | null;
       worker_ok: boolean | null;
+      worker_receipt_ok: boolean | null;
+      worker_timed_out: boolean | null;
+      worker_status: number | null;
       transcript_excerpt: string | null;
     }>;
     stages: Array<{
@@ -512,6 +515,16 @@ export default function App() {
     return `${evidence.worker_kind}/${state}`;
   };
 
+  const workerReceiptLabel = (evidence: NonNullable<IssueCard["trace"]>["evidence"][number]) => {
+    if (evidence.worker_receipt_ok === null) return null;
+    return evidence.worker_receipt_ok ? "receipt ok" : "receipt fail";
+  };
+
+  const workerStatusLabel = (evidence: NonNullable<IssueCard["trace"]>["evidence"][number]) => {
+    if (evidence.worker_status === null) return null;
+    return `exit ${evidence.worker_status}`;
+  };
+
   const scoreMetricLabel = (name: string) =>
     ({
       stage_completeness: "stage",
@@ -874,6 +887,23 @@ export default function App() {
                                   </span>
                                   {evidence.schema_version ? (
                                     <span class="trace-pill">{schemaLabel(evidence.schema_version)}</span>
+                                  ) : null}
+                                  {workerReceiptLabel(evidence) ? (
+                                    <span
+                                      class={
+                                        evidence.worker_receipt_ok === false
+                                          ? "trace-pill trace-pill--warn"
+                                          : "trace-pill"
+                                      }
+                                    >
+                                      {workerReceiptLabel(evidence)}
+                                    </span>
+                                  ) : null}
+                                  {evidence.worker_timed_out === true ? (
+                                    <span class="trace-pill trace-pill--warn">timeout</span>
+                                  ) : null}
+                                  {workerStatusLabel(evidence) ? (
+                                    <span class="trace-pill">{workerStatusLabel(evidence)}</span>
                                   ) : null}
                                   {evidence.blocked_phase ? (
                                     <span class="trace-pill trace-pill--warn">blocked {evidence.blocked_phase}</span>

@@ -81,7 +81,9 @@ the issue is bound to a loop, mirrors it into the loop ledger as
 `operator_comment` evidence.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
-stores the worker transcripts in stage evidence.
+stores the worker transcript plus explicit receipt, timeout, and exit status in
+stage evidence. Codex workers must return an `{ "ok": true }` JSON receipt to be
+admitted.
 Unknown runtimes return a blocked verdict instead of being silently kept.
 The evaluator decision can be overridden for local simulation with
 `--decision keep|reject|needs-review|blocked`.
