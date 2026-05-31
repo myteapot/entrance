@@ -5018,9 +5018,12 @@ fn gate_failure_reason(gate: &str, payload: &serde_json::Value) -> String {
 fn receipt_requirement_status(payload: &serde_json::Value) -> (Vec<String>, Vec<String>) {
     let required = packet_receipt_requirements(payload);
     let body = packet_body(payload);
+    let expected_worker_role = payload
+        .pointer("/writer/role")
+        .and_then(|value| value.as_str());
     let missing = required
         .iter()
-        .filter(|requirement| !receipt_value_present(body, requirement))
+        .filter(|requirement| !receipt_value_present(body, requirement, expected_worker_role))
         .cloned()
         .collect::<Vec<_>>();
     (required, missing)
@@ -5049,9 +5052,15 @@ fn packet_receipt_requirements(payload: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-fn receipt_value_present(body: &serde_json::Value, requirement: &str) -> bool {
+fn receipt_value_present(
+    body: &serde_json::Value,
+    requirement: &str,
+    expected_worker_role: Option<&str>,
+) -> bool {
     if matches!(requirement, "role_worker" | "runtime_worker") {
-        return body.get(requirement).is_some_and(worker_ok);
+        return body
+            .get(requirement)
+            .is_some_and(|worker| worker_receipt_valid(worker, expected_worker_role));
     }
     body.get(requirement).is_some_and(|value| match value {
         serde_json::Value::Null => false,
@@ -5060,6 +5069,13 @@ fn receipt_value_present(body: &serde_json::Value, requirement: &str) -> bool {
         serde_json::Value::Object(values) => !values.is_empty(),
         serde_json::Value::Bool(_) | serde_json::Value::Number(_) => true,
     })
+}
+
+fn worker_receipt_valid(worker: &serde_json::Value, expected_role: Option<&str>) -> bool {
+    worker_ok(worker)
+        && worker_structured_receipt(worker).is_some_and(|receipt| {
+            worker_receipt_contract_errors(&receipt, expected_role).is_empty()
+        })
 }
 
 fn packet_object_kind(payload: &serde_json::Value) -> Option<&str> {
@@ -6567,6 +6583,80 @@ mod tests {
                 .pointer("/receipt/missing/1")
                 .and_then(|value| value.as_str()),
             Some("role_worker")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_rejects_success_worker_with_incomplete_structured_receipt() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-worker-receipt-gate-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Worker receipt gate loop".to_string(),
+                goal: "Reject incomplete successful worker receipts".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let runtime_probe = serde_json::json!({
+            "ok": true,
+            "kind": "local"
+        });
+        let runtime_worker = run_role_worker(
+            "local",
+            "doer",
+            &created.contract,
+            &runtime_probe,
+            DEFAULT_WORKER_TIMEOUT_SECS,
+            DEFAULT_WORKER_ATTEMPTS,
+        );
+        let mut role_worker = runtime_worker.clone();
+        role_worker
+            .pointer_mut("/receipt")
+            .and_then(|value| value.as_object_mut())
+            .expect("role worker receipt should be an object")
+            .remove("action");
+
+        let admission = emit_and_admit(
+            &store,
+            &created.contract,
+            "EXECUTION_PACKET",
+            "doer",
+            "doer",
+            "evaluator",
+            serde_json::json!({
+                "runtime_probe": runtime_probe,
+                "runtime_worker": runtime_worker,
+                "role_worker": role_worker,
+                "artifact": "hive-loop-ledger"
+            }),
+        )
+        .expect("admission should be recorded");
+
+        assert_eq!(admission.result, "rejected");
+        assert_eq!(
+            admission.reason,
+            "runtime_receipts_present failed: missing or invalid receipts role_worker"
+        );
+        assert_eq!(
+            string_array_at(&admission.policy, "/receipt/missing"),
+            vec!["role_worker"]
         );
 
         let _ = fs::remove_dir_all(root);
