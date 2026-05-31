@@ -11,6 +11,10 @@
   backdrop-filter: blur(16px);
 }
 
+:root[data-platform="windows"] .nav-shell {
+  backdrop-filter: none;
+}
+
 .nav-brand h1 {
   margin: 8px 0 10px;
   font-size: 2.4rem;
