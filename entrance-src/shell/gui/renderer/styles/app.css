@@ -293,6 +293,22 @@
   overflow-wrap: anywhere;
 }
 
+.decision-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.decision-options span {
+  padding: 6px 10px;
+  border: 1px solid rgba(230, 184, 79, 0.26);
+  border-radius: 999px;
+  background: rgba(230, 184, 79, 0.08);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
 .stage-timeline {
   display: grid;
   gap: 0;

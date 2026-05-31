@@ -101,6 +101,7 @@ type IssueCard = {
     last_admission_passed: boolean | null;
     last_decision: string | null;
     reason_code: string | null;
+    human_options: string[];
     worker_kind: string | null;
     worker_mode: string | null;
     worker_ok: boolean | null;
@@ -466,6 +467,10 @@ export default function App() {
       ["Gate", trace?.last_admission_gate ?? "pending"],
       ["Decision", trace?.last_decision ?? "pending"],
       ["Reason", trace?.reason_code ?? "pending"],
+      [
+        "Options",
+        trace?.human_options.length ? trace.human_options.join(", ") : "pending",
+      ],
       ["Packet", schemaLabel(trace?.packet_schema)],
       ["Admission", schemaLabel(trace?.admission_schema)],
       ["Verdict", schemaLabel(trace?.verdict_schema)],
@@ -682,6 +687,13 @@ export default function App() {
                             </div>
                           ))}
                         </dl>
+                        {card.trace?.human_options.length ? (
+                          <div class="decision-options">
+                            {card.trace.human_options.map((option) => (
+                              <span>{option}</span>
+                            ))}
+                          </div>
+                        ) : null}
                         {card.trace?.stages.length ? (
                           <div class="stage-timeline">
                             {card.trace.stages.map((stage) => (

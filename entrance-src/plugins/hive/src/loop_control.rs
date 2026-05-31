@@ -105,6 +105,7 @@ pub struct IssueTraceSummary {
     pub last_admission_passed: Option<bool>,
     pub last_decision: Option<String>,
     pub reason_code: Option<String>,
+    pub human_options: Vec<String>,
     pub worker_kind: Option<String>,
     pub worker_mode: Option<String>,
     pub worker_ok: Option<bool>,
@@ -749,6 +750,9 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
                     })
             })
             .map(ToOwned::to_owned),
+        human_options: last_verdict
+            .map(|verdict| human_options(&verdict.score))
+            .unwrap_or_default(),
         worker_kind: worker
             .and_then(|value| value.get("kind"))
             .and_then(|value| value.as_str())
@@ -823,6 +827,20 @@ fn receipt_array_len(value: &serde_json::Value, pointer: &str) -> usize {
         .pointer(pointer)
         .and_then(|value| value.as_array())
         .map(Vec::len)
+        .unwrap_or_default()
+}
+
+fn human_options(value: &serde_json::Value) -> Vec<String> {
+    value
+        .get("human_options")
+        .and_then(|value| value.as_array())
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -2081,6 +2099,7 @@ mod tests {
         );
         assert_eq!(trace.last_admission_passed, Some(true));
         assert_eq!(trace.last_decision.as_deref(), Some("keep"));
+        assert_eq!(trace.human_options, vec!["comment"]);
         assert_eq!(trace.worker_kind.as_deref(), Some("local"));
         assert_eq!(trace.worker_ok, Some(true));
         assert_eq!(
@@ -2419,6 +2438,14 @@ mod tests {
                 .pointer("/human_options/2")
                 .and_then(|value| value.as_str()),
             Some("cancel")
+        );
+        assert_eq!(
+            review_report.issues[0]
+                .trace
+                .as_ref()
+                .expect("review issue trace should exist")
+                .human_options,
+            vec!["comment", "retry", "cancel"]
         );
 
         let _ = fs::remove_dir_all(root);
