@@ -77,19 +77,21 @@ without packet transcripts.
 admission result, worker receipt, packet envelope diagnostics, missing receipts,
 operator options, and short transcript excerpts.
 `hive loop audit <id>` returns a compiler-style audit over the loop contract,
-active policies, runtime policy, typed packets, admission receipts, worker
-receipts, verdict packets, and linked issue surface. The active policy check
-verifies the canonical Explorer/Doer/Evaluator route and gate contract. The
-worker and runtime policy checks verify that worker receipts carry a role and
-that the role still matches the packet writer. The admission check verifies that
-the recorded packet, policy, gate spec, receipt requirements, missing receipts,
-gate result, and final admission result still bind to each other. The verdict
-check verifies decision bindings, score-vector metrics, gate booleans, human
-options, and reason-code evidence bindings. The issue surface check verifies
-issue status, typed comments, operator comment/decision evidence, and the
-author/action/body bindings between evidence and its linked comment. Runtime
-policy checks the current round so a successful retry can replace a previously
-blocked runtime attempt.
+active policies, runtime policy, typed packets, packet sequence, admission
+receipts, worker receipts, verdict packets, and linked issue surface. The active
+policy check verifies the canonical Explorer/Doer/Evaluator route and gate
+contract. The packet sequence check rejects duplicate route packets in a loop
+round. The worker and runtime policy checks verify that worker receipts carry a
+role and that the role still matches the packet writer. The admission check
+verifies that every packet has exactly one admission and that the recorded
+packet, policy, gate spec, receipt requirements, missing receipts, gate result,
+and final admission result still bind to each other. The verdict check verifies
+decision bindings, score-vector metrics, gate booleans, human options, and
+reason-code evidence bindings. The issue surface check verifies issue status,
+typed comments, operator comment/decision evidence, and the author/action/body
+bindings between evidence and its linked comment. Runtime policy checks the
+current round so a successful retry can replace a previously blocked runtime
+attempt.
 `hive loop doctor <id>` is the first CLI stop after a run: it combines trace and
 audit state into one health summary with counts, failed checks, missing
 receipts, worker failures, specific audit failure details, and suggested next

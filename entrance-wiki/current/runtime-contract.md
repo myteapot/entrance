@@ -46,23 +46,24 @@ recorded on worker evidence so slow or timed-out codex runs are reviewable.
 Worker attempts default to 1, can be overridden with `--worker-attempts <n>` or
 `ENTRANCE_HIVE_WORKER_ATTEMPTS`, and are recorded as attempt count/max attempts
 plus the raw attempt receipts on codex workers.
-Loop audit includes a `worker_receipts` check that verifies worker receipts
+Loop audit includes a `packet_sequence` check that rejects duplicate route
+packets in one round, a `worker_receipts` check that verifies worker receipts
 carry bounded timeout and attempt metadata plus the expected role, and a
 `runtime_policy` check that verifies the contract runtime and current-round
 worker receipt kind/mode/role values against the registry and packet writer.
 The `active_policy_registry` check verifies the canonical Explorer/Doer/Evaluator
 route and gate contract, including gate expected object kind and required
-receipts. The `admission_receipts` check verifies the stored
-admission receipt against the packet row, policy route, gate spec, required
-receipt list, missing receipt list, gate result, and final admitted/rejected
-result. The `verdict_packets` check verifies decision bindings, required
-score-vector metrics, gate booleans, human options, and reason-code evidence
-bindings. The `issue_surface` check verifies linked issue status, typed
-comments, operator comment/decision evidence, and evidence-to-comment
-author/action/body bindings so the control plane is auditable instead of only
-visible. Trace, Doctor, and Panel summaries expose both failed audit check names
-and extracted audit failure detail codes, so an operator can see the exact
-binding that broke without opening raw JSON first.
+receipts. The `admission_receipts` check verifies every packet has exactly one
+admission and that the stored admission receipt still binds to the packet row,
+policy route, gate spec, required receipt list, missing receipt list, gate
+result, and final admitted/rejected result. The `verdict_packets` check verifies
+decision bindings, required score-vector metrics, gate booleans, human options,
+and reason-code evidence bindings. The `issue_surface` check verifies linked
+issue status, typed comments, operator comment/decision evidence, and
+evidence-to-comment author/action/body bindings so the control plane is
+auditable instead of only visible. Trace, Doctor, and Panel summaries expose
+both failed audit check names and extracted audit failure detail codes, so an
+operator can see the exact binding that broke without opening raw JSON first.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 Human decisions are available through `hive issue decide <id>
@@ -75,6 +76,8 @@ back to the loop contract so later audits inspect the actual runtime used.
 `hive loop run` only starts work when the linked contract is in `todo`; for
 running or terminal states it returns the current report without appending
 duplicate packets, admissions, evidence, verdicts, or comments.
+Loop audit also rejects packet replay if a duplicate packet appears through
+external corruption or manual database edits.
 Issue panel trace summaries are round-aware: they expose the current round,
 current-round packet/admission/evidence/verdict counts, and total historical
 counts so retries do not look like stale verdicts from the previous round.

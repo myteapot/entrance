@@ -972,6 +972,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .filter(|policy| policy.status == "active")
         .collect::<Vec<_>>();
     let policy_errors = active_policy_audit_errors(&active_policies);
+    let packet_sequence_errors = packet_sequence_audit_errors(&packets);
     let packet_errors = packets
         .iter()
         .filter_map(|packet| {
@@ -988,10 +989,11 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
             }
         })
         .collect::<Vec<_>>();
-    let admission_errors = admissions
+    let mut admission_errors = admissions
         .iter()
         .filter_map(|admission| admission_audit_errors(admission, &packet_by_id))
         .collect::<Vec<_>>();
+    admission_errors.extend(packet_admission_audit_errors(&packets, &admissions));
     let worker_errors = packets
         .iter()
         .filter_map(worker_receipt_audit_errors)
@@ -1028,6 +1030,16 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
                 "expected_policy_count": DEFAULT_LOOP_POLICIES.len(),
                 "policy_errors": policy_errors
             }),
+        ),
+        audit_check(
+            "packet_sequence",
+            packet_sequence_errors.is_empty(),
+            format!(
+                "{} packets inspected; {} route cardinality issues.",
+                packets.len(),
+                packet_sequence_errors.len()
+            ),
+            serde_json::json!({ "packet_sequence_errors": packet_sequence_errors }),
         ),
         audit_check(
             "packet_envelopes",
@@ -1462,6 +1474,56 @@ fn audit_check(
     }
 }
 
+fn packet_sequence_audit_errors(packets: &[HiveLoopPacket]) -> Vec<serde_json::Value> {
+    let mut groups: HashMap<(i64, &str, &str, &str, &str), Vec<&HiveLoopPacket>> = HashMap::new();
+    for packet in packets {
+        groups
+            .entry((
+                packet.round,
+                packet.object_kind.as_str(),
+                packet.writer_role.as_str(),
+                packet.route_from.as_str(),
+                packet.route_to.as_str(),
+            ))
+            .or_default()
+            .push(packet);
+    }
+
+    let mut errors = groups
+        .into_iter()
+        .filter_map(
+            |((round, object_kind, writer_role, route_from, route_to), packets)| {
+                (packets.len() > 1).then(|| {
+                    serde_json::json!({
+                        "scope": "packet_route",
+                        "round": round,
+                        "object_kind": object_kind,
+                        "writer_role": writer_role,
+                        "route_from": route_from,
+                        "route_to": route_to,
+                        "packet_ids": packets.iter().map(|packet| packet.id).collect::<Vec<_>>(),
+                        "errors": ["packet.route_duplicate"]
+                    })
+                })
+            },
+        )
+        .collect::<Vec<_>>();
+    errors.sort_by_key(|error| {
+        (
+            error
+                .get("round")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
+            error
+                .get("object_kind")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        )
+    });
+    errors
+}
+
 fn packet_row_binding_errors(packet: &HiveLoopPacket) -> Vec<String> {
     let payload = &packet.payload;
     let mut errors = Vec::new();
@@ -1511,6 +1573,44 @@ fn packet_row_binding_errors(packet: &HiveLoopPacket) -> Vec<String> {
         errors.push("row.state_code".to_string());
     }
     errors
+}
+
+fn packet_admission_audit_errors(
+    packets: &[HiveLoopPacket],
+    admissions: &[HiveLoopAdmission],
+) -> Vec<serde_json::Value> {
+    let mut admission_counts = HashMap::new();
+    for admission in admissions {
+        *admission_counts
+            .entry(admission.packet_id)
+            .or_insert(0usize) += 1;
+    }
+
+    packets
+        .iter()
+        .filter_map(|packet| {
+            let count = admission_counts
+                .get(&packet.id)
+                .copied()
+                .unwrap_or_default();
+            let errors = match count {
+                0 => vec!["packet.admission_missing"],
+                1 => Vec::new(),
+                _ => vec!["packet.admission_duplicate"],
+            };
+            (!errors.is_empty()).then(|| {
+                serde_json::json!({
+                    "scope": "packet_admission",
+                    "packet_id": packet.id,
+                    "round": packet.round,
+                    "object_kind": packet.object_kind,
+                    "writer_role": packet.writer_role,
+                    "admission_count": count,
+                    "errors": errors
+                })
+            })
+        })
+        .collect()
 }
 
 fn admission_audit_errors(
@@ -5973,6 +6073,113 @@ mod tests {
             .audit_failure_details
             .iter()
             .any(|detail| detail == "runtime_policy:worker_receipt:role_binding"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn packet_sequence_audit_rejects_replayed_packets() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-packet-sequence-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Packet replay audit loop".to_string(),
+                goal: "Catch replayed packets in one round".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let doer_packet = report
+            .packets
+            .iter()
+            .find(|packet| packet.object_kind == "EXECUTION_PACKET")
+            .expect("doer packet should exist");
+        store
+            .insert_hive_loop_packet(HiveLoopPacketCreate {
+                loop_id: doer_packet.loop_id,
+                round: doer_packet.round,
+                object_kind: doer_packet.object_kind.clone(),
+                writer_role: doer_packet.writer_role.clone(),
+                route_from: doer_packet.route_from.clone(),
+                route_to: doer_packet.route_to.clone(),
+                state_code: doer_packet.state_code.clone(),
+                payload: doer_packet.payload.clone(),
+            })
+            .expect("replayed packet should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let sequence_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "packet_sequence")
+            .expect("packet sequence audit should exist");
+        assert!(!sequence_check.passed);
+        assert!(sequence_check
+            .details
+            .pointer("/packet_sequence_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("packet.route_duplicate"))))));
+        let admission_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "admission_receipts")
+            .expect("admission audit should exist");
+        assert!(!admission_check.passed);
+        assert!(admission_check
+            .details
+            .pointer("/admission_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("packet.admission_missing"))))));
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "packet_sequence:packet_route:packet.route_duplicate"));
+        assert!(
+            trace_report
+                .trace
+                .audit_failure_details
+                .iter()
+                .any(|detail| detail
+                    == "admission_receipts:packet_admission:packet.admission_missing")
+        );
 
         let _ = fs::remove_dir_all(root);
     }
