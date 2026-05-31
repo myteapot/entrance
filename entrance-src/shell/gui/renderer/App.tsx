@@ -1280,6 +1280,17 @@ export default function App() {
                         ) : null}
                         {card.trace?.human_options.length ? (
                           <div class="decision-options">
+                            {card.issue.loop_id && card.issue.status === "Todo" ? (
+                              <button
+                                type="button"
+                                aria-label={issueRuntimeActionAriaLabel(card, false, "detail")}
+                                data-testid={`issue-action-detail-run-${card.issue.id}`}
+                                disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                onClick={() => void runIssueLoop(card)}
+                              >
+                                {issueRuntimeActionLabel(card, false)}
+                              </button>
+                            ) : null}
                             {card.trace.human_options.map((option) => (
                               <button
                                 type="button"
