@@ -419,6 +419,8 @@ export default function App() {
   const issuePendingLabel = (issueId: number) => pendingIssueActions()[issueId] ?? null;
   const issueDecisionNote = (issueId: number) =>
     activeCommentComposer()?.issueId === issueId ? commentBody().trim() : "";
+  const commentSubmitDisabled = (issueId: number) =>
+    Boolean(issuePendingLabel(issueId)) || !commentBody().trim();
   const clearIssueComposer = (issueId: number) => {
     if (activeCommentComposer()?.issueId === issueId) {
       setCommentBody("");
@@ -524,6 +526,9 @@ export default function App() {
   };
 
   const openIssueComment = (issueId: number, surface: CommentSurface) => {
+    if (activeCommentComposer()?.issueId !== issueId) {
+      setCommentBody("");
+    }
     setSelectedIssueId(issueId);
     setActiveCommentComposer({ issueId, surface });
   };
@@ -533,14 +538,15 @@ export default function App() {
   };
 
   const addIssueComment = async (issueId: number) => {
-    if (!commentBody().trim() || issuePendingLabel(issueId)) return;
+    const body = commentBody().trim();
+    if (!body || issuePendingLabel(issueId)) return;
     setSelectedIssueId(issueId);
     setPendingIssue(issueId, "Sending");
     try {
       await bridge.invoke("hive_issue_comment", {
         issueId,
         author: "human",
-        body: commentBody(),
+        body,
       });
       setCommentBody("");
       setActiveCommentComposer(null);
@@ -1193,7 +1199,7 @@ export default function App() {
                               type="button"
                               aria-label={`Send detail issue #${card.issue.id} comment`}
                               data-testid={`issue-comment-detail-send-${card.issue.id}`}
-                              disabled={Boolean(issuePendingLabel(card.issue.id))}
+                              disabled={commentSubmitDisabled(card.issue.id)}
                               onClick={() => void addIssueComment(card.issue.id)}
                             >
                               {issuePendingLabel(card.issue.id) ?? "Send"}
@@ -1509,7 +1515,7 @@ export default function App() {
                                     type="button"
                                     aria-label={`Send board issue #${card.issue.id} comment`}
                                     data-testid={`issue-comment-board-send-${card.issue.id}`}
-                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                    disabled={commentSubmitDisabled(card.issue.id)}
                                     onClick={() => void addIssueComment(card.issue.id)}
                                   >
                                     {issuePendingLabel(card.issue.id) ?? "Send"}
