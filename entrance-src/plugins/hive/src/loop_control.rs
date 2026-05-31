@@ -195,6 +195,7 @@ pub struct IssueEvidenceSummary {
     pub admission_result: Option<String>,
     pub blocked_phase: Option<String>,
     pub missing_receipts: Vec<String>,
+    pub packet_envelope_errors: Vec<String>,
     pub operator_options: Vec<String>,
     pub operator_author: Option<String>,
     pub operator_action: Option<String>,
@@ -1087,6 +1088,10 @@ fn issue_evidence_summary(
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned),
         missing_receipts: string_array_at(&row.payload, "/admission_receipt/receipt/missing"),
+        packet_envelope_errors: string_array_at(
+            &row.payload,
+            "/admission_receipt/packet/envelope/errors",
+        ),
         operator_options: string_array_at(&row.payload, "/operator_options"),
         operator_author: string_at(&row.payload, "/operator/author"),
         operator_action: string_at(&row.payload, "/operator/action"),
@@ -1963,6 +1968,7 @@ fn typed_admission_receipt(
 ) -> serde_json::Value {
     let (required_receipts, missing_receipts) = receipt_requirement_status(packet_payload);
     let receipt_satisfied = missing_receipts.is_empty();
+    let packet_envelope_errors = typed_packet_envelope_errors(packet_payload);
     serde_json::json!({
         "schema_version": ADMISSION_SCHEMA_VERSION,
         "result": result,
@@ -1977,7 +1983,11 @@ fn typed_admission_receipt(
             "writer_role": &packet.writer_role,
             "route_from": &packet.route_from,
             "route_to": &packet.route_to,
-            "state_code": &packet.state_code
+            "state_code": &packet.state_code,
+            "envelope": {
+                "valid": packet_envelope_errors.is_empty(),
+                "errors": packet_envelope_errors
+            }
         },
         "policy": policy.map(|policy| serde_json::json!({
             "schema_version": POLICY_SCHEMA_VERSION,
@@ -2041,6 +2051,13 @@ fn receipt_requirements_satisfied(payload: &serde_json::Value) -> bool {
 }
 
 fn gate_failure_reason(gate: &str, payload: &serde_json::Value) -> String {
+    let envelope_errors = typed_packet_envelope_errors(payload);
+    if !envelope_errors.is_empty() {
+        return format!(
+            "{gate} failed: typed packet envelope invalid: {}",
+            envelope_errors.join(", ")
+        );
+    }
     let (_required, missing) = receipt_requirement_status(payload);
     if missing.is_empty() {
         format!("{gate} failed")
@@ -2104,27 +2121,67 @@ fn packet_object_kind(payload: &serde_json::Value) -> Option<&str> {
 }
 
 fn typed_packet_envelope_valid(payload: &serde_json::Value) -> bool {
-    payload
+    typed_packet_envelope_errors(payload).is_empty()
+}
+
+fn typed_packet_envelope_errors(payload: &serde_json::Value) -> Vec<String> {
+    let mut errors = Vec::new();
+    if payload
         .get("schema_version")
         .and_then(|value| value.as_str())
-        == Some(PACKET_SCHEMA_VERSION)
-        && payload
-            .get("object_kind")
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.trim().is_empty())
-        && payload
-            .pointer("/writer/role")
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.trim().is_empty())
-        && payload
-            .pointer("/route/from")
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.trim().is_empty())
-        && payload
-            .pointer("/route/to")
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.trim().is_empty())
-        && payload.get("body").is_some()
+        != Some(PACKET_SCHEMA_VERSION)
+    {
+        errors.push("schema_version".to_string());
+    }
+    if payload
+        .get("loop_id")
+        .and_then(|value| value.as_i64())
+        .is_none()
+    {
+        errors.push("loop_id".to_string());
+    }
+    if payload
+        .get("round")
+        .and_then(|value| value.as_i64())
+        .is_none()
+    {
+        errors.push("round".to_string());
+    }
+    if payload
+        .get("object_kind")
+        .and_then(|value| value.as_str())
+        .map_or(true, |value| value.trim().is_empty())
+    {
+        errors.push("object_kind".to_string());
+    }
+    if payload
+        .pointer("/writer/role")
+        .and_then(|value| value.as_str())
+        .map_or(true, |value| value.trim().is_empty())
+    {
+        errors.push("writer.role".to_string());
+    }
+    if payload
+        .pointer("/route/from")
+        .and_then(|value| value.as_str())
+        .map_or(true, |value| value.trim().is_empty())
+    {
+        errors.push("route.from".to_string());
+    }
+    if payload
+        .pointer("/route/to")
+        .and_then(|value| value.as_str())
+        .map_or(true, |value| value.trim().is_empty())
+    {
+        errors.push("route.to".to_string());
+    }
+    if payload.get("state_code").and_then(|value| value.as_str()) != Some("submitted") {
+        errors.push("state_code".to_string());
+    }
+    if payload.get("body").is_none() {
+        errors.push("body".to_string());
+    }
+    errors
 }
 
 fn packet_body(payload: &serde_json::Value) -> &serde_json::Value {
@@ -2624,6 +2681,16 @@ mod tests {
         );
         assert!(report.admissions.iter().all(|admission| admission
             .policy
+            .pointer("/packet/envelope/valid")
+            .and_then(|value| value.as_bool())
+            == Some(true)));
+        assert!(report.admissions.iter().all(|admission| admission
+            .policy
+            .pointer("/packet/envelope/errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.is_empty())));
+        assert!(report.admissions.iter().all(|admission| admission
+            .policy
             .pointer("/receipt/satisfied")
             .and_then(|value| value.as_bool())
             == Some(true)));
@@ -2913,6 +2980,82 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_packet_envelope_diagnostics_explain_schema_breaks() {
+        let malformed = serde_json::json!({
+            "schema_version": "entrance.hive.packet.v0",
+            "object_kind": " ",
+            "writer": {
+                "role": ""
+            },
+            "route": {
+                "from": "explorer"
+            },
+            "state_code": "draft",
+            "body": {
+                "candidate": "local-loop-mvp"
+            }
+        });
+        assert_eq!(
+            typed_packet_envelope_errors(&malformed),
+            vec![
+                "schema_version",
+                "loop_id",
+                "round",
+                "object_kind",
+                "writer.role",
+                "route.to",
+                "state_code"
+            ]
+        );
+        assert!(!typed_packet_envelope_valid(&malformed));
+        assert!(!gate_passes("candidate_receipts_present", &malformed));
+        assert_eq!(
+            gate_failure_reason("candidate_receipts_present", &malformed),
+            "candidate_receipts_present failed: typed packet envelope invalid: schema_version, loop_id, round, object_kind, writer.role, route.to, state_code"
+        );
+
+        let packet = HiveLoopPacket {
+            id: 42,
+            loop_id: 7,
+            round: 3,
+            object_kind: "EXPLORATION_PACKET".to_string(),
+            writer_role: "explorer".to_string(),
+            route_from: "explorer".to_string(),
+            route_to: "doer".to_string(),
+            state_code: "submitted".to_string(),
+            payload: malformed.clone(),
+            created_at: "2026-05-31T00:00:00Z".to_string(),
+        };
+        let receipt = typed_admission_receipt(
+            &packet,
+            &malformed,
+            None,
+            "rejected",
+            "bad packet",
+            None,
+            None,
+        );
+        assert_eq!(
+            receipt
+                .pointer("/packet/envelope/valid")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            receipt
+                .pointer("/packet/envelope/errors/0")
+                .and_then(|value| value.as_str()),
+            Some("schema_version")
+        );
+        assert_eq!(
+            receipt
+                .pointer("/packet/envelope/errors/6")
+                .and_then(|value| value.as_str()),
+            Some("state_code")
+        );
     }
 
     #[test]

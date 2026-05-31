@@ -122,6 +122,7 @@ type IssueCard = {
       admission_result: string | null;
       blocked_phase: string | null;
       missing_receipts: string[];
+      packet_envelope_errors: string[];
       operator_options: string[];
       operator_author: string | null;
       operator_action: string | null;
@@ -864,6 +865,9 @@ export default function App() {
                                   ) : null}
                                   {evidence.missing_receipts.map((receipt) => (
                                     <span class="trace-pill trace-pill--warn">missing {receipt}</span>
+                                  ))}
+                                  {evidence.packet_envelope_errors.map((field) => (
+                                    <span class="trace-pill trace-pill--warn">invalid {field}</span>
                                   ))}
                                   {evidence.operator_options.map((option) => (
                                     <span class="trace-pill">{option}</span>
