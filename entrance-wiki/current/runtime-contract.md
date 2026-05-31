@@ -57,11 +57,12 @@ receipts. The `admission_receipts` check verifies every packet has exactly one
 admission and that the stored admission receipt still binds to the packet row,
 policy route, gate spec, required receipt list, missing receipt list, gate
 result, and final admitted/rejected result. The `verdict_packets` check verifies
-decision bindings, required score-vector metrics, gate booleans, human options,
-and reason-code evidence bindings. The `issue_surface` check verifies linked
-issue status, typed comments, operator comment/decision evidence, and
-evidence-to-comment author/action/body bindings so the control plane is
-auditable instead of only visible. Trace, Doctor, and Panel summaries expose
+terminal rounds have exactly one verdict, then checks decision bindings,
+required score-vector metrics, gate booleans, human options, and reason-code
+evidence bindings. The `issue_surface` check verifies linked issue status,
+typed comments, operator comment/decision evidence, and evidence-to-comment
+author/action/body bindings so the control plane is auditable instead of only
+visible. Trace, Doctor, and Panel summaries expose
 both failed audit check names and extracted audit failure detail codes, so an
 operator can see the exact binding that broke without opening raw JSON first.
 For evaluator-path testing, `hive loop run` accepts

@@ -999,10 +999,11 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .filter_map(worker_receipt_audit_errors)
         .collect::<Vec<_>>();
     let runtime_policy_errors = runtime_policy_audit_errors(&contract, &packets);
-    let verdict_errors = verdicts
+    let mut verdict_errors = verdicts
         .iter()
         .filter_map(verdict_audit_errors)
         .collect::<Vec<_>>();
+    verdict_errors.extend(verdict_sequence_audit_errors(&contract, &verdicts));
     let evidence = store.list_hive_loop_evidence(loop_id)?;
     let issue_surface = issue_surface_audit(store, loop_id, &issues, &evidence)?;
 
@@ -2158,6 +2159,76 @@ fn policy_matches_expected_route(policy: &HiveLoopPolicy, expected: &LoopPolicyS
         && policy.writer_role == expected.writer_role
         && policy.route_from == expected.route_from
         && policy.route_to == expected.route_to
+}
+
+fn verdict_sequence_audit_errors(
+    contract: &HiveLoopContract,
+    verdicts: &[HiveLoopVerdict],
+) -> Vec<serde_json::Value> {
+    let mut errors = Vec::new();
+    let mut verdicts_by_round: HashMap<i64, Vec<&HiveLoopVerdict>> = HashMap::new();
+    for verdict in verdicts {
+        if verdict.round < 1 || verdict.round > contract.current_round {
+            errors.push(serde_json::json!({
+                "scope": "verdict_row",
+                "verdict_id": verdict.id,
+                "round": verdict.round,
+                "current_round": contract.current_round,
+                "errors": ["verdict.round"]
+            }));
+        }
+        verdicts_by_round
+            .entry(verdict.round)
+            .or_default()
+            .push(verdict);
+    }
+
+    for (round, round_verdicts) in verdicts_by_round {
+        if round_verdicts.len() > 1 {
+            errors.push(serde_json::json!({
+                "scope": "verdict_round",
+                "round": round,
+                "verdict_ids": round_verdicts.iter().map(|verdict| verdict.id).collect::<Vec<_>>(),
+                "decisions": round_verdicts
+                    .iter()
+                    .map(|verdict| verdict.decision.as_str())
+                    .collect::<Vec<_>>(),
+                "errors": ["verdict.round_duplicate"]
+            }));
+        }
+    }
+
+    if terminal_contract_status(&contract.status)
+        && !verdicts
+            .iter()
+            .any(|verdict| verdict.round == contract.current_round)
+    {
+        errors.push(serde_json::json!({
+            "scope": "verdict_round",
+            "round": contract.current_round,
+            "status": contract.status,
+            "errors": ["verdict.current_round_missing"]
+        }));
+    }
+
+    errors.sort_by_key(|error| {
+        (
+            error
+                .get("round")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
+            error
+                .get("scope")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        )
+    });
+    errors
+}
+
+fn terminal_contract_status(status: &str) -> bool {
+    matches!(status, "kept" | "rejected" | "needs-review" | "blocked")
 }
 
 fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> {
@@ -5469,6 +5540,86 @@ mod tests {
         assert!(fields.contains(&"score.score_vector.runtime_readiness"));
         assert!(fields.contains(&"evidence.decision_binding"));
         assert!(fields.contains(&"reason_code.binding"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verdict_audit_rejects_replayed_round_verdicts() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-verdict-replay-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Verdict replay audit loop".to_string(),
+                goal: "Catch replayed verdicts in one round".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let verdict = report
+            .verdicts
+            .first()
+            .expect("run should record a verdict");
+        store
+            .insert_hive_loop_verdict(HiveLoopVerdictCreate {
+                loop_id: verdict.loop_id,
+                round: verdict.round,
+                decision: verdict.decision.clone(),
+                summary: verdict.summary.clone(),
+                score: verdict.score.clone(),
+                evidence: verdict.evidence.clone(),
+            })
+            .expect("replayed verdict should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let verdict_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "verdict_packets")
+            .expect("verdict audit should exist");
+        assert!(!verdict_check.passed);
+        assert!(verdict_check
+            .details
+            .pointer("/verdict_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("verdict.round_duplicate"))))));
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "verdict_packets:verdict_round:verdict.round_duplicate"));
 
         let _ = fs::remove_dir_all(root);
     }
