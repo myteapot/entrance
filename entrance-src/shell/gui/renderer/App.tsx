@@ -77,12 +77,19 @@ type IssueCard = {
     created_at: string;
   }>;
   trace: {
+    current_round: number;
     packet_count: number;
     admission_count: number;
     evidence_count: number;
     verdict_count: number;
+    round_packet_count: number;
+    round_admission_count: number;
+    round_evidence_count: number;
+    round_verdict_count: number;
     receipt_required_count: number;
     receipt_missing_count: number;
+    round_receipt_required_count: number;
+    round_receipt_missing_count: number;
     packet_schema: string | null;
     admission_schema: string | null;
     verdict_schema: string | null;
@@ -299,8 +306,10 @@ export default function App() {
 
   const receiptLabel = (card: IssueCard) => {
     if (!card.trace) return null;
-    if (card.trace.receipt_required_count === 0) return "receipts pending";
-    return card.trace.receipt_missing_count === 0 ? "receipts ok" : `missing ${card.trace.receipt_missing_count}`;
+    if (card.trace.round_receipt_required_count === 0) return "receipts pending";
+    return card.trace.round_receipt_missing_count === 0
+      ? "receipts ok"
+      : `missing ${card.trace.round_receipt_missing_count}`;
   };
 
   const gateLabel = (card: IssueCard) => {
@@ -308,6 +317,9 @@ export default function App() {
     const state = card.trace.last_admission_passed === true ? "ok" : "blocked";
     return `gate ${state}`;
   };
+
+  const traceCountLabel = (label: string, current: number, total: number) =>
+    total > current ? `${label} ${current}/${total}` : `${label} ${current}`;
 
   return (
     <div class="app-shell">
@@ -518,15 +530,24 @@ export default function App() {
                               <p class="muted">{card.issue.summary ?? "No summary"}</p>
                               {card.trace ? (
                                 <div class="trace-strip">
-                                  <span class="trace-pill">P {card.trace.packet_count}</span>
-                                  <span class="trace-pill">A {card.trace.admission_count}</span>
-                                  <span class="trace-pill">E {card.trace.evidence_count}</span>
-                                  <span class="trace-pill">V {card.trace.verdict_count}</span>
+                                  <span class="trace-pill">R {card.trace.current_round}</span>
+                                  <span class="trace-pill">
+                                    {traceCountLabel("P", card.trace.round_packet_count, card.trace.packet_count)}
+                                  </span>
+                                  <span class="trace-pill">
+                                    {traceCountLabel("A", card.trace.round_admission_count, card.trace.admission_count)}
+                                  </span>
+                                  <span class="trace-pill">
+                                    {traceCountLabel("E", card.trace.round_evidence_count, card.trace.evidence_count)}
+                                  </span>
+                                  <span class="trace-pill">
+                                    {traceCountLabel("V", card.trace.round_verdict_count, card.trace.verdict_count)}
+                                  </span>
                                   <span class="trace-pill">{schemaLabel(card.trace.verdict_schema)}</span>
                                   {receiptLabel(card) ? (
                                     <span
                                       class={
-                                        card.trace.receipt_missing_count === 0
+                                        card.trace.round_receipt_missing_count === 0
                                           ? "trace-pill"
                                           : "trace-pill trace-pill--warn"
                                       }

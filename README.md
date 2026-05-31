@@ -67,7 +67,7 @@ For current product usage, commands, and architecture, start with [`entrance-src
 | Agent execution | MVP runtimes are `local` and `codex`; `codex` launches a read-only `codex exec` worker with timeout and transcript evidence. There is not yet worker replacement, retry policy, sandbox matrix, or artifact manifest collection. | Runtime-managed workers with bounded permissions, receipts, retry policy, replacement behavior, and evidence manifests. |
 | Review surface | The local Panel exposes issue/status/comment cards, trace chips, retry/review/cancel actions, and linked loop state. There is no active Linear/GitHub issue connector in the V2 runtime path yet. | External board where issue status and comments expose every loop stage, blocker, option, and decision across local and remote issue systems. |
 | Evaluation | Evaluator emits `keep`, `reject`, `needs-review`, or `blocked` with schema-versioned score vectors, gate results, evidence links, and human options. Target-drift checks are still shallow. | Evaluator produces structured verdicts from richer gates, metrics, evidence, target-drift checks, and human preference boundaries. |
-| GUI | GUI shows Runtime, Drawer, Hive, Launcher, and a minimal Linear-like Panel for loop issues. Issue cards show compact packet/admission/evidence/verdict trace chips. | Full loop dashboard for observing rounds, roles, status, evidence drilldown, verdicts, and human review points. |
+| GUI | GUI shows Runtime, Drawer, Hive, Launcher, and a minimal Linear-like Panel for loop issues. Issue cards show round-aware packet/admission/evidence/verdict trace chips. | Full loop dashboard for observing rounds, roles, status, evidence drilldown, verdicts, and human review points. |
 
 ## Validation
 

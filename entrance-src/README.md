@@ -64,6 +64,8 @@ Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 Unknown runtimes return a blocked verdict instead of being silently kept.
 The evaluator decision can be overridden for local simulation with
 `--decision keep|reject|needs-review|blocked`.
+Issue cards expose round-aware trace chips so a retry shows the new current
+round separately from the loop's accumulated history.
 
 ### Launcher
 

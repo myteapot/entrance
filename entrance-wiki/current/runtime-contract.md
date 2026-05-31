@@ -33,6 +33,9 @@ For evaluator-path testing, `hive loop run` accepts
 Human decisions are available through `hive issue decide <id>
 <retry|request-review|cancel>` and are recorded as operator comments while
 also moving the linked loop contract state.
+Issue panel trace summaries are round-aware: they expose the current round,
+current-round packet/admission/evidence/verdict counts, and total historical
+counts so retries do not look like stale verdicts from the previous round.
 
 ## Daemon
 

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -80,12 +81,19 @@ pub struct IssueCard {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueTraceSummary {
+    pub current_round: i64,
     pub packet_count: usize,
     pub admission_count: usize,
     pub evidence_count: usize,
     pub verdict_count: usize,
+    pub round_packet_count: usize,
+    pub round_admission_count: usize,
+    pub round_evidence_count: usize,
+    pub round_verdict_count: usize,
     pub receipt_required_count: usize,
     pub receipt_missing_count: usize,
+    pub round_receipt_required_count: usize,
+    pub round_receipt_missing_count: usize,
     pub packet_schema: Option<String>,
     pub admission_schema: Option<String>,
     pub verdict_schema: Option<String>,
@@ -578,23 +586,60 @@ fn issue_card_from_issue(store: &Store, issue: HiveIssue) -> Result<IssueCard> {
 }
 
 fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary> {
+    let current_round = store
+        .get_hive_loop_contract(loop_id)?
+        .map(|contract| contract.current_round)
+        .unwrap_or(1);
     let packets = store.list_hive_loop_packets(loop_id)?;
     let admissions = store.list_hive_loop_admissions(loop_id)?;
     let evidence = store.list_hive_loop_evidence(loop_id)?;
     let verdicts = store.list_hive_loop_verdicts(loop_id)?;
-    let last_admission = admissions.last();
-    let last_verdict = verdicts.last();
+    let packet_rounds = packets
+        .iter()
+        .map(|packet| (packet.id, packet.round))
+        .collect::<HashMap<_, _>>();
+    let admission_in_current_round = |admission: &HiveLoopAdmission| {
+        packet_rounds
+            .get(&admission.packet_id)
+            .is_some_and(|round| *round == current_round)
+    };
+    let last_admission = admissions
+        .iter()
+        .rev()
+        .find(|admission| admission_in_current_round(admission));
+    let last_verdict = verdicts
+        .iter()
+        .rev()
+        .find(|verdict| verdict.round == current_round);
     let execution_evidence = evidence
         .iter()
         .rev()
-        .find(|row| row.kind == "execution_packet");
+        .find(|row| row.round == current_round && row.kind == "execution_packet");
     let worker = execution_evidence.and_then(|row| row.payload.get("worker"));
+    let round_admissions = admissions
+        .iter()
+        .filter(|admission| admission_in_current_round(admission))
+        .collect::<Vec<_>>();
 
     Ok(IssueTraceSummary {
+        current_round,
         packet_count: packets.len(),
         admission_count: admissions.len(),
         evidence_count: evidence.len(),
         verdict_count: verdicts.len(),
+        round_packet_count: packets
+            .iter()
+            .filter(|packet| packet.round == current_round)
+            .count(),
+        round_admission_count: round_admissions.len(),
+        round_evidence_count: evidence
+            .iter()
+            .filter(|row| row.round == current_round)
+            .count(),
+        round_verdict_count: verdicts
+            .iter()
+            .filter(|verdict| verdict.round == current_round)
+            .count(),
         receipt_required_count: admissions
             .iter()
             .map(|admission| receipt_array_len(&admission.policy, "/receipt/required"))
@@ -603,12 +648,20 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
             .iter()
             .map(|admission| receipt_array_len(&admission.policy, "/receipt/missing"))
             .sum(),
+        round_receipt_required_count: round_admissions
+            .iter()
+            .map(|admission| receipt_array_len(&admission.policy, "/receipt/required"))
+            .sum(),
+        round_receipt_missing_count: round_admissions
+            .iter()
+            .map(|admission| receipt_array_len(&admission.policy, "/receipt/missing"))
+            .sum(),
         packet_schema: packets
-            .last()
+            .iter()
+            .rev()
+            .find(|packet| packet.round == current_round)
             .and_then(|packet| schema_version(&packet.payload)),
-        admission_schema: admissions
-            .last()
-            .and_then(|admission| schema_version(&admission.policy)),
+        admission_schema: last_admission.and_then(|admission| schema_version(&admission.policy)),
         verdict_schema: last_verdict.and_then(|verdict| schema_version(&verdict.score)),
         last_admission_gate: last_admission
             .and_then(|admission| admission.policy.pointer("/gate/name"))
@@ -1799,11 +1852,18 @@ mod tests {
             .trace
             .as_ref()
             .expect("issue trace should be present");
+        assert_eq!(trace.current_round, 1);
         assert_eq!(trace.packet_count, 3);
         assert_eq!(trace.admission_count, 3);
         assert_eq!(trace.verdict_count, 1);
+        assert_eq!(trace.round_packet_count, 3);
+        assert_eq!(trace.round_admission_count, 3);
+        assert_eq!(trace.round_evidence_count, 3);
+        assert_eq!(trace.round_verdict_count, 1);
         assert_eq!(trace.receipt_required_count, 8);
         assert_eq!(trace.receipt_missing_count, 0);
+        assert_eq!(trace.round_receipt_required_count, 8);
+        assert_eq!(trace.round_receipt_missing_count, 0);
         assert_eq!(trace.packet_schema.as_deref(), Some(PACKET_SCHEMA_VERSION));
         assert_eq!(
             trace.admission_schema.as_deref(),
@@ -2305,6 +2365,23 @@ mod tests {
             retry_contract.current_round,
             blocked.contract.current_round + 1
         );
+        let retry_trace = retry_card
+            .trace
+            .as_ref()
+            .expect("retry card should retain loop trace");
+        assert_eq!(retry_trace.current_round, retry_contract.current_round);
+        assert_eq!(retry_trace.packet_count, 3);
+        assert_eq!(retry_trace.admission_count, 3);
+        assert_eq!(retry_trace.verdict_count, 1);
+        assert_eq!(retry_trace.round_packet_count, 0);
+        assert_eq!(retry_trace.round_admission_count, 0);
+        assert_eq!(retry_trace.round_evidence_count, 0);
+        assert_eq!(retry_trace.round_verdict_count, 0);
+        assert_eq!(retry_trace.round_receipt_required_count, 0);
+        assert_eq!(retry_trace.round_receipt_missing_count, 0);
+        assert_eq!(retry_trace.verdict_schema, None);
+        assert_eq!(retry_trace.last_decision, None);
+        assert_eq!(retry_trace.worker_kind, None);
 
         let cancel_card = decide_issue(
             &store,
