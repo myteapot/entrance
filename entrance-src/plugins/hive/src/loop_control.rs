@@ -1926,7 +1926,10 @@ fn evidence_worker_policy_audit_errors(
             "exploration_packet" | "execution_packet" | "verdict_packet"
         )
     }) {
-        let Some(stage) = row.stage_id.and_then(|stage_id| stages_by_id.get(&stage_id)) else {
+        let Some(stage) = row
+            .stage_id
+            .and_then(|stage_id| stages_by_id.get(&stage_id))
+        else {
             continue;
         };
         let row_errors = match row.payload.get("worker") {
@@ -3253,6 +3256,9 @@ fn issue_comment_audit_error(
         errors.push("comment.payload.schema_binding".to_string());
     }
     match expected_schema {
+        Some(SYSTEM_COMMENT_SCHEMA_VERSION) => {
+            errors.extend(system_comment_audit_errors(comment, issue, evidence));
+        }
         Some(OPERATOR_COMMENT_SCHEMA_VERSION) => {
             if !evidence.iter().any(|row| {
                 row.kind == "operator_comment"
@@ -3301,6 +3307,86 @@ fn issue_comment_audit_error(
             "errors": errors
         }))
     }
+}
+
+fn system_comment_audit_errors(
+    comment: &HiveComment,
+    issue: &HiveIssue,
+    evidence: &[HiveLoopEvidence],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let payload = &comment.payload;
+
+    if let Some(loop_id) = issue.loop_id {
+        let comment_loop_id = payload.get("loop_id").and_then(|value| value.as_i64());
+        if comment_loop_id != Some(loop_id) {
+            errors.push("comment.payload.loop_id".to_string());
+        }
+    }
+
+    let has_stage_fields = ["stage_role", "evidence_kind", "worker"]
+        .iter()
+        .any(|field| payload.get(*field).is_some());
+    if !has_stage_fields {
+        return errors;
+    }
+
+    let round = payload.get("round").and_then(|value| value.as_i64());
+    if !round.is_some_and(|round| round >= 1) {
+        errors.push("comment.stage.round".to_string());
+    }
+
+    let stage_role = payload.get("stage_role").and_then(|value| value.as_str());
+    let valid_stage_role = stage_role.filter(|role| canonical_stage_roles().contains(role));
+    if valid_stage_role.is_none() {
+        errors.push("comment.stage.role".to_string());
+    }
+
+    let evidence_kind = payload
+        .get("evidence_kind")
+        .and_then(|value| value.as_str());
+    if let Some(role) = valid_stage_role {
+        if canonical_stage_evidence_kind(role) != evidence_kind {
+            errors.push("comment.stage.evidence_kind".to_string());
+        }
+    } else if evidence_kind.is_none() {
+        errors.push("comment.stage.evidence_kind".to_string());
+    }
+
+    let admission = payload.get("admission").and_then(|value| value.as_str());
+    if admission != Some("admitted") {
+        errors.push("comment.stage.admission".to_string());
+    }
+
+    let worker = payload.get("worker");
+    if !worker.is_some_and(|worker| worker.is_object()) {
+        errors.push("comment.stage.worker".to_string());
+    }
+    if let (Some(worker), Some(role)) = (worker, valid_stage_role) {
+        if worker.get("role").and_then(|value| value.as_str()) != Some(role) {
+            errors.push("comment.stage.worker_role".to_string());
+        }
+    }
+
+    if let (Some(round), Some(evidence_kind), Some(admission), Some(worker)) =
+        (round, evidence_kind, admission, worker)
+    {
+        let has_evidence_binding = evidence.iter().any(|row| {
+            row.round == round
+                && row.kind == evidence_kind
+                && row
+                    .payload
+                    .get("admission")
+                    .and_then(|value| value.as_str())
+                    == Some(admission)
+                && row.payload.get("worker") == Some(worker)
+        });
+        if !has_evidence_binding {
+            errors.push("comment.stage.evidence_binding".to_string());
+        }
+    }
+
+    errors
 }
 
 fn operator_evidence_audit_error(
@@ -6413,17 +6499,26 @@ mod tests {
         );
         assert!(report.issues[0].comments.iter().any(|comment| {
             comment.body == "Explorer admitted a candidate for this round."
-                && comment.payload.get("evidence_kind").and_then(|value| value.as_str())
+                && comment
+                    .payload
+                    .get("evidence_kind")
+                    .and_then(|value| value.as_str())
                     == Some("exploration_packet")
         }));
         assert!(report.issues[0].comments.iter().any(|comment| {
             comment.body == "Doer admitted the execution packet."
-                && comment.payload.get("evidence_kind").and_then(|value| value.as_str())
+                && comment
+                    .payload
+                    .get("evidence_kind")
+                    .and_then(|value| value.as_str())
                     == Some("execution_packet")
         }));
         assert!(report.issues[0].comments.iter().any(|comment| {
             comment.body == "Evaluator admitted the verdict packet."
-                && comment.payload.get("evidence_kind").and_then(|value| value.as_str())
+                && comment
+                    .payload
+                    .get("evidence_kind")
+                    .and_then(|value| value.as_str())
                     == Some("verdict_packet")
         }));
         assert!(report.issues[0].comments.iter().all(|comment| comment
@@ -6659,7 +6754,10 @@ mod tests {
             Some("codex -a never exec --sandbox read-only <prompt>")
         );
         assert_eq!(summary.worker_cwd.as_deref(), Some("/tmp/entrance-src"));
-        assert_eq!(summary.worker_action.as_deref(), Some("record-local-loop-ledger"));
+        assert_eq!(
+            summary.worker_action.as_deref(),
+            Some("record-local-loop-ledger")
+        );
     }
 
     #[test]
@@ -8946,6 +9044,103 @@ mod tests {
                 .is_some_and(|fields| fields
                     .iter()
                     .any(|field| field.as_str() == Some("comment.payload.schema_version"))))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_surface_audit_rejects_stage_system_comment_drift() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-stage-comment-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Stage comment audit loop".to_string(),
+                goal: "Detect drift between stage comments and stage evidence".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let issue_id = created.issues[0].issue.id;
+        let run_report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let doer_worker = run_report
+            .evidence
+            .iter()
+            .find(|row| row.kind == "execution_packet")
+            .and_then(|row| row.payload.get("worker"))
+            .cloned()
+            .expect("doer evidence should carry a worker receipt");
+
+        store
+            .insert_hive_comment(HiveCommentCreate {
+                issue_id,
+                author: "hive".to_string(),
+                body: "Doer admitted the execution packet.".to_string(),
+                payload: serde_json::json!({
+                    "schema_version": SYSTEM_COMMENT_SCHEMA_VERSION,
+                    "source": "hive",
+                    "loop_id": created.contract.id,
+                    "round": 1,
+                    "phase": "doer",
+                    "stage_role": "doer",
+                    "evidence_kind": "verdict_packet",
+                    "admission": "admitted",
+                    "worker": doer_worker
+                }),
+            })
+            .expect("drifted stage comment should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let issue_surface_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "issue_surface")
+            .expect("issue surface audit should exist");
+        assert!(!issue_surface_check.passed);
+        let errors = issue_surface_check
+            .details
+            .pointer("/issue_surface_errors")
+            .and_then(|value| value.as_array())
+            .expect("issue surface errors should be listed");
+        assert!(errors.iter().any(|error| error
+            .pointer("/errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|fields| fields
+                .iter()
+                .any(|field| field.as_str() == Some("comment.stage.evidence_kind"))
+                && fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("comment.stage.evidence_binding")))));
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "issue_surface:comment:comment.stage.evidence_binding"));
 
         let _ = fs::remove_dir_all(root);
     }
