@@ -453,27 +453,29 @@ async fn handle_invoke(
                 .get("id")
                 .and_then(|value| value.as_i64())
                 .context("hive_loop_run requires `id`")?;
-            Ok(serde_json::to_value(
-                state.services.hive.loop_run(HiveLoopRunRequest {
-                    loop_id: id,
-                    runtime: args
-                        .get("runtime")
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned),
-                    decision: args
-                        .get("decision")
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned),
-                    worker_timeout_secs: args
-                        .get("workerTimeoutSecs")
-                        .or_else(|| args.get("worker_timeout_secs"))
-                        .and_then(|value| value.as_u64()),
-                    worker_attempts: args
-                        .get("workerAttempts")
-                        .or_else(|| args.get("worker_attempts"))
-                        .and_then(|value| value.as_u64()),
-                })?,
-            )?)
+            let hive = state.services.hive.clone();
+            let request = HiveLoopRunRequest {
+                loop_id: id,
+                runtime: args
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                decision: args
+                    .get("decision")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                worker_timeout_secs: args
+                    .get("workerTimeoutSecs")
+                    .or_else(|| args.get("worker_timeout_secs"))
+                    .and_then(|value| value.as_u64()),
+                worker_attempts: args
+                    .get("workerAttempts")
+                    .or_else(|| args.get("worker_attempts"))
+                    .and_then(|value| value.as_u64()),
+            };
+            tokio::task::spawn_blocking(move || Ok(serde_json::to_value(hive.loop_run(request)?)?))
+                .await
+                .context("hive_loop_run worker panicked")?
         }
         "hive_panel" => Ok(serde_json::to_value(state.services.hive.panel()?)?),
         "hive_issue_show" => {
@@ -541,40 +543,42 @@ async fn handle_invoke(
                 .or_else(|| args.get("issue_id"))
                 .and_then(|value| value.as_i64())
                 .context("hive_issue_run requires `issueId`")?;
-            Ok(serde_json::to_value(
-                state.services.hive.issue_run(IssueRunRequest {
-                    issue_id,
-                    runtime: args
-                        .get("runtime")
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned),
-                    decision: args
-                        .get("decision")
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned),
-                    worker_timeout_secs: args
-                        .get("workerTimeoutSecs")
-                        .or_else(|| args.get("worker_timeout_secs"))
-                        .and_then(|value| value.as_u64()),
-                    worker_attempts: args
-                        .get("workerAttempts")
-                        .or_else(|| args.get("worker_attempts"))
-                        .and_then(|value| value.as_u64()),
-                    retry: args
-                        .get("retry")
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(false),
-                    author: args
-                        .get("author")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("human")
-                        .to_string(),
-                    body: args
-                        .get("body")
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned),
-                })?,
-            )?)
+            let hive = state.services.hive.clone();
+            let request = IssueRunRequest {
+                issue_id,
+                runtime: args
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                decision: args
+                    .get("decision")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                worker_timeout_secs: args
+                    .get("workerTimeoutSecs")
+                    .or_else(|| args.get("worker_timeout_secs"))
+                    .and_then(|value| value.as_u64()),
+                worker_attempts: args
+                    .get("workerAttempts")
+                    .or_else(|| args.get("worker_attempts"))
+                    .and_then(|value| value.as_u64()),
+                retry: args
+                    .get("retry")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+                author: args
+                    .get("author")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("human")
+                    .to_string(),
+                body: args
+                    .get("body")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+            };
+            tokio::task::spawn_blocking(move || Ok(serde_json::to_value(hive.issue_run(request)?)?))
+                .await
+                .context("hive_issue_run worker panicked")?
         }
         "launcher_hotkey" => Ok(serde_json::json!(state.services.launcher.hotkey())),
         "launcher_refresh" => {

@@ -369,6 +369,21 @@ export default function App() {
       refetchLauncher(),
     ]);
   };
+  const refetchLoopSurfaces = async () => {
+    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+  };
+  const pollLoopSurfaces = () => {
+    void refetchLoopSurfaces().catch(() => undefined);
+  };
+  const withLoopProgressPolling = async <T,>(work: Promise<T>) => {
+    pollLoopSurfaces();
+    const interval = window.setInterval(pollLoopSurfaces, 2500);
+    try {
+      return await work;
+    } finally {
+      window.clearInterval(interval);
+    }
+  };
 
   const addDrawerNote = async () => {
     await bridge.invoke("drawer_add_note", {
@@ -411,7 +426,7 @@ export default function App() {
         ? "Loop contract created."
         : `Loop contract created as issue #${createdIssueId}.`,
     );
-    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+    await refetchLoopSurfaces();
     if (createdIssueId !== null) {
       revealIssueDetail();
     }
@@ -550,13 +565,13 @@ export default function App() {
     setPendingLoop(loop.id, "Running");
     try {
       const runArgs = loopRunArgs();
-      await bridge.invoke("hive_loop_run", {
+      await withLoopProgressPolling(bridge.invoke("hive_loop_run", {
         id: loop.id,
         ...runArgs,
         runtime: loop.runtime || runArgs.runtime,
-      });
+      }));
       setBanner(`Loop #${loop.id} finished.`);
-      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+      await refetchLoopSurfaces();
     } catch (error) {
       setBanner(`Loop #${loop.id} failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -569,12 +584,12 @@ export default function App() {
     setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Running");
     try {
-      await bridge.invoke("hive_issue_run", {
+      await withLoopProgressPolling(bridge.invoke("hive_issue_run", {
         issueId: card.issue.id,
         ...issueRunArgs(card),
-      });
+      }));
       setBanner(`Loop #${card.issue.loop_id} finished.`);
-      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+      await refetchLoopSurfaces();
     } catch (error) {
       setBanner(`Loop #${card.issue.loop_id} failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -595,7 +610,7 @@ export default function App() {
       });
       clearIssueComposer(issueId);
       setBanner(`Issue #${issueId} ${issueActionLabel(action)}.`);
-      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+      await refetchLoopSurfaces();
     } catch (error) {
       setBanner(`Issue #${issueId} failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -608,16 +623,16 @@ export default function App() {
     setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Retrying");
     try {
-      await bridge.invoke("hive_issue_run", {
+      await withLoopProgressPolling(bridge.invoke("hive_issue_run", {
         issueId: card.issue.id,
         retry: true,
         author: "human",
         body: issueDecisionNote(card.issue.id) || undefined,
         ...issueRetryRunArgs(card),
-      });
+      }));
       clearIssueComposer(card.issue.id);
       setBanner(`Issue #${card.issue.id} retried.`);
-      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+      await refetchLoopSurfaces();
     } catch (error) {
       setBanner(`Issue #${card.issue.id} retry failed: ${actionErrorMessage(error)}`);
     } finally {
