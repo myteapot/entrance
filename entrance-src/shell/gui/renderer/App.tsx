@@ -136,6 +136,7 @@ type IssueCard = {
       worker_receipt_ok: boolean | null;
       worker_timed_out: boolean | null;
       worker_status: number | null;
+      worker_duration_ms: number | null;
       transcript_excerpt: string | null;
     }>;
     stages: Array<{
@@ -525,6 +526,14 @@ export default function App() {
     return `exit ${evidence.worker_status}`;
   };
 
+  const workerDurationLabel = (evidence: NonNullable<IssueCard["trace"]>["evidence"][number]) => {
+    if (evidence.worker_duration_ms === null) return null;
+    if (evidence.worker_duration_ms >= 1000) {
+      return `${(evidence.worker_duration_ms / 1000).toFixed(1)}s`;
+    }
+    return `${evidence.worker_duration_ms}ms`;
+  };
+
   const scoreMetricLabel = (name: string) =>
     ({
       stage_completeness: "stage",
@@ -904,6 +913,9 @@ export default function App() {
                                   ) : null}
                                   {workerStatusLabel(evidence) ? (
                                     <span class="trace-pill">{workerStatusLabel(evidence)}</span>
+                                  ) : null}
+                                  {workerDurationLabel(evidence) ? (
+                                    <span class="trace-pill">{workerDurationLabel(evidence)}</span>
                                   ) : null}
                                   {evidence.blocked_phase ? (
                                     <span class="trace-pill trace-pill--warn">blocked {evidence.blocked_phase}</span>

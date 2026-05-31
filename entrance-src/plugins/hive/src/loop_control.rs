@@ -227,6 +227,7 @@ pub struct IssueEvidenceSummary {
     pub worker_receipt_ok: Option<bool>,
     pub worker_timed_out: Option<bool>,
     pub worker_status: Option<i64>,
+    pub worker_duration_ms: Option<u64>,
     pub transcript_excerpt: Option<String>,
 }
 
@@ -1459,6 +1460,9 @@ fn issue_evidence_summary(
         worker_status: worker
             .and_then(|value| value.get("status"))
             .and_then(|value| value.as_i64()),
+        worker_duration_ms: worker
+            .and_then(|value| value.get("duration_ms"))
+            .and_then(|value| value.as_u64()),
         transcript_excerpt: worker
             .and_then(worker_transcript_excerpt)
             .map(|value| truncate_text(&value, 240)),
@@ -2587,6 +2591,7 @@ fn run_role_worker(
             "kind": "local",
             "mode": "deterministic-worker",
             "role": role,
+            "duration_ms": 0,
             "last_message": format!(
                 "Local {role} worker accepted loop #{} round {}.",
                 contract.id,
@@ -2684,6 +2689,7 @@ fn run_codex_worker(contract: &HiveLoopContract, role: &str) -> serde_json::Valu
                 "completed_at": chrono::Utc::now().to_rfc3339(),
                 "timed_out": output.timed_out,
                 "status": output.status_code,
+                "duration_ms": output.duration_ms,
                 "receipt_ok": receipt_ok,
                 "stdout": truncate_text(&output.stdout, 12000),
                 "stderr": truncate_text(&output.stderr, 4000),
@@ -2711,6 +2717,7 @@ struct TimedCommandOutput {
     status_success: bool,
     status_code: Option<i32>,
     timed_out: bool,
+    duration_ms: u64,
     stdout: String,
     stderr: String,
 }
@@ -2733,10 +2740,12 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<T
     }
 
     let output = child.wait_with_output()?;
+    let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     Ok(TimedCommandOutput {
         status_success: output.status.success(),
         status_code: output.status.code(),
         timed_out,
+        duration_ms,
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
@@ -3149,6 +3158,7 @@ mod tests {
         assert_eq!(doer_evidence.admission_result.as_deref(), Some("admitted"));
         assert_eq!(doer_evidence.worker_kind.as_deref(), Some("local"));
         assert_eq!(doer_evidence.worker_ok, Some(true));
+        assert_eq!(doer_evidence.worker_duration_ms, Some(0));
         assert!(doer_evidence
             .transcript_excerpt
             .as_deref()
@@ -3293,6 +3303,7 @@ mod tests {
             status_success: true,
             status_code: Some(0),
             timed_out: false,
+            duration_ms: 12,
             stdout: String::new(),
             stderr: String::new(),
         };
