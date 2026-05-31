@@ -72,6 +72,45 @@ CREATE TABLE IF NOT EXISTS hive_loop_stages (
     FOREIGN KEY(loop_id) REFERENCES hive_loop_contracts(id)
 );
 
+CREATE TABLE IF NOT EXISTS hive_loop_policies (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop_id         INTEGER NOT NULL,
+    object_kind     TEXT NOT NULL,
+    writer_role     TEXT NOT NULL,
+    route_from      TEXT NOT NULL,
+    route_to        TEXT NOT NULL,
+    gate            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY(loop_id) REFERENCES hive_loop_contracts(id)
+);
+
+CREATE TABLE IF NOT EXISTS hive_loop_packets (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop_id         INTEGER NOT NULL,
+    round           INTEGER NOT NULL,
+    object_kind     TEXT NOT NULL,
+    writer_role     TEXT NOT NULL,
+    route_from      TEXT NOT NULL,
+    route_to        TEXT NOT NULL,
+    state_code      TEXT NOT NULL,
+    payload_json    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY(loop_id) REFERENCES hive_loop_contracts(id)
+);
+
+CREATE TABLE IF NOT EXISTS hive_loop_admissions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop_id         INTEGER NOT NULL,
+    packet_id       INTEGER NOT NULL,
+    result          TEXT NOT NULL,
+    reason          TEXT NOT NULL,
+    policy_json     TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY(loop_id) REFERENCES hive_loop_contracts(id),
+    FOREIGN KEY(packet_id) REFERENCES hive_loop_packets(id)
+);
+
 CREATE TABLE IF NOT EXISTS hive_loop_evidence (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     loop_id         INTEGER NOT NULL,
@@ -275,6 +314,76 @@ pub struct HiveLoopStageCreate {
     pub output: serde_json::Value,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopPolicy {
+    pub id: i64,
+    pub loop_id: i64,
+    pub object_kind: String,
+    pub writer_role: String,
+    pub route_from: String,
+    pub route_to: String,
+    pub gate: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopPolicyCreate {
+    pub loop_id: i64,
+    pub object_kind: String,
+    pub writer_role: String,
+    pub route_from: String,
+    pub route_to: String,
+    pub gate: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopPacket {
+    pub id: i64,
+    pub loop_id: i64,
+    pub round: i64,
+    pub object_kind: String,
+    pub writer_role: String,
+    pub route_from: String,
+    pub route_to: String,
+    pub state_code: String,
+    pub payload: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopPacketCreate {
+    pub loop_id: i64,
+    pub round: i64,
+    pub object_kind: String,
+    pub writer_role: String,
+    pub route_from: String,
+    pub route_to: String,
+    pub state_code: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopAdmission {
+    pub id: i64,
+    pub loop_id: i64,
+    pub packet_id: i64,
+    pub result: String,
+    pub reason: String,
+    pub policy: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopAdmissionCreate {
+    pub loop_id: i64,
+    pub packet_id: i64,
+    pub result: String,
+    pub reason: String,
+    pub policy: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -689,6 +798,115 @@ impl Store {
             .map_err(Into::into)
     }
 
+    pub fn insert_hive_loop_policy(&self, row: HiveLoopPolicyCreate) -> Result<i64> {
+        let now = timestamp();
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO hive_loop_policies
+             (loop_id, object_kind, writer_role, route_from, route_to, gate, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                row.loop_id,
+                row.object_kind,
+                row.writer_role,
+                row.route_from,
+                row.route_to,
+                row.gate,
+                row.status,
+                now
+            ],
+        )?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn list_hive_loop_policies(&self, loop_id: i64) -> Result<Vec<HiveLoopPolicy>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, object_kind, writer_role, route_from, route_to, gate, status, created_at
+             FROM hive_loop_policies WHERE loop_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = statement.query_map(params![loop_id], map_hive_loop_policy)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_hive_loop_packet(&self, row: HiveLoopPacketCreate) -> Result<i64> {
+        let now = timestamp();
+        let payload_json = serde_json::to_string(&row.payload)?;
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO hive_loop_packets
+             (loop_id, round, object_kind, writer_role, route_from, route_to, state_code, payload_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                row.loop_id,
+                row.round,
+                row.object_kind,
+                row.writer_role,
+                row.route_from,
+                row.route_to,
+                row.state_code,
+                payload_json,
+                now
+            ],
+        )?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn get_hive_loop_packet(&self, id: i64) -> Result<Option<HiveLoopPacket>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, round, object_kind, writer_role, route_from, route_to, state_code, payload_json, created_at
+             FROM hive_loop_packets WHERE id = ?1 LIMIT 1",
+        )?;
+        statement
+            .query_row(params![id], map_hive_loop_packet)
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn list_hive_loop_packets(&self, loop_id: i64) -> Result<Vec<HiveLoopPacket>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, round, object_kind, writer_role, route_from, route_to, state_code, payload_json, created_at
+             FROM hive_loop_packets WHERE loop_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = statement.query_map(params![loop_id], map_hive_loop_packet)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_hive_loop_admission(&self, row: HiveLoopAdmissionCreate) -> Result<i64> {
+        let now = timestamp();
+        let policy_json = serde_json::to_string(&row.policy)?;
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO hive_loop_admissions
+             (loop_id, packet_id, result, reason, policy_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row.loop_id,
+                row.packet_id,
+                row.result,
+                row.reason,
+                policy_json,
+                now
+            ],
+        )?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn list_hive_loop_admissions(&self, loop_id: i64) -> Result<Vec<HiveLoopAdmission>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, packet_id, result, reason, policy_json, created_at
+             FROM hive_loop_admissions WHERE loop_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = statement.query_map(params![loop_id], map_hive_loop_admission)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn insert_hive_loop_evidence(&self, row: HiveLoopEvidenceCreate) -> Result<i64> {
         let now = timestamp();
         let payload_json = serde_json::to_string(&row.payload)?;
@@ -1086,6 +1304,49 @@ fn map_hive_loop_stage(row: &Row<'_>) -> rusqlite::Result<HiveLoopStage> {
         completed_at: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
+    })
+}
+
+fn map_hive_loop_policy(row: &Row<'_>) -> rusqlite::Result<HiveLoopPolicy> {
+    Ok(HiveLoopPolicy {
+        id: row.get(0)?,
+        loop_id: row.get(1)?,
+        object_kind: row.get(2)?,
+        writer_role: row.get(3)?,
+        route_from: row.get(4)?,
+        route_to: row.get(5)?,
+        gate: row.get(6)?,
+        status: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+fn map_hive_loop_packet(row: &Row<'_>) -> rusqlite::Result<HiveLoopPacket> {
+    let payload_json: String = row.get(8)?;
+    Ok(HiveLoopPacket {
+        id: row.get(0)?,
+        loop_id: row.get(1)?,
+        round: row.get(2)?,
+        object_kind: row.get(3)?,
+        writer_role: row.get(4)?,
+        route_from: row.get(5)?,
+        route_to: row.get(6)?,
+        state_code: row.get(7)?,
+        payload: parse_json_value(&payload_json),
+        created_at: row.get(9)?,
+    })
+}
+
+fn map_hive_loop_admission(row: &Row<'_>) -> rusqlite::Result<HiveLoopAdmission> {
+    let policy_json: String = row.get(5)?;
+    Ok(HiveLoopAdmission {
+        id: row.get(0)?,
+        loop_id: row.get(1)?,
+        packet_id: row.get(2)?,
+        result: row.get(3)?,
+        reason: row.get(4)?,
+        policy: parse_json_value(&policy_json),
+        created_at: row.get(6)?,
     })
 }
 

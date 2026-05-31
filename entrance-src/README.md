@@ -55,6 +55,9 @@ Local agent-loop MVP:
 .\entrance.exe hive issue comment 1 --body "Reviewed from the local panel"
 ```
 
+`hive loop run` records a minimal compiler path in SQLite: active policies,
+typed packets, admission receipts, stage evidence, and the final verdict.
+
 ### Launcher
 
 Local application index and launch surface.
