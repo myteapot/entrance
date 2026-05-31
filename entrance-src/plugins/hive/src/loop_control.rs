@@ -615,6 +615,19 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "admission": explorer_admission.result
         }),
     })?;
+    if let Some(issue_id) = issue_id {
+        add_stage_system_comment(
+            store,
+            issue_id,
+            contract.id,
+            contract.current_round,
+            "explorer",
+            "exploration_packet",
+            "Explorer admitted a candidate for this round.",
+            &explorer_admission.result,
+            &explorer_worker,
+        )?;
+    }
 
     store.update_hive_loop_contract_state(
         contract.id,
@@ -685,6 +698,19 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "admission": doer_admission.result
         }),
     })?;
+    if let Some(issue_id) = issue_id {
+        add_stage_system_comment(
+            store,
+            issue_id,
+            contract.id,
+            contract.current_round,
+            "doer",
+            "execution_packet",
+            "Doer admitted the execution packet.",
+            &doer_admission.result,
+            &runtime_worker,
+        )?;
+    }
 
     store.update_hive_loop_contract_state(
         contract.id,
@@ -774,6 +800,19 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "admission": evaluator_admission.result
         }),
     })?;
+    if let Some(issue_id) = issue_id {
+        add_stage_system_comment(
+            store,
+            issue_id,
+            contract.id,
+            contract.current_round,
+            "evaluator",
+            "verdict_packet",
+            "Evaluator admitted the verdict packet.",
+            &evaluator_admission.result,
+            &evaluator_worker,
+        )?;
+    }
     store.insert_hive_loop_verdict(HiveLoopVerdictCreate {
         loop_id: contract.id,
         round: contract.current_round,
@@ -4334,6 +4373,33 @@ fn add_system_comment(
     Ok(())
 }
 
+fn add_stage_system_comment(
+    store: &Store,
+    issue_id: i64,
+    loop_id: i64,
+    round: i64,
+    role: &str,
+    evidence_kind: &str,
+    body: &str,
+    admission: &str,
+    worker: &serde_json::Value,
+) -> Result<()> {
+    add_system_comment(
+        store,
+        issue_id,
+        body,
+        serde_json::json!({
+            "loop_id": loop_id,
+            "round": round,
+            "phase": role,
+            "stage_role": role,
+            "evidence_kind": evidence_kind,
+            "admission": admission,
+            "worker": worker
+        }),
+    )
+}
+
 fn system_comment_payload(source: &str, payload: serde_json::Value) -> serde_json::Value {
     let mut typed = serde_json::Map::new();
     typed.insert(
@@ -6334,6 +6400,32 @@ mod tests {
         );
         assert_eq!(report.issues[0].issue.status, "Done");
         assert!(report.issues[0].comments.len() >= 3);
+        assert_eq!(
+            report.issues[0]
+                .comments
+                .iter()
+                .filter_map(|comment| comment
+                    .payload
+                    .get("stage_role")
+                    .and_then(|value| value.as_str()))
+                .collect::<Vec<_>>(),
+            vec!["explorer", "doer", "evaluator"]
+        );
+        assert!(report.issues[0].comments.iter().any(|comment| {
+            comment.body == "Explorer admitted a candidate for this round."
+                && comment.payload.get("evidence_kind").and_then(|value| value.as_str())
+                    == Some("exploration_packet")
+        }));
+        assert!(report.issues[0].comments.iter().any(|comment| {
+            comment.body == "Doer admitted the execution packet."
+                && comment.payload.get("evidence_kind").and_then(|value| value.as_str())
+                    == Some("execution_packet")
+        }));
+        assert!(report.issues[0].comments.iter().any(|comment| {
+            comment.body == "Evaluator admitted the verdict packet."
+                && comment.payload.get("evidence_kind").and_then(|value| value.as_str())
+                    == Some("verdict_packet")
+        }));
         assert!(report.issues[0].comments.iter().all(|comment| comment
             .payload
             .get("schema_version")
