@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 const PACKET_SCHEMA_VERSION: &str = "entrance.hive.packet.v1";
 const ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.admission.v1";
 const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
+const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopCreateRequest {
@@ -565,15 +566,14 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
         next_round = Some(round);
     }
 
-    store.update_hive_issue_status(
-        issue.id,
-        action.issue_status(),
-        Some(action.issue_summary(next_round).as_str()),
-    )?;
+    let issue_summary = action.issue_summary(next_round);
+    let comment_body = action.comment_body(next_round, note);
+
+    store.update_hive_issue_status(issue.id, action.issue_status(), Some(&issue_summary))?;
     store.insert_hive_comment(HiveCommentCreate {
         issue_id: issue.id,
-        author,
-        body: action.comment_body(next_round, note),
+        author: author.clone(),
+        body: comment_body.clone(),
         payload: serde_json::json!({
             "source": "operator",
             "action": action.as_str(),
@@ -582,8 +582,71 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
             "note": note
         }),
     })?;
+    record_operator_decision_evidence(
+        store,
+        &issue,
+        action,
+        &author,
+        note,
+        next_round,
+        &issue_summary,
+        &comment_body,
+    )?;
 
     issue_card(store, issue.id)
+}
+
+fn record_operator_decision_evidence(
+    store: &Store,
+    issue: &HiveIssue,
+    action: IssueDecisionAction,
+    author: &str,
+    note: &str,
+    next_round: Option<i64>,
+    summary: &str,
+    comment_body: &str,
+) -> Result<()> {
+    let Some(loop_id) = issue.loop_id else {
+        return Ok(());
+    };
+    let round = match next_round {
+        Some(round) => round,
+        None => store
+            .get_hive_loop_contract(loop_id)?
+            .map(|contract| contract.current_round)
+            .unwrap_or(1),
+    };
+
+    store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+        loop_id,
+        stage_id: None,
+        round,
+        kind: "operator_decision".to_string(),
+        summary: summary.to_string(),
+        path: None,
+        payload: serde_json::json!({
+            "schema_version": OPERATOR_DECISION_SCHEMA_VERSION,
+            "source": "issue/status/comment",
+            "issue": {
+                "id": issue.id,
+                "from_status": issue.status,
+                "to_status": action.issue_status()
+            },
+            "loop": {
+                "id": loop_id,
+                "next_status": action.contract_status(),
+                "next_phase": action.contract_phase(),
+                "round": round
+            },
+            "operator": {
+                "author": author,
+                "action": action.as_str(),
+                "note": note,
+                "comment_body": comment_body
+            }
+        }),
+    })?;
+    Ok(())
 }
 
 fn insert_stage(
@@ -2650,6 +2713,22 @@ mod tests {
             .comments
             .iter()
             .any(|comment| comment.body.contains("Need policy owner")));
+        let review_evidence = store
+            .list_hive_loop_evidence(created.contract.id)
+            .expect("loop evidence should list");
+        assert!(review_evidence.iter().any(|evidence| {
+            evidence.kind == "operator_decision"
+                && evidence
+                    .payload
+                    .get("schema_version")
+                    .and_then(|value| value.as_str())
+                    == Some(OPERATOR_DECISION_SCHEMA_VERSION)
+                && evidence
+                    .payload
+                    .pointer("/operator/action")
+                    .and_then(|value| value.as_str())
+                    == Some("request-review")
+        }));
 
         let retry_card = decide_issue(
             &store,
@@ -2679,10 +2758,11 @@ mod tests {
         assert_eq!(retry_trace.current_round, retry_contract.current_round);
         assert_eq!(retry_trace.packet_count, 1);
         assert_eq!(retry_trace.admission_count, 1);
+        assert_eq!(retry_trace.evidence_count, 3);
         assert_eq!(retry_trace.verdict_count, 1);
         assert_eq!(retry_trace.round_packet_count, 0);
         assert_eq!(retry_trace.round_admission_count, 0);
-        assert_eq!(retry_trace.round_evidence_count, 0);
+        assert_eq!(retry_trace.round_evidence_count, 1);
         assert_eq!(retry_trace.round_verdict_count, 0);
         assert_eq!(retry_trace.round_receipt_required_count, 0);
         assert_eq!(retry_trace.round_receipt_missing_count, 0);
@@ -2715,6 +2795,18 @@ mod tests {
             .comments
             .iter()
             .any(|comment| comment.body.contains("Human canceled")));
+        let decision_evidence = store
+            .list_hive_loop_evidence(created.contract.id)
+            .expect("loop evidence should list");
+        assert!(decision_evidence.iter().any(|evidence| {
+            evidence.kind == "operator_decision"
+                && evidence.round == retry_contract.current_round
+                && evidence
+                    .payload
+                    .pointer("/operator/action")
+                    .and_then(|value| value.as_str())
+                    == Some("cancel")
+        }));
 
         let _ = fs::remove_dir_all(root);
     }
