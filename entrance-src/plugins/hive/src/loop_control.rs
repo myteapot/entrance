@@ -250,6 +250,7 @@ pub struct HiveLoopDoctorReport {
     pub reason_code: Option<String>,
     pub counts: HiveLoopDoctorCounts,
     pub failed_checks: Vec<String>,
+    pub audit_failure_details: Vec<String>,
     pub missing_receipts: Vec<String>,
     pub worker_failures: Vec<String>,
     pub checks: Vec<HiveLoopDoctorCheck>,
@@ -340,6 +341,7 @@ pub struct IssueTraceSummary {
     pub audit_passed: Option<bool>,
     pub audit_failed_count: usize,
     pub audit_failed_checks: Vec<String>,
+    pub audit_failure_details: Vec<String>,
     pub evidence: Vec<IssueEvidenceSummary>,
     pub stages: Vec<IssueStageSummary>,
 }
@@ -353,6 +355,7 @@ pub struct IssueDoctorSummary {
     pub current_round: i64,
     pub counts: HiveLoopDoctorCounts,
     pub failed_checks: Vec<String>,
+    pub audit_failure_details: Vec<String>,
     pub missing_receipts: Vec<String>,
     pub worker_failures: Vec<String>,
 }
@@ -1127,6 +1130,7 @@ pub fn doctor(store: &Store, loop_id: i64) -> Result<HiveLoopDoctorReport> {
         .filter(|check| !check.passed)
         .map(|check| check.name.clone())
         .collect::<Vec<_>>();
+    let audit_failure_details = audit_failure_details(&audit_report);
     let missing_receipts = doctor_missing_receipts(&trace_summary);
     let worker_failures = doctor_worker_failures(&trace_summary);
     let health = doctor_health(
@@ -1177,11 +1181,58 @@ pub fn doctor(store: &Store, loop_id: i64) -> Result<HiveLoopDoctorReport> {
         reason_code: trace_summary.reason_code.clone(),
         counts,
         failed_checks,
+        audit_failure_details,
         missing_receipts,
         worker_failures,
         checks,
         trace: trace_summary,
     })
+}
+
+fn audit_failure_details(report: &HiveLoopAuditReport) -> Vec<String> {
+    let mut details = Vec::new();
+    for check in report.checks.iter().filter(|check| !check.passed) {
+        let before = details.len();
+        collect_audit_failure_details(&check.name, &check.details, &mut details);
+        if details.len() == before {
+            details.push(check.name.clone());
+        }
+    }
+    details.sort();
+    details.dedup();
+    details
+}
+
+fn collect_audit_failure_details(
+    prefix: &str,
+    value: &serde_json::Value,
+    details: &mut Vec<String>,
+) {
+    if let Some(values) = value.as_array() {
+        for value in values {
+            collect_audit_failure_details(prefix, value, details);
+        }
+        return;
+    }
+
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    let scoped_prefix = object
+        .get("scope")
+        .and_then(|value| value.as_str())
+        .map(|scope| format!("{prefix}:{scope}"))
+        .unwrap_or_else(|| prefix.to_string());
+    if let Some(errors) = object.get("errors").and_then(|value| value.as_array()) {
+        for error in errors.iter().filter_map(|value| value.as_str()) {
+            details.push(format!("{scoped_prefix}:{error}"));
+        }
+    }
+    for (key, value) in object {
+        if key != "errors" {
+            collect_audit_failure_details(&scoped_prefix, value, details);
+        }
+    }
 }
 
 fn doctor_counts(trace: &IssueTraceSummary) -> HiveLoopDoctorCounts {
@@ -2745,6 +2796,7 @@ fn issue_doctor_summary(
         ),
         counts: doctor_counts(trace),
         failed_checks: trace.audit_failed_checks.clone(),
+        audit_failure_details: trace.audit_failure_details.clone(),
         missing_receipts: doctor_missing_receipts(trace),
         worker_failures: doctor_worker_failures(trace),
     })
@@ -2823,6 +2875,10 @@ fn issue_trace_summary(
                 .map(|check| check.name.clone())
                 .collect::<Vec<_>>()
         })
+        .unwrap_or_default();
+    let audit_failure_details = audit_report
+        .as_ref()
+        .map(audit_failure_details)
         .unwrap_or_default();
     let round_evidence = evidence
         .iter()
@@ -2967,6 +3023,7 @@ fn issue_trace_summary(
             .map(|report| report.failed_count)
             .unwrap_or_default(),
         audit_failed_checks,
+        audit_failure_details,
         evidence: round_evidence,
         stages: issue_stage_summaries(&stages, &evidence, current_round),
     })
@@ -6668,6 +6725,34 @@ mod tests {
             .is_some_and(|fields| fields
                 .iter()
                 .any(|field| field.as_str() == Some("evidence.action_binding")))));
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "issue_surface:operator_evidence:evidence.author_binding"));
+        assert!(trace_report.trace.audit_failure_details.iter().any(
+            |detail| detail == "issue_surface:operator_evidence:evidence.comment_body_binding"
+        ));
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "issue_surface:operator_evidence:evidence.action_binding"));
+        let doctor_report = super::doctor(&store, created.contract.id)
+            .expect("doctor should include audit details");
+        assert!(doctor_report.audit_failure_details.iter().any(
+            |detail| detail == "issue_surface:operator_evidence:evidence.comment_body_binding"
+        ));
+        let issue_card = issue(&store, issue_id).expect("issue card should include doctor details");
+        let issue_doctor = issue_card
+            .doctor
+            .expect("issue doctor should be present for linked loop");
+        assert!(issue_doctor
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "issue_surface:operator_evidence:evidence.action_binding"));
 
         let _ = fs::remove_dir_all(root);
     }

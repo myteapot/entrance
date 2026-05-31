@@ -90,7 +90,8 @@ and its linked comment. Runtime policy checks the current round so a successful
 retry can replace a previously blocked runtime attempt.
 `hive loop doctor <id>` is the first CLI stop after a run: it combines trace and
 audit state into one health summary with counts, failed checks, missing
-receipts, worker failures, and suggested next commands.
+receipts, worker failures, specific audit failure details, and suggested next
+commands.
 `hive issue comment <id> --body <text>` records a local issue comment and, when
 the issue is bound to a loop, mirrors it into the loop ledger as
 `operator_comment` evidence.
@@ -113,7 +114,8 @@ Issue cards expose round-aware trace chips so a retry shows the new current
 round separately from the loop's accumulated history. They also expose an
 operator trail derived from typed `operator_comment` and `operator_decision`
 evidence so the latest human comment, retry, review, or cancel action is visible
-without opening raw evidence.
+without opening raw evidence. Audit failures include both the failed check and
+the extracted detail code, such as an evidence-to-comment binding error.
 
 ### Launcher
 

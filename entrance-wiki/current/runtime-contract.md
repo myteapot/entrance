@@ -57,7 +57,9 @@ score-vector metrics, gate booleans, human options, and reason-code evidence
 bindings. The `issue_surface` check verifies linked issue status, typed
 comments, operator comment/decision evidence, and evidence-to-comment
 author/action/body bindings so the control plane is auditable instead of only
-visible.
+visible. Trace, Doctor, and Panel summaries expose both failed audit check names
+and extracted audit failure detail codes, so an operator can see the exact
+binding that broke without opening raw JSON first.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 Human decisions are available through `hive issue decide <id>

@@ -124,6 +124,7 @@ type IssueCard = {
     audit_passed: boolean | null;
     audit_failed_count: number;
     audit_failed_checks: string[];
+    audit_failure_details: string[];
     evidence: Array<{
       id: number;
       round: number;
@@ -195,6 +196,7 @@ type IssueDoctorSummary = {
     audit_failed_count: number;
   };
   failed_checks: string[];
+  audit_failure_details: string[];
   missing_receipts: string[];
   worker_failures: string[];
 };
@@ -817,6 +819,10 @@ export default function App() {
         "Audit Fails",
         trace?.audit_failed_checks.length ? trace.audit_failed_checks.join(", ") : "none",
       ],
+      [
+        "Audit Details",
+        trace?.audit_failure_details.length ? trace.audit_failure_details.join(", ") : "none",
+      ],
       ["Worker", workerLabel(card) ?? "pending"],
     ];
   };
@@ -1085,11 +1091,15 @@ export default function App() {
                                 </span>
                               </div>
                               {doctor.failed_checks.length ||
+                              doctor.audit_failure_details.length ||
                               doctor.missing_receipts.length ||
                               doctor.worker_failures.length ? (
                                 <div class="doctor-lines">
                                   {doctor.failed_checks.map((check) => (
                                     <span>check {check}</span>
+                                  ))}
+                                  {doctor.audit_failure_details.map((detail) => (
+                                    <span>detail {detail}</span>
                                   ))}
                                   {doctor.missing_receipts.map((receipt) => (
                                     <span>missing {receipt}</span>
