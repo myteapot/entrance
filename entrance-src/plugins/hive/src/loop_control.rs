@@ -130,6 +130,39 @@ enum RuntimeFailure {
     Worker,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LoopPolicySpec {
+    object_kind: &'static str,
+    writer_role: &'static str,
+    route_from: &'static str,
+    route_to: &'static str,
+    gate: &'static str,
+}
+
+const DEFAULT_LOOP_POLICIES: &[LoopPolicySpec] = &[
+    LoopPolicySpec {
+        object_kind: "EXPLORATION_PACKET",
+        writer_role: "explorer",
+        route_from: "explorer",
+        route_to: "doer",
+        gate: "candidate_receipts_present",
+    },
+    LoopPolicySpec {
+        object_kind: "EXECUTION_PACKET",
+        writer_role: "doer",
+        route_from: "doer",
+        route_to: "evaluator",
+        gate: "runtime_receipts_present",
+    },
+    LoopPolicySpec {
+        object_kind: "VERDICT_PACKET",
+        writer_role: "evaluator",
+        route_from: "evaluator",
+        route_to: "complete",
+        gate: "verdict_receipts_present",
+    },
+];
+
 struct TypedVerdict {
     decision: VerdictDecision,
     reason_code: &'static str,
@@ -916,11 +949,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .iter()
         .filter(|policy| policy.status == "active")
         .collect::<Vec<_>>();
-    let policy_unknown_gates = active_policies
-        .iter()
-        .filter(|policy| gate_spec(&policy.gate).is_none())
-        .map(|policy| format!("{}:{}", policy.id, policy.gate))
-        .collect::<Vec<_>>();
+    let policy_errors = active_policy_audit_errors(&active_policies);
     let packet_errors = packets
         .iter()
         .filter_map(|packet| {
@@ -966,15 +995,16 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         ),
         audit_check(
             "active_policy_registry",
-            active_policies.len() == 3 && policy_unknown_gates.is_empty(),
+            policy_errors.is_empty(),
             format!(
-                "{} active policies inspected; {} unknown gates.",
+                "{} active policies inspected; {} policy contract issues.",
                 active_policies.len(),
-                policy_unknown_gates.len()
+                policy_errors.len()
             ),
             serde_json::json!({
                 "active_policy_count": active_policies.len(),
-                "unknown_gates": policy_unknown_gates
+                "expected_policy_count": DEFAULT_LOOP_POLICIES.len(),
+                "policy_errors": policy_errors
             }),
         ),
         audit_check(
@@ -1601,6 +1631,109 @@ fn runtime_policy_spec<'a>(
     runtime: &str,
 ) -> Option<&'a RuntimePolicySpec> {
     registry.supported.iter().find(|spec| spec.name == runtime)
+}
+
+fn active_policy_audit_errors(active_policies: &[&HiveLoopPolicy]) -> Vec<serde_json::Value> {
+    let mut errors = Vec::new();
+    if active_policies.len() != DEFAULT_LOOP_POLICIES.len() {
+        errors.push(serde_json::json!({
+            "scope": "active_policy_set",
+            "expected": DEFAULT_LOOP_POLICIES.len(),
+            "actual": active_policies.len(),
+            "errors": ["active_policy_count"]
+        }));
+    }
+
+    for expected in DEFAULT_LOOP_POLICIES {
+        let matches = active_policies
+            .iter()
+            .filter(|policy| policy_matches_expected_route(policy, expected))
+            .collect::<Vec<_>>();
+        match matches.len() {
+            0 => errors.push(serde_json::json!({
+                "scope": "expected_policy",
+                "object_kind": expected.object_kind,
+                "writer_role": expected.writer_role,
+                "route_from": expected.route_from,
+                "route_to": expected.route_to,
+                "gate": expected.gate,
+                "errors": ["policy.missing"]
+            })),
+            1 => {
+                let policy = matches[0];
+                if policy.gate != expected.gate {
+                    errors.push(serde_json::json!({
+                        "scope": "policy",
+                        "policy_id": policy.id,
+                        "object_kind": policy.object_kind,
+                        "writer_role": policy.writer_role,
+                        "route_from": policy.route_from,
+                        "route_to": policy.route_to,
+                        "gate": policy.gate,
+                        "expected_gate": expected.gate,
+                        "errors": ["policy.gate"]
+                    }));
+                }
+            }
+            _ => errors.push(serde_json::json!({
+                "scope": "expected_policy",
+                "object_kind": expected.object_kind,
+                "writer_role": expected.writer_role,
+                "route_from": expected.route_from,
+                "route_to": expected.route_to,
+                "gate": expected.gate,
+                "policy_ids": matches.iter().map(|policy| policy.id).collect::<Vec<_>>(),
+                "errors": ["policy.duplicate"]
+            })),
+        }
+    }
+
+    for policy in active_policies {
+        let mut policy_errors = Vec::new();
+        match gate_spec(&policy.gate) {
+            Some(spec) => {
+                if spec
+                    .expected_object_kind
+                    .is_some_and(|expected| expected != policy.object_kind)
+                {
+                    policy_errors.push("gate.expected_object_kind".to_string());
+                }
+                if spec.required_receipts
+                    != receipt_requirements_for_packet(&policy.object_kind).as_slice()
+                {
+                    policy_errors.push("gate.required_receipts".to_string());
+                }
+            }
+            None => policy_errors.push("gate.unknown".to_string()),
+        }
+        if !DEFAULT_LOOP_POLICIES
+            .iter()
+            .any(|expected| policy_matches_expected_route(policy, expected))
+        {
+            policy_errors.push("policy.route".to_string());
+        }
+        if !policy_errors.is_empty() {
+            errors.push(serde_json::json!({
+                "scope": "policy",
+                "policy_id": policy.id,
+                "object_kind": policy.object_kind,
+                "writer_role": policy.writer_role,
+                "route_from": policy.route_from,
+                "route_to": policy.route_to,
+                "gate": policy.gate,
+                "errors": policy_errors
+            }));
+        }
+    }
+
+    errors
+}
+
+fn policy_matches_expected_route(policy: &HiveLoopPolicy, expected: &LoopPolicySpec) -> bool {
+    policy.object_kind == expected.object_kind
+        && policy.writer_role == expected.writer_role
+        && policy.route_from == expected.route_from
+        && policy.route_to == expected.route_to
 }
 
 fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> {
@@ -3314,36 +3447,14 @@ fn worker_attempts(requested: Option<u64>) -> Result<u64> {
 }
 
 fn seed_default_policies(store: &Store, loop_id: i64) -> Result<()> {
-    for policy in [
-        (
-            "EXPLORATION_PACKET",
-            "explorer",
-            "explorer",
-            "doer",
-            "candidate_receipts_present",
-        ),
-        (
-            "EXECUTION_PACKET",
-            "doer",
-            "doer",
-            "evaluator",
-            "runtime_receipts_present",
-        ),
-        (
-            "VERDICT_PACKET",
-            "evaluator",
-            "evaluator",
-            "complete",
-            "verdict_receipts_present",
-        ),
-    ] {
+    for policy in DEFAULT_LOOP_POLICIES {
         store.insert_hive_loop_policy(HiveLoopPolicyCreate {
             loop_id,
-            object_kind: policy.0.to_string(),
-            writer_role: policy.1.to_string(),
-            route_from: policy.2.to_string(),
-            route_to: policy.3.to_string(),
-            gate: policy.4.to_string(),
+            object_kind: policy.object_kind.to_string(),
+            writer_role: policy.writer_role.to_string(),
+            route_from: policy.route_from.to_string(),
+            route_to: policy.route_to.to_string(),
+            gate: policy.gate.to_string(),
             status: "active".to_string(),
         })?;
     }
@@ -4246,6 +4357,46 @@ mod tests {
                 .required_receipts,
             vec!["candidate", "constraints", "role_worker"]
         );
+        let audit_report =
+            super::audit(&store, created.contract.id).expect("policy audit should resolve");
+        let policy_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "active_policy_registry")
+            .expect("policy registry check should exist");
+        assert!(policy_check.passed);
+        assert!(policy_check
+            .details
+            .pointer("/policy_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.is_empty()));
+
+        let explorer_policy = report
+            .policies
+            .iter()
+            .find(|card| card.policy.object_kind == "EXPLORATION_PACKET")
+            .expect("explorer policy should exist");
+        store
+            .update_hive_loop_policy_gate(explorer_policy.policy.id, "runtime_receipts_present")
+            .expect("policy gate should update");
+        let bad_audit =
+            super::audit(&store, created.contract.id).expect("bad policy audit should resolve");
+        let bad_policy_check = bad_audit
+            .checks
+            .iter()
+            .find(|check| check.name == "active_policy_registry")
+            .expect("policy registry check should exist");
+        assert!(!bad_policy_check.passed);
+        assert!(bad_policy_check
+            .details
+            .pointer("/policy_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("gate.expected_object_kind"))))));
 
         let _ = fs::remove_dir_all(root);
     }
