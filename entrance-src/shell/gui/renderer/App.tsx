@@ -252,6 +252,11 @@ const commentPayloadString = (comment: IssueComment, field: string) => {
   return typeof value === "string" && value.trim() ? value : null;
 };
 
+const commentPayloadNumber = (comment: IssueComment, field: string) => {
+  const value = comment.payload?.[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+};
+
 const commentSchemaLabel = (comment: IssueComment) => {
   const schema = commentPayloadString(comment, "schema_version");
   return schema ? schema.split(".").slice(-2).join(".") : null;
@@ -263,11 +268,13 @@ const commentPills = (comment: IssueComment) => {
   const decision = commentPayloadString(comment, "decision");
   const phase =
     commentPayloadString(comment, "phase") ?? commentPayloadString(comment, "next_phase");
+  const evidenceId = commentPayloadNumber(comment, "evidence_id");
   return [
     source,
     action ? COMMENT_ACTION_LABELS[action] ?? action : null,
     decision && decision !== action ? decision : null,
     phase,
+    evidenceId ? `E#${evidenceId}` : null,
     commentSchemaLabel(comment),
   ].filter((value): value is string => Boolean(value));
 };

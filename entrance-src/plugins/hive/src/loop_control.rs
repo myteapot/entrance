@@ -601,7 +601,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             &explorer_admission,
         );
     }
-    store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+    let explorer_evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
         stage_id: Some(explorer_stage),
         round: contract.current_round,
@@ -623,6 +623,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             contract.current_round,
             "explorer",
             "exploration_packet",
+            explorer_evidence_id,
             "Explorer admitted a candidate for this round.",
             &explorer_admission.result,
             &explorer_worker,
@@ -684,7 +685,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             &doer_admission,
         );
     }
-    store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+    let doer_evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
         stage_id: Some(doer_stage),
         round: contract.current_round,
@@ -706,6 +707,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             contract.current_round,
             "doer",
             "execution_packet",
+            doer_evidence_id,
             "Doer admitted the execution packet.",
             &doer_admission.result,
             &runtime_worker,
@@ -785,7 +787,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             &evaluator_admission,
         );
     }
-    store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+    let evaluator_evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
         stage_id: Some(evaluator_stage),
         round: contract.current_round,
@@ -808,6 +810,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             contract.current_round,
             "evaluator",
             "verdict_packet",
+            evaluator_evidence_id,
             "Evaluator admitted the verdict packet.",
             &evaluator_admission.result,
             &evaluator_worker,
@@ -3352,6 +3355,10 @@ fn system_comment_audit_errors(
     } else if evidence_kind.is_none() {
         errors.push("comment.stage.evidence_kind".to_string());
     }
+    let evidence_id = payload.get("evidence_id").and_then(|value| value.as_i64());
+    if !evidence_id.is_some_and(|id| id > 0) {
+        errors.push("comment.stage.evidence_id".to_string());
+    }
 
     let admission = payload.get("admission").and_then(|value| value.as_str());
     if admission != Some("admitted") {
@@ -3368,11 +3375,12 @@ fn system_comment_audit_errors(
         }
     }
 
-    if let (Some(round), Some(evidence_kind), Some(admission), Some(worker)) =
-        (round, evidence_kind, admission, worker)
+    if let (Some(round), Some(evidence_id), Some(evidence_kind), Some(admission), Some(worker)) =
+        (round, evidence_id, evidence_kind, admission, worker)
     {
         let has_evidence_binding = evidence.iter().any(|row| {
-            row.round == round
+            row.id == evidence_id
+                && row.round == round
                 && row.kind == evidence_kind
                 && row
                     .payload
@@ -4466,6 +4474,7 @@ fn add_stage_system_comment(
     round: i64,
     role: &str,
     evidence_kind: &str,
+    evidence_id: i64,
     body: &str,
     admission: &str,
     worker: &serde_json::Value,
@@ -4480,6 +4489,7 @@ fn add_stage_system_comment(
             "phase": role,
             "stage_role": role,
             "evidence_kind": evidence_kind,
+            "evidence_id": evidence_id,
             "admission": admission,
             "worker": worker
         }),
@@ -6496,6 +6506,17 @@ mod tests {
                     .and_then(|value| value.as_str()))
                 .collect::<Vec<_>>(),
             vec!["explorer", "doer", "evaluator"]
+        );
+        assert_eq!(
+            report.issues[0]
+                .comments
+                .iter()
+                .filter_map(|comment| comment
+                    .payload
+                    .get("evidence_id")
+                    .and_then(|value| value.as_i64()))
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
         );
         assert!(report.issues[0].comments.iter().any(|comment| {
             comment.body == "Explorer admitted a candidate for this round."
@@ -9086,11 +9107,14 @@ mod tests {
             },
         )
         .expect("loop should run");
-        let doer_worker = run_report
+        let doer_evidence = run_report
             .evidence
             .iter()
             .find(|row| row.kind == "execution_packet")
-            .and_then(|row| row.payload.get("worker"))
+            .expect("doer evidence should exist");
+        let doer_worker = doer_evidence
+            .payload
+            .get("worker")
             .cloned()
             .expect("doer evidence should carry a worker receipt");
 
@@ -9107,6 +9131,7 @@ mod tests {
                     "phase": "doer",
                     "stage_role": "doer",
                     "evidence_kind": "verdict_packet",
+                    "evidence_id": doer_evidence.id,
                     "admission": "admitted",
                     "worker": doer_worker
                 }),
