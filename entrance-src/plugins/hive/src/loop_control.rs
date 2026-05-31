@@ -119,6 +119,13 @@ pub struct HiveLoopPolicyCard {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopTraceReport {
+    pub contract: HiveLoopContract,
+    pub issue: Option<HiveIssue>,
+    pub trace: IssueTraceSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueCard {
     pub issue: HiveIssue,
     pub comments: Vec<HiveComment>,
@@ -581,6 +588,18 @@ pub fn policies(store: &Store, loop_id: i64) -> Result<HiveLoopPolicyReport> {
         })
         .collect();
     Ok(HiveLoopPolicyReport { loop_id, policies })
+}
+
+pub fn trace(store: &Store, loop_id: i64) -> Result<HiveLoopTraceReport> {
+    let contract = store
+        .get_hive_loop_contract(loop_id)?
+        .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
+    let issue = store.list_hive_issues_for_loop(loop_id)?.into_iter().next();
+    Ok(HiveLoopTraceReport {
+        trace: issue_trace_summary(store, loop_id)?,
+        contract,
+        issue,
+    })
 }
 
 pub fn panel(store: &Store) -> Result<Vec<IssueCard>> {
@@ -2508,6 +2527,22 @@ mod tests {
         );
         assert_eq!(report.issues[0].issue.status, "Done");
         assert!(report.issues[0].comments.len() >= 3);
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("loop trace report should resolve");
+        assert_eq!(trace_report.contract.status, "kept");
+        assert_eq!(
+            trace_report
+                .issue
+                .as_ref()
+                .map(|issue| issue.status.as_str()),
+            Some("Done")
+        );
+        assert_eq!(trace_report.trace.last_decision.as_deref(), Some("keep"));
+        assert_eq!(trace_report.trace.round_receipt_missing_count, 0);
+        assert_eq!(
+            trace_report.trace.last_gate_expected_object_kind.as_deref(),
+            Some("VERDICT_PACKET")
+        );
 
         let rerun = run(
             &store,

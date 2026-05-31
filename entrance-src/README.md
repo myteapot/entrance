@@ -52,6 +52,7 @@ Local agent-loop MVP:
 .\entrance.exe hive loop run 1 --runtime codex
 .\entrance.exe hive loop run 1 --runtime local --decision needs-review
 .\entrance.exe hive loop show 1
+.\entrance.exe hive loop trace 1
 .\entrance.exe hive loop policies 1
 .\entrance.exe hive policy registry
 .\entrance.exe hive issue list
@@ -65,6 +66,8 @@ receipts, stage evidence, and the versioned final verdict.
 `hive policy registry` exposes the typed gate registry, while
 `hive loop policies <id>` shows the active policy rows loaded into a specific
 loop contract.
+`hive loop trace <id>` returns the compact round-aware health view without
+packet transcripts.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcripts in stage evidence.
