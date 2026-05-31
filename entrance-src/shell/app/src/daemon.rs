@@ -9,7 +9,10 @@ use axum::{
 };
 use entrance_core::LauncherQuery;
 use entrance_drawer::VaultSecret;
-use entrance_hive::{HiveCallbackRequest, HiveDispatchRequest, ReviewDecision};
+use entrance_hive::{
+    HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest,
+    IssueCommentRequest, ReviewDecision,
+};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -103,7 +106,7 @@ pub async fn run_http(services: AppServices) -> Result<()> {
     let state = Arc::new(DaemonState { services });
     let router = Router::new()
         .route("/health", get(http_health))
-        .route("/invoke", post(http_invoke))
+        .route("/invoke", post(http_invoke).options(http_options))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -114,14 +117,21 @@ pub async fn run_http(services: AppServices) -> Result<()> {
 }
 
 async fn http_health(State(state): State<Arc<DaemonState>>) -> impl IntoResponse {
-    Json(
-        state
-            .services
-            .kernel
-            .store
-            .app_status(&state.services.kernel.root)
-            .unwrap(),
+    (
+        cors_headers(),
+        Json(
+            state
+                .services
+                .kernel
+                .store
+                .app_status(&state.services.kernel.root)
+                .unwrap(),
+        ),
     )
+}
+
+async fn http_options() -> impl IntoResponse {
+    cors_headers()
 }
 
 async fn http_invoke(
@@ -129,17 +139,31 @@ async fn http_invoke(
     Json(request): Json<InvokeRequest>,
 ) -> impl IntoResponse {
     match handle_invoke(state.as_ref(), request.command, request.args).await {
-        Ok(result) => Json(serde_json::json!({
-            "ok": true,
-            "id": request.id,
-            "result": result
-        })),
-        Err(error) => Json(serde_json::json!({
-            "ok": false,
-            "id": request.id,
-            "error": error.to_string()
-        })),
+        Ok(result) => (
+            cors_headers(),
+            Json(serde_json::json!({
+                "ok": true,
+                "id": request.id,
+                "result": result
+            })),
+        ),
+        Err(error) => (
+            cors_headers(),
+            Json(serde_json::json!({
+                "ok": false,
+                "id": request.id,
+                "error": error.to_string()
+            })),
+        ),
     }
+}
+
+fn cors_headers() -> [(&'static str, &'static str); 3] {
+    [
+        ("access-control-allow-origin", "*"),
+        ("access-control-allow-methods", "GET, POST, OPTIONS"),
+        ("access-control-allow-headers", "content-type"),
+    ]
 }
 
 async fn handle_invoke(
@@ -325,6 +349,101 @@ async fn handle_invoke(
             };
             Ok(serde_json::to_value(
                 state.services.hive.review(id, decision)?,
+            )?)
+        }
+        "hive_loop_list" => Ok(serde_json::to_value(state.services.hive.loop_list()?)?),
+        "hive_loop_show" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_show requires `id`")?;
+            Ok(serde_json::to_value(state.services.hive.loop_report(id)?)?)
+        }
+        "hive_loop_create" => {
+            let string_list = |key: &str| {
+                args.get(key)
+                    .and_then(|value| value.as_array())
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            };
+            Ok(serde_json::to_value(
+                state.services.hive.loop_create(HiveLoopCreateRequest {
+                    title: args
+                        .get("title")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("Untitled loop")
+                        .to_string(),
+                    goal: args
+                        .get("goal")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("Run an Entrance loop")
+                        .to_string(),
+                    boundary: args
+                        .get("boundary")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    approach_space: string_list("approachSpace"),
+                    eval_space: string_list("evalSpace"),
+                    review_surface: args
+                        .get("reviewSurface")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("local-hive-panel")
+                        .to_string(),
+                    autonomy_level: args
+                        .get("autonomyLevel")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("run-approved-candidates")
+                        .to_string(),
+                    runtime: args
+                        .get("runtime")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("local")
+                        .to_string(),
+                })?,
+            )?)
+        }
+        "hive_loop_run" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_run requires `id`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.loop_run(HiveLoopRunRequest {
+                    loop_id: id,
+                    runtime: args
+                        .get("runtime")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned),
+                })?,
+            )?)
+        }
+        "hive_panel" => Ok(serde_json::to_value(state.services.hive.panel()?)?),
+        "hive_issue_comment" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_comment requires `issueId`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.issue_comment(IssueCommentRequest {
+                    issue_id,
+                    author: args
+                        .get("author")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("human")
+                        .to_string(),
+                    body: args
+                        .get("body")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                })?,
             )?)
         }
         "launcher_hotkey" => Ok(serde_json::json!(state.services.launcher.hotkey())),

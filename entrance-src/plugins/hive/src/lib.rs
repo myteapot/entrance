@@ -1,6 +1,7 @@
 mod dispatch;
 mod engine;
 mod http;
+mod loop_control;
 mod preset;
 mod review;
 
@@ -13,6 +14,9 @@ use serde::{Deserialize, Serialize};
 pub use dispatch::DispatchSummary;
 pub use engine::{EngineEvent, EngineReport};
 pub use http::{HiveCallback, HiveCallbackRequest};
+pub use loop_control::{
+    HiveLoopCreateRequest, HiveLoopReport, HiveLoopRunRequest, IssueCard, IssueCommentRequest,
+};
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};
 
@@ -81,6 +85,30 @@ impl HivePlugin {
 
     pub fn review(&self, id: i64, decision: ReviewDecision) -> Result<ReviewRecord> {
         review::apply(&self.store, id, decision)
+    }
+
+    pub fn loop_create(&self, request: HiveLoopCreateRequest) -> Result<HiveLoopReport> {
+        loop_control::create(&self.store, request)
+    }
+
+    pub fn loop_run(&self, request: HiveLoopRunRequest) -> Result<HiveLoopReport> {
+        loop_control::run(&self.store, request)
+    }
+
+    pub fn loop_report(&self, id: i64) -> Result<HiveLoopReport> {
+        loop_control::report(&self.store, id)
+    }
+
+    pub fn loop_list(&self) -> Result<Vec<entrance_core::HiveLoopContract>> {
+        loop_control::list(&self.store)
+    }
+
+    pub fn panel(&self) -> Result<Vec<IssueCard>> {
+        loop_control::panel(&self.store)
+    }
+
+    pub fn issue_comment(&self, request: IssueCommentRequest) -> Result<IssueCard> {
+        loop_control::add_comment(&self.store, request)
     }
 
     pub fn bootstrap_run(&self, row: HiveRunCreate) -> Result<i64> {

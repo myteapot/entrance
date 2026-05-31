@@ -2,13 +2,14 @@ import { Match, Switch, createResource, createSignal } from "solid-js";
 import Nav from "./components/Nav";
 import { bridge } from "./lib/bridge";
 
-type View = "status" | "drawer" | "hive" | "launcher";
+type View = "status" | "drawer" | "hive" | "panel" | "launcher";
 
 type AppStatus = {
   app_root: string;
   db_path: string;
   drawer_entries: number;
   hive_runs: number;
+  hive_loops: number;
   launcher_entries: number;
   generated_at: string;
 };
@@ -50,6 +51,33 @@ type HiveSummary = {
   returned_runs: number;
 };
 
+type HiveLoop = {
+  id: number;
+  title: string;
+  goal: string;
+  status: string;
+  active_phase: string;
+  current_round: number;
+  runtime: string;
+};
+
+type IssueCard = {
+  issue: {
+    id: number;
+    loop_id: number | null;
+    title: string;
+    status: string;
+    summary: string | null;
+    updated_at: string;
+  };
+  comments: Array<{
+    id: number;
+    author: string;
+    body: string;
+    created_at: string;
+  }>;
+};
+
 type LauncherResult = {
   id: number;
   name: string;
@@ -67,6 +95,11 @@ export default function App() {
   const [launcherQuery, setLauncherQuery] = createSignal("");
   const [hiveTitle, setHiveTitle] = createSignal("");
   const [hiveProject, setHiveProject] = createSignal("");
+  const [loopTitle, setLoopTitle] = createSignal("");
+  const [loopGoal, setLoopGoal] = createSignal("");
+  const [loopRuntime, setLoopRuntime] = createSignal("codex");
+  const [activeCommentIssue, setActiveCommentIssue] = createSignal<number | null>(null);
+  const [commentBody, setCommentBody] = createSignal("");
   const [drawerTitle, setDrawerTitle] = createSignal("");
   const [drawerBody, setDrawerBody] = createSignal("");
   const [banner, setBanner] = createSignal<string>("");
@@ -89,6 +122,12 @@ export default function App() {
   const [hiveSummary, { refetch: refetchHiveSummary }] = createResource(async () =>
     bridge.invoke<HiveSummary>("hive_summary"),
   );
+  const [hiveLoops, { refetch: refetchHiveLoops }] = createResource(async () =>
+    bridge.invoke<HiveLoop[]>("hive_loop_list"),
+  );
+  const [issueCards, { refetch: refetchIssueCards }] = createResource(async () =>
+    bridge.invoke<IssueCard[]>("hive_panel"),
+  );
   const [launcherItems, { refetch: refetchLauncher }] = createResource(launcherQuery, async (query) =>
     bridge.invoke<LauncherResult[]>("launcher_search", { query, limit: 12 }),
   );
@@ -101,6 +140,8 @@ export default function App() {
       refetchDrawerHistory(),
       refetchHiveRuns(),
       refetchHiveSummary(),
+      refetchHiveLoops(),
+      refetchIssueCards(),
       refetchLauncher(),
     ]);
   };
@@ -125,6 +166,51 @@ export default function App() {
     setHiveProject("");
     setBanner("Hive dispatch persisted.");
     await Promise.all([refetchHiveRuns(), refetchHiveSummary(), refetchStatus()]);
+  };
+
+  const createHiveLoop = async () => {
+    await bridge.invoke("hive_loop_create", {
+      title: loopTitle() || "Untitled loop",
+      goal: loopGoal() || loopTitle() || "Run an Entrance loop",
+      runtime: loopRuntime(),
+      approachSpace: ["Explore the smallest runnable MVP"],
+      evalSpace: ["CLI loop run produces a keep/reject/block verdict"],
+    });
+    setLoopTitle("");
+    setLoopGoal("");
+    setBanner("Loop contract created.");
+    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+  };
+
+  const runHiveLoop = async (loop: HiveLoop) => {
+    await bridge.invoke("hive_loop_run", {
+      id: loop.id,
+      runtime: loop.runtime || loopRuntime(),
+    });
+    setBanner(`Loop #${loop.id} finished.`);
+    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+  };
+
+  const runIssueLoop = async (loopId: number) => {
+    await bridge.invoke("hive_loop_run", {
+      id: loopId,
+      runtime: loopRuntime(),
+    });
+    setBanner(`Loop #${loopId} finished.`);
+    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+  };
+
+  const addIssueComment = async (issueId: number) => {
+    if (!commentBody().trim()) return;
+    await bridge.invoke("hive_issue_comment", {
+      issueId,
+      author: "human",
+      body: commentBody(),
+    });
+    setCommentBody("");
+    setActiveCommentIssue(null);
+    setBanner(`Commented on issue #${issueId}.`);
+    await refetchIssueCards();
   };
 
   const refreshLauncherIndex = async () => {
@@ -182,6 +268,7 @@ export default function App() {
                   <div><dt>Database</dt><dd>{status()?.db_path ?? "..."}</dd></div>
                   <div><dt>Drawer</dt><dd>{status()?.drawer_entries ?? 0}</dd></div>
                   <div><dt>Hive</dt><dd>{status()?.hive_runs ?? 0}</dd></div>
+                  <div><dt>Loops</dt><dd>{status()?.hive_loops ?? 0}</dd></div>
                   <div><dt>Launcher</dt><dd>{status()?.launcher_entries ?? 0}</dd></div>
                 </dl>
               </article>
@@ -287,6 +374,113 @@ export default function App() {
                     </li>
                   ))}
                 </ul>
+              </article>
+
+              <article class="panel panel--list">
+                <p class="panel-kicker">Loops</p>
+                <h3>Contracts</h3>
+                <ul class="record-list">
+                  {(hiveLoops() ?? []).map((loop) => (
+                    <li class="record-card">
+                      <div class="record-head">
+                        <strong>{loop.title}</strong>
+                        <span>{loop.status}</span>
+                      </div>
+                      <span>{loop.active_phase} / round {loop.current_round}</span>
+                      <code>{loop.runtime}</code>
+                      <div class="record-actions">
+                        <button type="button" onClick={() => void runHiveLoop(loop)}>
+                          Run
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </article>
+            </section>
+          </Match>
+
+          <Match when={view() === "panel"}>
+            <section class="panel-grid panel-grid--board">
+              <article class="panel panel--form">
+                <p class="panel-kicker">Loop</p>
+                <h3>Contract</h3>
+                <input
+                  value={loopTitle()}
+                  onInput={(event) => setLoopTitle(event.currentTarget.value)}
+                  placeholder="Title"
+                />
+                <textarea
+                  value={loopGoal()}
+                  onInput={(event) => setLoopGoal(event.currentTarget.value)}
+                  placeholder="Goal"
+                />
+                <select value={loopRuntime()} onChange={(event) => setLoopRuntime(event.currentTarget.value)}>
+                  <option value="codex">codex</option>
+                  <option value="local">local</option>
+                </select>
+                <button type="button" class="primary-button" onClick={() => void createHiveLoop()}>
+                  Create Loop
+                </button>
+              </article>
+
+              <article class="panel panel--board">
+                <p class="panel-kicker">Issues</p>
+                <h3>Status board</h3>
+                <div class="board-columns">
+                  {["Todo", "Doing", "Blocked", "Done"].map((statusName) => (
+                    <section class="board-column">
+                      <div class="board-column-head">
+                        <strong>{statusName}</strong>
+                        <span>{(issueCards() ?? []).filter((card) => card.issue.status === statusName).length}</span>
+                      </div>
+                      <ul class="record-list">
+                        {(issueCards() ?? [])
+                          .filter((card) => card.issue.status === statusName)
+                          .map((card) => (
+                            <li class="record-card issue-card">
+                              <div class="record-head">
+                                <strong>{card.issue.title}</strong>
+                                <span>#{card.issue.id}</span>
+                              </div>
+                              <p class="muted">{card.issue.summary ?? "No summary"}</p>
+                              <div class="comment-stack">
+                                {card.comments.slice(-3).map((comment) => (
+                                  <div class="comment-line">
+                                    <strong>{comment.author}</strong>
+                                    <span>{comment.body}</span>
+                                  </div>
+                                ))}
+                              </div>
+                              {activeCommentIssue() === card.issue.id ? (
+                                <div class="comment-box">
+                                  <textarea
+                                    value={commentBody()}
+                                    onInput={(event) => setCommentBody(event.currentTarget.value)}
+                                    placeholder="Comment"
+                                  />
+                                  <button type="button" onClick={() => void addIssueComment(card.issue.id)}>
+                                    Send
+                                  </button>
+                                </div>
+                              ) : (
+                                <div class="record-actions">
+                                  {card.issue.loop_id && card.issue.status !== "Done" ? (
+                                    <button type="button" onClick={() => void runIssueLoop(card.issue.loop_id!)}>
+                                      Run
+                                    </button>
+                                  ) : null}
+                                  <button type="button" onClick={() => setActiveCommentIssue(card.issue.id)}>
+                                    Comment
+                                  </button>
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                      </ul>
+                    </section>
+                  ))}
+                </div>
               </article>
             </section>
           </Match>

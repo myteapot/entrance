@@ -45,6 +45,16 @@ Task ledger for dispatch records, engine reports, callbacks, and review state.
 .\entrance.exe hive review 1 approve
 ```
 
+Local agent-loop MVP:
+
+```powershell
+.\entrance.exe hive loop create --title "README loop" --goal "Run a constrained agent loop" --runtime codex
+.\entrance.exe hive loop run 1 --runtime codex
+.\entrance.exe hive loop show 1
+.\entrance.exe hive issue list
+.\entrance.exe hive issue comment 1 --body "Reviewed from the local panel"
+```
+
 ### Launcher
 
 Local application index and launch surface.

@@ -8,6 +8,9 @@ Run all commands from `entrance-src/`.
 cargo run -p entrance-app --bin entrance -- status
 cargo run -p entrance-app --bin entrance -- drawer summary
 cargo run -p entrance-app --bin entrance -- hive summary
+cargo run -p entrance-app --bin entrance -- hive loop create --title "Local loop" --goal "Run the Hive loop MVP" --runtime codex
+cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex
+cargo run -p entrance-app --bin entrance -- hive issue list
 cargo run -p entrance-app --bin entrance -- launcher list
 ```
 

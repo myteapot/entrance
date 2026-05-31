@@ -19,8 +19,11 @@ pub use persona::{Persona, PersonaProfile};
 pub use plugin_api::{Plugin, PluginContext};
 pub use scheduler::{RoundState, Scheduler, TaskCheckpoint, TaskState};
 pub use store::{
-    AppStatus, DrawerEntry, DrawerEntryCreate, DrawerFilter, DrawerMode, HiveRun, HiveRunCreate,
-    LauncherEntry, LauncherEntryCreate, LauncherQuery, MigrationStep, PersistedCommand, Store,
+    AppStatus, DrawerEntry, DrawerEntryCreate, DrawerFilter, DrawerMode, HiveComment,
+    HiveCommentCreate, HiveIssue, HiveIssueCreate, HiveLoopContract, HiveLoopContractCreate,
+    HiveLoopEvidence, HiveLoopEvidenceCreate, HiveLoopStage, HiveLoopStageCreate, HiveLoopVerdict,
+    HiveLoopVerdictCreate, HiveRun, HiveRunCreate, LauncherEntry, LauncherEntryCreate,
+    LauncherQuery, MigrationStep, PersistedCommand, Store,
 };
 pub use supervision::{RetryPolicy, Supervision};
 pub use versioning::{CommitSummary, Versioning};

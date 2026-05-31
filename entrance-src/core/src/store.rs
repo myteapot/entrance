@@ -39,6 +39,86 @@ CREATE TABLE IF NOT EXISTS hive_runs (
     updated_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS hive_loop_contracts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    title               TEXT NOT NULL,
+    goal                TEXT NOT NULL,
+    boundary            TEXT NOT NULL,
+    approach_space_json TEXT NOT NULL,
+    eval_space_json     TEXT NOT NULL,
+    review_surface      TEXT NOT NULL,
+    autonomy_level      TEXT NOT NULL,
+    runtime             TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    active_phase        TEXT NOT NULL,
+    current_round       INTEGER NOT NULL DEFAULT 1,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hive_loop_stages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop_id         INTEGER NOT NULL,
+    round           INTEGER NOT NULL,
+    role            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    summary         TEXT,
+    input_json      TEXT NOT NULL,
+    output_json     TEXT NOT NULL,
+    started_at      TEXT,
+    completed_at    TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    FOREIGN KEY(loop_id) REFERENCES hive_loop_contracts(id)
+);
+
+CREATE TABLE IF NOT EXISTS hive_loop_evidence (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop_id         INTEGER NOT NULL,
+    stage_id        INTEGER,
+    round           INTEGER NOT NULL,
+    kind            TEXT NOT NULL,
+    summary         TEXT NOT NULL,
+    path            TEXT,
+    payload_json    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY(loop_id) REFERENCES hive_loop_contracts(id),
+    FOREIGN KEY(stage_id) REFERENCES hive_loop_stages(id)
+);
+
+CREATE TABLE IF NOT EXISTS hive_loop_verdicts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop_id         INTEGER NOT NULL,
+    round           INTEGER NOT NULL,
+    decision        TEXT NOT NULL,
+    summary         TEXT NOT NULL,
+    score_json      TEXT NOT NULL,
+    evidence_json   TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY(loop_id) REFERENCES hive_loop_contracts(id)
+);
+
+CREATE TABLE IF NOT EXISTS hive_issues (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop_id         INTEGER,
+    title           TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    summary         TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    FOREIGN KEY(loop_id) REFERENCES hive_loop_contracts(id)
+);
+
+CREATE TABLE IF NOT EXISTS hive_comments (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id        INTEGER NOT NULL,
+    author          TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    payload_json    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY(issue_id) REFERENCES hive_issues(id)
+);
+
 CREATE TABLE IF NOT EXISTS launcher_entries (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT NOT NULL,
@@ -75,6 +155,7 @@ pub struct AppStatus {
     pub db_path: String,
     pub drawer_entries: i64,
     pub hive_runs: i64,
+    pub hive_loops: i64,
     pub launcher_entries: i64,
     pub generated_at: String,
 }
@@ -135,6 +216,148 @@ pub struct HiveRunCreate {
     pub project_dir: Option<String>,
     pub summary: Option<String>,
     pub payload_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopContract {
+    pub id: i64,
+    pub title: String,
+    pub goal: String,
+    pub boundary: String,
+    pub approach_space: Vec<String>,
+    pub eval_space: Vec<String>,
+    pub review_surface: String,
+    pub autonomy_level: String,
+    pub runtime: String,
+    pub status: String,
+    pub active_phase: String,
+    pub current_round: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopContractCreate {
+    pub title: String,
+    pub goal: String,
+    pub boundary: String,
+    pub approach_space: Vec<String>,
+    pub eval_space: Vec<String>,
+    pub review_surface: String,
+    pub autonomy_level: String,
+    pub runtime: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopStage {
+    pub id: i64,
+    pub loop_id: i64,
+    pub round: i64,
+    pub role: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub input: serde_json::Value,
+    pub output: serde_json::Value,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopStageCreate {
+    pub loop_id: i64,
+    pub round: i64,
+    pub role: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub input: serde_json::Value,
+    pub output: serde_json::Value,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidence {
+    pub id: i64,
+    pub loop_id: i64,
+    pub stage_id: Option<i64>,
+    pub round: i64,
+    pub kind: String,
+    pub summary: String,
+    pub path: Option<String>,
+    pub payload: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceCreate {
+    pub loop_id: i64,
+    pub stage_id: Option<i64>,
+    pub round: i64,
+    pub kind: String,
+    pub summary: String,
+    pub path: Option<String>,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopVerdict {
+    pub id: i64,
+    pub loop_id: i64,
+    pub round: i64,
+    pub decision: String,
+    pub summary: String,
+    pub score: serde_json::Value,
+    pub evidence: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopVerdictCreate {
+    pub loop_id: i64,
+    pub round: i64,
+    pub decision: String,
+    pub summary: String,
+    pub score: serde_json::Value,
+    pub evidence: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveIssue {
+    pub id: i64,
+    pub loop_id: Option<i64>,
+    pub title: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveIssueCreate {
+    pub loop_id: Option<i64>,
+    pub title: String,
+    pub status: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveComment {
+    pub id: i64,
+    pub issue_id: i64,
+    pub author: String,
+    pub body: String,
+    pub payload: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveCommentCreate {
+    pub issue_id: i64,
+    pub author: String,
+    pub body: String,
+    pub payload: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,6 +587,246 @@ impl Store {
         Ok(())
     }
 
+    pub fn insert_hive_loop_contract(&self, row: HiveLoopContractCreate) -> Result<i64> {
+        let now = timestamp();
+        let approach_space_json = serde_json::to_string(&row.approach_space)?;
+        let eval_space_json = serde_json::to_string(&row.eval_space)?;
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO hive_loop_contracts
+             (title, goal, boundary, approach_space_json, eval_space_json, review_surface, autonomy_level, runtime, status, active_phase, current_round, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'todo', 'explorer', 1, ?9, ?10)",
+            params![
+                row.title,
+                row.goal,
+                row.boundary,
+                approach_space_json,
+                eval_space_json,
+                row.review_surface,
+                row.autonomy_level,
+                row.runtime,
+                now,
+                now
+            ],
+        )?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn list_hive_loop_contracts(&self) -> Result<Vec<HiveLoopContract>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, title, goal, boundary, approach_space_json, eval_space_json, review_surface, autonomy_level, runtime, status, active_phase, current_round, created_at, updated_at
+             FROM hive_loop_contracts ORDER BY updated_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map([], map_hive_loop_contract)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn get_hive_loop_contract(&self, id: i64) -> Result<Option<HiveLoopContract>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, title, goal, boundary, approach_space_json, eval_space_json, review_surface, autonomy_level, runtime, status, active_phase, current_round, created_at, updated_at
+             FROM hive_loop_contracts WHERE id = ?1 LIMIT 1",
+        )?;
+        statement
+            .query_row(params![id], map_hive_loop_contract)
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn update_hive_loop_contract_state(
+        &self,
+        id: i64,
+        status: &str,
+        active_phase: &str,
+        current_round: i64,
+    ) -> Result<()> {
+        let connection = self.connection();
+        connection.execute(
+            "UPDATE hive_loop_contracts
+             SET status = ?2, active_phase = ?3, current_round = ?4, updated_at = ?5
+             WHERE id = ?1",
+            params![id, status, active_phase, current_round, timestamp()],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_hive_loop_stage(&self, row: HiveLoopStageCreate) -> Result<i64> {
+        let now = timestamp();
+        let input_json = serde_json::to_string(&row.input)?;
+        let output_json = serde_json::to_string(&row.output)?;
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO hive_loop_stages
+             (loop_id, round, role, status, summary, input_json, output_json, started_at, completed_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                row.loop_id,
+                row.round,
+                row.role,
+                row.status,
+                row.summary,
+                input_json,
+                output_json,
+                row.started_at,
+                row.completed_at,
+                now,
+                now
+            ],
+        )?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn list_hive_loop_stages(&self, loop_id: i64) -> Result<Vec<HiveLoopStage>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, round, role, status, summary, input_json, output_json, started_at, completed_at, created_at, updated_at
+             FROM hive_loop_stages WHERE loop_id = ?1 ORDER BY round ASC, id ASC",
+        )?;
+        let rows = statement.query_map(params![loop_id], map_hive_loop_stage)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_hive_loop_evidence(&self, row: HiveLoopEvidenceCreate) -> Result<i64> {
+        let now = timestamp();
+        let payload_json = serde_json::to_string(&row.payload)?;
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO hive_loop_evidence
+             (loop_id, stage_id, round, kind, summary, path, payload_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                row.loop_id,
+                row.stage_id,
+                row.round,
+                row.kind,
+                row.summary,
+                row.path,
+                payload_json,
+                now
+            ],
+        )?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn list_hive_loop_evidence(&self, loop_id: i64) -> Result<Vec<HiveLoopEvidence>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, stage_id, round, kind, summary, path, payload_json, created_at
+             FROM hive_loop_evidence WHERE loop_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = statement.query_map(params![loop_id], map_hive_loop_evidence)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_hive_loop_verdict(&self, row: HiveLoopVerdictCreate) -> Result<i64> {
+        let now = timestamp();
+        let score_json = serde_json::to_string(&row.score)?;
+        let evidence_json = serde_json::to_string(&row.evidence)?;
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO hive_loop_verdicts
+             (loop_id, round, decision, summary, score_json, evidence_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                row.loop_id,
+                row.round,
+                row.decision,
+                row.summary,
+                score_json,
+                evidence_json,
+                now
+            ],
+        )?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn list_hive_loop_verdicts(&self, loop_id: i64) -> Result<Vec<HiveLoopVerdict>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, round, decision, summary, score_json, evidence_json, created_at
+             FROM hive_loop_verdicts WHERE loop_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = statement.query_map(params![loop_id], map_hive_loop_verdict)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn insert_hive_issue(&self, row: HiveIssueCreate) -> Result<i64> {
+        let now = timestamp();
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO hive_issues (loop_id, title, status, summary, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![row.loop_id, row.title, row.status, row.summary, now, now],
+        )?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn list_hive_issues(&self) -> Result<Vec<HiveIssue>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, title, status, summary, created_at, updated_at
+             FROM hive_issues ORDER BY updated_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map([], map_hive_issue)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_hive_issues_for_loop(&self, loop_id: i64) -> Result<Vec<HiveIssue>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, title, status, summary, created_at, updated_at
+             FROM hive_issues WHERE loop_id = ?1 ORDER BY updated_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map(params![loop_id], map_hive_issue)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn update_hive_issue_status(
+        &self,
+        id: i64,
+        status: &str,
+        summary: Option<&str>,
+    ) -> Result<()> {
+        let connection = self.connection();
+        connection.execute(
+            "UPDATE hive_issues
+             SET status = ?2, summary = COALESCE(?3, summary), updated_at = ?4
+             WHERE id = ?1",
+            params![id, status, summary, timestamp()],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_hive_comment(&self, row: HiveCommentCreate) -> Result<i64> {
+        let now = timestamp();
+        let payload_json = serde_json::to_string(&row.payload)?;
+        let connection = self.connection();
+        connection.execute(
+            "INSERT INTO hive_comments (issue_id, author, body, payload_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![row.issue_id, row.author, row.body, payload_json, now],
+        )?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn list_hive_comments(&self, issue_id: i64) -> Result<Vec<HiveComment>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, issue_id, author, body, payload_json, created_at
+             FROM hive_comments WHERE issue_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = statement.query_map(params![issue_id], map_hive_comment)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn enqueue_command(
         &self,
         topic: &str,
@@ -522,6 +985,7 @@ impl Store {
             db_path: self.db_path.display().to_string(),
             drawer_entries: self.count("drawer_entries")?,
             hive_runs: self.count("hive_runs")?,
+            hive_loops: self.count("hive_loop_contracts")?,
             launcher_entries: self.count("launcher_entries")?,
             generated_at: timestamp(),
         })
@@ -585,6 +1049,100 @@ fn map_hive_run(row: &Row<'_>) -> rusqlite::Result<HiveRun> {
     })
 }
 
+fn map_hive_loop_contract(row: &Row<'_>) -> rusqlite::Result<HiveLoopContract> {
+    let approach_space_json: String = row.get(4)?;
+    let eval_space_json: String = row.get(5)?;
+    Ok(HiveLoopContract {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        goal: row.get(2)?,
+        boundary: row.get(3)?,
+        approach_space: parse_json_vec(&approach_space_json),
+        eval_space: parse_json_vec(&eval_space_json),
+        review_surface: row.get(6)?,
+        autonomy_level: row.get(7)?,
+        runtime: row.get(8)?,
+        status: row.get(9)?,
+        active_phase: row.get(10)?,
+        current_round: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+    })
+}
+
+fn map_hive_loop_stage(row: &Row<'_>) -> rusqlite::Result<HiveLoopStage> {
+    let input_json: String = row.get(6)?;
+    let output_json: String = row.get(7)?;
+    Ok(HiveLoopStage {
+        id: row.get(0)?,
+        loop_id: row.get(1)?,
+        round: row.get(2)?,
+        role: row.get(3)?,
+        status: row.get(4)?,
+        summary: row.get(5)?,
+        input: parse_json_value(&input_json),
+        output: parse_json_value(&output_json),
+        started_at: row.get(8)?,
+        completed_at: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+fn map_hive_loop_evidence(row: &Row<'_>) -> rusqlite::Result<HiveLoopEvidence> {
+    let payload_json: String = row.get(7)?;
+    Ok(HiveLoopEvidence {
+        id: row.get(0)?,
+        loop_id: row.get(1)?,
+        stage_id: row.get(2)?,
+        round: row.get(3)?,
+        kind: row.get(4)?,
+        summary: row.get(5)?,
+        path: row.get(6)?,
+        payload: parse_json_value(&payload_json),
+        created_at: row.get(8)?,
+    })
+}
+
+fn map_hive_loop_verdict(row: &Row<'_>) -> rusqlite::Result<HiveLoopVerdict> {
+    let score_json: String = row.get(5)?;
+    let evidence_json: String = row.get(6)?;
+    Ok(HiveLoopVerdict {
+        id: row.get(0)?,
+        loop_id: row.get(1)?,
+        round: row.get(2)?,
+        decision: row.get(3)?,
+        summary: row.get(4)?,
+        score: parse_json_value(&score_json),
+        evidence: parse_json_value(&evidence_json),
+        created_at: row.get(7)?,
+    })
+}
+
+fn map_hive_issue(row: &Row<'_>) -> rusqlite::Result<HiveIssue> {
+    Ok(HiveIssue {
+        id: row.get(0)?,
+        loop_id: row.get(1)?,
+        title: row.get(2)?,
+        status: row.get(3)?,
+        summary: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
+fn map_hive_comment(row: &Row<'_>) -> rusqlite::Result<HiveComment> {
+    let payload_json: String = row.get(4)?;
+    Ok(HiveComment {
+        id: row.get(0)?,
+        issue_id: row.get(1)?,
+        author: row.get(2)?,
+        body: row.get(3)?,
+        payload: parse_json_value(&payload_json),
+        created_at: row.get(5)?,
+    })
+}
+
 fn map_launcher_entry(row: &Row<'_>) -> rusqlite::Result<LauncherEntry> {
     Ok(LauncherEntry {
         id: row.get(0)?,
@@ -599,6 +1157,14 @@ fn map_launcher_entry(row: &Row<'_>) -> rusqlite::Result<LauncherEntry> {
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
     })
+}
+
+fn parse_json_vec(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn parse_json_value(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({ "raw": raw }))
 }
 
 fn map_persisted_command(row: &Row<'_>) -> rusqlite::Result<PersistedCommand> {
