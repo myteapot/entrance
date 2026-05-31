@@ -1,11 +1,3 @@
-# Entrance
-
-Entrance 是一个给 `agent loop` 加上 compiler/runtime 约束的本地控制平面。
-
-普通 agent 很有趣，但也有一个明显问题：它可以执行很久，最后结果却和一开始的目标相差很远；执行过程中也可能逐渐偏离原本的意图。程序化语言之所以更稳定，是因为自然语言意图会先被编译成受约束的指令、类型、边界和错误反馈。Entrance 的核心想法，就是把类似的约束层引入 agent 行为。
-
-换句话说，Entrance 不把 agent 当成一个无限自由的聊天执行者，而是把人的目标降低为可观测、可验收、可回滚的 `explore -> do -> evaluate` 串行循环。
-
 ## Core Idea
 
 Entrance 的目标是把人的自然语言目标编译成一份 typed loop contract：
@@ -78,5 +70,7 @@ cargo check --workspace
 cargo test --workspace
 pnpm check
 pnpm build
+
+
 ```
 
