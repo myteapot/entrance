@@ -396,13 +396,32 @@
   margin-top: 10px;
 }
 
-.doctor-actions code {
+.doctor-action-row {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.doctor-action-row code {
   display: block;
   padding: 6px 8px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.035);
   color: var(--text-dim);
   overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  min-width: 0;
+}
+
+.doctor-action-row button {
+  min-width: 58px;
+  border: 1px solid rgba(121, 215, 167, 0.22);
+  border-radius: 8px;
+  background: rgba(121, 215, 167, 0.08);
+  color: var(--text);
+  font-size: 0.78rem;
+  justify-self: start;
 }
 
 .doctor-strip {

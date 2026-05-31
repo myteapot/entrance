@@ -474,6 +474,39 @@ export default function App() {
   };
   const actionErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
+  const writeClipboardText = async (text: string) => {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+        // Browser and Electron focus rules can reject the async clipboard API.
+        // Fall back to a selected textarea so the control remains usable.
+      }
+    }
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    window.focus();
+    textarea.focus({ preventScroll: true });
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.remove();
+    if (!copied) {
+      throw new Error("clipboard is unavailable");
+    }
+  };
+  const copyDoctorAction = async (action: string) => {
+    try {
+      await writeClipboardText(action);
+      setBanner(`Copied next action: ${compactText(action, 96)}`);
+    } catch {
+      setBanner(`Copy unavailable; command: ${compactText(action, 120)}`);
+    }
+  };
   const workerLimitRunArgs = (): LoopRunArgs => {
     const timeoutText = loopWorkerTimeoutSecs().trim();
     const workerTimeoutSecs = timeoutText ? Number.parseInt(timeoutText, 10) : undefined;
@@ -1306,8 +1339,18 @@ export default function App() {
                               ) : null}
                               {doctor.next_actions.length ? (
                                 <div class="doctor-actions">
-                                  {doctor.next_actions.slice(0, 3).map((action) => (
-                                    <code>{action}</code>
+                                  {doctor.next_actions.slice(0, 3).map((action, index) => (
+                                    <div class="doctor-action-row">
+                                      <code>{action}</code>
+                                      <button
+                                        type="button"
+                                        aria-label={`Copy doctor action ${action}`}
+                                        data-testid={`doctor-action-copy-${card.issue.id}-${index}`}
+                                        onClick={() => void copyDoctorAction(action)}
+                                      >
+                                        Copy
+                                      </button>
+                                    </div>
                                   ))}
                                 </div>
                               ) : null}
