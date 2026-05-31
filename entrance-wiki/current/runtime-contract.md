@@ -21,7 +21,9 @@ versioned typed packet envelopes, versioned admission receipts, evidence, and
 versioned verdict receipts.
 Admission receipts include the packet receipt requirements, missing receipt
 fields, and a boolean satisfied flag. Default MVP gates admit packets only when
-their typed receipt requirements are present.
+their typed receipt requirements are present. Worker receipts are stricter than
+plain presence checks: `role_worker` and `runtime_worker` must have `ok=true`
+before the packet can pass admission.
 Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
@@ -34,6 +36,9 @@ For evaluator-path testing, `hive loop run` accepts
 Human decisions are available through `hive issue decide <id>
 <retry|request-review|cancel>` and are recorded as operator comments while
 also moving the linked loop contract state.
+`hive loop run` only starts work when the linked contract is in `todo`; for
+running or terminal states it returns the current report without appending
+duplicate packets, admissions, evidence, verdicts, or comments.
 Issue panel trace summaries are round-aware: they expose the current round,
 current-round packet/admission/evidence/verdict counts, and total historical
 counts so retries do not look like stale verdicts from the previous round.

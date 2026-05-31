@@ -65,6 +65,10 @@ stores the worker transcripts in stage evidence.
 Unknown runtimes return a blocked verdict instead of being silently kept.
 The evaluator decision can be overridden for local simulation with
 `--decision keep|reject|needs-review|blocked`.
+Admission gates reject failed worker receipts, so a role worker with `ok=false`
+blocks at the compiler boundary instead of being treated as valid evidence.
+`hive loop run` is idempotent for non-`todo` contracts; use
+`hive issue decide <id> retry` to start a new round.
 Issue cards expose round-aware trace chips so a retry shows the new current
 round separately from the loop's accumulated history.
 

@@ -175,9 +175,14 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         .get_hive_loop_contract(request.loop_id)?
         .with_context(|| format!("unknown hive loop `{}`", request.loop_id))?;
     let runtime = request.runtime.unwrap_or_else(|| contract.runtime.clone());
-    let runtime_probe = probe_runtime(&runtime);
     let issues = store.list_hive_issues_for_loop(contract.id)?;
     let issue_id = issues.first().map(|issue| issue.id);
+
+    if contract.status != "todo" {
+        return report(store, contract.id);
+    }
+
+    let runtime_probe = probe_runtime(&runtime);
 
     if let Some(issue_id) = issue_id {
         store.update_hive_issue_status(
@@ -1278,10 +1283,14 @@ fn emit_and_admit(
         Some(policy) => {
             let passed = gate_passes(&policy.gate, &packet_payload);
             let result = if passed { "admitted" } else { "rejected" };
-            let outcome = if passed { "passed" } else { "failed" };
+            let reason = if passed {
+                format!("{} passed", policy.gate)
+            } else {
+                gate_failure_reason(&policy.gate, &packet_payload)
+            };
             (
                 result.to_string(),
-                format!("{} {outcome}", policy.gate),
+                reason,
                 Some(policy.gate.as_str()),
                 Some(passed),
             )
@@ -1438,6 +1447,18 @@ fn receipt_requirements_satisfied(payload: &serde_json::Value) -> bool {
     missing.is_empty()
 }
 
+fn gate_failure_reason(gate: &str, payload: &serde_json::Value) -> String {
+    let (_required, missing) = receipt_requirement_status(payload);
+    if missing.is_empty() {
+        format!("{gate} failed")
+    } else {
+        format!(
+            "{gate} failed: missing or invalid receipts {}",
+            missing.join(", ")
+        )
+    }
+}
+
 fn receipt_requirement_status(payload: &serde_json::Value) -> (Vec<String>, Vec<String>) {
     let required = packet_receipt_requirements(payload);
     let body = packet_body(payload);
@@ -1473,6 +1494,9 @@ fn packet_receipt_requirements(payload: &serde_json::Value) -> Vec<String> {
 }
 
 fn receipt_value_present(body: &serde_json::Value, requirement: &str) -> bool {
+    if matches!(requirement, "role_worker" | "runtime_worker") {
+        return body.get(requirement).is_some_and(worker_ok);
+    }
     body.get(requirement).is_some_and(|value| match value {
         serde_json::Value::Null => false,
         serde_json::Value::String(text) => !text.trim().is_empty(),
@@ -2020,6 +2044,25 @@ mod tests {
         assert_eq!(report.issues[0].issue.status, "Done");
         assert!(report.issues[0].comments.len() >= 3);
 
+        let rerun = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+            },
+        )
+        .expect("completed loop run should be idempotent");
+        assert_eq!(rerun.contract.status, "kept");
+        assert_eq!(rerun.packets.len(), report.packets.len());
+        assert_eq!(rerun.admissions.len(), report.admissions.len());
+        assert_eq!(rerun.evidence.len(), report.evidence.len());
+        assert_eq!(rerun.verdicts.len(), report.verdicts.len());
+        assert_eq!(
+            rerun.issues[0].comments.len(),
+            report.issues[0].comments.len()
+        );
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2078,7 +2121,10 @@ mod tests {
         .expect("admission should be recorded");
 
         assert_eq!(admission.result, "rejected");
-        assert_eq!(admission.reason, "runtime_receipts_present failed");
+        assert_eq!(
+            admission.reason,
+            "runtime_receipts_present failed: missing or invalid receipts runtime_worker, role_worker"
+        );
         assert_eq!(
             admission
                 .policy
@@ -2142,20 +2188,20 @@ mod tests {
         .expect("blocked loop should still return a report");
 
         assert_eq!(report.contract.status, "blocked");
-        assert_eq!(report.contract.active_phase, "complete");
+        assert_eq!(report.contract.active_phase, "explorer");
         assert_eq!(report.verdicts.len(), 1);
         assert_eq!(report.verdicts[0].decision, "blocked");
         assert_eq!(
             report.verdicts[0]
                 .score
-                .get("schema_version")
+                .get("reason_code")
                 .and_then(|value| value.as_str()),
-            Some(VERDICT_SCHEMA_VERSION)
+            Some("admission_rejected")
         );
         assert_eq!(
             report.verdicts[0]
                 .score
-                .pointer("/score_vector/runtime_readiness")
+                .pointer("/score_vector/admission_integrity")
                 .and_then(|value| value.as_f64()),
             Some(0.0)
         );
@@ -2166,12 +2212,25 @@ mod tests {
             .expect("issue should exist")
             .comments
             .iter()
-            .any(|comment| comment.body.contains("unsupported-agent")));
-        assert_eq!(report.admissions.len(), 3);
-        assert!(report
-            .admissions
-            .iter()
-            .all(|admission| admission.result == "admitted"));
+            .any(|comment| comment.body.contains("role_worker")));
+        assert_eq!(report.admissions.len(), 1);
+        assert_eq!(report.admissions[0].result, "rejected");
+        assert!(report.admissions[0].reason.contains("role_worker"));
+        assert_eq!(
+            report.admissions[0]
+                .policy
+                .pointer("/receipt/missing/0")
+                .and_then(|value| value.as_str()),
+            Some("role_worker")
+        );
+        assert_eq!(report.packets.len(), 1);
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/role_worker/ok")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -2492,8 +2551,8 @@ mod tests {
             .as_ref()
             .expect("retry card should retain loop trace");
         assert_eq!(retry_trace.current_round, retry_contract.current_round);
-        assert_eq!(retry_trace.packet_count, 3);
-        assert_eq!(retry_trace.admission_count, 3);
+        assert_eq!(retry_trace.packet_count, 1);
+        assert_eq!(retry_trace.admission_count, 1);
         assert_eq!(retry_trace.verdict_count, 1);
         assert_eq!(retry_trace.round_packet_count, 0);
         assert_eq!(retry_trace.round_admission_count, 0);
@@ -2501,7 +2560,7 @@ mod tests {
         assert_eq!(retry_trace.round_verdict_count, 0);
         assert_eq!(retry_trace.round_receipt_required_count, 0);
         assert_eq!(retry_trace.round_receipt_missing_count, 0);
-        assert_eq!(retry_trace.role_worker_count, 3);
+        assert_eq!(retry_trace.role_worker_count, 1);
         assert_eq!(retry_trace.role_worker_ok_count, 0);
         assert_eq!(retry_trace.round_role_worker_count, 0);
         assert_eq!(retry_trace.round_role_worker_ok_count, 0);
