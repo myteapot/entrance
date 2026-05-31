@@ -3695,6 +3695,37 @@ fn operator_evidence_audit_error(
             if evidence_action != comment_action {
                 errors.push("evidence.action_binding".to_string());
             }
+            if row
+                .payload
+                .pointer("/loop/id")
+                .and_then(|value| value.as_i64())
+                != Some(row.loop_id)
+            {
+                errors.push("evidence.loop_id_binding".to_string());
+            }
+            let evidence_round = row
+                .payload
+                .pointer("/loop/round")
+                .and_then(|value| value.as_i64());
+            if evidence_round != Some(row.round) {
+                errors.push("evidence.loop_round_binding".to_string());
+            }
+            if comment
+                .payload
+                .get("loop_id")
+                .and_then(|value| value.as_i64())
+                != Some(row.loop_id)
+            {
+                errors.push("evidence.comment_loop_binding".to_string());
+            }
+            if comment
+                .payload
+                .get("next_round")
+                .and_then(|value| value.as_i64())
+                != evidence_round
+            {
+                errors.push("evidence.comment_next_round_binding".to_string());
+            }
             match evidence_action.map(parse_issue_decision_action) {
                 Some(Ok(action)) => {
                     if row
@@ -3712,6 +3743,19 @@ fn operator_evidence_audit_error(
                         != Some(action.contract_status())
                     {
                         errors.push("evidence.loop_status_binding".to_string());
+                    }
+                    if row
+                        .payload
+                        .pointer("/loop/next_phase")
+                        .and_then(|value| value.as_str())
+                        != Some(action.contract_phase())
+                    {
+                        errors.push("evidence.loop_phase_binding".to_string());
+                    }
+                    if action == IssueDecisionAction::Retry
+                        && !evidence_round.is_some_and(|round| round > 1)
+                    {
+                        errors.push("evidence.retry_round".to_string());
                     }
                 }
                 _ => errors.push("evidence.action".to_string()),
@@ -9850,6 +9894,38 @@ mod tests {
                 }),
             })
             .expect("drifted operator decision evidence should insert");
+        store
+            .insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+                loop_id: created.contract.id,
+                stage_id: None,
+                round: created.contract.current_round,
+                kind: "operator_decision".to_string(),
+                summary: "drifted retry round binding".to_string(),
+                path: None,
+                payload: serde_json::json!({
+                    "schema_version": OPERATOR_DECISION_SCHEMA_VERSION,
+                    "source": "issue/status/comment",
+                    "issue": {
+                        "id": issue_id,
+                        "comment_id": cancel_comment.id,
+                        "from_status": "Todo",
+                        "to_status": "Canceled"
+                    },
+                    "loop": {
+                        "id": created.contract.id + 99,
+                        "next_status": "rejected",
+                        "next_phase": "explorer",
+                        "round": created.contract.current_round + 99
+                    },
+                    "operator": {
+                        "author": "human",
+                        "action": "cancel",
+                        "note": "wrong round",
+                        "comment_body": cancel_comment.body
+                    }
+                }),
+            })
+            .expect("drifted decision round evidence should insert");
 
         let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
         let issue_surface_check = audit_report
@@ -9878,6 +9954,21 @@ mod tests {
             .is_some_and(|fields| fields
                 .iter()
                 .any(|field| field.as_str() == Some("evidence.action_binding")))));
+        assert!(errors.iter().any(|error| error
+            .pointer("/errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|fields| fields
+                .iter()
+                .any(|field| field.as_str() == Some("evidence.loop_id_binding"))
+                && fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("evidence.loop_round_binding"))
+                && fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("evidence.loop_phase_binding"))
+                && fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("evidence.comment_next_round_binding")))));
         let trace_report =
             super::trace(&store, created.contract.id).expect("trace should include audit details");
         assert!(trace_report
@@ -9893,6 +9984,11 @@ mod tests {
             .audit_failure_details
             .iter()
             .any(|detail| detail == "issue_surface:operator_evidence:evidence.action_binding"));
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "issue_surface:operator_evidence:evidence.loop_round_binding"));
         let doctor_report = super::doctor(&store, created.contract.id)
             .expect("doctor should include audit details");
         assert!(doctor_report.audit_failure_details.iter().any(
