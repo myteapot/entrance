@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use entrance_hive::{
-    HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest,
+    HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest, IssueCard,
     IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, ReviewDecision,
 };
 
@@ -10,7 +10,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list\n  entrance hive issue show <id>\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id>\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -145,8 +145,13 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             };
             print_json(&services.hive.loop_create(request)?)
         }
-        [scope, action] if scope == "issue" && action == "list" => {
-            print_json(&services.hive.panel()?)
+        [scope, action, rest @ ..] if scope == "issue" && action == "list" => {
+            let cards = services.hive.panel()?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_board(&cards))
+            } else {
+                print_json(&cards)
+            }
         }
         [scope, action, id] if scope == "issue" && action == "show" => {
             print_json(&services.hive.issue_report(id.parse::<i64>()?)?)
@@ -214,9 +219,94 @@ fn csv_values(value: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+fn compact_issue_board(cards: &[IssueCard]) -> serde_json::Value {
+    const STATUSES: &[&str] = &[
+        "Todo",
+        "Doing",
+        "Blocked",
+        "Needs Review",
+        "Done",
+        "Canceled",
+    ];
+    let columns = STATUSES
+        .iter()
+        .map(|status| {
+            let issues = cards
+                .iter()
+                .filter(|card| card.issue.status == *status)
+                .map(compact_issue_card)
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "status": status,
+                "count": issues.len(),
+                "issues": issues
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue_board.compact.v1",
+        "total": cards.len(),
+        "columns": columns
+    })
+}
+
+fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
+    let latest_comment = card.comments.last().map(|comment| {
+        serde_json::json!({
+            "author": comment.author,
+            "body": compact_text(&comment.body, 180),
+            "created_at": comment.created_at
+        })
+    });
+    serde_json::json!({
+        "id": card.issue.id,
+        "loop_id": card.issue.loop_id,
+        "title": card.issue.title,
+        "status": card.issue.status,
+        "summary": card.issue.summary,
+        "doctor": card.doctor.as_ref().map(|doctor| serde_json::json!({
+            "health": doctor.health,
+            "summary": doctor.summary,
+            "next_actions": doctor.next_actions.iter().take(3).collect::<Vec<_>>()
+        })),
+        "trace": card.trace.as_ref().map(|trace| serde_json::json!({
+            "round": trace.current_round,
+            "decision": trace.last_decision,
+            "reason_code": trace.reason_code,
+            "human_options": trace.human_options,
+            "receipts": {
+                "required": trace.round_receipt_required_count,
+                "missing": trace.round_receipt_missing_count
+            },
+            "workers": {
+                "ok": trace.round_role_worker_ok_count,
+                "total": trace.round_role_worker_count
+            },
+            "audit_failed": trace.audit_failed_count
+        })),
+        "comment_count": card.comments.len(),
+        "latest_comment": latest_comment
+    })
+}
+
+fn compact_text(value: &str, limit: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.len() <= limit {
+        return normalized;
+    }
+    let mut output = normalized
+        .chars()
+        .take(limit.saturating_sub(3))
+        .collect::<String>();
+    output.push_str("...");
+    output
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{flag_present, flag_value};
+    use super::{compact_issue_board, flag_present, flag_value};
+    use entrance_core::{HiveComment, HiveIssue};
+    use entrance_hive::IssueCard;
 
     #[test]
     fn flags_read_values_and_presence_independently() {
@@ -229,5 +319,62 @@ mod tests {
         assert_eq!(flag_value(&args, "--compact"), None);
         assert!(flag_present(&args, "--compact"));
         assert!(!flag_present(&args, "--missing"));
+    }
+
+    #[test]
+    fn compact_issue_board_groups_status_and_latest_comment() {
+        let card = IssueCard {
+            issue: HiveIssue {
+                id: 7,
+                loop_id: Some(3),
+                title: "Loop #3: compact board".to_string(),
+                status: "Blocked".to_string(),
+                summary: Some("Waiting for operator decision".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            comments: vec![HiveComment {
+                id: 11,
+                issue_id: 7,
+                author: "hive".to_string(),
+                body: "Compiler admission blocked at doer.".to_string(),
+                payload: serde_json::json!({}),
+                created_at: "2026-01-01T00:01:00Z".to_string(),
+            }],
+            trace: None,
+            doctor: None,
+        };
+
+        let board = compact_issue_board(&[card]);
+
+        assert_eq!(
+            board
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_board.compact.v1")
+        );
+        assert_eq!(
+            board.pointer("/total").and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        let blocked = board
+            .pointer("/columns/2")
+            .expect("blocked column should be present");
+        assert_eq!(
+            blocked.pointer("/status").and_then(|value| value.as_str()),
+            Some("Blocked")
+        );
+        assert_eq!(
+            blocked
+                .pointer("/issues/0/id")
+                .and_then(|value| value.as_i64()),
+            Some(7)
+        );
+        assert_eq!(
+            blocked
+                .pointer("/issues/0/latest_comment/body")
+                .and_then(|value| value.as_str()),
+            Some("Compiler admission blocked at doer.")
+        );
     }
 }
