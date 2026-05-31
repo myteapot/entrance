@@ -5517,6 +5517,7 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<T
 }
 
 fn codex_worker_prompt(contract: &HiveLoopContract, role: &str) -> String {
+    let expected_action = role_worker_action(role);
     let role_duty = match role {
         "explorer" => {
             "compile the goal into a bounded candidate and confirm the constraints are explicit"
@@ -5537,7 +5538,21 @@ Rules:
 - Do not modify files.
 - Do not make network calls.
 - Keep the response compact.
-- Return only JSON with keys: ok, role, action, evidence_summary, gates.
+- Return a single JSON object only. Do not use markdown fences or prose.
+- The receipt schema is strict:
+  {{
+    "ok": true,
+    "role": "{role_name}",
+    "action": "{expected_action}",
+    "evidence_summary": "one compact sentence",
+    "gates": {{"packet_received": true, "role_bound": true}}
+  }}
+- `ok` must be a boolean.
+- `role` must be the string "{role_name}".
+- `action` must be a non-empty JSON string. Never return `action` as an object,
+  array, or nested structure. Put details in `evidence_summary` instead.
+- `evidence_summary` must be a non-empty string.
+- `gates` must be a non-empty JSON object.
 - Your role duty is: {role_duty}.
 - This is a runtime receipt: validate that you received the typed packet,
   summarize the accepted action for your role, and set ok=true unless you cannot process it.
@@ -5554,6 +5569,7 @@ Eval space: {eval}
 Accepted candidate: Run the local Hive loop MVP packet and report whether the runtime can execute it.
 "#,
         role_name = role,
+        expected_action = expected_action,
         role_duty = role_duty,
         id = contract.id,
         round = contract.current_round,
@@ -6321,10 +6337,54 @@ mod tests {
         );
         assert_eq!(worker_receipt_ok(r#"{"ok":true}"#), Some(false));
         assert_eq!(
+            worker_receipt_ok(
+                r#"{"ok":true,"role":"doer","action":{"accepted":"execute"},"evidence_summary":"done","gates":{"accepted":true}}"#
+            ),
+            Some(false)
+        );
+        let object_action_receipt = serde_json::json!({
+            "ok": true,
+            "role": "doer",
+            "action": { "accepted": "execute" },
+            "evidence_summary": "done",
+            "gates": { "accepted": true }
+        });
+        assert_eq!(
+            worker_receipt_contract_errors(&object_action_receipt, Some("doer")),
+            vec!["action"]
+        );
+        assert_eq!(
             worker_receipt_ok("prefix {\"ok\":false,\"reason\":\"blocked\"} suffix"),
             Some(false)
         );
         assert_eq!(worker_receipt_ok("not json"), None);
+    }
+
+    #[test]
+    fn codex_worker_prompt_declares_strict_receipt_schema() {
+        let contract = HiveLoopContract {
+            id: 42,
+            title: "Prompt contract".to_string(),
+            goal: "Keep worker receipts typed".to_string(),
+            boundary: "No writes".to_string(),
+            approach_space: vec!["Use strict JSON".to_string()],
+            eval_space: vec!["action is a string".to_string()],
+            review_surface: "local-hive-panel".to_string(),
+            autonomy_level: "run-approved-candidates".to_string(),
+            runtime: "codex".to_string(),
+            status: "todo".to_string(),
+            active_phase: "explorer".to_string(),
+            current_round: 1,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let prompt = codex_worker_prompt(&contract, "explorer");
+
+        assert!(prompt.contains(r#""role": "explorer""#));
+        assert!(prompt.contains(r#""action": "compile-candidate""#));
+        assert!(prompt.contains("action` must be a non-empty JSON string"));
+        assert!(prompt.contains("Never return `action` as an object"));
     }
 
     #[test]
