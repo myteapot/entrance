@@ -1,4 +1,4 @@
-import { Match, Switch, createResource, createSignal } from "solid-js";
+import { Match, Show, Switch, createMemo, createResource, createSignal } from "solid-js";
 import Nav from "./components/Nav";
 import { bridge } from "./lib/bridge";
 
@@ -127,6 +127,7 @@ export default function App() {
   const [loopTitle, setLoopTitle] = createSignal("");
   const [loopGoal, setLoopGoal] = createSignal("");
   const [loopRuntime, setLoopRuntime] = createSignal("codex");
+  const [selectedIssueId, setSelectedIssueId] = createSignal<number | null>(null);
   const [activeCommentIssue, setActiveCommentIssue] = createSignal<number | null>(null);
   const [commentBody, setCommentBody] = createSignal("");
   const [pendingLoopActions, setPendingLoopActions] = createSignal<Record<number, string>>({});
@@ -162,6 +163,13 @@ export default function App() {
   const [launcherItems, { refetch: refetchLauncher }] = createResource(launcherQuery, async (query) =>
     bridge.invoke<LauncherResult[]>("launcher_search", { query, limit: 12 }),
   );
+
+  const selectedIssueCard = createMemo(() => {
+    const cards = issueCards() ?? [];
+    if (cards.length === 0) return null;
+    const issueId = selectedIssueId();
+    return cards.find((card) => card.issue.id === issueId) ?? cards[0];
+  });
 
   const refreshAll = async () => {
     await Promise.all([
@@ -261,6 +269,7 @@ export default function App() {
 
   const runIssueLoop = async (card: IssueCard) => {
     if (!card.issue.loop_id || issuePendingLabel(card.issue.id)) return;
+    setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Running");
     try {
       await bridge.invoke("hive_loop_run", {
@@ -278,6 +287,7 @@ export default function App() {
 
   const decideIssue = async (issueId: number, action: string) => {
     if (issuePendingLabel(issueId)) return;
+    setSelectedIssueId(issueId);
     setPendingIssue(issueId, issuePendingActionLabel(action));
     try {
       await bridge.invoke("hive_issue_decide", {
@@ -296,6 +306,7 @@ export default function App() {
 
   const retryIssueLoop = async (card: IssueCard) => {
     if (issuePendingLabel(card.issue.id)) return;
+    setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Retrying");
     try {
       await bridge.invoke("hive_issue_decide", {
@@ -320,6 +331,7 @@ export default function App() {
 
   const addIssueComment = async (issueId: number) => {
     if (!commentBody().trim() || issuePendingLabel(issueId)) return;
+    setSelectedIssueId(issueId);
     setPendingIssue(issueId, "Sending");
     try {
       await bridge.invoke("hive_issue_comment", {
@@ -407,6 +419,42 @@ export default function App() {
 
   const traceCountLabel = (label: string, current: number, total: number) =>
     total > current ? `${label} ${current}/${total}` : `${label} ${current}`;
+
+  const issueDetailRows = (card: IssueCard) => {
+    const trace = card.trace;
+    return [
+      ["Status", card.issue.status],
+      ["Loop", card.issue.loop_id ? `#${card.issue.loop_id}` : "unlinked"],
+      ["Round", trace ? String(trace.current_round) : "pending"],
+      [
+        "Packets",
+        trace ? `${trace.round_packet_count}/${trace.packet_count}` : "pending",
+      ],
+      [
+        "Admissions",
+        trace ? `${trace.round_admission_count}/${trace.admission_count}` : "pending",
+      ],
+      ["Evidence", trace ? `${trace.round_evidence_count}/${trace.evidence_count}` : "pending"],
+      ["Verdicts", trace ? `${trace.round_verdict_count}/${trace.verdict_count}` : "pending"],
+      [
+        "Receipts",
+        trace
+          ? `${trace.round_receipt_required_count - trace.round_receipt_missing_count}/${trace.round_receipt_required_count}`
+          : "pending",
+      ],
+      [
+        "Workers",
+        trace ? `${trace.round_role_worker_ok_count}/${trace.round_role_worker_count}` : "pending",
+      ],
+      ["Gate", trace?.last_admission_gate ?? "pending"],
+      ["Decision", trace?.last_decision ?? "pending"],
+      ["Reason", trace?.reason_code ?? "pending"],
+      ["Packet", schemaLabel(trace?.packet_schema)],
+      ["Admission", schemaLabel(trace?.admission_schema)],
+      ["Verdict", schemaLabel(trace?.verdict_schema)],
+      ["Worker", workerLabel(card) ?? "pending"],
+    ];
+  };
 
   return (
     <div class="app-shell">
@@ -579,27 +627,57 @@ export default function App() {
 
           <Match when={view() === "panel"}>
             <section class="panel-grid panel-grid--board">
-              <article class="panel panel--form">
-                <p class="panel-kicker">Loop</p>
-                <h3>Contract</h3>
-                <input
-                  value={loopTitle()}
-                  onInput={(event) => setLoopTitle(event.currentTarget.value)}
-                  placeholder="Title"
-                />
-                <textarea
-                  value={loopGoal()}
-                  onInput={(event) => setLoopGoal(event.currentTarget.value)}
-                  placeholder="Goal"
-                />
-                <select value={loopRuntime()} onChange={(event) => setLoopRuntime(event.currentTarget.value)}>
-                  <option value="codex">codex</option>
-                  <option value="local">local</option>
-                </select>
-                <button type="button" class="primary-button" onClick={() => void createHiveLoop()}>
-                  Create Loop
-                </button>
-              </article>
+              <div class="panel-stack">
+                <article class="panel panel--form">
+                  <p class="panel-kicker">Loop</p>
+                  <h3>Contract</h3>
+                  <input
+                    value={loopTitle()}
+                    onInput={(event) => setLoopTitle(event.currentTarget.value)}
+                    placeholder="Title"
+                  />
+                  <textarea
+                    value={loopGoal()}
+                    onInput={(event) => setLoopGoal(event.currentTarget.value)}
+                    placeholder="Goal"
+                  />
+                  <select value={loopRuntime()} onChange={(event) => setLoopRuntime(event.currentTarget.value)}>
+                    <option value="codex">codex</option>
+                    <option value="local">local</option>
+                  </select>
+                  <button type="button" class="primary-button" onClick={() => void createHiveLoop()}>
+                    Create Loop
+                  </button>
+                </article>
+
+                <article class="panel panel--detail">
+                  <p class="panel-kicker">Issue</p>
+                  <Show when={selectedIssueCard()} keyed fallback={<p class="muted">No issues</p>}>
+                    {(card) => (
+                      <>
+                        <h3>{card.issue.title}</h3>
+                        <p class="muted">{card.issue.summary ?? "No summary"}</p>
+                        <dl class="detail-grid">
+                          {issueDetailRows(card).map(([label, value]) => (
+                            <div>
+                              <dt>{label}</dt>
+                              <dd>{value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                        <div class="comment-stack comment-stack--detail">
+                          {card.comments.map((comment) => (
+                            <div class="comment-line">
+                              <strong>{comment.author}</strong>
+                              <span>{comment.body}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </Show>
+                </article>
+              </div>
 
               <article class="panel panel--board">
                 <p class="panel-kicker">Issues</p>
@@ -615,7 +693,13 @@ export default function App() {
                         {(issueCards() ?? [])
                           .filter((card) => card.issue.status === statusName)
                           .map((card) => (
-                            <li class="record-card issue-card">
+                            <li
+                              class={
+                                selectedIssueCard()?.issue.id === card.issue.id
+                                  ? "record-card issue-card issue-card--selected"
+                                  : "record-card issue-card"
+                              }
+                            >
                               <div class="record-head">
                                 <strong>{card.issue.title}</strong>
                                 <span>#{card.issue.id}</span>
@@ -743,10 +827,16 @@ export default function App() {
                                       {issuePendingLabel(card.issue.id) ?? "Cancel"}
                                     </button>
                                   ) : null}
+                                  <button type="button" onClick={() => setSelectedIssueId(card.issue.id)}>
+                                    Details
+                                  </button>
                                   <button
                                     type="button"
                                     disabled={Boolean(issuePendingLabel(card.issue.id))}
-                                    onClick={() => setActiveCommentIssue(card.issue.id)}
+                                    onClick={() => {
+                                      setSelectedIssueId(card.issue.id);
+                                      setActiveCommentIssue(card.issue.id);
+                                    }}
                                   >
                                     Comment
                                   </button>
