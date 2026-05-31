@@ -140,6 +140,7 @@ type IssueCard = {
       worker_timeout_secs: number | null;
       worker_attempt_count: number | null;
       worker_max_attempts: number | null;
+      worker_retry_exhausted: boolean | null;
       transcript_excerpt: string | null;
     }>;
     stages: Array<{
@@ -988,6 +989,9 @@ export default function App() {
                                   ) : null}
                                   {workerAttemptLabel(evidence) ? (
                                     <span class="trace-pill">{workerAttemptLabel(evidence)}</span>
+                                  ) : null}
+                                  {evidence.worker_retry_exhausted === true ? (
+                                    <span class="trace-pill trace-pill--warn">retry exhausted</span>
                                   ) : null}
                                   {evidence.blocked_phase ? (
                                     <span class="trace-pill trace-pill--warn">blocked {evidence.blocked_phase}</span>

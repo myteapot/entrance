@@ -237,6 +237,7 @@ pub struct IssueEvidenceSummary {
     pub worker_timeout_secs: Option<u64>,
     pub worker_attempt_count: Option<u64>,
     pub worker_max_attempts: Option<u64>,
+    pub worker_retry_exhausted: Option<bool>,
     pub transcript_excerpt: Option<String>,
 }
 
@@ -758,6 +759,10 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .iter()
         .filter_map(|admission| admission_audit_errors(admission, &packet_by_id))
         .collect::<Vec<_>>();
+    let worker_errors = packets
+        .iter()
+        .filter_map(worker_receipt_audit_errors)
+        .collect::<Vec<_>>();
     let verdict_errors = verdicts
         .iter()
         .filter_map(verdict_audit_errors)
@@ -806,6 +811,16 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
                 admission_errors.len()
             ),
             serde_json::json!({ "admission_errors": admission_errors }),
+        ),
+        audit_check(
+            "worker_receipts",
+            worker_errors.is_empty(),
+            format!(
+                "{} packets inspected; {} worker receipt issues.",
+                packets.len(),
+                worker_errors.len()
+            ),
+            serde_json::json!({ "worker_errors": worker_errors }),
         ),
         audit_check(
             "verdict_packets",
@@ -956,6 +971,47 @@ fn admission_audit_errors(
         Some(serde_json::json!({
             "admission_id": admission.id,
             "packet_id": admission.packet_id,
+            "errors": errors
+        }))
+    }
+}
+
+fn worker_receipt_audit_errors(packet: &HiveLoopPacket) -> Option<serde_json::Value> {
+    let Some(worker) = packet_role_worker(&packet.payload) else {
+        return None;
+    };
+    let mut errors = Vec::new();
+    if worker
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .map_or(true, |value| value.trim().is_empty())
+    {
+        errors.push("kind".to_string());
+    }
+    if worker.get("ok").and_then(|value| value.as_bool()).is_none() {
+        errors.push("ok".to_string());
+    }
+    match worker.get("timeout_secs").and_then(|value| value.as_u64()) {
+        Some(1..=MAX_WORKER_TIMEOUT_SECS) => {}
+        _ => errors.push("timeout_secs".to_string()),
+    }
+    let attempt_count = worker.get("attempt_count").and_then(|value| value.as_u64());
+    let max_attempts = worker.get("max_attempts").and_then(|value| value.as_u64());
+    match max_attempts {
+        Some(1..=MAX_WORKER_ATTEMPTS) => {}
+        _ => errors.push("max_attempts".to_string()),
+    }
+    match (attempt_count, max_attempts) {
+        (Some(count), Some(max)) if count <= max => {}
+        _ => errors.push("attempt_count".to_string()),
+    }
+
+    if errors.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "packet_id": packet.id,
+            "object_kind": packet.object_kind,
             "errors": errors
         }))
     }
@@ -1536,6 +1592,9 @@ fn issue_evidence_summary(
         worker_max_attempts: worker
             .and_then(|value| value.get("max_attempts"))
             .and_then(|value| value.as_u64()),
+        worker_retry_exhausted: worker
+            .and_then(|value| value.get("retry_exhausted"))
+            .and_then(|value| value.as_bool()),
         transcript_excerpt: worker
             .and_then(worker_transcript_excerpt)
             .map(|value| truncate_text(&value, 240)),
@@ -3387,6 +3446,7 @@ mod tests {
         assert_eq!(doer_evidence.worker_timeout_secs, Some(7));
         assert_eq!(doer_evidence.worker_attempt_count, Some(1));
         assert_eq!(doer_evidence.worker_max_attempts, Some(2));
+        assert_eq!(doer_evidence.worker_retry_exhausted, None);
         assert!(doer_evidence
             .transcript_excerpt
             .as_deref()
@@ -3489,6 +3549,15 @@ mod tests {
                 && check
                     .details
                     .pointer("/packet_errors")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|errors| errors.is_empty())
+        }));
+        assert!(audit_report.checks.iter().any(|check| {
+            check.name == "worker_receipts"
+                && check.passed
+                && check
+                    .details
+                    .pointer("/worker_errors")
                     .and_then(|value| value.as_array())
                     .is_some_and(|errors| errors.is_empty())
         }));
@@ -3795,6 +3864,7 @@ mod tests {
         assert_eq!(blocked_evidence.worker_timeout_secs, Some(5));
         assert_eq!(blocked_evidence.worker_attempt_count, Some(0));
         assert_eq!(blocked_evidence.worker_max_attempts, Some(2));
+        assert_eq!(blocked_evidence.worker_retry_exhausted, None);
         assert!(blocked_evidence
             .operator_options
             .iter()
