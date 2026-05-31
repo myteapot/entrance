@@ -1529,11 +1529,12 @@ fn doctor_next_actions(
 ) -> Vec<String> {
     let mut actions = Vec::new();
     if !audit_passed {
-        actions.push(format!("entrance hive loop audit {loop_id}"));
+        actions.push(compact_audit_command(loop_id));
         actions.push(format!("entrance hive loop evidence {loop_id}"));
     }
     match health {
         "ok" => {
+            actions.push(compact_audit_command(loop_id));
             actions.push(format!("entrance hive loop trace {loop_id}"));
             actions.push(format!("entrance hive loop evidence {loop_id}"));
         }
@@ -1561,7 +1562,7 @@ fn doctor_next_actions(
             }
         }
         "audit_failed" => {
-            actions.push(format!("entrance hive loop audit {loop_id}"));
+            actions.push(compact_audit_command(loop_id));
             actions.push(format!("entrance hive loop evidence {loop_id}"));
         }
         "worker_failed" => {
@@ -1583,6 +1584,10 @@ fn doctor_next_actions(
         }
     }
     deduped
+}
+
+fn compact_audit_command(loop_id: i64) -> String {
+    format!("entrance hive loop audit {loop_id} --compact")
 }
 
 fn pending_run_command(loop_id: i64, issue_id: Option<i64>, runtime: &str) -> String {
@@ -6150,6 +6155,25 @@ mod tests {
         assert_eq!(
             doctor_next_actions("pending", 4, None, "local", true),
             vec!["entrance hive loop run 4 --runtime local --compact"]
+        );
+    }
+
+    #[test]
+    fn doctor_next_actions_prefer_compact_audit_gate() {
+        assert_eq!(
+            doctor_next_actions("ok", 4, Some(9), "codex", true),
+            vec![
+                "entrance hive loop audit 4 --compact",
+                "entrance hive loop trace 4",
+                "entrance hive loop evidence 4"
+            ]
+        );
+        assert_eq!(
+            doctor_next_actions("audit_failed", 4, Some(9), "codex", false),
+            vec![
+                "entrance hive loop audit 4 --compact",
+                "entrance hive loop evidence 4"
+            ]
         );
     }
 
