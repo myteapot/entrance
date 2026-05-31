@@ -553,14 +553,15 @@ export default function App() {
       throw new Error("clipboard is unavailable");
     }
   };
-  const copyDoctorAction = async (action: string) => {
+  const copyCommandAction = async (label: string, action: string) => {
     try {
       await writeClipboardText(action);
-      setBanner(`Copied next action: ${compactText(action, 96)}`);
+      setBanner(`Copied ${label}: ${compactText(action, 96)}`);
     } catch {
       setBanner(`Copy unavailable; command: ${compactText(action, 120)}`);
     }
   };
+  const copyDoctorAction = (action: string) => copyCommandAction("next action", action);
   const workerLimitRunArgs = (): LoopRunArgs => {
     const timeoutText = loopWorkerTimeoutSecs().trim();
     const workerTimeoutSecs = timeoutText ? Number.parseInt(timeoutText, 10) : undefined;
@@ -1075,11 +1076,43 @@ export default function App() {
     card.doctor?.audit_failure_details.length
       ? card.doctor.audit_failure_details
       : card.trace?.audit_failure_details ?? [];
+  const loopAuditCommand = (card: IssueCard) =>
+    card.issue.loop_id ? `entrance hive loop audit ${card.issue.loop_id} --compact` : null;
+  const loopEvidenceCommand = (card: IssueCard) =>
+    card.issue.loop_id ? `entrance hive loop evidence ${card.issue.loop_id}` : null;
 
   const compactAuditFailureDetail = (detail: string) => {
     const parts = detail.split(":").filter(Boolean);
     if (parts.length < 2) return detail;
     return `${parts[0]} / ${parts[parts.length - 1]}`;
+  };
+
+  const issueAuditQuickActions = (card: IssueCard) => {
+    const auditCommand = loopAuditCommand(card);
+    const evidenceCommand = loopEvidenceCommand(card);
+    if (!auditCommand || !evidenceCommand) return null;
+    return (
+      <div class="audit-preview-actions">
+        <button
+          type="button"
+          aria-label={`Copy compact audit for issue #${card.issue.id}`}
+          data-testid={`issue-audit-copy-${card.issue.id}`}
+          title={auditCommand}
+          onClick={() => void copyCommandAction("audit command", auditCommand)}
+        >
+          Audit
+        </button>
+        <button
+          type="button"
+          aria-label={`Copy evidence command for issue #${card.issue.id}`}
+          data-testid={`issue-evidence-copy-${card.issue.id}`}
+          title={evidenceCommand}
+          onClick={() => void copyCommandAction("evidence command", evidenceCommand)}
+        >
+          Evidence
+        </button>
+      </div>
+    );
   };
 
   const issueDetailRows = (card: IssueCard) => {
@@ -1760,6 +1793,7 @@ export default function App() {
                                   {cardAuditFailureDetails(card).length > 2 ? (
                                     <span>+{cardAuditFailureDetails(card).length - 2} more</span>
                                   ) : null}
+                                  {issueAuditQuickActions(card)}
                                 </div>
                               ) : null}
                               {card.trace ? (

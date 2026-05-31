@@ -517,6 +517,21 @@
   overflow-wrap: anywhere;
 }
 
+.audit-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.audit-preview-actions button {
+  padding: 5px 8px;
+  border: 1px solid rgba(121, 215, 167, 0.22);
+  border-radius: 8px;
+  background: rgba(121, 215, 167, 0.08);
+  color: var(--text);
+  font-size: 0.72rem;
+}
+
 .panel--board .issue-card .trace-strip {
   max-height: 156px;
   overflow: hidden;
