@@ -607,10 +607,29 @@ export default function App() {
     }
     setSelectedIssueId(issueId);
     setActiveCommentComposer({ issueId, surface });
+    focusIssueComment(issueId, surface);
   };
 
   const closeIssueComment = (issueId: number) => {
     clearIssueComposer(issueId);
+  };
+  const focusIssueComment = (issueId: number, surface: CommentSurface) => {
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(`[data-testid="issue-comment-${surface}-${issueId}"]`)
+        ?.focus();
+    }, 0);
+  };
+  const handleCommentKeyDown = (event: KeyboardEvent, issueId: number) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      void addIssueComment(issueId);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeIssueComment(issueId);
+    }
   };
 
   const addIssueComment = async (issueId: number) => {
@@ -1285,6 +1304,7 @@ export default function App() {
                               data-testid={`issue-comment-detail-${card.issue.id}`}
                               value={commentBody()}
                               onInput={(event) => setCommentBody(event.currentTarget.value)}
+                              onKeyDown={(event) => handleCommentKeyDown(event, card.issue.id)}
                               placeholder="Comment"
                             />
                             <button
@@ -1622,6 +1642,7 @@ export default function App() {
                                     data-testid={`issue-comment-board-${card.issue.id}`}
                                     value={commentBody()}
                                     onInput={(event) => setCommentBody(event.currentTarget.value)}
+                                    onKeyDown={(event) => handleCommentKeyDown(event, card.issue.id)}
                                     placeholder="Comment"
                                   />
                                   <button
