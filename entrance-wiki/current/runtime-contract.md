@@ -47,8 +47,10 @@ plus the raw attempt receipts on codex workers.
 Loop audit includes a `worker_receipts` check that verifies worker receipts
 carry bounded timeout and attempt metadata, plus a `runtime_policy` check that
 verifies the contract runtime and current-round worker receipt kind/mode values
-against the registry. The `issue_surface` check verifies linked issue status, typed
-comments, and operator comment/decision evidence so the control plane is
+against the registry. The `verdict_packets` check verifies decision bindings,
+required score-vector metrics, gate booleans, human options, and reason-code
+evidence bindings. The `issue_surface` check verifies linked issue status,
+typed comments, and operator comment/decision evidence so the control plane is
 auditable instead of only visible.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.

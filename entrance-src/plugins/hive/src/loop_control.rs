@@ -24,6 +24,12 @@ const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
+const VERDICT_SCORE_METRICS: &[&str] = &[
+    "stage_completeness",
+    "runtime_readiness",
+    "evidence_presence",
+    "admission_integrity",
+];
 const DEFAULT_WORKER_TIMEOUT_SECS: u64 = 60;
 const MAX_WORKER_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_WORKER_ATTEMPTS: u64 = 1;
@@ -1599,6 +1605,22 @@ fn runtime_policy_spec<'a>(
 
 fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> {
     let mut errors = Vec::new();
+    let score_decision = verdict
+        .score
+        .get("decision")
+        .and_then(|value| value.as_str());
+    let evidence_decision = verdict
+        .evidence
+        .get("decision")
+        .and_then(|value| value.as_str());
+    let score_reason = verdict
+        .score
+        .get("reason_code")
+        .and_then(|value| value.as_str());
+    let evidence_reason = verdict
+        .evidence
+        .get("reason_code")
+        .and_then(|value| value.as_str());
     if verdict
         .score
         .get("schema_version")
@@ -1610,20 +1632,53 @@ fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> 
     if !decision_label_allowed(&verdict.decision) {
         errors.push("decision".to_string());
     }
-    if verdict
-        .score
-        .get("decision")
-        .and_then(|value| value.as_str())
-        != Some(verdict.decision.as_str())
-    {
+    if score_decision != Some(verdict.decision.as_str()) {
         errors.push("score.decision_binding".to_string());
     }
-    if !verdict
+    if evidence_decision != Some(verdict.decision.as_str()) {
+        errors.push("evidence.decision_binding".to_string());
+    }
+    if score_reason.is_none() {
+        errors.push("score.reason_code".to_string());
+    }
+    if evidence_reason.is_none() {
+        errors.push("evidence.reason_code".to_string());
+    }
+    if score_reason.is_some() && evidence_reason.is_some() && score_reason != evidence_reason {
+        errors.push("reason_code.binding".to_string());
+    }
+    if verdict.score.get("gate_results").map_or(true, |value| {
+        !value.is_object() || value.as_object().is_some_and(serde_json::Map::is_empty)
+    }) {
+        errors.push("score.gate_results".to_string());
+    }
+    match verdict.score.get("score_vector") {
+        Some(score_vector) if score_vector.is_object() => {
+            errors.extend(verdict_score_vector_errors(
+                score_vector,
+                verdict.decision.as_str(),
+            ));
+        }
+        _ => errors.push("score.score_vector".to_string()),
+    }
+    match verdict
         .score
-        .get("score_vector")
-        .is_some_and(serde_json::Value::is_object)
+        .get("gates_passed")
+        .and_then(|value| value.as_bool())
     {
-        errors.push("score.score_vector".to_string());
+        Some(value) if value == (verdict.decision == "keep") => {}
+        _ => errors.push("score.gates_passed".to_string()),
+    }
+    match verdict
+        .score
+        .get("operator_review_needed")
+        .and_then(|value| value.as_bool())
+    {
+        Some(value) if value == (verdict.decision != "keep") => {}
+        _ => errors.push("score.operator_review_needed".to_string()),
+    }
+    if human_options(&verdict.score) != expected_human_options_for_decision(&verdict.decision) {
+        errors.push("score.human_options".to_string());
     }
     if verdict
         .evidence
@@ -1642,6 +1697,34 @@ fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> 
             "round": verdict.round,
             "errors": errors
         }))
+    }
+}
+
+fn verdict_score_vector_errors(score_vector: &serde_json::Value, decision: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+    for metric in VERDICT_SCORE_METRICS {
+        let value = score_vector.get(*metric);
+        if *metric == "runtime_readiness"
+            && decision == "blocked"
+            && value == Some(&serde_json::Value::Null)
+        {
+            continue;
+        }
+        match value.and_then(|value| value.as_f64()) {
+            Some(value) if (0.0..=1.0).contains(&value) => {}
+            _ => errors.push(format!("score.score_vector.{metric}")),
+        }
+    }
+    errors
+}
+
+fn expected_human_options_for_decision(decision: &str) -> Vec<String> {
+    match decision {
+        "keep" => option_list(&["comment"]),
+        "reject" => option_list(&["comment", "retry"]),
+        "needs-review" => option_list(&["comment", "retry", "cancel"]),
+        "blocked" => option_list(&["comment", "retry", "request-review", "cancel"]),
+        _ => Vec::new(),
     }
 }
 
@@ -4631,6 +4714,68 @@ mod tests {
             ..output
         };
         assert!(!codex_worker_success(&timed_out, Some(true)));
+    }
+
+    #[test]
+    fn verdict_audit_rejects_inconsistent_score_contract() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-verdict-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Verdict audit loop".to_string(),
+                goal: "Detect inconsistent typed verdict score contracts".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+
+        let mut verdict = report.verdicts[0].clone();
+        verdict.score["gates_passed"] = serde_json::json!(false);
+        verdict.score["human_options"] = serde_json::json!(["comment", "retry"]);
+        verdict.score["score_vector"]["runtime_readiness"] = serde_json::json!(1.5);
+        verdict.evidence["decision"] = serde_json::json!("blocked");
+        verdict.evidence["reason_code"] = serde_json::json!("different_reason");
+
+        let errors = verdict_audit_errors(&verdict).expect("verdict should fail audit");
+        let fields = errors
+            .get("errors")
+            .and_then(|value| value.as_array())
+            .expect("verdict audit should return error fields")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(fields.contains(&"score.gates_passed"));
+        assert!(fields.contains(&"score.human_options"));
+        assert!(fields.contains(&"score.score_vector.runtime_readiness"));
+        assert!(fields.contains(&"evidence.decision_binding"));
+        assert!(fields.contains(&"reason_code.binding"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
