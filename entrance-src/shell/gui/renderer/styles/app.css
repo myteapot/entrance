@@ -241,14 +241,20 @@
 
 .board-columns {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  grid-template-columns: repeat(6, minmax(220px, 1fr));
   gap: 12px;
   align-items: start;
-  overflow-x: visible;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
 }
 
 .board-column {
-  min-width: 0;
+  min-width: 220px;
+}
+
+.board-column-list {
+  min-height: 88px;
 }
 
 .board-column-head {
@@ -276,6 +282,19 @@
 .issue-card--selected {
   border-color: rgba(230, 184, 79, 0.42);
   background: rgba(230, 184, 79, 0.045);
+}
+
+.issue-card--empty {
+  display: grid;
+  min-height: 72px;
+  place-items: center;
+  border-style: dashed;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.issue-card--empty span {
+  margin-top: 0;
 }
 
 .detail-grid {

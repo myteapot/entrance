@@ -236,6 +236,7 @@ type CommentPill = {
   evidenceId?: number;
 };
 
+const ISSUE_STATUSES = ["Todo", "Doing", "Blocked", "Needs Review", "Done", "Canceled"] as const;
 const COMMENT_CARD_PREVIEW_LIMIT = 132;
 const COMMENT_DETAIL_PREVIEW_LIMIT = 360;
 
@@ -265,6 +266,8 @@ const commentSchemaLabel = (comment: IssueComment) => {
   const schema = commentPayloadString(comment, "schema_version");
   return schema ? schema.split(".").slice(-2).join(".") : null;
 };
+
+const issueStatusTestId = (statusName: string) => statusName.toLowerCase().replace(/\s+/g, "-");
 
 const commentPills = (comment: IssueComment) => {
   const source = commentPayloadString(comment, "source") ?? comment.author;
@@ -364,6 +367,8 @@ export default function App() {
     return cards.find((card) => card.issue.id === issueId) ?? cards[0];
   });
   const selectedIssueDoctor = createMemo(() => selectedIssueCard()?.doctor ?? null);
+  const issueCardsForStatus = (statusName: string) =>
+    (issueCards() ?? []).filter((card) => card.issue.status === statusName);
   const revealIssueDetail = () => {
     window.setTimeout(() => {
       issueDetailPanel?.scrollIntoView({ block: "start", behavior: "auto" });
@@ -1646,16 +1651,18 @@ export default function App() {
                 <p class="panel-kicker">Issues</p>
                 <h3>Status board</h3>
                 <div class="board-columns">
-                  {["Todo", "Doing", "Blocked", "Needs Review", "Done", "Canceled"].map((statusName) => (
-                    <section class="board-column">
+                  {ISSUE_STATUSES.map((statusName) => (
+                    <section
+                      class="board-column"
+                      data-testid={`issue-column-${issueStatusTestId(statusName)}`}
+                    >
                       <div class="board-column-head">
                         <strong>{statusName}</strong>
-                        <span>{(issueCards() ?? []).filter((card) => card.issue.status === statusName).length}</span>
+                        <span>{issueCardsForStatus(statusName).length}</span>
                       </div>
-                      <ul class="record-list">
-                        {(issueCards() ?? [])
-                          .filter((card) => card.issue.status === statusName)
-                          .map((card) => (
+                      <ul class="record-list board-column-list">
+                        {issueCardsForStatus(statusName).length ? (
+                          issueCardsForStatus(statusName).map((card) => (
                             <li
                               class={
                                 selectedIssueCard()?.issue.id === card.issue.id
@@ -1912,7 +1919,12 @@ export default function App() {
                                 </div>
                               )}
                             </li>
-                          ))}
+                          ))
+                        ) : (
+                          <li class="record-card issue-card issue-card--empty">
+                            <span>No issues</span>
+                          </li>
+                        )}
                       </ul>
                     </section>
                   ))}
