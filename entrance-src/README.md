@@ -70,7 +70,8 @@ loop contract.
 `hive loop trace <id>` returns the compact round-aware health view, including
 the evaluator score vector, without packet transcripts.
 `hive loop evidence <id>` returns the compact evidence ledger with stage role,
-admission result, worker receipt, and short transcript excerpts.
+admission result, worker receipt, missing receipts, operator options, and short
+transcript excerpts.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcripts in stage evidence.

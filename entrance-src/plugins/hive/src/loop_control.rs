@@ -192,6 +192,9 @@ pub struct IssueEvidenceSummary {
     pub summary: String,
     pub schema_version: Option<String>,
     pub admission_result: Option<String>,
+    pub blocked_phase: Option<String>,
+    pub missing_receipts: Vec<String>,
+    pub operator_options: Vec<String>,
     pub worker_kind: Option<String>,
     pub worker_mode: Option<String>,
     pub worker_ok: Option<bool>,
@@ -1023,6 +1026,13 @@ fn issue_evidence_summary(
             .or_else(|| row.payload.get("result"))
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned),
+        blocked_phase: row
+            .payload
+            .get("phase")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        missing_receipts: string_array_at(&row.payload, "/admission_receipt/receipt/missing"),
+        operator_options: string_array_at(&row.payload, "/operator_options"),
         worker_kind: worker
             .and_then(|value| value.get("kind"))
             .and_then(|value| value.as_str())
@@ -1108,6 +1118,20 @@ fn receipt_array_len(value: &serde_json::Value, pointer: &str) -> usize {
         .pointer(pointer)
         .and_then(|value| value.as_array())
         .map(Vec::len)
+        .unwrap_or_default()
+}
+
+fn string_array_at(value: &serde_json::Value, pointer: &str) -> Vec<String> {
+    value
+        .pointer(pointer)
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -2908,6 +2932,19 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(false)
         );
+        let evidence_report = super::evidence_report(&store, created.contract.id)
+            .expect("blocked evidence report should resolve");
+        let blocked_evidence = evidence_report
+            .evidence
+            .iter()
+            .find(|evidence| evidence.kind == "admission_rejection")
+            .expect("admission rejection evidence should be summarized");
+        assert_eq!(blocked_evidence.blocked_phase.as_deref(), Some("explorer"));
+        assert_eq!(blocked_evidence.missing_receipts, vec!["role_worker"]);
+        assert!(blocked_evidence
+            .operator_options
+            .iter()
+            .any(|option| option == "request-human-review"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -3140,6 +3177,19 @@ mod tests {
             .evidence
             .iter()
             .any(|evidence| evidence.kind == "admission_rejection"));
+        let evidence_report = super::evidence_report(&store, created.contract.id)
+            .expect("blocked evidence report should resolve");
+        let blocked_evidence = evidence_report
+            .evidence
+            .iter()
+            .find(|evidence| evidence.kind == "admission_rejection")
+            .expect("admission rejection evidence should be summarized");
+        assert_eq!(blocked_evidence.blocked_phase.as_deref(), Some("doer"));
+        assert!(blocked_evidence
+            .operator_options
+            .iter()
+            .any(|option| option == "retry"));
+        assert!(blocked_evidence.missing_receipts.is_empty());
         assert!(report
             .issues
             .first()

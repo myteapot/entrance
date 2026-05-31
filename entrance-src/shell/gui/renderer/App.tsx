@@ -120,6 +120,9 @@ type IssueCard = {
       summary: string;
       schema_version: string | null;
       admission_result: string | null;
+      blocked_phase: string | null;
+      missing_receipts: string[];
+      operator_options: string[];
       worker_kind: string | null;
       worker_mode: string | null;
       worker_ok: boolean | null;
@@ -854,6 +857,15 @@ export default function App() {
                                   {evidence.schema_version ? (
                                     <span class="trace-pill">{schemaLabel(evidence.schema_version)}</span>
                                   ) : null}
+                                  {evidence.blocked_phase ? (
+                                    <span class="trace-pill trace-pill--warn">blocked {evidence.blocked_phase}</span>
+                                  ) : null}
+                                  {evidence.missing_receipts.map((receipt) => (
+                                    <span class="trace-pill trace-pill--warn">missing {receipt}</span>
+                                  ))}
+                                  {evidence.operator_options.map((option) => (
+                                    <span class="trace-pill">{option}</span>
+                                  ))}
                                 </div>
                                 {evidence.transcript_excerpt ? (
                                   <p class="muted">{evidence.transcript_excerpt}</p>
