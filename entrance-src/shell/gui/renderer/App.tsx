@@ -467,7 +467,7 @@ export default function App() {
                                 <div class="record-actions">
                                   {card.issue.loop_id && card.issue.status !== "Done" ? (
                                     <button type="button" onClick={() => void runIssueLoop(card.issue.loop_id!)}>
-                                      Run
+                                      {card.issue.status === "Blocked" ? "Retry" : "Run"}
                                     </button>
                                   ) : null}
                                   <button type="button" onClick={() => setActiveCommentIssue(card.issue.id)}>

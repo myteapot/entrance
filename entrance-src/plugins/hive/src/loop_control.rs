@@ -227,11 +227,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         .get("ok")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let decision = if runtime == "codex" && !runtime_ready {
-        "blocked"
-    } else {
-        "keep"
-    };
+    let decision = if !runtime_ready { "blocked" } else { "keep" };
     let verdict_summary = if decision == "keep" {
         "Evaluator kept the candidate: all MVP gates passed.".to_string()
     } else {
@@ -574,26 +570,31 @@ fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
 }
 
 fn probe_runtime(runtime: &str) -> serde_json::Value {
-    if runtime != "codex" {
-        return serde_json::json!({
+    match runtime {
+        "local" => serde_json::json!({
             "ok": true,
             "kind": "local",
             "detail": "local deterministic runtime"
-        });
-    }
-
-    match Command::new("codex").arg("--version").output() {
-        Ok(output) => serde_json::json!({
-            "ok": output.status.success(),
-            "kind": "codex",
-            "status": output.status.code(),
-            "stdout": String::from_utf8_lossy(&output.stdout).trim(),
-            "stderr": String::from_utf8_lossy(&output.stderr).trim()
         }),
-        Err(error) => serde_json::json!({
+        "codex" => match Command::new("codex").arg("--version").output() {
+            Ok(output) => serde_json::json!({
+                "ok": output.status.success(),
+                "kind": "codex",
+                "status": output.status.code(),
+                "stdout": String::from_utf8_lossy(&output.stdout).trim(),
+                "stderr": String::from_utf8_lossy(&output.stderr).trim()
+            }),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "kind": "codex",
+                "error": error.to_string()
+            }),
+        },
+        other => serde_json::json!({
             "ok": false,
-            "kind": "codex",
-            "error": error.to_string()
+            "kind": "unsupported",
+            "runtime": other,
+            "error": "unsupported runtime"
         }),
     }
 }
@@ -682,6 +683,63 @@ mod tests {
         assert_eq!(report.verdicts[0].decision, "keep");
         assert_eq!(report.issues[0].issue.status, "Done");
         assert!(report.issues[0].comments.len() >= 3);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsupported_runtime_records_blocked_verdict_and_issue() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-blocked-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Blocked loop".to_string(),
+                goal: "Block unsupported runtime".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "unsupported-agent".to_string(),
+            },
+        )
+        .expect("loop should be created");
+
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("unsupported-agent".to_string()),
+            },
+        )
+        .expect("blocked loop should still return a report");
+
+        assert_eq!(report.contract.status, "blocked");
+        assert_eq!(report.contract.active_phase, "complete");
+        assert_eq!(report.verdicts.len(), 1);
+        assert_eq!(report.verdicts[0].decision, "blocked");
+        assert_eq!(report.issues[0].issue.status, "Blocked");
+        assert!(report
+            .issues
+            .first()
+            .expect("issue should exist")
+            .comments
+            .iter()
+            .any(|comment| comment.body.contains("unsupported-agent")));
+        assert_eq!(report.admissions.len(), 3);
+        assert!(report
+            .admissions
+            .iter()
+            .all(|admission| admission.result == "admitted"));
 
         let _ = fs::remove_dir_all(root);
     }

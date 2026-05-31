@@ -10,7 +10,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime codex]\n  entrance hive loop run <id> [--runtime codex]\n  entrance hive loop show <id>\n  entrance hive loop list\n  entrance hive issue list\n  entrance hive issue comment <id> --body <text>"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex]\n  entrance hive loop show <id>\n  entrance hive loop list\n  entrance hive issue list\n  entrance hive issue comment <id> --body <text>"
             );
             Ok(())
         }
