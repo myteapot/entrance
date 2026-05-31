@@ -10,7 +10,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id>\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -153,8 +153,13 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 print_json(&cards)
             }
         }
-        [scope, action, id] if scope == "issue" && action == "show" => {
-            print_json(&services.hive.issue_report(id.parse::<i64>()?)?)
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "show" => {
+            let card = services.hive.issue_report(id.parse::<i64>()?)?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_detail(&card))
+            } else {
+                print_json(&card)
+            }
         }
         [scope, action, id, rest @ ..] if scope == "issue" && action == "comment" => {
             let body = flag_value(rest, "--body").unwrap_or_default();
@@ -250,6 +255,16 @@ fn compact_issue_board(cards: &[IssueCard]) -> serde_json::Value {
     })
 }
 
+fn compact_issue_detail(card: &IssueCard) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue.compact.v1",
+        "issue": compact_issue_card(card),
+        "recent_comments": compact_recent_comments(card, 5),
+        "recent_evidence": compact_recent_evidence(card, 5),
+        "stages": compact_stage_rows(card)
+    })
+}
+
 fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
     let latest_comment = card.comments.last().map(|comment| {
         serde_json::json!({
@@ -288,6 +303,74 @@ fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
         "latest_comment": latest_comment,
         "actions": compact_issue_actions(card)
     })
+}
+
+fn compact_recent_comments(card: &IssueCard, limit: usize) -> Vec<serde_json::Value> {
+    let mut comments = card.comments.iter().rev().take(limit).collect::<Vec<_>>();
+    comments.reverse();
+    comments
+        .into_iter()
+        .map(|comment| {
+            serde_json::json!({
+                "id": comment.id,
+                "author": comment.author,
+                "body": compact_text(&comment.body, 220),
+                "created_at": comment.created_at,
+                "action": comment.payload.get("action").and_then(|value| value.as_str()),
+                "source": comment.payload.get("source").and_then(|value| value.as_str())
+            })
+        })
+        .collect()
+}
+
+fn compact_recent_evidence(card: &IssueCard, limit: usize) -> Vec<serde_json::Value> {
+    let Some(trace) = &card.trace else {
+        return Vec::new();
+    };
+    let mut evidence = trace.evidence.iter().rev().take(limit).collect::<Vec<_>>();
+    evidence.reverse();
+    evidence
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.id,
+                "round": row.round,
+                "role": row.stage_role,
+                "kind": row.kind,
+                "summary": compact_text(&row.summary, 220),
+                "admission": row.admission_result,
+                "worker": row.worker_kind.as_ref().map(|kind| serde_json::json!({
+                    "kind": kind,
+                    "ok": row.worker_ok,
+                    "receipt_ok": row.worker_receipt_ok,
+                    "duration_ms": row.worker_duration_ms,
+                    "action": row.worker_action.as_ref().map(|action| compact_text(action, 180))
+                }))
+            })
+        })
+        .collect()
+}
+
+fn compact_stage_rows(card: &IssueCard) -> Vec<serde_json::Value> {
+    let Some(trace) = &card.trace else {
+        return Vec::new();
+    };
+    trace
+        .stages
+        .iter()
+        .map(|stage| {
+            serde_json::json!({
+                "role": stage.role,
+                "status": stage.status,
+                "summary": stage.summary.as_ref().map(|summary| compact_text(summary, 180)),
+                "admission": stage.admission_result,
+                "worker": stage.worker_kind.as_ref().map(|kind| serde_json::json!({
+                    "kind": kind,
+                    "ok": stage.worker_ok
+                }))
+            })
+        })
+        .collect()
 }
 
 fn compact_issue_actions(card: &IssueCard) -> Vec<serde_json::Value> {
@@ -372,7 +455,7 @@ fn compact_text(value: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_issue_board, flag_present, flag_value};
+    use super::{compact_issue_board, compact_issue_detail, flag_present, flag_value};
     use entrance_core::{HiveComment, HiveIssue};
     use entrance_hive::IssueCard;
 
@@ -455,6 +538,54 @@ mod tests {
                 .pointer("/issues/0/actions/2/action")
                 .and_then(|value| value.as_str()),
             Some("request-review")
+        );
+        let issue = blocked
+            .pointer("/issues/0")
+            .expect("blocked issue should be present");
+        let detail = compact_issue_detail(&IssueCard {
+            issue: HiveIssue {
+                id: issue
+                    .pointer("/id")
+                    .and_then(|value| value.as_i64())
+                    .expect("issue id should be numeric"),
+                loop_id: Some(3),
+                title: "Loop #3: compact board".to_string(),
+                status: "Blocked".to_string(),
+                summary: Some("Waiting for operator decision".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            comments: vec![HiveComment {
+                id: 12,
+                issue_id: 7,
+                author: "human".to_string(),
+                body: "Please retry with a smaller gate.".to_string(),
+                payload: serde_json::json!({
+                    "source": "operator",
+                    "action": "comment"
+                }),
+                created_at: "2026-01-01T00:02:00Z".to_string(),
+            }],
+            trace: None,
+            doctor: None,
+        });
+        assert_eq!(
+            detail
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue.compact.v1")
+        );
+        assert_eq!(
+            detail
+                .pointer("/recent_comments/0/body")
+                .and_then(|value| value.as_str()),
+            Some("Please retry with a smaller gate.")
+        );
+        assert_eq!(
+            detail
+                .pointer("/issue/actions/1/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue retry-run 7 --body <note> --compact")
         );
     }
 }
