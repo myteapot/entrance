@@ -94,6 +94,10 @@ pub struct IssueTraceSummary {
     pub receipt_missing_count: usize,
     pub round_receipt_required_count: usize,
     pub round_receipt_missing_count: usize,
+    pub role_worker_count: usize,
+    pub role_worker_ok_count: usize,
+    pub round_role_worker_count: usize,
+    pub round_role_worker_ok_count: usize,
     pub packet_schema: Option<String>,
     pub admission_schema: Option<String>,
     pub verdict_schema: Option<String>,
@@ -171,6 +175,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         .get_hive_loop_contract(request.loop_id)?
         .with_context(|| format!("unknown hive loop `{}`", request.loop_id))?;
     let runtime = request.runtime.unwrap_or_else(|| contract.runtime.clone());
+    let runtime_probe = probe_runtime(&runtime);
     let issues = store.list_hive_issues_for_loop(contract.id)?;
     let issue_id = issues.first().map(|issue| issue.id);
 
@@ -194,6 +199,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "explorer",
         contract.current_round,
     )?;
+    let explorer_worker = run_role_worker(&runtime, "explorer", &contract, &runtime_probe);
     let explorer_stage = insert_stage(
         store,
         &contract,
@@ -206,6 +212,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         }),
         serde_json::json!({
             "candidate": "Run a local MVP loop through Hive",
+            "role_worker": explorer_worker,
             "constraints": [
                 "keep work in SQLite/Hive",
                 "separate explorer, doer, evaluator stages",
@@ -222,6 +229,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "doer",
         serde_json::json!({
             "candidate": "Run a local MVP loop through Hive",
+            "role_worker": explorer_worker,
             "constraints": [
                 "keep work in SQLite/Hive",
                 "separate explorer, doer, evaluator stages",
@@ -249,6 +257,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         payload: serde_json::json!({
             "candidate": "local-loop-mvp",
             "approach_count": contract.approach_space.len(),
+            "worker": explorer_worker,
             "admission": explorer_admission.result
         }),
     })?;
@@ -259,8 +268,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "doer",
         contract.current_round,
     )?;
-    let runtime_probe = probe_runtime(&runtime);
-    let runtime_worker = run_runtime_worker(&runtime, &contract, &runtime_probe);
+    let runtime_worker = run_role_worker(&runtime, "doer", &contract, &runtime_probe);
     let doer_stage = insert_stage(
         store,
         &contract,
@@ -273,6 +281,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         serde_json::json!({
             "runtime_probe": runtime_probe,
             "runtime_worker": runtime_worker,
+            "role_worker": runtime_worker,
             "artifact": "hive-loop-ledger"
         }),
     )?;
@@ -287,6 +296,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "runtime": runtime,
             "runtime_probe": runtime_probe,
             "runtime_worker": runtime_worker,
+            "role_worker": runtime_worker,
             "artifact": "hive-loop-ledger"
         }),
     )?;
@@ -322,14 +332,14 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         contract.current_round,
     )?;
     let evidence = store.list_hive_loop_evidence(contract.id)?;
+    let evaluator_worker = run_role_worker(&runtime, "evaluator", &contract, &runtime_probe);
     let runtime_ready = runtime_probe
         .get("ok")
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
-        && runtime_worker
-            .get("ok")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
+        && worker_ok(&explorer_worker)
+        && worker_ok(&runtime_worker)
+        && worker_ok(&evaluator_worker);
     let runtime_failure = runtime_failure(&runtime_probe, &runtime_worker);
     let decision_override = parse_decision_override(request.decision.as_deref())?;
     let typed_verdict = build_verdict(
@@ -350,6 +360,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         }),
         serde_json::json!({
             "decision": typed_verdict.decision.as_str(),
+            "role_worker": evaluator_worker,
             "gates": {
                 "three_stages_recorded": true,
                 "evidence_recorded": !evidence.is_empty(),
@@ -364,7 +375,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "evaluator",
         "evaluator",
         "complete",
-        typed_verdict.packet_payload(),
+        typed_verdict.packet_payload(&evaluator_worker),
     )?;
     if evaluator_admission.result != "admitted" {
         return block_on_admission_rejection(
@@ -387,6 +398,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "decision": typed_verdict.decision.as_str(),
             "reason_code": typed_verdict.reason_code,
             "runtime_ready": typed_verdict.runtime_ready,
+            "worker": evaluator_worker,
             "admission": evaluator_admission.result
         }),
     })?;
@@ -396,7 +408,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         decision: typed_verdict.decision.as_str().to_string(),
         summary: typed_verdict.summary.clone(),
         score: typed_verdict.score_payload(),
-        evidence: typed_verdict.evidence_payload(&runtime),
+        evidence: typed_verdict.evidence_payload(&runtime, &evaluator_worker),
     })?;
 
     let final_status = typed_verdict.decision.contract_status();
@@ -410,9 +422,11 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
     if let Some(issue_id) = issue_id {
         store.update_hive_issue_status(issue_id, issue_status, Some(&typed_verdict.summary))?;
         let admission_summary = format!(
-            "{} Worker: {}. Admissions: explorer={}, doer={}, evaluator={}.",
+            "{} Workers: explorer={}, doer={}, evaluator={}. Admissions: explorer={}, doer={}, evaluator={}.",
             typed_verdict.summary,
+            runtime_worker_summary(&explorer_worker),
             runtime_worker_summary(&runtime_worker),
+            runtime_worker_summary(&evaluator_worker),
             explorer_admission.result,
             doer_admission.result,
             evaluator_admission.result
@@ -427,6 +441,11 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
                 "reason_code": typed_verdict.reason_code,
                 "phase": "evaluator",
                 "runtime_worker": runtime_worker,
+                "role_workers": {
+                    "explorer": explorer_worker,
+                    "doer": runtime_worker,
+                    "evaluator": evaluator_worker
+                },
                 "admissions": {
                     "explorer": explorer_admission.result,
                     "doer": doer_admission.result,
@@ -620,6 +639,27 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
         .iter()
         .filter(|admission| admission_in_current_round(admission))
         .collect::<Vec<_>>();
+    let role_worker_count = packets
+        .iter()
+        .filter(|packet| packet_role_worker(&packet.payload).is_some())
+        .count();
+    let role_worker_ok_count = packets
+        .iter()
+        .filter_map(|packet| packet_role_worker(&packet.payload))
+        .filter(|worker| worker_ok(worker))
+        .count();
+    let round_role_worker_count = packets
+        .iter()
+        .filter(|packet| {
+            packet.round == current_round && packet_role_worker(&packet.payload).is_some()
+        })
+        .count();
+    let round_role_worker_ok_count = packets
+        .iter()
+        .filter(|packet| packet.round == current_round)
+        .filter_map(|packet| packet_role_worker(&packet.payload))
+        .filter(|worker| worker_ok(worker))
+        .count();
 
     Ok(IssueTraceSummary {
         current_round,
@@ -656,6 +696,10 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
             .iter()
             .map(|admission| receipt_array_len(&admission.policy, "/receipt/missing"))
             .sum(),
+        role_worker_count,
+        role_worker_ok_count,
+        round_role_worker_count,
+        round_role_worker_ok_count,
         packet_schema: packets
             .iter()
             .rev()
@@ -988,7 +1032,11 @@ impl TypedVerdict {
         })
     }
 
-    fn evidence_payload(&self, runtime: &str) -> serde_json::Value {
+    fn evidence_payload(
+        &self,
+        runtime: &str,
+        evaluator_worker: &serde_json::Value,
+    ) -> serde_json::Value {
         serde_json::json!({
             "schema_version": VERDICT_SCHEMA_VERSION,
             "decision": self.decision.as_str(),
@@ -996,6 +1044,7 @@ impl TypedVerdict {
             "evidence_count": self.evidence_count + 1,
             "runtime": runtime,
             "runtime_ready": self.runtime_ready,
+            "role_worker": evaluator_worker,
             "source": {
                 "evaluator": "hive-loop-control",
                 "round_evidence_before_verdict": self.evidence_count
@@ -1003,12 +1052,13 @@ impl TypedVerdict {
         })
     }
 
-    fn packet_payload(&self) -> serde_json::Value {
+    fn packet_payload(&self, evaluator_worker: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({
             "decision": self.decision.as_str(),
             "summary": self.summary,
             "reason_code": self.reason_code,
-            "score": self.score_payload()
+            "score": self.score_payload(),
+            "role_worker": evaluator_worker
         })
     }
 }
@@ -1134,7 +1184,18 @@ fn runtime_worker_summary(runtime_worker: &serde_json::Value) -> String {
         .get("ok")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    format!("{kind}/{mode} ok={ok}")
+    let role = runtime_worker
+        .get("role")
+        .and_then(|value| value.as_str())
+        .unwrap_or("worker");
+    format!("{role}:{kind}/{mode} ok={ok}")
+}
+
+fn worker_ok(worker: &serde_json::Value) -> bool {
+    worker
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 fn seed_default_policies(store: &Store, loop_id: i64) -> Result<()> {
@@ -1286,9 +1347,9 @@ fn typed_packet_payload(
 
 fn receipt_requirements_for_packet(object_kind: &str) -> Vec<&'static str> {
     match object_kind {
-        "EXPLORATION_PACKET" => vec!["candidate", "constraints"],
-        "EXECUTION_PACKET" => vec!["runtime_probe", "runtime_worker", "artifact"],
-        "VERDICT_PACKET" => vec!["decision", "summary", "score"],
+        "EXPLORATION_PACKET" => vec!["candidate", "constraints", "role_worker"],
+        "EXECUTION_PACKET" => vec!["runtime_probe", "runtime_worker", "artifact", "role_worker"],
+        "VERDICT_PACKET" => vec!["decision", "summary", "score", "role_worker"],
         _ => Vec::new(),
     }
 }
@@ -1453,6 +1514,10 @@ fn packet_body(payload: &serde_json::Value) -> &serde_json::Value {
     payload.get("body").unwrap_or(payload)
 }
 
+fn packet_role_worker(payload: &serde_json::Value) -> Option<&serde_json::Value> {
+    packet_body(payload).get("role_worker")
+}
+
 fn probe_runtime(runtime: &str) -> serde_json::Value {
     match runtime {
         "local" => serde_json::json!({
@@ -1483,8 +1548,9 @@ fn probe_runtime(runtime: &str) -> serde_json::Value {
     }
 }
 
-fn run_runtime_worker(
+fn run_role_worker(
     runtime: &str,
+    role: &str,
     contract: &HiveLoopContract,
     runtime_probe: &serde_json::Value,
 ) -> serde_json::Value {
@@ -1493,15 +1559,17 @@ fn run_runtime_worker(
             "ok": true,
             "kind": "local",
             "mode": "deterministic-worker",
+            "role": role,
             "last_message": format!(
-                "Local worker accepted loop #{} and recorded the task packet.",
-                contract.id
+                "Local {role} worker accepted loop #{} round {}.",
+                contract.id,
+                contract.current_round
             ),
             "packet": {
                 "loop_id": contract.id,
                 "round": contract.current_round,
-                "role": "doer",
-                "action": "record-local-loop-ledger"
+                "role": role,
+                "action": role_worker_action(role)
             }
         }),
         "codex" => {
@@ -1513,15 +1581,17 @@ fn run_runtime_worker(
                 return serde_json::json!({
                     "ok": false,
                     "kind": "codex",
+                    "role": role,
                     "skipped": true,
                     "error": "codex probe failed"
                 });
             }
-            run_codex_worker(contract)
+            run_codex_worker(contract, role)
         }
         other => serde_json::json!({
             "ok": false,
             "kind": "unsupported",
+            "role": role,
             "runtime": other,
             "skipped": true,
             "error": "unsupported runtime"
@@ -1529,13 +1599,23 @@ fn run_runtime_worker(
     }
 }
 
-fn run_codex_worker(contract: &HiveLoopContract) -> serde_json::Value {
+fn role_worker_action(role: &str) -> &'static str {
+    match role {
+        "explorer" => "compile-candidate",
+        "doer" => "record-local-loop-ledger",
+        "evaluator" => "check-gates-and-verdict-envelope",
+        _ => "unknown-role-action",
+    }
+}
+
+fn run_codex_worker(contract: &HiveLoopContract, role: &str) -> serde_json::Value {
     let output_path = std::env::temp_dir().join(format!(
-        "entrance-hive-codex-worker-{}-{}.txt",
+        "entrance-hive-codex-worker-{}-{}-{}.txt",
         contract.id,
+        role,
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     ));
-    let prompt = codex_worker_prompt(contract);
+    let prompt = codex_worker_prompt(contract, role);
     let cwd = std::env::current_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| ".".to_string());
@@ -1571,6 +1651,7 @@ fn run_codex_worker(contract: &HiveLoopContract) -> serde_json::Value {
                 "ok": output.status_success && !output.timed_out && receipt_ok.unwrap_or(true),
                 "kind": "codex",
                 "mode": "codex-exec",
+                "role": role,
                 "started_at": started_at,
                 "completed_at": chrono::Utc::now().to_rfc3339(),
                 "timed_out": output.timed_out,
@@ -1585,6 +1666,7 @@ fn run_codex_worker(contract: &HiveLoopContract) -> serde_json::Value {
             "ok": false,
             "kind": "codex",
             "mode": "codex-exec",
+            "role": role,
             "started_at": started_at,
             "completed_at": chrono::Utc::now().to_rfc3339(),
             "error": error.to_string(),
@@ -1628,18 +1710,31 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<T
     })
 }
 
-fn codex_worker_prompt(contract: &HiveLoopContract) -> String {
+fn codex_worker_prompt(contract: &HiveLoopContract, role: &str) -> String {
+    let role_duty = match role {
+        "explorer" => {
+            "compile the goal into a bounded candidate and confirm the constraints are explicit"
+        }
+        "doer" => {
+            "validate that you received the accepted execution packet and confirm it can be executed"
+        }
+        "evaluator" => {
+            "inspect the gate contract and confirm the verdict envelope can be evaluated"
+        }
+        _ => "acknowledge the typed loop packet",
+    };
     format!(
-        r#"Entrance Hive Doer worker packet.
+        r#"Entrance Hive {role_name} worker packet.
 
-You are the Doer role inside a constrained Explorer -> Doer -> Evaluator loop.
+You are the {role_name} role inside a constrained Explorer -> Doer -> Evaluator loop.
 Rules:
 - Do not modify files.
 - Do not make network calls.
 - Keep the response compact.
 - Return only JSON with keys: ok, role, action, evidence_summary, gates.
-- The MVP execution is this receipt: validate that you received the typed packet,
-  summarize the accepted action, and set ok=true unless you cannot process it.
+- Your role duty is: {role_duty}.
+- This is a runtime receipt: validate that you received the typed packet,
+  summarize the accepted action for your role, and set ok=true unless you cannot process it.
 - Do not set ok=false merely because the surrounding Hive runtime persists the
   evidence after you return.
 
@@ -1652,6 +1747,8 @@ Approach space: {approach}
 Eval space: {eval}
 Accepted candidate: Run the local Hive loop MVP packet and report whether the runtime can execute it.
 "#,
+        role_name = role,
+        role_duty = role_duty,
         id = contract.id,
         round = contract.current_round,
         title = contract.title,
@@ -1777,6 +1874,13 @@ mod tests {
         assert_eq!(
             report.packets[0]
                 .payload
+                .pointer("/body/role_worker/role")
+                .and_then(|value| value.as_str()),
+            Some("explorer")
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
                 .pointer("/body/candidate")
                 .and_then(|value| value.as_str()),
             Some("Run a local MVP loop through Hive")
@@ -1784,9 +1888,16 @@ mod tests {
         assert_eq!(
             report.packets[1]
                 .payload
-                .pointer("/receipt_requirements/1")
+                .pointer("/receipt_requirements/3")
                 .and_then(|value| value.as_str()),
-            Some("runtime_worker")
+            Some("role_worker")
+        );
+        assert_eq!(
+            report.packets[2]
+                .payload
+                .pointer("/body/role_worker/role")
+                .and_then(|value| value.as_str()),
+            Some("evaluator")
         );
         assert_eq!(report.admissions.len(), 3);
         assert!(report
@@ -1820,9 +1931,9 @@ mod tests {
         assert_eq!(
             report.admissions[1]
                 .policy
-                .pointer("/receipt/required/1")
+                .pointer("/receipt/required/3")
                 .and_then(|value| value.as_str()),
-            Some("runtime_worker")
+            Some("role_worker")
         );
         assert_eq!(
             report.admissions[1]
@@ -1860,10 +1971,14 @@ mod tests {
         assert_eq!(trace.round_admission_count, 3);
         assert_eq!(trace.round_evidence_count, 3);
         assert_eq!(trace.round_verdict_count, 1);
-        assert_eq!(trace.receipt_required_count, 8);
+        assert_eq!(trace.receipt_required_count, 11);
         assert_eq!(trace.receipt_missing_count, 0);
-        assert_eq!(trace.round_receipt_required_count, 8);
+        assert_eq!(trace.round_receipt_required_count, 11);
         assert_eq!(trace.round_receipt_missing_count, 0);
+        assert_eq!(trace.role_worker_count, 3);
+        assert_eq!(trace.role_worker_ok_count, 3);
+        assert_eq!(trace.round_role_worker_count, 3);
+        assert_eq!(trace.round_role_worker_ok_count, 3);
         assert_eq!(trace.packet_schema.as_deref(), Some(PACKET_SCHEMA_VERSION));
         assert_eq!(
             trace.admission_schema.as_deref(),
@@ -1977,6 +2092,13 @@ mod tests {
                 .pointer("/receipt/missing/0")
                 .and_then(|value| value.as_str()),
             Some("runtime_worker")
+        );
+        assert_eq!(
+            admission
+                .policy
+                .pointer("/receipt/missing/1")
+                .and_then(|value| value.as_str()),
+            Some("role_worker")
         );
 
         let _ = fs::remove_dir_all(root);
@@ -2379,6 +2501,10 @@ mod tests {
         assert_eq!(retry_trace.round_verdict_count, 0);
         assert_eq!(retry_trace.round_receipt_required_count, 0);
         assert_eq!(retry_trace.round_receipt_missing_count, 0);
+        assert_eq!(retry_trace.role_worker_count, 3);
+        assert_eq!(retry_trace.role_worker_ok_count, 0);
+        assert_eq!(retry_trace.round_role_worker_count, 0);
+        assert_eq!(retry_trace.round_role_worker_ok_count, 0);
         assert_eq!(retry_trace.verdict_schema, None);
         assert_eq!(retry_trace.last_decision, None);
         assert_eq!(retry_trace.worker_kind, None);

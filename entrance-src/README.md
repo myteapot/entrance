@@ -60,7 +60,8 @@ Local agent-loop MVP:
 versioned typed packets, receipt-aware admission gates, versioned admission
 receipts, stage evidence, and the versioned final verdict.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
-`codex exec` worker and stores the worker transcript in execution evidence.
+`codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
+stores the worker transcripts in stage evidence.
 Unknown runtimes return a blocked verdict instead of being silently kept.
 The evaluator decision can be overridden for local simulation with
 `--decision keep|reject|needs-review|blocked`.

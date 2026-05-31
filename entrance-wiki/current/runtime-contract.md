@@ -26,8 +26,9 @@ Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as blocked verdicts. The `codex` runtime uses a read-only
-`codex exec` worker and records stdout, stderr, and last-message transcript
-data inside execution evidence.
+`codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
+records stdout, stderr, and last-message transcript data in the stage evidence
+for that role.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 Human decisions are available through `hive issue decide <id>
@@ -36,6 +37,8 @@ also moving the linked loop contract state.
 Issue panel trace summaries are round-aware: they expose the current round,
 current-round packet/admission/evidence/verdict counts, and total historical
 counts so retries do not look like stale verdicts from the previous round.
+Trace summaries also expose role-worker coverage so the Panel can show whether
+all role receipts in the current round were produced successfully.
 
 ## Daemon
 

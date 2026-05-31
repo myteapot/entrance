@@ -90,6 +90,10 @@ type IssueCard = {
     receipt_missing_count: number;
     round_receipt_required_count: number;
     round_receipt_missing_count: number;
+    role_worker_count: number;
+    role_worker_ok_count: number;
+    round_role_worker_count: number;
+    round_role_worker_ok_count: number;
     packet_schema: string | null;
     admission_schema: string | null;
     verdict_schema: string | null;
@@ -316,6 +320,12 @@ export default function App() {
     if (!card.trace?.last_admission_gate) return null;
     const state = card.trace.last_admission_passed === true ? "ok" : "blocked";
     return `gate ${state}`;
+  };
+
+  const roleWorkerLabel = (card: IssueCard) => {
+    if (!card.trace) return null;
+    if (card.trace.round_role_worker_count === 0) return "workers pending";
+    return `workers ${card.trace.round_role_worker_ok_count}/${card.trace.round_role_worker_count}`;
   };
 
   const traceCountLabel = (label: string, current: number, total: number) =>
@@ -564,6 +574,18 @@ export default function App() {
                                       }
                                     >
                                       {gateLabel(card)}
+                                    </span>
+                                  ) : null}
+                                  {roleWorkerLabel(card) ? (
+                                    <span
+                                      class={
+                                        card.trace.round_role_worker_count ===
+                                        card.trace.round_role_worker_ok_count
+                                          ? "trace-pill"
+                                          : "trace-pill trace-pill--warn"
+                                      }
+                                    >
+                                      {roleWorkerLabel(card)}
                                     </span>
                                   ) : null}
                                   {card.trace.last_decision ? (
