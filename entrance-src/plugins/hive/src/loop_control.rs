@@ -1448,6 +1448,7 @@ fn admission_audit_errors(
     packet_by_id: &HashMap<i64, &HiveLoopPacket>,
 ) -> Option<serde_json::Value> {
     let mut errors = Vec::new();
+    let packet = packet_by_id.get(&admission.packet_id).copied();
     if admission
         .policy
         .get("schema_version")
@@ -1456,15 +1457,14 @@ fn admission_audit_errors(
     {
         errors.push("schema_version".to_string());
     }
-    if !packet_by_id.contains_key(&admission.packet_id) {
+    if packet.is_none() {
         errors.push("packet.link".to_string());
     }
-    if admission
+    let envelope_valid = admission
         .policy
         .pointer("/packet/envelope/valid")
-        .and_then(|value| value.as_bool())
-        != Some(true)
-    {
+        .and_then(|value| value.as_bool());
+    if envelope_valid != Some(true) {
         errors.push("packet.envelope".to_string());
     }
     if admission
@@ -1475,21 +1475,188 @@ fn admission_audit_errors(
     {
         errors.push("result.binding".to_string());
     }
-    if let Some(gate_name) = admission
+    if !matches!(admission.result.as_str(), "admitted" | "rejected") {
+        errors.push("result.value".to_string());
+    }
+
+    let gate_name = admission
         .policy
         .pointer("/gate/name")
-        .and_then(|value| value.as_str())
-    {
+        .and_then(|value| value.as_str());
+    if let Some(gate_name) = gate_name {
         if gate_spec(gate_name).is_none() {
             errors.push("gate.unknown".to_string());
         }
     }
+    let gate_passed = admission
+        .policy
+        .pointer("/gate/passed")
+        .and_then(|value| value.as_bool());
     let policy_missing = admission
         .policy
         .get("policy")
         .map_or(true, serde_json::Value::is_null);
     if policy_missing && admission.result == "admitted" {
         errors.push("policy.missing".to_string());
+    }
+    if let Some(packet) = packet {
+        if packet.loop_id != admission.loop_id {
+            errors.push("packet.loop_id".to_string());
+        }
+        if admission
+            .policy
+            .pointer("/packet/id")
+            .and_then(|value| value.as_i64())
+            != Some(packet.id)
+        {
+            errors.push("packet.id".to_string());
+        }
+        if admission_field(&admission.policy, "/packet/object_kind")
+            != Some(packet.object_kind.as_str())
+        {
+            errors.push("packet.object_kind".to_string());
+        }
+        if admission_field(&admission.policy, "/packet/writer_role")
+            != Some(packet.writer_role.as_str())
+        {
+            errors.push("packet.writer_role".to_string());
+        }
+        if admission_field(&admission.policy, "/packet/route_from")
+            != Some(packet.route_from.as_str())
+        {
+            errors.push("packet.route_from".to_string());
+        }
+        if admission_field(&admission.policy, "/packet/route_to") != Some(packet.route_to.as_str())
+        {
+            errors.push("packet.route_to".to_string());
+        }
+        if admission_field(&admission.policy, "/packet/state_code")
+            != Some(packet.state_code.as_str())
+        {
+            errors.push("packet.state_code".to_string());
+        }
+        if envelope_valid != Some(typed_packet_envelope_valid(&packet.payload)) {
+            errors.push("packet.envelope_binding".to_string());
+        }
+
+        let expected_required = receipt_requirements_for_packet(&packet.object_kind)
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let declared_required = packet_receipt_requirements(&packet.payload);
+        let receipt_required = string_array_at(&admission.policy, "/receipt/required");
+        if declared_required != expected_required {
+            errors.push("packet.receipt_requirements".to_string());
+        }
+        if receipt_required != expected_required {
+            errors.push("receipt.required_binding".to_string());
+        }
+    }
+
+    if admission
+        .policy
+        .pointer("/receipt/required")
+        .and_then(|value| value.as_array())
+        .is_none()
+    {
+        errors.push("receipt.required".to_string());
+    }
+    let receipt_missing_array = admission
+        .policy
+        .pointer("/receipt/missing")
+        .and_then(|value| value.as_array());
+    if receipt_missing_array.is_none() {
+        errors.push("receipt.missing".to_string());
+    }
+    let receipt_missing = string_array_at(&admission.policy, "/receipt/missing");
+    let receipt_satisfied = admission
+        .policy
+        .pointer("/receipt/satisfied")
+        .and_then(|value| value.as_bool());
+    if receipt_satisfied.is_none() {
+        errors.push("receipt.satisfied".to_string());
+    }
+    if receipt_satisfied != Some(receipt_missing.is_empty()) {
+        errors.push("receipt.satisfied_binding".to_string());
+    }
+
+    if let Some(policy) = admission
+        .policy
+        .get("policy")
+        .filter(|value| !value.is_null())
+    {
+        if policy
+            .get("schema_version")
+            .and_then(|value| value.as_str())
+            != Some(POLICY_SCHEMA_VERSION)
+        {
+            errors.push("policy.schema_version".to_string());
+        }
+        if policy.get("status").and_then(|value| value.as_str()) != Some("active") {
+            errors.push("policy.status".to_string());
+        }
+        let policy_gate = policy.get("gate").and_then(|value| value.as_str());
+        if policy_gate != gate_name {
+            errors.push("policy.gate_binding".to_string());
+        }
+        if let Some(packet) = packet {
+            if policy.get("object_kind").and_then(|value| value.as_str())
+                != Some(packet.object_kind.as_str())
+            {
+                errors.push("policy.object_kind".to_string());
+            }
+            if policy.get("writer_role").and_then(|value| value.as_str())
+                != Some(packet.writer_role.as_str())
+            {
+                errors.push("policy.writer_role".to_string());
+            }
+            if policy.get("route_from").and_then(|value| value.as_str())
+                != Some(packet.route_from.as_str())
+            {
+                errors.push("policy.route_from".to_string());
+            }
+            if policy.get("route_to").and_then(|value| value.as_str())
+                != Some(packet.route_to.as_str())
+            {
+                errors.push("policy.route_to".to_string());
+            }
+        }
+        if let Some(policy_gate) = policy_gate {
+            admission_gate_spec_errors(
+                policy,
+                "/gate_spec",
+                policy_gate,
+                packet,
+                "policy.gate_spec",
+                &mut errors,
+            );
+        }
+    }
+
+    if let Some(gate_name) = gate_name {
+        admission_gate_spec_errors(
+            &admission.policy,
+            "/gate/spec",
+            gate_name,
+            packet,
+            "gate.spec",
+            &mut errors,
+        );
+    }
+    match (
+        admission.result.as_str(),
+        gate_passed,
+        receipt_satisfied,
+        envelope_valid,
+        policy_missing,
+    ) {
+        ("admitted", Some(true), Some(true), Some(true), false) => {}
+        ("admitted", _, _, _, _) => errors.push("result.admission_conditions".to_string()),
+        ("rejected", Some(true), Some(true), Some(true), false) => {
+            errors.push("gate.result_binding".to_string());
+        }
+        ("rejected", _, _, _, _) => {}
+        _ => {}
     }
 
     if errors.is_empty() {
@@ -1500,6 +1667,65 @@ fn admission_audit_errors(
             "packet_id": admission.packet_id,
             "errors": errors
         }))
+    }
+}
+
+fn admission_field<'a>(value: &'a serde_json::Value, pointer: &str) -> Option<&'a str> {
+    value.pointer(pointer).and_then(|value| value.as_str())
+}
+
+fn admission_gate_spec_errors(
+    value: &serde_json::Value,
+    pointer: &str,
+    gate_name: &str,
+    packet: Option<&HiveLoopPacket>,
+    prefix: &str,
+    errors: &mut Vec<String>,
+) {
+    let Some(spec_value) = value.pointer(pointer) else {
+        errors.push(format!("{prefix}.missing"));
+        return;
+    };
+    let Some(spec) = gate_spec(gate_name) else {
+        return;
+    };
+    if spec_value
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        != Some(POLICY_SCHEMA_VERSION)
+    {
+        errors.push(format!("{prefix}.schema_version"));
+    }
+    if spec_value.get("name").and_then(|value| value.as_str()) != Some(gate_name) {
+        errors.push(format!("{prefix}.name"));
+    }
+    if spec_value
+        .get("expected_object_kind")
+        .and_then(|value| value.as_str())
+        != spec.expected_object_kind
+    {
+        errors.push(format!("{prefix}.expected_object_kind"));
+    }
+    if string_array_at(spec_value, "/required_receipts")
+        != spec
+            .required_receipts
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>()
+    {
+        errors.push(format!("{prefix}.required_receipts"));
+    }
+    if let Some(packet) = packet {
+        if spec
+            .expected_object_kind
+            .is_some_and(|expected| expected != packet.object_kind)
+        {
+            errors.push(format!("{prefix}.packet_object_kind"));
+        }
+        if spec.required_receipts != receipt_requirements_for_packet(&packet.object_kind).as_slice()
+        {
+            errors.push(format!("{prefix}.packet_receipts"));
+        }
     }
 }
 
@@ -4266,6 +4492,7 @@ fn default_vec(values: Vec<String>, fallback: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -4999,6 +5226,77 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("role_worker")
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_audit_rejects_corrupt_receipt_policy_and_gate_bindings() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-admission-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Admission audit loop".to_string(),
+                goal: "Detect drift between admission receipt, policy, gate, and packet"
+                    .to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let packet_by_id = report
+            .packets
+            .iter()
+            .map(|packet| (packet.id, packet))
+            .collect::<HashMap<_, _>>();
+        let mut bad_admission = report.admissions[0].clone();
+        bad_admission.policy["packet"]["object_kind"] = serde_json::json!("EXECUTION_PACKET");
+        bad_admission.policy["policy"]["route_to"] = serde_json::json!("complete");
+        bad_admission.policy["policy"]["gate"] = serde_json::json!("runtime_receipts_present");
+        bad_admission.policy["gate"]["passed"] = serde_json::json!(false);
+        bad_admission.policy["receipt"]["required"] = serde_json::json!(["candidate"]);
+        bad_admission.policy["receipt"]["missing"] = serde_json::json!(["constraints"]);
+        bad_admission.policy["receipt"]["satisfied"] = serde_json::json!(true);
+
+        let errors = admission_audit_errors(&bad_admission, &packet_by_id)
+            .expect("corrupt admission should fail audit");
+        let fields = errors
+            .get("errors")
+            .and_then(|value| value.as_array())
+            .expect("admission audit should return error fields")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(fields.contains(&"packet.object_kind"));
+        assert!(fields.contains(&"policy.route_to"));
+        assert!(fields.contains(&"policy.gate_binding"));
+        assert!(fields.contains(&"receipt.required_binding"));
+        assert!(fields.contains(&"receipt.satisfied_binding"));
+        assert!(fields.contains(&"result.admission_conditions"));
 
         let _ = fs::remove_dir_all(root);
     }

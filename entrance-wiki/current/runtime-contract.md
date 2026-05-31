@@ -49,11 +49,14 @@ carry bounded timeout and attempt metadata, plus a `runtime_policy` check that
 verifies the contract runtime and current-round worker receipt kind/mode values
 against the registry. The `active_policy_registry` check verifies the canonical
 Explorer/Doer/Evaluator route and gate contract, including gate expected object
-kind and required receipts. The `verdict_packets` check verifies decision
-bindings, required score-vector metrics, gate booleans, human options, and
-reason-code evidence bindings. The `issue_surface` check verifies linked issue
-status, typed comments, and operator comment/decision evidence so the control
-plane is auditable instead of only visible.
+kind and required receipts. The `admission_receipts` check verifies the stored
+admission receipt against the packet row, policy route, gate spec, required
+receipt list, missing receipt list, gate result, and final admitted/rejected
+result. The `verdict_packets` check verifies decision bindings, required
+score-vector metrics, gate booleans, human options, and reason-code evidence
+bindings. The `issue_surface` check verifies linked issue status, typed
+comments, and operator comment/decision evidence so the control plane is
+auditable instead of only visible.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 Human decisions are available through `hive issue decide <id>
