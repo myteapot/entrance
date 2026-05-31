@@ -21,6 +21,7 @@ const ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.admission.v1";
 const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
 const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
+const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
 const DEFAULT_WORKER_TIMEOUT_SECS: u64 = 60;
@@ -404,12 +405,15 @@ pub fn create(store: &Store, request: HiveLoopCreateRequest) -> Result<HiveLoopR
         issue_id,
         author: "compiler".to_string(),
         body: "Loop contract admitted into Hive with 3 active policies.".to_string(),
-        payload: serde_json::json!({
-            "loop_id": loop_id,
-            "goal": request.goal,
-            "next_phase": "explorer",
-            "policy_count": 3
-        }),
+        payload: system_comment_payload(
+            "compiler",
+            serde_json::json!({
+                "loop_id": loop_id,
+                "goal": request.goal,
+                "next_phase": "explorer",
+                "policy_count": 3
+            }),
+        ),
     })?;
 
     report(store, loop_id)
@@ -917,6 +921,8 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .iter()
         .filter_map(verdict_audit_errors)
         .collect::<Vec<_>>();
+    let evidence = store.list_hive_loop_evidence(loop_id)?;
+    let issue_surface = issue_surface_audit(store, loop_id, &issues, &evidence)?;
 
     let checks = vec![
         audit_check(
@@ -1001,10 +1007,19 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         ),
         audit_check(
             "issue_surface",
-            !issues.is_empty(),
-            format!("{} linked issues inspected.", issues.len()),
+            issue_surface.errors.is_empty(),
+            format!(
+                "{} linked issues, {} comments, and {} operator evidence rows inspected; {} issue surface issues.",
+                issues.len(),
+                issue_surface.comment_count,
+                issue_surface.operator_evidence_count,
+                issue_surface.errors.len()
+            ),
             serde_json::json!({
-                "issue_ids": issues.iter().map(|issue| issue.id).collect::<Vec<_>>()
+                "issue_ids": issues.iter().map(|issue| issue.id).collect::<Vec<_>>(),
+                "comment_count": issue_surface.comment_count,
+                "operator_evidence_count": issue_surface.operator_evidence_count,
+                "issue_surface_errors": issue_surface.errors
             }),
         ),
     ];
@@ -1591,6 +1606,229 @@ fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> 
     }
 }
 
+#[derive(Default)]
+struct IssueSurfaceAudit {
+    comment_count: usize,
+    operator_evidence_count: usize,
+    errors: Vec<serde_json::Value>,
+}
+
+fn issue_surface_audit(
+    store: &Store,
+    loop_id: i64,
+    issues: &[HiveIssue],
+    evidence: &[HiveLoopEvidence],
+) -> Result<IssueSurfaceAudit> {
+    let mut audit = IssueSurfaceAudit::default();
+    if issues.is_empty() {
+        audit.errors.push(serde_json::json!({
+            "scope": "loop",
+            "loop_id": loop_id,
+            "errors": ["issue.missing"]
+        }));
+    }
+
+    for issue in issues {
+        let mut issue_errors = Vec::new();
+        if issue.loop_id != Some(loop_id) {
+            issue_errors.push("issue.loop_id".to_string());
+        }
+        if !issue_status_allowed(&issue.status) {
+            issue_errors.push("issue.status".to_string());
+        }
+        if issue.title.trim().is_empty() {
+            issue_errors.push("issue.title".to_string());
+        }
+
+        let comments = store.list_hive_comments(issue.id)?;
+        audit.comment_count += comments.len();
+        if comments.is_empty() {
+            issue_errors.push("comment.missing".to_string());
+        }
+        if !issue_errors.is_empty() {
+            audit.errors.push(serde_json::json!({
+                "scope": "issue",
+                "issue_id": issue.id,
+                "errors": issue_errors
+            }));
+        }
+
+        for comment in comments {
+            if let Some(error) = issue_comment_audit_error(&comment, issue, evidence) {
+                audit.errors.push(error);
+            }
+        }
+    }
+
+    for row in evidence
+        .iter()
+        .filter(|row| row.kind == "operator_comment" || row.kind == "operator_decision")
+    {
+        audit.operator_evidence_count += 1;
+        if let Some(error) = operator_evidence_audit_error(row, issues) {
+            audit.errors.push(error);
+        }
+    }
+
+    Ok(audit)
+}
+
+fn issue_comment_audit_error(
+    comment: &HiveComment,
+    issue: &HiveIssue,
+    evidence: &[HiveLoopEvidence],
+) -> Option<serde_json::Value> {
+    let mut errors = Vec::new();
+    if comment.issue_id != issue.id {
+        errors.push("comment.issue_id".to_string());
+    }
+    if comment.author.trim().is_empty() {
+        errors.push("comment.author".to_string());
+    }
+    if comment.body.trim().is_empty() {
+        errors.push("comment.body".to_string());
+    }
+    let schema = schema_version(&comment.payload);
+    let source = comment
+        .payload
+        .get("source")
+        .and_then(|value| value.as_str());
+    let expected_schema = expected_comment_schema(comment);
+    if source.is_none() {
+        errors.push("comment.payload.source".to_string());
+    }
+    if !comment_schema_allowed(schema.as_deref()) {
+        errors.push("comment.payload.schema_version".to_string());
+    }
+    if expected_schema.is_some() && schema.as_deref() != expected_schema {
+        errors.push("comment.payload.schema_binding".to_string());
+    }
+    match expected_schema {
+        Some(OPERATOR_COMMENT_SCHEMA_VERSION) => {
+            if !evidence.iter().any(|row| {
+                row.kind == "operator_comment"
+                    && row
+                        .payload
+                        .pointer("/issue/comment_id")
+                        .and_then(|value| value.as_i64())
+                        == Some(comment.id)
+            }) {
+                errors.push("comment.operator_evidence".to_string());
+            }
+        }
+        Some(OPERATOR_DECISION_SCHEMA_VERSION) => {
+            if comment
+                .payload
+                .get("action")
+                .and_then(|value| value.as_str())
+                .is_none()
+            {
+                errors.push("comment.payload.action".to_string());
+            }
+            if !evidence.iter().any(|row| {
+                row.kind == "operator_decision"
+                    && row
+                        .payload
+                        .pointer("/issue/comment_id")
+                        .and_then(|value| value.as_i64())
+                        == Some(comment.id)
+            }) {
+                errors.push("comment.operator_evidence".to_string());
+            }
+        }
+        _ => {}
+    }
+
+    if errors.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "scope": "comment",
+            "issue_id": issue.id,
+            "comment_id": comment.id,
+            "author": comment.author,
+            "source": source,
+            "schema_version": schema,
+            "errors": errors
+        }))
+    }
+}
+
+fn operator_evidence_audit_error(
+    row: &HiveLoopEvidence,
+    issues: &[HiveIssue],
+) -> Option<serde_json::Value> {
+    let mut errors = Vec::new();
+    let expected_schema = match row.kind.as_str() {
+        "operator_comment" => OPERATOR_COMMENT_SCHEMA_VERSION,
+        "operator_decision" => OPERATOR_DECISION_SCHEMA_VERSION,
+        _ => return None,
+    };
+    if schema_version(&row.payload).as_deref() != Some(expected_schema) {
+        errors.push("evidence.schema_version".to_string());
+    }
+    let issue_id = row
+        .payload
+        .pointer("/issue/id")
+        .and_then(|value| value.as_i64());
+    if !issue_id.is_some_and(|issue_id| issues.iter().any(|issue| issue.id == issue_id)) {
+        errors.push("evidence.issue_id".to_string());
+    }
+    if row
+        .payload
+        .pointer("/issue/comment_id")
+        .and_then(|value| value.as_i64())
+        .is_none()
+    {
+        errors.push("evidence.comment_id".to_string());
+    }
+
+    if errors.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "scope": "operator_evidence",
+            "evidence_id": row.id,
+            "kind": row.kind,
+            "issue_id": issue_id,
+            "errors": errors
+        }))
+    }
+}
+
+fn expected_comment_schema(comment: &HiveComment) -> Option<&'static str> {
+    let source = comment
+        .payload
+        .get("source")
+        .and_then(|value| value.as_str());
+    let action = comment
+        .payload
+        .get("action")
+        .and_then(|value| value.as_str());
+    match source {
+        Some("operator") if action.is_some() => Some(OPERATOR_DECISION_SCHEMA_VERSION),
+        Some("operator") => Some(OPERATOR_COMMENT_SCHEMA_VERSION),
+        Some("hive" | "compiler") => Some(SYSTEM_COMMENT_SCHEMA_VERSION),
+        _ => None,
+    }
+}
+
+fn comment_schema_allowed(schema: Option<&str>) -> bool {
+    matches!(
+        schema,
+        Some(OPERATOR_COMMENT_SCHEMA_VERSION)
+            | Some(OPERATOR_DECISION_SCHEMA_VERSION)
+            | Some(SYSTEM_COMMENT_SCHEMA_VERSION)
+    )
+}
+
+fn issue_status_allowed(value: &str) -> bool {
+    matches!(
+        value,
+        "Todo" | "Doing" | "Blocked" | "Needs Review" | "Done" | "Canceled"
+    )
+}
+
 fn decision_label_allowed(value: &str) -> bool {
     matches!(value, "keep" | "reject" | "needs-review" | "blocked")
 }
@@ -1664,11 +1902,12 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
     let comment_body = action.comment_body(next_round, note);
 
     store.update_hive_issue_status(issue.id, action.issue_status(), Some(&issue_summary))?;
-    store.insert_hive_comment(HiveCommentCreate {
+    let comment_id = store.insert_hive_comment(HiveCommentCreate {
         issue_id: issue.id,
         author: author.clone(),
         body: comment_body.clone(),
         payload: serde_json::json!({
+            "schema_version": OPERATOR_DECISION_SCHEMA_VERSION,
             "source": "operator",
             "action": action.as_str(),
             "loop_id": issue.loop_id,
@@ -1680,6 +1919,7 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
         store,
         &issue,
         action,
+        comment_id,
         &author,
         note,
         next_round,
@@ -1719,6 +1959,7 @@ fn record_operator_decision_evidence(
     store: &Store,
     issue: &HiveIssue,
     action: IssueDecisionAction,
+    comment_id: i64,
     author: &str,
     note: &str,
     next_round: Option<i64>,
@@ -1748,6 +1989,7 @@ fn record_operator_decision_evidence(
             "source": "issue/status/comment",
             "issue": {
                 "id": issue.id,
+                "comment_id": comment_id,
                 "from_status": issue.status,
                 "to_status": action.issue_status()
             },
@@ -2364,9 +2606,34 @@ fn add_system_comment(
         issue_id,
         author: "hive".to_string(),
         body: body.to_string(),
-        payload,
+        payload: system_comment_payload("hive", payload),
     })?;
     Ok(())
+}
+
+fn system_comment_payload(source: &str, payload: serde_json::Value) -> serde_json::Value {
+    let mut typed = serde_json::Map::new();
+    typed.insert(
+        "schema_version".to_string(),
+        serde_json::Value::String(SYSTEM_COMMENT_SCHEMA_VERSION.to_string()),
+    );
+    typed.insert(
+        "source".to_string(),
+        serde_json::Value::String(source.to_string()),
+    );
+    match payload {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                if key != "schema_version" && key != "source" {
+                    typed.insert(key, value);
+                }
+            }
+        }
+        other => {
+            typed.insert("details".to_string(), other);
+        }
+    }
+    serde_json::Value::Object(typed)
 }
 
 fn block_on_admission_rejection(
@@ -4105,6 +4372,11 @@ mod tests {
         );
         assert_eq!(report.issues[0].issue.status, "Done");
         assert!(report.issues[0].comments.len() >= 3);
+        assert!(report.issues[0].comments.iter().all(|comment| comment
+            .payload
+            .get("schema_version")
+            .and_then(|value| value.as_str())
+            == Some(SYSTEM_COMMENT_SCHEMA_VERSION)));
         let issue_doctor = report.issues[0]
             .doctor
             .as_ref()
@@ -4173,6 +4445,20 @@ mod tests {
                 && check
                     .details
                     .pointer("/runtime_policy_errors")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|errors| errors.is_empty())
+        }));
+        assert!(audit_report.checks.iter().any(|check| {
+            check.name == "issue_surface"
+                && check.passed
+                && check
+                    .details
+                    .pointer("/comment_count")
+                    .and_then(|value| value.as_u64())
+                    .is_some_and(|count| count >= 3)
+                && check
+                    .details
+                    .pointer("/issue_surface_errors")
                     .and_then(|value| value.as_array())
                     .is_some_and(|errors| errors.is_empty())
         }));
@@ -4894,6 +5180,19 @@ mod tests {
             .comments
             .iter()
             .any(|comment| comment.body.contains("Need policy owner")));
+        assert!(review_card.comments.iter().any(|comment| {
+            comment.body.contains("Need policy owner")
+                && comment
+                    .payload
+                    .get("schema_version")
+                    .and_then(|value| value.as_str())
+                    == Some(OPERATOR_DECISION_SCHEMA_VERSION)
+                && comment
+                    .payload
+                    .get("action")
+                    .and_then(|value| value.as_str())
+                    == Some("request-review")
+        }));
         let review_evidence = store
             .list_hive_loop_evidence(created.contract.id)
             .expect("loop evidence should list");
@@ -5009,10 +5308,23 @@ mod tests {
                 && evidence.round == retry_contract.current_round
                 && evidence
                     .payload
+                    .pointer("/issue/comment_id")
+                    .and_then(|value| value.as_i64())
+                    .is_some()
+                && evidence
+                    .payload
                     .pointer("/operator/action")
                     .and_then(|value| value.as_str())
                     == Some("cancel")
         }));
+        let audit_report =
+            super::audit(&store, created.contract.id).expect("decision audit should resolve");
+        let issue_surface_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "issue_surface")
+            .expect("issue surface audit should exist");
+        assert!(issue_surface_check.passed);
         let retry_after_cancel = decide_issue(
             &store,
             IssueDecisionRequest {
@@ -5132,6 +5444,19 @@ mod tests {
                 && evidence.schema_version.as_deref() == Some(OPERATOR_COMMENT_SCHEMA_VERSION)
                 && evidence.operator_author.as_deref() == Some("operator")
         }));
+        let audit_report =
+            super::audit(&store, created.contract.id).expect("comment audit should resolve");
+        let issue_surface_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "issue_surface")
+            .expect("issue surface audit should exist");
+        assert!(issue_surface_check.passed);
+        assert!(issue_surface_check
+            .details
+            .pointer("/operator_evidence_count")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|count| count >= 1));
         assert!(add_comment(
             &store,
             IssueCommentRequest {
@@ -5141,6 +5466,63 @@ mod tests {
             },
         )
         .is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_surface_audit_rejects_untyped_comments() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-issue-surface-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Issue surface audit loop".to_string(),
+                goal: "Detect untyped control-plane comments".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let issue_id = created.issues[0].issue.id;
+        store
+            .insert_hive_comment(HiveCommentCreate {
+                issue_id,
+                author: "human".to_string(),
+                body: "legacy untyped note".to_string(),
+                payload: serde_json::json!({}),
+            })
+            .expect("legacy comment should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let issue_surface_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "issue_surface")
+            .expect("issue surface audit should exist");
+        assert!(!issue_surface_check.passed);
+        assert!(issue_surface_check
+            .details
+            .pointer("/issue_surface_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("comment.payload.schema_version"))))));
 
         let _ = fs::remove_dir_all(root);
     }

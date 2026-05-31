@@ -77,7 +77,8 @@ admission result, worker receipt, packet envelope diagnostics, missing receipts,
 operator options, and short transcript excerpts.
 `hive loop audit <id>` returns a compiler-style audit over the loop contract,
 active policies, runtime policy, typed packets, admission receipts, worker
-receipts, verdict packets, and linked issue surface.
+receipts, verdict packets, and linked issue surface. The issue surface check
+verifies issue status, typed comments, and operator comment/decision evidence.
 `hive loop doctor <id>` is the first CLI stop after a run: it combines trace and
 audit state into one health summary with counts, failed checks, missing
 receipts, worker failures, and suggested next commands.
