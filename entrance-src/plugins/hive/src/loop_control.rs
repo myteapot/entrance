@@ -3659,6 +3659,21 @@ fn operator_evidence_audit_error(
     if comment_id.is_some() && linked_comment.is_none() {
         errors.push("evidence.comment_link".to_string());
     }
+    if row
+        .payload
+        .pointer("/loop/id")
+        .and_then(|value| value.as_i64())
+        != Some(row.loop_id)
+    {
+        errors.push("evidence.loop_id_binding".to_string());
+    }
+    let evidence_round = row
+        .payload
+        .pointer("/loop/round")
+        .and_then(|value| value.as_i64());
+    if evidence_round != Some(row.round) {
+        errors.push("evidence.loop_round_binding".to_string());
+    }
 
     if let Some(comment) = linked_comment {
         if issue_id != Some(comment.issue_id) {
@@ -3683,6 +3698,46 @@ fn operator_evidence_audit_error(
         {
             errors.push("evidence.comment_body_binding".to_string());
         }
+        if comment
+            .payload
+            .get("loop_id")
+            .and_then(|value| value.as_i64())
+            != Some(row.loop_id)
+        {
+            errors.push("evidence.comment_loop_binding".to_string());
+        }
+        if row.kind == "operator_comment" {
+            if comment
+                .payload
+                .get("round")
+                .and_then(|value| value.as_i64())
+                != evidence_round
+            {
+                errors.push("evidence.comment_round_binding".to_string());
+            }
+            if comment
+                .payload
+                .get("status")
+                .and_then(|value| value.as_str())
+                != row
+                    .payload
+                    .pointer("/issue/status")
+                    .and_then(|value| value.as_str())
+            {
+                errors.push("evidence.comment_status_binding".to_string());
+            }
+            if comment
+                .payload
+                .get("phase")
+                .and_then(|value| value.as_str())
+                != row
+                    .payload
+                    .pointer("/loop/phase")
+                    .and_then(|value| value.as_str())
+            {
+                errors.push("evidence.comment_phase_binding".to_string());
+            }
+        }
         if row.kind == "operator_decision" {
             let evidence_action = row
                 .payload
@@ -3694,29 +3749,6 @@ fn operator_evidence_audit_error(
                 .and_then(|value| value.as_str());
             if evidence_action != comment_action {
                 errors.push("evidence.action_binding".to_string());
-            }
-            if row
-                .payload
-                .pointer("/loop/id")
-                .and_then(|value| value.as_i64())
-                != Some(row.loop_id)
-            {
-                errors.push("evidence.loop_id_binding".to_string());
-            }
-            let evidence_round = row
-                .payload
-                .pointer("/loop/round")
-                .and_then(|value| value.as_i64());
-            if evidence_round != Some(row.round) {
-                errors.push("evidence.loop_round_binding".to_string());
-            }
-            if comment
-                .payload
-                .get("loop_id")
-                .and_then(|value| value.as_i64())
-                != Some(row.loop_id)
-            {
-                errors.push("evidence.comment_loop_binding".to_string());
             }
             if comment
                 .payload
@@ -3834,6 +3866,11 @@ pub fn add_comment(store: &Store, request: IssueCommentRequest) -> Result<IssueC
     if body.is_empty() {
         anyhow::bail!("hive issue comment requires a non-empty body");
     }
+    let contract = issue
+        .loop_id
+        .map(|loop_id| store.get_hive_loop_contract(loop_id))
+        .transpose()?
+        .flatten();
     let comment_id = store.insert_hive_comment(HiveCommentCreate {
         issue_id: request.issue_id,
         author: author.clone(),
@@ -3841,7 +3878,10 @@ pub fn add_comment(store: &Store, request: IssueCommentRequest) -> Result<IssueC
         payload: serde_json::json!({
             "schema_version": OPERATOR_COMMENT_SCHEMA_VERSION,
             "source": "operator",
-            "loop_id": issue.loop_id
+            "loop_id": issue.loop_id,
+            "round": contract.as_ref().map(|contract| contract.current_round),
+            "status": issue.status,
+            "phase": contract.as_ref().map(|contract| contract.active_phase.as_str())
         }),
     })?;
     record_operator_comment_evidence(store, &issue, comment_id, &author, &body)?;
@@ -9461,6 +9501,34 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some(OPERATOR_COMMENT_SCHEMA_VERSION)
         );
+        assert_eq!(
+            operator_comment
+                .payload
+                .get("loop_id")
+                .and_then(|value| value.as_i64()),
+            Some(created.contract.id)
+        );
+        assert_eq!(
+            operator_comment
+                .payload
+                .get("round")
+                .and_then(|value| value.as_i64()),
+            Some(blocked.contract.current_round)
+        );
+        assert_eq!(
+            operator_comment
+                .payload
+                .get("status")
+                .and_then(|value| value.as_str()),
+            Some("Blocked")
+        );
+        assert_eq!(
+            operator_comment
+                .payload
+                .get("phase")
+                .and_then(|value| value.as_str()),
+            Some(blocked.contract.active_phase.as_str())
+        );
 
         let evidence = store
             .list_hive_loop_evidence(created.contract.id)
@@ -9490,6 +9558,20 @@ mod tests {
                 .pointer("/issue/comment_id")
                 .and_then(|value| value.as_i64()),
             Some(operator_comment.id)
+        );
+        assert_eq!(
+            comment_evidence
+                .payload
+                .pointer("/loop/round")
+                .and_then(|value| value.as_i64()),
+            Some(blocked.contract.current_round)
+        );
+        assert_eq!(
+            comment_evidence
+                .payload
+                .pointer("/loop/phase")
+                .and_then(|value| value.as_str()),
+            Some(blocked.contract.active_phase.as_str())
         );
         let evidence_report = super::evidence_report(&store, created.contract.id)
             .expect("evidence report should resolve");
@@ -9840,6 +9922,35 @@ mod tests {
                 }),
             })
             .expect("drifted operator comment evidence should insert");
+        store
+            .insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+                loop_id: created.contract.id,
+                stage_id: None,
+                round: created.contract.current_round,
+                kind: "operator_comment".to_string(),
+                summary: "drifted comment loop binding".to_string(),
+                path: None,
+                payload: serde_json::json!({
+                    "schema_version": OPERATOR_COMMENT_SCHEMA_VERSION,
+                    "source": "issue/status/comment",
+                    "issue": {
+                        "id": issue_id,
+                        "status": "Drifted",
+                        "comment_id": operator_comment.id
+                    },
+                    "loop": {
+                        "id": created.contract.id + 99,
+                        "status": "blocked",
+                        "phase": "doer",
+                        "round": created.contract.current_round + 99
+                    },
+                    "operator": {
+                        "author": "human",
+                        "comment_body": operator_comment.body
+                    }
+                }),
+            })
+            .expect("drifted operator comment binding evidence should insert");
 
         let cancel_card = decide_issue(
             &store,
@@ -9948,6 +10059,29 @@ mod tests {
                 && fields
                     .iter()
                     .any(|field| field.as_str() == Some("evidence.comment_body_binding")))));
+        assert!(errors.iter().any(|error| {
+            error.pointer("/kind").and_then(|value| value.as_str()) == Some("operator_comment")
+                && error
+                    .pointer("/errors")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|fields| {
+                        fields
+                            .iter()
+                            .any(|field| field.as_str() == Some("evidence.loop_id_binding"))
+                            && fields
+                                .iter()
+                                .any(|field| field.as_str() == Some("evidence.loop_round_binding"))
+                            && fields.iter().any(|field| {
+                                field.as_str() == Some("evidence.comment_round_binding")
+                            })
+                            && fields.iter().any(|field| {
+                                field.as_str() == Some("evidence.comment_status_binding")
+                            })
+                            && fields.iter().any(|field| {
+                                field.as_str() == Some("evidence.comment_phase_binding")
+                            })
+                    })
+        }));
         assert!(errors.iter().any(|error| error
             .pointer("/errors")
             .and_then(|value| value.as_array())
@@ -9989,6 +10123,9 @@ mod tests {
             .audit_failure_details
             .iter()
             .any(|detail| detail == "issue_surface:operator_evidence:evidence.loop_round_binding"));
+        assert!(trace_report.trace.audit_failure_details.iter().any(
+            |detail| detail == "issue_surface:operator_evidence:evidence.comment_round_binding"
+        ));
         let doctor_report = super::doctor(&store, created.contract.id)
             .expect("doctor should include audit details");
         assert!(doctor_report.audit_failure_details.iter().any(
