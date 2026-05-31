@@ -43,7 +43,9 @@ Worker attempts default to 1, can be overridden with `--worker-attempts <n>` or
 `ENTRANCE_HIVE_WORKER_ATTEMPTS`, and are recorded as attempt count/max attempts
 plus the raw attempt receipts on codex workers.
 Loop audit includes a `worker_receipts` check that verifies worker receipts
-carry bounded timeout and attempt metadata.
+carry bounded timeout and attempt metadata, plus a `runtime_policy` check that
+verifies contract runtimes and worker receipt kind/mode values against the
+registry.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 Human decisions are available through `hive issue decide <id>

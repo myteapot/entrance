@@ -912,6 +912,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .iter()
         .filter_map(worker_receipt_audit_errors)
         .collect::<Vec<_>>();
+    let runtime_policy_errors = runtime_policy_audit_errors(&contract, &packets);
     let verdict_errors = verdicts
         .iter()
         .filter_map(verdict_audit_errors)
@@ -970,6 +971,23 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
                 worker_errors.len()
             ),
             serde_json::json!({ "worker_errors": worker_errors }),
+        ),
+        audit_check(
+            "runtime_policy",
+            runtime_policy_errors.is_empty(),
+            format!(
+                "Runtime `{}` and worker receipts inspected; {} runtime policy issues.",
+                contract.runtime,
+                runtime_policy_errors.len()
+            ),
+            serde_json::json!({
+                "supported_runtimes": runtime_policy_registry()
+                    .supported
+                    .iter()
+                    .map(|runtime| runtime.name.clone())
+                    .collect::<Vec<_>>(),
+                "runtime_policy_errors": runtime_policy_errors
+            }),
         ),
         audit_check(
             "verdict_packets",
@@ -1437,6 +1455,92 @@ fn worker_receipt_audit_errors(packet: &HiveLoopPacket) -> Option<serde_json::Va
             "errors": errors
         }))
     }
+}
+
+fn runtime_policy_audit_errors(
+    contract: &HiveLoopContract,
+    packets: &[HiveLoopPacket],
+) -> Vec<serde_json::Value> {
+    let registry = runtime_policy_registry();
+    let mut errors = Vec::new();
+    if runtime_policy_spec(&registry, &contract.runtime).is_none() {
+        errors.push(serde_json::json!({
+            "scope": "contract",
+            "runtime": contract.runtime,
+            "errors": ["runtime.unsupported"]
+        }));
+    }
+
+    for packet in packets {
+        for (receipt, worker) in packet_worker_receipts(packet) {
+            let worker_errors = runtime_worker_policy_errors(&registry, worker);
+            if !worker_errors.is_empty() {
+                errors.push(serde_json::json!({
+                    "scope": "worker_receipt",
+                    "packet_id": packet.id,
+                    "object_kind": packet.object_kind,
+                    "receipt": receipt,
+                    "kind": worker.get("kind").and_then(|value| value.as_str()),
+                    "errors": worker_errors
+                }));
+            }
+        }
+    }
+    errors
+}
+
+fn packet_worker_receipts<'a>(
+    packet: &'a HiveLoopPacket,
+) -> Vec<(&'static str, &'a serde_json::Value)> {
+    let body = packet_body(&packet.payload);
+    let mut workers = Vec::new();
+    if let Some(worker) = body.get("role_worker") {
+        workers.push(("role_worker", worker));
+    }
+    if let Some(worker) = body.get("runtime_worker") {
+        workers.push(("runtime_worker", worker));
+    }
+    workers
+}
+
+fn runtime_worker_policy_errors(
+    registry: &RuntimePolicyRegistry,
+    worker: &serde_json::Value,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let kind = worker.get("kind").and_then(|value| value.as_str());
+    match kind.and_then(|kind| runtime_policy_spec(registry, kind)) {
+        Some(spec) => {
+            if worker.get("mode").and_then(|value| value.as_str()) != Some(spec.mode.as_str()) {
+                errors.push("mode".to_string());
+            }
+        }
+        None if kind.is_some() => errors.push("kind.unsupported".to_string()),
+        None => errors.push("kind".to_string()),
+    }
+
+    match worker.get("timeout_secs").and_then(|value| value.as_u64()) {
+        Some(1..=MAX_WORKER_TIMEOUT_SECS) => {}
+        _ => errors.push("timeout_secs".to_string()),
+    }
+    let attempt_count = worker.get("attempt_count").and_then(|value| value.as_u64());
+    let max_attempts = worker.get("max_attempts").and_then(|value| value.as_u64());
+    match max_attempts {
+        Some(1..=MAX_WORKER_ATTEMPTS) => {}
+        _ => errors.push("max_attempts".to_string()),
+    }
+    match (attempt_count, max_attempts) {
+        (Some(count), Some(max)) if count <= max => {}
+        _ => errors.push("attempt_count".to_string()),
+    }
+    errors
+}
+
+fn runtime_policy_spec<'a>(
+    registry: &'a RuntimePolicyRegistry,
+    runtime: &str,
+) -> Option<&'a RuntimePolicySpec> {
+    registry.supported.iter().find(|spec| spec.name == runtime)
 }
 
 fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> {
@@ -4063,6 +4167,15 @@ mod tests {
                     .and_then(|value| value.as_array())
                     .is_some_and(|errors| errors.is_empty())
         }));
+        assert!(audit_report.checks.iter().any(|check| {
+            check.name == "runtime_policy"
+                && check.passed
+                && check
+                    .details
+                    .pointer("/runtime_policy_errors")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|errors| errors.is_empty())
+        }));
         let doctor_report =
             super::doctor(&store, created.contract.id).expect("loop doctor should resolve");
         assert_eq!(doctor_report.schema_version, DOCTOR_SCHEMA_VERSION);
@@ -4414,6 +4527,19 @@ mod tests {
             .next_actions
             .iter()
             .any(|action| action.contains("retry --body")));
+        let audit_report =
+            super::audit(&store, created.contract.id).expect("blocked audit should resolve");
+        let runtime_policy_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "runtime_policy")
+            .expect("runtime policy audit should be present");
+        assert!(!runtime_policy_check.passed);
+        assert!(runtime_policy_check
+            .details
+            .pointer("/runtime_policy_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| !errors.is_empty()));
 
         let _ = fs::remove_dir_all(root);
     }
