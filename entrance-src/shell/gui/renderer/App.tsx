@@ -157,6 +157,41 @@ type IssueCard = {
   } | null;
 };
 
+type HiveLoopDoctor = {
+  schema_version: string;
+  loop_id: number;
+  health: string;
+  summary: string;
+  next_actions: string[];
+  status: string;
+  active_phase: string;
+  current_round: number;
+  runtime: string;
+  issue_id: number | null;
+  issue_status: string | null;
+  decision: string | null;
+  reason_code: string | null;
+  counts: {
+    round_packet_count: number;
+    round_admission_count: number;
+    round_evidence_count: number;
+    round_verdict_count: number;
+    round_receipt_required_count: number;
+    round_receipt_missing_count: number;
+    round_role_worker_count: number;
+    round_role_worker_ok_count: number;
+    audit_failed_count: number;
+  };
+  failed_checks: string[];
+  missing_receipts: string[];
+  worker_failures: string[];
+  checks: Array<{
+    name: string;
+    passed: boolean;
+    summary: string;
+  }>;
+};
+
 type LauncherResult = {
   id: number;
   name: string;
@@ -222,6 +257,19 @@ export default function App() {
     const issueId = selectedIssueId();
     return cards.find((card) => card.issue.id === issueId) ?? cards[0];
   });
+  const selectedLoopId = createMemo(() => selectedIssueCard()?.issue.loop_id ?? null);
+  const [loopDoctor, { refetch: refetchLoopDoctor }] = createResource(
+    selectedLoopId,
+    async (loopId) => {
+      if (!loopId) return null;
+      return bridge.invoke<HiveLoopDoctor>("hive_loop_doctor", { id: loopId });
+    },
+  );
+  const selectedLoopDoctor = createMemo(() => {
+    const doctor = loopDoctor();
+    const loopId = selectedLoopId();
+    return doctor && loopId === doctor.loop_id ? doctor : null;
+  });
 
   const refreshAll = async () => {
     await Promise.all([
@@ -233,6 +281,7 @@ export default function App() {
       refetchHiveSummary(),
       refetchHiveLoops(),
       refetchIssueCards(),
+      refetchLoopDoctor(),
       refetchLauncher(),
     ]);
   };
@@ -332,7 +381,7 @@ export default function App() {
         runtime: loop.runtime || runArgs.runtime,
       });
       setBanner(`Loop #${loop.id} finished.`);
-      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchLoopDoctor(), refetchStatus()]);
     } catch (error) {
       setBanner(`Loop #${loop.id} failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -350,7 +399,7 @@ export default function App() {
         ...loopRunArgs(),
       });
       setBanner(`Loop #${card.issue.loop_id} finished.`);
-      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchLoopDoctor(), refetchStatus()]);
     } catch (error) {
       setBanner(`Loop #${card.issue.loop_id} failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -371,7 +420,7 @@ export default function App() {
       });
       clearIssueComposer(issueId);
       setBanner(`Issue #${issueId} ${issueActionLabel(action)}.`);
-      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchLoopDoctor(), refetchStatus()]);
     } catch (error) {
       setBanner(`Issue #${issueId} failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -398,7 +447,7 @@ export default function App() {
         });
       }
       setBanner(`Issue #${card.issue.id} retried.`);
-      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchLoopDoctor(), refetchStatus()]);
     } catch (error) {
       setBanner(`Issue #${card.issue.id} retry failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -428,7 +477,7 @@ export default function App() {
       setCommentBody("");
       setActiveCommentIssue(null);
       setBanner(`Commented on issue #${issueId}.`);
-      await refetchIssueCards();
+      await Promise.all([refetchIssueCards(), refetchLoopDoctor()]);
     } catch (error) {
       setBanner(`Comment failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -600,6 +649,38 @@ export default function App() {
     if (!trace.score_vector.length) return null;
     const healthy = trace.score_vector.filter((metric) => metric.value !== null && metric.value >= 1).length;
     return `score ${healthy}/${trace.score_vector.length}`;
+  };
+
+  const doctorHealthLabel = (health: string) =>
+    ({
+      ok: "ok",
+      blocked: "blocked",
+      needs_review: "needs review",
+      rejected: "rejected",
+      audit_failed: "audit failed",
+      pending: "pending",
+      unknown: "unknown",
+    })[health] ?? health;
+
+  const doctorHealthTone = (health: string) =>
+    health === "ok" ? "ok" : health === "pending" ? "pending" : "warn";
+
+  const doctorReceiptLabel = (doctor: HiveLoopDoctor) => {
+    const required = doctor.counts.round_receipt_required_count;
+    if (required === 0) return "receipts pending";
+    const present = required - doctor.counts.round_receipt_missing_count;
+    return `receipts ${present}/${required}`;
+  };
+
+  const doctorWorkerLabel = (doctor: HiveLoopDoctor) => {
+    const total = doctor.counts.round_role_worker_count;
+    if (total === 0) return "workers pending";
+    return `workers ${doctor.counts.round_role_worker_ok_count}/${total}`;
+  };
+
+  const cardDoctor = (card: IssueCard) => {
+    const doctor = selectedLoopDoctor();
+    return doctor && card.issue.loop_id === doctor.loop_id ? doctor : null;
   };
 
   const issueDetailRows = (card: IssueCard) => {
@@ -876,6 +957,62 @@ export default function App() {
                       <>
                         <h3>{card.issue.title}</h3>
                         <p class="muted">{card.issue.summary ?? "No summary"}</p>
+                        <Show when={selectedLoopDoctor()} keyed>
+                          {(doctor) => (
+                            <div class={`doctor-summary doctor-summary--${doctorHealthTone(doctor.health)}`}>
+                              <div class="stage-row-head">
+                                <strong>Doctor</strong>
+                                <span>{doctorHealthLabel(doctor.health)}</span>
+                              </div>
+                              <p>{doctor.summary}</p>
+                              <div class="trace-strip">
+                                <span class="trace-pill">{schemaLabel(doctor.schema_version)}</span>
+                                <span class="trace-pill">round {doctor.current_round}</span>
+                                <span class="trace-pill">{doctorWorkerLabel(doctor)}</span>
+                                <span
+                                  class={
+                                    doctor.counts.round_receipt_missing_count === 0
+                                      ? "trace-pill"
+                                      : "trace-pill trace-pill--warn"
+                                  }
+                                >
+                                  {doctorReceiptLabel(doctor)}
+                                </span>
+                                <span
+                                  class={
+                                    doctor.counts.audit_failed_count === 0
+                                      ? "trace-pill"
+                                      : "trace-pill trace-pill--warn"
+                                  }
+                                >
+                                  audit {doctor.counts.audit_failed_count}
+                                </span>
+                              </div>
+                              {doctor.failed_checks.length ||
+                              doctor.missing_receipts.length ||
+                              doctor.worker_failures.length ? (
+                                <div class="doctor-lines">
+                                  {doctor.failed_checks.map((check) => (
+                                    <span>check {check}</span>
+                                  ))}
+                                  {doctor.missing_receipts.map((receipt) => (
+                                    <span>missing {receipt}</span>
+                                  ))}
+                                  {doctor.worker_failures.map((failure) => (
+                                    <span>{failure}</span>
+                                  ))}
+                                </div>
+                              ) : null}
+                              {doctor.next_actions.length ? (
+                                <div class="doctor-actions">
+                                  {doctor.next_actions.slice(0, 3).map((action) => (
+                                    <code>{action}</code>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+                        </Show>
                         <dl class="detail-grid">
                           {issueDetailRows(card).map(([label, value]) => (
                             <div>
@@ -1045,7 +1182,7 @@ export default function App() {
                 <p class="panel-kicker">Issues</p>
                 <h3>Status board</h3>
                 <div class="board-columns">
-                  {["Todo", "Doing", "Needs Review", "Blocked", "Done", "Canceled"].map((statusName) => (
+                  {["Todo", "Doing", "Blocked", "Needs Review", "Done", "Canceled"].map((statusName) => (
                     <section class="board-column">
                       <div class="board-column-head">
                         <strong>{statusName}</strong>
@@ -1067,6 +1204,16 @@ export default function App() {
                                 <span>#{card.issue.id}</span>
                               </div>
                               <p class="muted">{card.issue.summary ?? "No summary"}</p>
+                              <Show when={cardDoctor(card)} keyed>
+                                {(doctor) => (
+                                  <div class={`doctor-strip doctor-strip--${doctorHealthTone(doctor.health)}`}>
+                                    <strong>Doctor</strong>
+                                    <span>{doctorHealthLabel(doctor.health)}</span>
+                                    <span>{doctorWorkerLabel(doctor)}</span>
+                                    <span>{doctorReceiptLabel(doctor)}</span>
+                                  </div>
+                                )}
+                              </Show>
                               {card.trace ? (
                                 <div class="trace-strip">
                                   <span class="trace-pill">R {card.trace.current_round}</span>

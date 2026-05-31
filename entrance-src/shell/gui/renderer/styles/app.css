@@ -270,6 +270,7 @@
 .issue-card {
   margin-top: 10px;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .issue-card--selected {
@@ -319,6 +320,94 @@
 .decision-options button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
+}
+
+.doctor-summary {
+  margin-top: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.doctor-summary--ok .stage-row-head span {
+  color: var(--ok);
+}
+
+.doctor-summary--warn .stage-row-head span {
+  color: #ffc107;
+}
+
+.doctor-summary--pending .stage-row-head span {
+  color: var(--text-dim);
+}
+
+.doctor-summary p {
+  margin: 8px 0 0;
+}
+
+.doctor-lines {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  color: #ffc107;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.doctor-actions {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.doctor-actions code {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.doctor-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid rgba(121, 215, 167, 0.18);
+  border-radius: 8px;
+  background: rgba(121, 215, 167, 0.06);
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+.doctor-strip strong {
+  color: var(--text);
+}
+
+.doctor-strip--ok {
+  border-color: rgba(121, 215, 167, 0.28);
+}
+
+.doctor-strip--warn {
+  border-color: rgba(255, 193, 7, 0.28);
+  background: rgba(255, 193, 7, 0.08);
+}
+
+.doctor-strip--pending {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.panel--board .issue-card .trace-strip {
+  max-height: 156px;
+  overflow: hidden;
+}
+
+.panel--board .issue-card .comment-stack {
+  max-height: 132px;
+  overflow: hidden;
 }
 
 .comment-box--detail {
