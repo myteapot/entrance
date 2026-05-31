@@ -72,6 +72,9 @@ the evaluator score vector, without packet transcripts.
 `hive loop evidence <id>` returns the compact evidence ledger with stage role,
 admission result, worker receipt, missing receipts, operator options, and short
 transcript excerpts.
+`hive issue comment <id> --body <text>` records a local issue comment and, when
+the issue is bound to a loop, mirrors it into the loop ledger as
+`operator_comment` evidence.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcripts in stage evidence.

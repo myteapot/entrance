@@ -20,6 +20,7 @@ const POLICY_SCHEMA_VERSION: &str = "entrance.hive.policy.v1";
 const ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.admission.v1";
 const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
+const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
 
 #[derive(Debug, Clone, Copy)]
 struct GateSpec {
@@ -666,18 +667,26 @@ pub fn issue(store: &Store, issue_id: i64) -> Result<IssueCard> {
 }
 
 pub fn add_comment(store: &Store, request: IssueCommentRequest) -> Result<IssueCard> {
-    store.insert_hive_comment(HiveCommentCreate {
-        issue_id: request.issue_id,
-        author: default_text(request.author, "human"),
-        body: request.body,
-        payload: serde_json::json!({ "source": "operator" }),
-    })?;
-
     let issue = store
-        .list_hive_issues()?
-        .into_iter()
-        .find(|issue| issue.id == request.issue_id)
+        .get_hive_issue(request.issue_id)?
         .with_context(|| format!("unknown hive issue `{}`", request.issue_id))?;
+    let author = default_text(request.author, "human");
+    let body = request.body.trim().to_string();
+    if body.is_empty() {
+        anyhow::bail!("hive issue comment requires a non-empty body");
+    }
+    let comment_id = store.insert_hive_comment(HiveCommentCreate {
+        issue_id: request.issue_id,
+        author: author.clone(),
+        body: body.clone(),
+        payload: serde_json::json!({
+            "schema_version": OPERATOR_COMMENT_SCHEMA_VERSION,
+            "source": "operator",
+            "loop_id": issue.loop_id
+        }),
+    })?;
+    record_operator_comment_evidence(store, &issue, comment_id, &author, &body)?;
+
     issue_card_from_issue(store, issue)
 }
 
@@ -786,6 +795,50 @@ fn record_operator_decision_evidence(
                 "action": action.as_str(),
                 "note": note,
                 "comment_body": comment_body
+            }
+        }),
+    })?;
+    Ok(())
+}
+
+fn record_operator_comment_evidence(
+    store: &Store,
+    issue: &HiveIssue,
+    comment_id: i64,
+    author: &str,
+    body: &str,
+) -> Result<()> {
+    let Some(loop_id) = issue.loop_id else {
+        return Ok(());
+    };
+    let Some(contract) = store.get_hive_loop_contract(loop_id)? else {
+        return Ok(());
+    };
+
+    store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+        loop_id,
+        stage_id: None,
+        round: contract.current_round,
+        kind: "operator_comment".to_string(),
+        summary: body.to_string(),
+        path: None,
+        payload: serde_json::json!({
+            "schema_version": OPERATOR_COMMENT_SCHEMA_VERSION,
+            "source": "issue/status/comment",
+            "issue": {
+                "id": issue.id,
+                "status": issue.status,
+                "comment_id": comment_id
+            },
+            "loop": {
+                "id": loop_id,
+                "status": contract.status,
+                "phase": contract.active_phase,
+                "round": contract.current_round
+            },
+            "operator": {
+                "author": author,
+                "comment_body": body
             }
         }),
     })?;
@@ -3353,6 +3406,118 @@ mod tests {
                     .and_then(|value| value.as_str())
                     == Some("cancel")
         }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_comments_record_operator_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-comment-evidence-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Human comment loop".to_string(),
+                goal: "Capture issue comments as loop evidence".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "unsupported-agent".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let blocked = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("unsupported-agent".to_string()),
+                decision: None,
+            },
+        )
+        .expect("loop should block");
+        let issue_id = blocked.issues[0].issue.id;
+
+        let comment_card = add_comment(
+            &store,
+            IssueCommentRequest {
+                issue_id,
+                author: "operator".to_string(),
+                body: "  Please inspect the missing role worker receipt.  ".to_string(),
+            },
+        )
+        .expect("comment should be recorded");
+        let operator_comment = comment_card
+            .comments
+            .iter()
+            .find(|comment| comment.author == "operator")
+            .expect("operator comment should be visible");
+        assert_eq!(
+            operator_comment.body,
+            "Please inspect the missing role worker receipt."
+        );
+        assert_eq!(
+            operator_comment
+                .payload
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(OPERATOR_COMMENT_SCHEMA_VERSION)
+        );
+
+        let evidence = store
+            .list_hive_loop_evidence(created.contract.id)
+            .expect("loop evidence should list");
+        let comment_evidence = evidence
+            .iter()
+            .find(|evidence| evidence.kind == "operator_comment")
+            .expect("operator comment should be ledger evidence");
+        assert_eq!(comment_evidence.round, blocked.contract.current_round);
+        assert_eq!(
+            comment_evidence
+                .payload
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(OPERATOR_COMMENT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            comment_evidence
+                .payload
+                .pointer("/operator/comment_body")
+                .and_then(|value| value.as_str()),
+            Some("Please inspect the missing role worker receipt.")
+        );
+        assert_eq!(
+            comment_evidence
+                .payload
+                .pointer("/issue/comment_id")
+                .and_then(|value| value.as_i64()),
+            Some(operator_comment.id)
+        );
+        let evidence_report = super::evidence_report(&store, created.contract.id)
+            .expect("evidence report should resolve");
+        assert!(evidence_report.evidence.iter().any(|evidence| {
+            evidence.kind == "operator_comment"
+                && evidence.summary == "Please inspect the missing role worker receipt."
+                && evidence.schema_version.as_deref() == Some(OPERATOR_COMMENT_SCHEMA_VERSION)
+        }));
+        assert!(add_comment(
+            &store,
+            IssueCommentRequest {
+                issue_id,
+                author: "operator".to_string(),
+                body: "   ".to_string(),
+            },
+        )
+        .is_err());
 
         let _ = fs::remove_dir_all(root);
     }
