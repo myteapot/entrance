@@ -112,6 +112,10 @@ type IssueCard = {
     worker_kind: string | null;
     worker_mode: string | null;
     worker_ok: boolean | null;
+    audit_schema: string | null;
+    audit_passed: boolean | null;
+    audit_failed_count: number;
+    audit_failed_checks: string[];
     evidence: Array<{
       id: number;
       round: number;
@@ -491,6 +495,11 @@ export default function App() {
   const traceCountLabel = (label: string, current: number, total: number) =>
     total > current ? `${label} ${current}/${total}` : `${label} ${current}`;
 
+  const auditLabel = (trace: NonNullable<IssueCard["trace"]>) => {
+    if (trace.audit_passed === null) return "audit pending";
+    return trace.audit_passed ? "audit ok" : `audit fail ${trace.audit_failed_count}`;
+  };
+
   const stageWorkerLabel = (stage: NonNullable<IssueCard["trace"]>["stages"][number]) => {
     if (!stage.worker_kind) return "worker pending";
     const state = stage.worker_ok === true ? "ok" : "blocked";
@@ -566,6 +575,12 @@ export default function App() {
       ["Policy", schemaLabel(trace?.policy_schema)],
       ["Admission", schemaLabel(trace?.admission_schema)],
       ["Verdict", schemaLabel(trace?.verdict_schema)],
+      ["Audit", trace ? auditLabel(trace) : "pending"],
+      ["Audit Schema", schemaLabel(trace?.audit_schema)],
+      [
+        "Audit Fails",
+        trace?.audit_failed_checks.length ? trace.audit_failed_checks.join(", ") : "none",
+      ],
       ["Worker", workerLabel(card) ?? "pending"],
     ];
   };
@@ -945,6 +960,15 @@ export default function App() {
                                   {scoreSummaryLabel(card.trace) ? (
                                     <span class="trace-pill">{scoreSummaryLabel(card.trace)}</span>
                                   ) : null}
+                                  <span
+                                    class={
+                                      card.trace.audit_passed === false
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {auditLabel(card.trace)}
+                                  </span>
                                   {receiptLabel(card) ? (
                                     <span
                                       class={

@@ -192,6 +192,10 @@ pub struct IssueTraceSummary {
     pub worker_kind: Option<String>,
     pub worker_mode: Option<String>,
     pub worker_ok: Option<bool>,
+    pub audit_schema: Option<String>,
+    pub audit_passed: Option<bool>,
+    pub audit_failed_count: usize,
+    pub audit_failed_checks: Vec<String>,
     pub evidence: Vec<IssueEvidenceSummary>,
     pub stages: Vec<IssueStageSummary>,
 }
@@ -1264,6 +1268,18 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
         .filter_map(|packet| packet_role_worker(&packet.payload))
         .filter(|worker| worker_ok(worker))
         .count();
+    let audit_report = audit(store, loop_id).ok();
+    let audit_failed_checks = audit_report
+        .as_ref()
+        .map(|report| {
+            report
+                .checks
+                .iter()
+                .filter(|check| !check.passed)
+                .map(|check| check.name.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     Ok(IssueTraceSummary {
         current_round,
@@ -1362,6 +1378,15 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
         worker_ok: worker
             .and_then(|value| value.get("ok"))
             .and_then(|value| value.as_bool()),
+        audit_schema: audit_report
+            .as_ref()
+            .map(|report| report.schema_version.clone()),
+        audit_passed: audit_report.as_ref().map(|report| report.passed),
+        audit_failed_count: audit_report
+            .as_ref()
+            .map(|report| report.failed_count)
+            .unwrap_or_default(),
+        audit_failed_checks,
         evidence: evidence
             .iter()
             .filter(|row| row.round == current_round)
@@ -3183,6 +3208,13 @@ mod tests {
             trace_report.trace.last_gate_expected_object_kind.as_deref(),
             Some("VERDICT_PACKET")
         );
+        assert_eq!(
+            trace_report.trace.audit_schema.as_deref(),
+            Some(AUDIT_SCHEMA_VERSION)
+        );
+        assert_eq!(trace_report.trace.audit_passed, Some(true));
+        assert_eq!(trace_report.trace.audit_failed_count, 0);
+        assert!(trace_report.trace.audit_failed_checks.is_empty());
         let evidence_report = super::evidence_report(&store, created.contract.id)
             .expect("loop evidence report should resolve");
         assert_eq!(evidence_report.evidence.len(), 3);
@@ -3734,6 +3766,19 @@ mod tests {
             .comments
             .iter()
             .any(|comment| comment.body.contains("Compiler admission blocked at doer")));
+        let blocked_trace = report.issues[0]
+            .trace
+            .as_ref()
+            .expect("blocked issue should include trace");
+        assert_eq!(blocked_trace.audit_passed, Some(false));
+        assert!(blocked_trace
+            .audit_failed_checks
+            .iter()
+            .any(|check| check == "active_policy_registry"));
+        assert!(blocked_trace
+            .audit_failed_checks
+            .iter()
+            .any(|check| check == "admission_receipts"));
         let audit_report =
             super::audit(&store, created.contract.id).expect("loop audit should resolve");
         assert!(!audit_report.passed);
