@@ -27,6 +27,9 @@ actions instead of the full empty loop report. Use `--compact` on
 `hive loop run`, `hive issue run`, or `hive issue retry-run` when running
 `codex`; the loop still records full worker transcripts in SQLite, but the CLI
 prints the Doctor summary or compact issue card instead of the full report.
+Pending Doctor next actions prefer the issue-first compact command
+`hive issue run <id> --runtime <runtime> --compact` when a loop has a linked
+issue, so operators stay on the issue/status/comment surface.
 Admission receipts include the packet receipt requirements, missing receipt
 fields, and a boolean satisfied flag. Default MVP gates admit packets only when
 their typed receipt requirements are present. Worker receipts are stricter than

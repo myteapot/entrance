@@ -74,6 +74,9 @@ transcript-heavy report. Add `--compact` to `hive issue run`,
 `hive issue retry-run`, `hive issue show`,
 `hive issue comment`, or `hive issue decide` to print the compact issue card
 with recent comments, evidence, stages, and next actions.
+Pending Doctor next actions prefer the issue-first compact command
+`hive issue run <id> --runtime <runtime> --compact` when a loop has a linked
+issue.
 `hive policy registry` exposes the typed gate registry plus runtime worker
 policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
 required worker receipt fields, and role binding. `hive loop policies <id>`

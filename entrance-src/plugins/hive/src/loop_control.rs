@@ -1496,9 +1496,7 @@ fn doctor_next_actions(
             actions.push(format!("entrance hive loop evidence {loop_id}"));
         }
         "pending" => {
-            actions.push(format!(
-                "entrance hive loop run {loop_id} --runtime {runtime}"
-            ));
+            actions.push(pending_run_command(loop_id, issue_id, runtime));
         }
         "blocked" => {
             actions.push(format!("entrance hive loop evidence {loop_id}"));
@@ -1543,6 +1541,15 @@ fn doctor_next_actions(
         }
     }
     deduped
+}
+
+fn pending_run_command(loop_id: i64, issue_id: Option<i64>, runtime: &str) -> String {
+    match issue_id {
+        Some(issue_id) => {
+            format!("entrance hive issue run {issue_id} --runtime {runtime} --compact")
+        }
+        None => format!("entrance hive loop run {loop_id} --runtime {runtime} --compact"),
+    }
 }
 
 fn audit_check(
@@ -5970,6 +5977,18 @@ mod tests {
                     .any(|field| field.as_str() == Some("gate.expected_object_kind"))))));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_next_actions_prefer_issue_compact_run() {
+        assert_eq!(
+            doctor_next_actions("pending", 4, Some(9), "codex", true),
+            vec!["entrance hive issue run 9 --runtime codex --compact"]
+        );
+        assert_eq!(
+            doctor_next_actions("pending", 4, None, "local", true),
+            vec!["entrance hive loop run 4 --runtime local --compact"]
+        );
     }
 
     #[test]
