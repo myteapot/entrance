@@ -10,7 +10,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -143,7 +143,16 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                     .to_string(),
                 runtime: flag_value(rest, "--runtime").unwrap_or("local").to_string(),
             };
-            print_json(&services.hive.loop_create(request)?)
+            let report = services.hive.loop_create(request)?;
+            if flag_present(rest, "--compact") {
+                if let Some(card) = report.issues.first() {
+                    print_json(&compact_issue_detail(card))
+                } else {
+                    print_json(&report)
+                }
+            } else {
+                print_json(&report)
+            }
         }
         [scope, action, rest @ ..] if scope == "issue" && action == "list" => {
             let cards = services.hive.panel()?;
@@ -643,6 +652,59 @@ mod tests {
                 .pointer("/issue/actions/1/command")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue retry-run 7 --body <note> --compact")
+        );
+    }
+
+    #[test]
+    fn compact_created_todo_issue_exposes_next_run_command() {
+        let detail = compact_issue_detail(&IssueCard {
+            issue: HiveIssue {
+                id: 9,
+                loop_id: Some(4),
+                title: "Loop #4: compact create".to_string(),
+                status: "Todo".to_string(),
+                summary: Some("Loop contract created; waiting for Explorer.".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            comments: vec![HiveComment {
+                id: 13,
+                issue_id: 9,
+                author: "compiler".to_string(),
+                body: "Loop contract admitted into Hive with 3 active policies.".to_string(),
+                payload: serde_json::json!({
+                    "source": "compiler",
+                    "next_phase": "explorer"
+                }),
+                created_at: "2026-01-01T00:01:00Z".to_string(),
+            }],
+            trace: None,
+            doctor: None,
+        });
+
+        assert_eq!(
+            detail
+                .pointer("/issue/status")
+                .and_then(|value| value.as_str()),
+            Some("Todo")
+        );
+        assert_eq!(
+            detail
+                .pointer("/issue/actions/0/action")
+                .and_then(|value| value.as_str()),
+            Some("run")
+        );
+        assert_eq!(
+            detail
+                .pointer("/issue/actions/0/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue run 9 --compact")
+        );
+        assert_eq!(
+            detail
+                .pointer("/issue/actions/1/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue comment 9 --body <text> --compact")
         );
     }
 }

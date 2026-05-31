@@ -48,7 +48,7 @@ Task ledger for dispatch records, engine reports, callbacks, and review state.
 Local agent-loop MVP:
 
 ```powershell
-.\entrance.exe hive loop create --title "README loop" --goal "Run a constrained agent loop" --runtime codex
+.\entrance.exe hive loop create --title "README loop" --goal "Run a constrained agent loop" --runtime codex --compact
 .\entrance.exe hive loop run 1 --runtime codex
 .\entrance.exe hive loop run 1 --runtime codex --compact
 .\entrance.exe hive loop run 1 --runtime local --decision needs-review
@@ -67,9 +67,11 @@ Local agent-loop MVP:
 `hive loop run` records a minimal compiler path in SQLite: active policies,
 versioned typed packets, receipt-aware admission gates, versioned admission
 receipts, stage evidence, and the versioned final verdict.
-Add `--compact` to `hive loop run` to print the Doctor summary after execution
-instead of the full packet/evidence transcript-heavy report. Add `--compact` to
-`hive issue run`, `hive issue retry-run`, `hive issue show`,
+Add `--compact` to `hive loop create` to print the linked issue card and next
+actions instead of the full empty loop report. Add `--compact` to `hive loop run`
+to print the Doctor summary after execution instead of the full packet/evidence
+transcript-heavy report. Add `--compact` to `hive issue run`,
+`hive issue retry-run`, `hive issue show`,
 `hive issue comment`, or `hive issue decide` to print the compact issue card
 with recent comments, evidence, stages, and next actions.
 `hive policy registry` exposes the typed gate registry plus runtime worker
