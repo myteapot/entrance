@@ -503,14 +503,56 @@
   background: rgba(255, 255, 255, 0.03);
 }
 
-.comment-line strong,
-.comment-line span {
-  display: block;
+.comment-line-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
 }
 
-.comment-line span {
+.comment-line-head strong {
+  min-width: 0;
+}
+
+.comment-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.comment-tags span,
+.comment-more {
+  display: inline-flex;
+  margin-top: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.comment-more {
+  width: fit-content;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.comment-line > span {
+  display: -webkit-box;
   margin-top: 4px;
   color: var(--text-dim);
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+}
+
+.comment-line--compact > span {
+  -webkit-line-clamp: 2;
+}
+
+.comment-line--detail > span {
+  -webkit-line-clamp: 4;
 }
 
 .comment-box textarea {

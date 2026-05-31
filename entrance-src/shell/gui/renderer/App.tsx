@@ -75,6 +75,7 @@ type IssueCard = {
     author: string;
     body: string;
     created_at: string;
+    payload?: Record<string, unknown>;
   }>;
   trace: {
     current_round: number;
@@ -192,6 +193,55 @@ type LauncherResult = {
   score: number;
   arguments: string | null;
   working_dir: string | null;
+};
+
+type IssueComment = IssueCard["comments"][number];
+
+const COMMENT_CARD_PREVIEW_LIMIT = 132;
+const COMMENT_DETAIL_PREVIEW_LIMIT = 360;
+
+const COMMENT_ACTION_LABELS: Record<string, string> = {
+  retry: "retry",
+  "request-review": "review",
+  cancel: "cancel",
+};
+
+const compactText = (value: string, limit: number) => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, Math.max(0, limit - 1)).trimEnd()}...`;
+};
+
+const commentPayloadString = (comment: IssueComment, field: string) => {
+  const value = comment.payload?.[field];
+  return typeof value === "string" && value.trim() ? value : null;
+};
+
+const commentSchemaLabel = (comment: IssueComment) => {
+  const schema = commentPayloadString(comment, "schema_version");
+  return schema ? schema.split(".").slice(-2).join(".") : null;
+};
+
+const commentPills = (comment: IssueComment) => {
+  const source = commentPayloadString(comment, "source") ?? comment.author;
+  const action = commentPayloadString(comment, "action");
+  const decision = commentPayloadString(comment, "decision");
+  const phase =
+    commentPayloadString(comment, "phase") ?? commentPayloadString(comment, "next_phase");
+  return [
+    source,
+    action ? COMMENT_ACTION_LABELS[action] ?? action : null,
+    decision && decision !== action ? decision : null,
+    phase,
+    commentSchemaLabel(comment),
+  ].filter((value): value is string => Boolean(value));
+};
+
+const commentPreview = (comment: IssueComment, limit: number) => {
+  if (limit === COMMENT_DETAIL_PREVIEW_LIMIT && commentPayloadString(comment, "source") === "operator") {
+    return comment.body;
+  }
+  return compactText(comment.body, limit);
 };
 
 export default function App() {
@@ -1172,9 +1222,16 @@ export default function App() {
                         ) : null}
                         <div class="comment-stack comment-stack--detail">
                           {card.comments.map((comment) => (
-                            <div class="comment-line">
-                              <strong>{comment.author}</strong>
-                              <span>{comment.body}</span>
+                            <div class="comment-line comment-line--detail">
+                              <div class="comment-line-head">
+                                <strong>{comment.author}</strong>
+                                <div class="comment-tags">
+                                  {commentPills(comment).map((pill) => (
+                                    <span>{pill}</span>
+                                  ))}
+                                </div>
+                              </div>
+                              <span>{commentPreview(comment, COMMENT_DETAIL_PREVIEW_LIMIT)}</span>
                             </div>
                           ))}
                         </div>
@@ -1297,10 +1354,20 @@ export default function App() {
                                 </div>
                               ) : null}
                               <div class="comment-stack">
-                                {card.comments.slice(-3).map((comment) => (
-                                  <div class="comment-line">
-                                    <strong>{comment.author}</strong>
-                                    <span>{comment.body}</span>
+                                {card.comments.length > 2 ? (
+                                  <div class="comment-more">+{card.comments.length - 2} earlier comments</div>
+                                ) : null}
+                                {card.comments.slice(-2).map((comment) => (
+                                  <div class="comment-line comment-line--compact">
+                                    <div class="comment-line-head">
+                                      <strong>{comment.author}</strong>
+                                      <div class="comment-tags">
+                                        {commentPills(comment).slice(0, 3).map((pill) => (
+                                          <span>{pill}</span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    <span>{commentPreview(comment, COMMENT_CARD_PREVIEW_LIMIT)}</span>
                                   </div>
                                 ))}
                               </div>
