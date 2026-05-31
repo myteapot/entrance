@@ -16,9 +16,26 @@ use entrance_core::{
 use serde::{Deserialize, Serialize};
 
 const PACKET_SCHEMA_VERSION: &str = "entrance.hive.packet.v1";
+const POLICY_SCHEMA_VERSION: &str = "entrance.hive.policy.v1";
 const ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.admission.v1";
 const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
+
+#[derive(Debug, Clone, Copy)]
+struct GateSpec {
+    name: &'static str,
+    description: &'static str,
+    expected_object_kind: Option<&'static str>,
+    required_receipts: &'static [&'static str],
+    check: GateCheck,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GateCheck {
+    ReceiptRequirementsSatisfied,
+    BodyFieldPresent(&'static str),
+    DecisionPresent,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopCreateRequest {
@@ -100,9 +117,12 @@ pub struct IssueTraceSummary {
     pub round_role_worker_count: usize,
     pub round_role_worker_ok_count: usize,
     pub packet_schema: Option<String>,
+    pub policy_schema: Option<String>,
     pub admission_schema: Option<String>,
     pub verdict_schema: Option<String>,
     pub last_admission_gate: Option<String>,
+    pub last_gate_description: Option<String>,
+    pub last_gate_expected_object_kind: Option<String>,
     pub last_admission_passed: Option<bool>,
     pub last_decision: Option<String>,
     pub reason_code: Option<String>,
@@ -793,10 +813,22 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
             .rev()
             .find(|packet| packet.round == current_round)
             .and_then(|packet| schema_version(&packet.payload)),
+        policy_schema: last_admission
+            .and_then(|admission| admission.policy.pointer("/policy/schema_version"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
         admission_schema: last_admission.and_then(|admission| schema_version(&admission.policy)),
         verdict_schema: last_verdict.and_then(|verdict| schema_version(&verdict.score)),
         last_admission_gate: last_admission
             .and_then(|admission| admission.policy.pointer("/gate/name"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        last_gate_description: last_admission
+            .and_then(|admission| admission.policy.pointer("/gate/spec/description"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        last_gate_expected_object_kind: last_admission
+            .and_then(|admission| admission.policy.pointer("/gate/spec/expected_object_kind"))
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned),
         last_admission_passed: last_admission
@@ -1303,6 +1335,16 @@ impl RuntimeFailure {
     }
 }
 
+impl GateCheck {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReceiptRequirementsSatisfied => "receipt_requirements_satisfied",
+            Self::BodyFieldPresent(_) => "body_field_present",
+            Self::DecisionPresent => "decision_present",
+        }
+    }
+}
+
 fn runtime_failure(
     runtime_probe: &serde_json::Value,
     runtime_worker: &serde_json::Value,
@@ -1511,6 +1553,69 @@ fn receipt_requirements_for_packet(object_kind: &str) -> Vec<&'static str> {
     }
 }
 
+fn gate_spec(gate: &str) -> Option<GateSpec> {
+    match gate {
+        "candidate_receipts_present" => Some(GateSpec {
+            name: "candidate_receipts_present",
+            description: "Explorer packets must carry the candidate, constraints, and role worker receipt.",
+            expected_object_kind: Some("EXPLORATION_PACKET"),
+            required_receipts: &["candidate", "constraints", "role_worker"],
+            check: GateCheck::ReceiptRequirementsSatisfied,
+        }),
+        "runtime_receipts_present" => Some(GateSpec {
+            name: "runtime_receipts_present",
+            description: "Doer packets must carry runtime probe, runtime worker, artifact, and role worker receipts.",
+            expected_object_kind: Some("EXECUTION_PACKET"),
+            required_receipts: &["runtime_probe", "runtime_worker", "artifact", "role_worker"],
+            check: GateCheck::ReceiptRequirementsSatisfied,
+        }),
+        "verdict_receipts_present" => Some(GateSpec {
+            name: "verdict_receipts_present",
+            description: "Evaluator packets must carry decision, summary, score, and role worker receipts.",
+            expected_object_kind: Some("VERDICT_PACKET"),
+            required_receipts: &["decision", "summary", "score", "role_worker"],
+            check: GateCheck::ReceiptRequirementsSatisfied,
+        }),
+        "candidate_present" => Some(GateSpec {
+            name: "candidate_present",
+            description: "Packet body must include a non-empty candidate.",
+            expected_object_kind: None,
+            required_receipts: &["candidate"],
+            check: GateCheck::BodyFieldPresent("candidate"),
+        }),
+        "runtime_probe_present" => Some(GateSpec {
+            name: "runtime_probe_present",
+            description: "Packet body must include runtime probe evidence.",
+            expected_object_kind: None,
+            required_receipts: &["runtime_probe"],
+            check: GateCheck::BodyFieldPresent("runtime_probe"),
+        }),
+        "decision_present" => Some(GateSpec {
+            name: "decision_present",
+            description: "Packet body must include an allowed evaluator decision.",
+            expected_object_kind: None,
+            required_receipts: &["decision"],
+            check: GateCheck::DecisionPresent,
+        }),
+        _ => None,
+    }
+}
+
+fn gate_spec_payload(gate: &str) -> serde_json::Value {
+    gate_spec(gate)
+        .map(|spec| {
+            serde_json::json!({
+                "schema_version": POLICY_SCHEMA_VERSION,
+                "name": spec.name,
+                "description": spec.description,
+                "expected_object_kind": spec.expected_object_kind,
+                "required_receipts": spec.required_receipts,
+                "check": spec.check.as_str()
+            })
+        })
+        .unwrap_or(serde_json::Value::Null)
+}
+
 fn typed_admission_receipt(
     packet: &HiveLoopPacket,
     packet_payload: &serde_json::Value,
@@ -1539,17 +1644,22 @@ fn typed_admission_receipt(
             "state_code": &packet.state_code
         },
         "policy": policy.map(|policy| serde_json::json!({
+            "schema_version": POLICY_SCHEMA_VERSION,
             "id": policy.id,
             "object_kind": &policy.object_kind,
             "writer_role": &policy.writer_role,
             "route_from": &policy.route_from,
             "route_to": &policy.route_to,
             "gate": &policy.gate,
-            "status": &policy.status
+            "status": &policy.status,
+            "gate_spec": gate_spec_payload(&policy.gate)
         })),
         "gate": {
             "name": gate_name,
-            "passed": gate_passed
+            "passed": gate_passed,
+            "spec": gate_name
+                .map(gate_spec_payload)
+                .unwrap_or(serde_json::Value::Null)
         },
         "receipt": {
             "required": required_receipts,
@@ -1563,30 +1673,29 @@ fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
     if !typed_packet_envelope_valid(payload) {
         return false;
     }
+    let Some(spec) = gate_spec(gate) else {
+        return false;
+    };
+    if spec
+        .expected_object_kind
+        .is_some_and(|expected| packet_object_kind(payload) != Some(expected))
+    {
+        return false;
+    }
     let body = packet_body(payload);
-    match gate {
-        "candidate_receipts_present" => {
-            packet_object_kind(payload) == Some("EXPLORATION_PACKET")
-                && receipt_requirements_satisfied(payload)
-        }
-        "runtime_receipts_present" => {
-            packet_object_kind(payload) == Some("EXECUTION_PACKET")
-                && receipt_requirements_satisfied(payload)
-        }
-        "verdict_receipts_present" => {
-            packet_object_kind(payload) == Some("VERDICT_PACKET")
-                && receipt_requirements_satisfied(payload)
-        }
-        "candidate_present" => body
-            .get("candidate")
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.trim().is_empty()),
-        "runtime_probe_present" => body.get("runtime_probe").is_some(),
-        "decision_present" => body
+    match spec.check {
+        GateCheck::ReceiptRequirementsSatisfied => receipt_requirements_satisfied(payload),
+        GateCheck::BodyFieldPresent(field) => body.get(field).is_some_and(|value| match value {
+            serde_json::Value::Null => false,
+            serde_json::Value::String(text) => !text.trim().is_empty(),
+            serde_json::Value::Array(values) => !values.is_empty(),
+            serde_json::Value::Object(values) => !values.is_empty(),
+            serde_json::Value::Bool(_) | serde_json::Value::Number(_) => true,
+        }),
+        GateCheck::DecisionPresent => body
             .get("decision")
             .and_then(|value| value.as_str())
             .is_some_and(|value| matches!(value, "keep" | "reject" | "needs-review" | "blocked")),
-        _ => false,
     }
 }
 
@@ -2081,12 +2190,31 @@ mod tests {
             .get("schema_version")
             .and_then(|value| value.as_str())
             == Some(ADMISSION_SCHEMA_VERSION)));
+        assert!(report.admissions.iter().all(|admission| admission
+            .policy
+            .pointer("/policy/schema_version")
+            .and_then(|value| value.as_str())
+            == Some(POLICY_SCHEMA_VERSION)));
         assert_eq!(
             report.admissions[0]
                 .policy
                 .pointer("/gate/passed")
                 .and_then(|value| value.as_bool()),
             Some(true)
+        );
+        assert_eq!(
+            report.admissions[0]
+                .policy
+                .pointer("/gate/spec/check")
+                .and_then(|value| value.as_str()),
+            Some("receipt_requirements_satisfied")
+        );
+        assert_eq!(
+            report.admissions[0]
+                .policy
+                .pointer("/gate/spec/expected_object_kind")
+                .and_then(|value| value.as_str()),
+            Some("EXPLORATION_PACKET")
         );
         assert_eq!(
             report.admissions[0]
@@ -2152,6 +2280,7 @@ mod tests {
         assert_eq!(trace.round_role_worker_count, 3);
         assert_eq!(trace.round_role_worker_ok_count, 3);
         assert_eq!(trace.packet_schema.as_deref(), Some(PACKET_SCHEMA_VERSION));
+        assert_eq!(trace.policy_schema.as_deref(), Some(POLICY_SCHEMA_VERSION));
         assert_eq!(
             trace.admission_schema.as_deref(),
             Some(ADMISSION_SCHEMA_VERSION)
@@ -2164,6 +2293,14 @@ mod tests {
             trace.last_admission_gate.as_deref(),
             Some("verdict_receipts_present")
         );
+        assert_eq!(
+            trace.last_gate_expected_object_kind.as_deref(),
+            Some("VERDICT_PACKET")
+        );
+        assert!(trace
+            .last_gate_description
+            .as_deref()
+            .is_some_and(|description| description.contains("Evaluator packets")));
         assert_eq!(trace.last_admission_passed, Some(true));
         assert_eq!(trace.last_decision.as_deref(), Some("keep"));
         assert_eq!(trace.human_options, vec!["comment"]);

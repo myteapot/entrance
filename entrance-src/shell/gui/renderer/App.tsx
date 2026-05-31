@@ -95,9 +95,12 @@ type IssueCard = {
     round_role_worker_count: number;
     round_role_worker_ok_count: number;
     packet_schema: string | null;
+    policy_schema: string | null;
     admission_schema: string | null;
     verdict_schema: string | null;
     last_admission_gate: string | null;
+    last_gate_description: string | null;
+    last_gate_expected_object_kind: string | null;
     last_admission_passed: boolean | null;
     last_decision: string | null;
     reason_code: string | null;
@@ -498,6 +501,8 @@ export default function App() {
         trace ? `${trace.round_role_worker_ok_count}/${trace.round_role_worker_count}` : "pending",
       ],
       ["Gate", trace?.last_admission_gate ?? "pending"],
+      ["Gate Rule", trace?.last_gate_description ?? "pending"],
+      ["Gate Object", trace?.last_gate_expected_object_kind ?? "pending"],
       ["Decision", trace?.last_decision ?? "pending"],
       ["Reason", trace?.reason_code ?? "pending"],
       [
@@ -505,6 +510,7 @@ export default function App() {
         trace?.human_options.length ? trace.human_options.join(", ") : "pending",
       ],
       ["Packet", schemaLabel(trace?.packet_schema)],
+      ["Policy", schemaLabel(trace?.policy_schema)],
       ["Admission", schemaLabel(trace?.admission_schema)],
       ["Verdict", schemaLabel(trace?.verdict_schema)],
       ["Worker", workerLabel(card) ?? "pending"],
