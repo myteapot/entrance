@@ -223,6 +223,11 @@ type LauncherResult = {
 };
 
 type IssueComment = IssueCard["comments"][number];
+type LoopRunArgs = {
+  runtime?: string;
+  workerTimeoutSecs?: number;
+  workerAttempts?: number;
+};
 
 const COMMENT_CARD_PREVIEW_LIMIT = 132;
 const COMMENT_DETAIL_PREVIEW_LIMIT = 360;
@@ -433,7 +438,7 @@ export default function App() {
   };
   const actionErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
-  const loopRunArgs = () => {
+  const loopRunArgs = (): LoopRunArgs => {
     const timeoutText = loopWorkerTimeoutSecs().trim();
     const workerTimeoutSecs = timeoutText ? Number.parseInt(timeoutText, 10) : undefined;
     const attemptsText = loopWorkerAttempts().trim();
@@ -444,6 +449,38 @@ export default function App() {
       workerAttempts: workerAttempts && workerAttempts > 0 ? workerAttempts : undefined,
     };
   };
+  const doctorRetryRunArgs = (card: IssueCard): LoopRunArgs => {
+    const command = card.doctor?.next_actions.find((action) =>
+      action.includes("entrance hive issue retry-run"),
+    );
+    if (!command) return {};
+    const tokens = command.split(/\s+/);
+    const valueAfter = (flag: string) => {
+      const index = tokens.indexOf(flag);
+      return index >= 0 ? tokens[index + 1] : undefined;
+    };
+    const parsePositive = (value: string | undefined) => {
+      if (!value) return undefined;
+      const parsed = Number.parseInt(value, 10);
+      return parsed > 0 ? parsed : undefined;
+    };
+    return {
+      runtime: valueAfter("--runtime"),
+      workerTimeoutSecs: parsePositive(valueAfter("--worker-timeout-secs")),
+      workerAttempts: parsePositive(valueAfter("--worker-attempts")),
+    };
+  };
+  const mergeRunArgs = (...argsList: LoopRunArgs[]) => {
+    const merged: LoopRunArgs = {};
+    argsList.forEach((args) => {
+      if (args.runtime) merged.runtime = args.runtime;
+      if (args.workerTimeoutSecs) merged.workerTimeoutSecs = args.workerTimeoutSecs;
+      if (args.workerAttempts) merged.workerAttempts = args.workerAttempts;
+    });
+    return merged;
+  };
+  const issueRetryRunArgs = (card: IssueCard) =>
+    mergeRunArgs(doctorRetryRunArgs(card), loopRunArgs());
 
   const runHiveLoop = async (loop: HiveLoop) => {
     if (loopPendingLabel(loop.id)) return;
@@ -513,7 +550,7 @@ export default function App() {
         retry: true,
         author: "human",
         body: issueDecisionNote(card.issue.id) || undefined,
-        ...loopRunArgs(),
+        ...issueRetryRunArgs(card),
       });
       clearIssueComposer(card.issue.id);
       setBanner(`Issue #${card.issue.id} retried.`);
