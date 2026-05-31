@@ -1197,6 +1197,7 @@ pub fn doctor(store: &Store, loop_id: i64) -> Result<HiveLoopDoctorReport> {
         issue_status.as_deref(),
         trace_summary.last_decision.as_deref(),
         audit_report.passed,
+        !worker_failures.is_empty(),
     )
     .to_string();
     let summary = doctor_summary(
@@ -1339,10 +1340,19 @@ fn doctor_worker_failures(trace: &IssueTraceSummary) -> Vec<String> {
                 || evidence.worker_receipt_ok == Some(false)
                 || evidence.worker_timed_out == Some(true)
                 || evidence.worker_retry_exhausted == Some(true)
+                || !evidence.worker_receipt_errors.is_empty()
         })
         .map(|evidence| {
+            let receipt_suffix = if evidence.worker_receipt_errors.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " receipt_errors={}",
+                    evidence.worker_receipt_errors.join("|")
+                )
+            };
             format!(
-                "{}:{} worker={} ok={} receipt={}{}",
+                "{}:{} worker={} ok={} receipt={}{}{}",
                 evidence.stage_role.as_deref().unwrap_or("loop"),
                 evidence.kind,
                 evidence.worker_kind.as_deref().unwrap_or("unknown"),
@@ -1354,7 +1364,8 @@ fn doctor_worker_failures(trace: &IssueTraceSummary) -> Vec<String> {
                     " timeout"
                 } else {
                     ""
-                }
+                },
+                receipt_suffix
             )
         })
         .collect()
@@ -1373,6 +1384,7 @@ fn doctor_health(
     issue_status: Option<&str>,
     decision: Option<&str>,
     audit_passed: bool,
+    has_worker_failures: bool,
 ) -> &'static str {
     if contract_status == "blocked"
         || issue_status == Some("Blocked")
@@ -1395,6 +1407,9 @@ fn doctor_health(
     if !audit_passed {
         return "audit_failed";
     }
+    if has_worker_failures {
+        return "worker_failed";
+    }
     if contract_status == "kept" && decision == Some("keep") {
         return "ok";
     }
@@ -1412,13 +1427,14 @@ fn doctor_summary(
     audit_failed_count: usize,
     health: &str,
 ) -> String {
+    let health_label = doctor_health_label(health);
     let audit_state = if audit_passed {
         "audit ok".to_string()
     } else {
         format!("audit failed {audit_failed_count} checks")
     };
     format!(
-        "Loop #{} is {health} at {} round {}; issue {}; decision {}; {}; workers {}/{} current round; receipts missing {}/{} current round; worker time {} current round.",
+        "Loop #{} is {health_label} at {} round {}; issue {}; decision {}; {}; workers {}/{} current round; receipts missing {}/{} current round; worker time {} current round.",
         contract.id,
         contract.active_phase,
         contract.current_round,
@@ -1431,6 +1447,15 @@ fn doctor_summary(
         trace.round_receipt_required_count,
         worker_duration_summary(trace.round_worker_duration_ms)
     )
+}
+
+fn doctor_health_label(health: &str) -> &str {
+    match health {
+        "needs_review" => "needs review",
+        "audit_failed" => "audit failed",
+        "worker_failed" => "worker failed",
+        other => other,
+    }
 }
 
 fn worker_duration_summary(duration_ms: u64) -> String {
@@ -1490,6 +1515,15 @@ fn doctor_next_actions(
         "audit_failed" => {
             actions.push(format!("entrance hive loop audit {loop_id}"));
             actions.push(format!("entrance hive loop evidence {loop_id}"));
+        }
+        "worker_failed" => {
+            actions.push(format!("entrance hive loop evidence {loop_id}"));
+            actions.push(format!("entrance hive loop doctor {loop_id}"));
+            if let Some(issue_id) = issue_id {
+                actions.push(format!(
+                    "entrance hive issue decide {issue_id} retry --body <note>"
+                ));
+            }
         }
         _ => {
             actions.push(format!("entrance hive loop show {loop_id}"));
@@ -3530,11 +3564,13 @@ fn issue_doctor_summary(
         .get_hive_loop_contract(loop_id)?
         .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
     let audit_passed = trace.audit_passed.unwrap_or(false);
+    let worker_failures = doctor_worker_failures(trace);
     let health = doctor_health(
         &contract.status,
         Some(issue.status.as_str()),
         trace.last_decision.as_deref(),
         audit_passed,
+        !worker_failures.is_empty(),
     )
     .to_string();
     Ok(IssueDoctorSummary {
@@ -3560,7 +3596,7 @@ fn issue_doctor_summary(
         failed_checks: trace.audit_failed_checks.clone(),
         audit_failure_details: trace.audit_failure_details.clone(),
         missing_receipts: doctor_missing_receipts(trace),
-        worker_failures: doctor_worker_failures(trace),
+        worker_failures,
     })
 }
 
@@ -5983,6 +6019,20 @@ mod tests {
             .is_some_and(|summary| summary.contains("Local doer worker")));
         assert_eq!(doer_evidence.worker_gate_count, Some(3));
         assert!(doer_evidence.worker_receipt_errors.is_empty());
+        let mut receipt_error_trace = trace.clone();
+        receipt_error_trace
+            .evidence
+            .iter_mut()
+            .find(|evidence| evidence.kind == "execution_packet")
+            .expect("doer evidence summary should exist")
+            .worker_receipt_errors = vec!["action".to_string()];
+        assert!(doctor_worker_failures(&receipt_error_trace)
+            .iter()
+            .any(|failure| failure.contains("receipt_errors=action")));
+        assert_eq!(
+            doctor_health("kept", Some("Done"), Some("keep"), true, true),
+            "worker_failed"
+        );
         assert!(doer_evidence
             .transcript_excerpt
             .as_deref()

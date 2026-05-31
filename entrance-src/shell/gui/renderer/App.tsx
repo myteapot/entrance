@@ -743,6 +743,7 @@ export default function App() {
       needs_review: "needs review",
       rejected: "rejected",
       audit_failed: "audit failed",
+      worker_failed: "worker failed",
       pending: "pending",
       unknown: "unknown",
     })[health] ?? health;
