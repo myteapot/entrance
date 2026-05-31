@@ -67,9 +67,11 @@ Local agent-loop MVP:
 `hive loop run` records a minimal compiler path in SQLite: active policies,
 versioned typed packets, receipt-aware admission gates, versioned admission
 receipts, stage evidence, and the versioned final verdict.
-Add `--compact` to `hive loop run`, `hive issue run`, or
-`hive issue retry-run` to print the Doctor summary after execution instead of
-the full packet/evidence transcript-heavy report.
+Add `--compact` to `hive loop run` to print the Doctor summary after execution
+instead of the full packet/evidence transcript-heavy report. Add `--compact` to
+`hive issue run`, `hive issue retry-run`, `hive issue show`,
+`hive issue comment`, or `hive issue decide` to print the compact issue card
+with recent comments, evidence, stages, and next actions.
 `hive policy registry` exposes the typed gate registry plus runtime worker
 policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
 required worker receipt fields, and role binding. `hive loop policies <id>`

@@ -190,8 +190,9 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action, id, rest @ ..]
             if scope == "issue" && (action == "run" || action == "retry-run") =>
         {
+            let issue_id = id.parse::<i64>()?;
             let report = services.hive.issue_run(IssueRunRequest {
-                issue_id: id.parse::<i64>()?,
+                issue_id,
                 runtime: flag_value(rest, "--runtime").map(ToOwned::to_owned),
                 decision: flag_value(rest, "--decision").map(ToOwned::to_owned),
                 worker_timeout_secs: flag_value(rest, "--worker-timeout-secs")
@@ -205,7 +206,8 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 body: flag_value(rest, "--body").map(ToOwned::to_owned),
             })?;
             if flag_present(rest, "--compact") {
-                print_json(&services.hive.loop_doctor(report.contract.id)?)
+                let card = services.hive.issue_report(issue_id)?;
+                print_json(&compact_issue_detail(&card))
             } else {
                 print_json(&report)
             }
