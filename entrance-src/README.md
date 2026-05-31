@@ -66,8 +66,8 @@ receipts, stage evidence, and the versioned final verdict.
 `hive policy registry` exposes the typed gate registry, while
 `hive loop policies <id>` shows the active policy rows loaded into a specific
 loop contract.
-`hive loop trace <id>` returns the compact round-aware health view without
-packet transcripts.
+`hive loop trace <id>` returns the compact round-aware health view, including
+the evaluator score vector, without packet transcripts.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcripts in stage evidence.

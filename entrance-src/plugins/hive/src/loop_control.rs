@@ -161,11 +161,18 @@ pub struct IssueTraceSummary {
     pub last_admission_passed: Option<bool>,
     pub last_decision: Option<String>,
     pub reason_code: Option<String>,
+    pub score_vector: Vec<ScoreVectorMetric>,
     pub human_options: Vec<String>,
     pub worker_kind: Option<String>,
     pub worker_mode: Option<String>,
     pub worker_ok: Option<bool>,
     pub stages: Vec<IssueStageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreVectorMetric {
+    pub name: String,
+    pub value: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -921,6 +928,9 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
                     })
             })
             .map(ToOwned::to_owned),
+        score_vector: last_verdict
+            .map(|verdict| score_vector(&verdict.score))
+            .unwrap_or_default(),
         human_options: last_verdict
             .map(|verdict| human_options(&verdict.score))
             .unwrap_or_default(),
@@ -1013,6 +1023,41 @@ fn human_options(value: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn score_vector(value: &serde_json::Value) -> Vec<ScoreVectorMetric> {
+    let Some(metrics) = value
+        .get("score_vector")
+        .and_then(|value| value.as_object())
+    else {
+        return Vec::new();
+    };
+    let preferred_order = [
+        "stage_completeness",
+        "runtime_readiness",
+        "evidence_presence",
+        "admission_integrity",
+    ];
+    let mut output = preferred_order
+        .into_iter()
+        .filter_map(|name| {
+            metrics.get(name).map(|value| ScoreVectorMetric {
+                name: name.to_string(),
+                value: value.as_f64(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut extra_names = metrics
+        .keys()
+        .filter(|name| !preferred_order.contains(&name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    extra_names.sort();
+    output.extend(extra_names.into_iter().map(|name| ScoreVectorMetric {
+        value: metrics.get(&name).and_then(|value| value.as_f64()),
+        name,
+    }));
+    output
 }
 
 fn add_system_comment(
@@ -2469,6 +2514,15 @@ mod tests {
             .is_some_and(|description| description.contains("Evaluator packets")));
         assert_eq!(trace.last_admission_passed, Some(true));
         assert_eq!(trace.last_decision.as_deref(), Some("keep"));
+        assert_eq!(trace.score_vector.len(), 4);
+        assert_eq!(
+            trace
+                .score_vector
+                .iter()
+                .find(|metric| metric.name == "runtime_readiness")
+                .and_then(|metric| metric.value),
+            Some(1.0)
+        );
         assert_eq!(trace.human_options, vec!["comment"]);
         assert_eq!(trace.worker_kind.as_deref(), Some("local"));
         assert_eq!(trace.worker_ok, Some(true));
@@ -2539,6 +2593,7 @@ mod tests {
         );
         assert_eq!(trace_report.trace.last_decision.as_deref(), Some("keep"));
         assert_eq!(trace_report.trace.round_receipt_missing_count, 0);
+        assert_eq!(trace_report.trace.score_vector.len(), 4);
         assert_eq!(
             trace_report.trace.last_gate_expected_object_kind.as_deref(),
             Some("VERDICT_PACKET")

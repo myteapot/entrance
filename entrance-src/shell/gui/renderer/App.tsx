@@ -104,6 +104,10 @@ type IssueCard = {
     last_admission_passed: boolean | null;
     last_decision: string | null;
     reason_code: string | null;
+    score_vector: Array<{
+      name: string;
+      value: number | null;
+    }>;
     human_options: string[];
     worker_kind: string | null;
     worker_mode: string | null;
@@ -474,6 +478,29 @@ export default function App() {
     return `${stage.worker_kind}/${state}`;
   };
 
+  const scoreMetricLabel = (name: string) =>
+    ({
+      stage_completeness: "stage",
+      runtime_readiness: "runtime",
+      evidence_presence: "evidence",
+      admission_integrity: "admission",
+    })[name] ?? name;
+
+  const scoreValueLabel = (value: number | null) => (value === null ? "n/a" : value.toFixed(2));
+
+  const scoreVectorLabel = (trace: NonNullable<IssueCard["trace"]>) =>
+    trace.score_vector.length
+      ? trace.score_vector
+          .map((metric) => `${scoreMetricLabel(metric.name)} ${scoreValueLabel(metric.value)}`)
+          .join(" / ")
+      : null;
+
+  const scoreSummaryLabel = (trace: NonNullable<IssueCard["trace"]>) => {
+    if (!trace.score_vector.length) return null;
+    const healthy = trace.score_vector.filter((metric) => metric.value !== null && metric.value >= 1).length;
+    return `score ${healthy}/${trace.score_vector.length}`;
+  };
+
   const issueDetailRows = (card: IssueCard) => {
     const trace = card.trace;
     return [
@@ -505,6 +532,7 @@ export default function App() {
       ["Gate Object", trace?.last_gate_expected_object_kind ?? "pending"],
       ["Decision", trace?.last_decision ?? "pending"],
       ["Reason", trace?.reason_code ?? "pending"],
+      ["Scores", trace ? scoreVectorLabel(trace) ?? "pending" : "pending"],
       [
         "Options",
         trace?.human_options.length ? trace.human_options.join(", ") : "pending",
@@ -838,6 +866,9 @@ export default function App() {
                                     {traceCountLabel("V", card.trace.round_verdict_count, card.trace.verdict_count)}
                                   </span>
                                   <span class="trace-pill">{schemaLabel(card.trace.verdict_schema)}</span>
+                                  {scoreSummaryLabel(card.trace) ? (
+                                    <span class="trace-pill">{scoreSummaryLabel(card.trace)}</span>
+                                  ) : null}
                                   {receiptLabel(card) ? (
                                     <span
                                       class={
