@@ -285,7 +285,75 @@ fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
             "audit_failed": trace.audit_failed_count
         })),
         "comment_count": card.comments.len(),
-        "latest_comment": latest_comment
+        "latest_comment": latest_comment,
+        "actions": compact_issue_actions(card)
+    })
+}
+
+fn compact_issue_actions(card: &IssueCard) -> Vec<serde_json::Value> {
+    let mut actions = Vec::new();
+    if card.issue.loop_id.is_some() && card.issue.status == "Todo" {
+        actions.push(compact_issue_action(
+            "run",
+            "Run",
+            format!("entrance hive issue run {} --compact", card.issue.id),
+        ));
+    }
+    actions.extend(
+        compact_issue_options(card)
+            .into_iter()
+            .filter_map(|option| compact_issue_option_action(card.issue.id, &option)),
+    );
+    actions
+}
+
+fn compact_issue_options(card: &IssueCard) -> Vec<String> {
+    if let Some(trace) = &card.trace {
+        return trace.human_options.clone();
+    }
+    match card.issue.status.as_str() {
+        "Todo" => vec!["comment", "cancel"],
+        "Blocked" => vec!["comment", "retry", "request-review", "cancel"],
+        "Needs Review" => vec!["comment", "retry", "cancel"],
+        "Doing" | "Done" | "Canceled" => vec!["comment"],
+        _ => vec!["comment"],
+    }
+    .into_iter()
+    .map(ToOwned::to_owned)
+    .collect()
+}
+
+fn compact_issue_option_action(issue_id: i64, option: &str) -> Option<serde_json::Value> {
+    match option {
+        "comment" => Some(compact_issue_action(
+            "comment",
+            "Comment",
+            format!("entrance hive issue comment {issue_id} --body <text>"),
+        )),
+        "retry" => Some(compact_issue_action(
+            "retry",
+            "Retry",
+            format!("entrance hive issue retry-run {issue_id} --body <note> --compact"),
+        )),
+        "request-review" => Some(compact_issue_action(
+            "request-review",
+            "Review",
+            format!("entrance hive issue decide {issue_id} request-review --body <note>"),
+        )),
+        "cancel" => Some(compact_issue_action(
+            "cancel",
+            "Cancel",
+            format!("entrance hive issue decide {issue_id} cancel --body <note>"),
+        )),
+        _ => None,
+    }
+}
+
+fn compact_issue_action(action: &str, label: &str, command: String) -> serde_json::Value {
+    serde_json::json!({
+        "action": action,
+        "label": label,
+        "command": command
     })
 }
 
@@ -375,6 +443,18 @@ mod tests {
                 .pointer("/issues/0/latest_comment/body")
                 .and_then(|value| value.as_str()),
             Some("Compiler admission blocked at doer.")
+        );
+        assert_eq!(
+            blocked
+                .pointer("/issues/0/actions/1/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue retry-run 7 --body <note> --compact")
+        );
+        assert_eq!(
+            blocked
+                .pointer("/issues/0/actions/2/action")
+                .and_then(|value| value.as_str()),
+            Some("request-review")
         );
     }
 }

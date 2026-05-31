@@ -1386,6 +1386,12 @@ fn doctor_health(
     audit_passed: bool,
     has_worker_failures: bool,
 ) -> &'static str {
+    if contract_status == "needs-review"
+        || issue_status == Some("Needs Review")
+        || decision == Some("needs-review")
+    {
+        return "needs_review";
+    }
     if contract_status == "blocked"
         || issue_status == Some("Blocked")
         || decision == Some("blocked")
@@ -1397,12 +1403,6 @@ fn doctor_health(
         || decision == Some("reject")
     {
         return "rejected";
-    }
-    if contract_status == "needs-review"
-        || issue_status == Some("Needs Review")
-        || decision == Some("needs-review")
-    {
-        return "needs_review";
     }
     if !audit_passed {
         return "audit_failed";
@@ -7777,6 +7777,19 @@ mod tests {
         assert_eq!(review_card.issue.status, "Needs Review");
         assert_eq!(review_contract.status, "needs-review");
         assert_eq!(review_contract.active_phase, "human-review");
+        let review_doctor = review_card
+            .doctor
+            .as_ref()
+            .expect("review card should include doctor summary");
+        assert_eq!(review_doctor.health, "needs_review");
+        assert!(review_doctor
+            .next_actions
+            .iter()
+            .any(|action| action.contains("retry --body")));
+        assert!(!review_doctor
+            .next_actions
+            .iter()
+            .any(|action| action.contains("request-review")));
         assert!(review_card
             .comments
             .iter()
