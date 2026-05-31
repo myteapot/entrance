@@ -517,6 +517,10 @@ pub fn panel(store: &Store) -> Result<Vec<IssueCard>> {
         .collect()
 }
 
+pub fn issue(store: &Store, issue_id: i64) -> Result<IssueCard> {
+    issue_card(store, issue_id)
+}
+
 pub fn add_comment(store: &Store, request: IssueCommentRequest) -> Result<IssueCard> {
     store.insert_hive_comment(HiveCommentCreate {
         issue_id: request.issue_id,
@@ -2122,6 +2126,18 @@ mod tests {
         assert_eq!(doer_trace.admission_result.as_deref(), Some("admitted"));
         assert_eq!(doer_trace.worker_kind.as_deref(), Some("local"));
         assert_eq!(doer_trace.worker_ok, Some(true));
+        let shown_issue =
+            issue(&store, report.issues[0].issue.id).expect("single issue report should resolve");
+        assert_eq!(shown_issue.issue.id, report.issues[0].issue.id);
+        assert_eq!(
+            shown_issue
+                .trace
+                .as_ref()
+                .expect("shown issue should include trace")
+                .stages
+                .len(),
+            3
+        );
         assert_eq!(
             report.verdicts[0]
                 .score

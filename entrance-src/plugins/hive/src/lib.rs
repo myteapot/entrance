@@ -108,6 +108,10 @@ impl HivePlugin {
         loop_control::panel(&self.store)
     }
 
+    pub fn issue_report(&self, id: i64) -> Result<IssueCard> {
+        loop_control::issue(&self.store, id)
+    }
+
     pub fn issue_comment(&self, request: IssueCommentRequest) -> Result<IssueCard> {
         loop_control::add_comment(&self.store, request)
     }

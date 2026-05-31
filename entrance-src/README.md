@@ -53,6 +53,7 @@ Local agent-loop MVP:
 .\entrance.exe hive loop run 1 --runtime local --decision needs-review
 .\entrance.exe hive loop show 1
 .\entrance.exe hive issue list
+.\entrance.exe hive issue show 1
 .\entrance.exe hive issue comment 1 --body "Reviewed from the local panel"
 ```
 

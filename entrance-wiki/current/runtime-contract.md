@@ -12,6 +12,7 @@ cargo run -p entrance-app --bin entrance -- hive loop create --title "Local loop
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime local --decision reject
 cargo run -p entrance-app --bin entrance -- hive issue list
+cargo run -p entrance-app --bin entrance -- hive issue show 1
 cargo run -p entrance-app --bin entrance -- hive issue decide 1 request-review --body "Need human call"
 cargo run -p entrance-app --bin entrance -- launcher list
 ```

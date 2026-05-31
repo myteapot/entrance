@@ -428,6 +428,17 @@ async fn handle_invoke(
             )?)
         }
         "hive_panel" => Ok(serde_json::to_value(state.services.hive.panel()?)?),
+        "hive_issue_show" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_show requires `issueId`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.issue_report(issue_id)?,
+            )?)
+        }
         "hive_issue_comment" => {
             let issue_id = args
                 .get("issueId")
