@@ -129,6 +129,8 @@ export default function App() {
   const [loopRuntime, setLoopRuntime] = createSignal("codex");
   const [activeCommentIssue, setActiveCommentIssue] = createSignal<number | null>(null);
   const [commentBody, setCommentBody] = createSignal("");
+  const [pendingLoopActions, setPendingLoopActions] = createSignal<Record<number, string>>({});
+  const [pendingIssueActions, setPendingIssueActions] = createSignal<Record<number, string>>({});
   const [drawerTitle, setDrawerTitle] = createSignal("");
   const [drawerBody, setDrawerBody] = createSignal("");
   const [banner, setBanner] = createSignal<string>("");
@@ -211,61 +213,129 @@ export default function App() {
     await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
   };
 
+  const setPendingLoop = (loopId: number, label: string | null) => {
+    setPendingLoopActions((current) => {
+      const next = { ...current };
+      if (label) {
+        next[loopId] = label;
+      } else {
+        delete next[loopId];
+      }
+      return next;
+    });
+  };
+
+  const setPendingIssue = (issueId: number, label: string | null) => {
+    setPendingIssueActions((current) => {
+      const next = { ...current };
+      if (label) {
+        next[issueId] = label;
+      } else {
+        delete next[issueId];
+      }
+      return next;
+    });
+  };
+
+  const loopPendingLabel = (loopId: number) => pendingLoopActions()[loopId] ?? null;
+  const issuePendingLabel = (issueId: number) => pendingIssueActions()[issueId] ?? null;
+  const actionErrorMessage = (error: unknown) =>
+    error instanceof Error ? error.message : String(error);
+
   const runHiveLoop = async (loop: HiveLoop) => {
-    await bridge.invoke("hive_loop_run", {
-      id: loop.id,
-      runtime: loop.runtime || loopRuntime(),
-    });
-    setBanner(`Loop #${loop.id} finished.`);
-    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+    if (loopPendingLabel(loop.id)) return;
+    setPendingLoop(loop.id, "Running");
+    try {
+      await bridge.invoke("hive_loop_run", {
+        id: loop.id,
+        runtime: loop.runtime || loopRuntime(),
+      });
+      setBanner(`Loop #${loop.id} finished.`);
+      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+    } catch (error) {
+      setBanner(`Loop #${loop.id} failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingLoop(loop.id, null);
+    }
   };
 
-  const runIssueLoop = async (loopId: number) => {
-    await bridge.invoke("hive_loop_run", {
-      id: loopId,
-      runtime: loopRuntime(),
-    });
-    setBanner(`Loop #${loopId} finished.`);
-    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
-  };
-
-  const decideIssue = async (issueId: number, action: string) => {
-    await bridge.invoke("hive_issue_decide", {
-      issueId,
-      action,
-      author: "human",
-    });
-    setBanner(`Issue #${issueId} ${issueActionLabel(action)}.`);
-    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
-  };
-
-  const retryIssueLoop = async (card: IssueCard) => {
-    await bridge.invoke("hive_issue_decide", {
-      issueId: card.issue.id,
-      action: "retry",
-      author: "human",
-    });
-    if (card.issue.loop_id) {
+  const runIssueLoop = async (card: IssueCard) => {
+    if (!card.issue.loop_id || issuePendingLabel(card.issue.id)) return;
+    setPendingIssue(card.issue.id, "Running");
+    try {
       await bridge.invoke("hive_loop_run", {
         id: card.issue.loop_id,
         runtime: loopRuntime(),
       });
+      setBanner(`Loop #${card.issue.loop_id} finished.`);
+      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+    } catch (error) {
+      setBanner(`Loop #${card.issue.loop_id} failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(card.issue.id, null);
     }
-    setBanner(`Issue #${card.issue.id} retried.`);
-    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+  };
+
+  const decideIssue = async (issueId: number, action: string) => {
+    if (issuePendingLabel(issueId)) return;
+    setPendingIssue(issueId, issuePendingActionLabel(action));
+    try {
+      await bridge.invoke("hive_issue_decide", {
+        issueId,
+        action,
+        author: "human",
+      });
+      setBanner(`Issue #${issueId} ${issueActionLabel(action)}.`);
+      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+    } catch (error) {
+      setBanner(`Issue #${issueId} failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(issueId, null);
+    }
+  };
+
+  const retryIssueLoop = async (card: IssueCard) => {
+    if (issuePendingLabel(card.issue.id)) return;
+    setPendingIssue(card.issue.id, "Retrying");
+    try {
+      await bridge.invoke("hive_issue_decide", {
+        issueId: card.issue.id,
+        action: "retry",
+        author: "human",
+      });
+      if (card.issue.loop_id) {
+        await bridge.invoke("hive_loop_run", {
+          id: card.issue.loop_id,
+          runtime: loopRuntime(),
+        });
+      }
+      setBanner(`Issue #${card.issue.id} retried.`);
+      await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+    } catch (error) {
+      setBanner(`Issue #${card.issue.id} retry failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(card.issue.id, null);
+    }
   };
 
   const addIssueComment = async (issueId: number) => {
-    if (!commentBody().trim()) return;
-    await bridge.invoke("hive_issue_comment", {
-      issueId,
-      author: "human",
-      body: commentBody(),
-    });
-    setCommentBody("");
-    setActiveCommentIssue(null);
-    setBanner(`Commented on issue #${issueId}.`);
-    await refetchIssueCards();
+    if (!commentBody().trim() || issuePendingLabel(issueId)) return;
+    setPendingIssue(issueId, "Sending");
+    try {
+      await bridge.invoke("hive_issue_comment", {
+        issueId,
+        author: "human",
+        body: commentBody(),
+      });
+      setCommentBody("");
+      setActiveCommentIssue(null);
+      setBanner(`Commented on issue #${issueId}.`);
+      await refetchIssueCards();
+    } catch (error) {
+      setBanner(`Comment failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(issueId, null);
+    }
   };
 
   const refreshLauncherIndex = async () => {
@@ -298,6 +368,13 @@ export default function App() {
       "request-review": "sent to review",
       cancel: "canceled",
     })[action] ?? action;
+
+  const issuePendingActionLabel = (action: string) =>
+    ({
+      retry: "Retrying",
+      "request-review": "Reviewing",
+      cancel: "Canceling",
+    })[action] ?? "Working";
 
   const schemaLabel = (schema: string | null | undefined) =>
     schema ? schema.split(".").slice(-2).join(".") : "pending";
@@ -482,11 +559,17 @@ export default function App() {
                       </div>
                       <span>{loop.active_phase} / round {loop.current_round}</span>
                       <code>{loop.runtime}</code>
-                      <div class="record-actions">
-                        <button type="button" onClick={() => void runHiveLoop(loop)}>
-                          Run
-                        </button>
-                      </div>
+                      {loop.status === "todo" ? (
+                        <div class="record-actions">
+                          <button
+                            type="button"
+                            disabled={Boolean(loopPendingLabel(loop.id))}
+                            onClick={() => void runHiveLoop(loop)}
+                          >
+                            {loopPendingLabel(loop.id) ?? "Run"}
+                          </button>
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -609,8 +692,12 @@ export default function App() {
                                     onInput={(event) => setCommentBody(event.currentTarget.value)}
                                     placeholder="Comment"
                                   />
-                                  <button type="button" onClick={() => void addIssueComment(card.issue.id)}>
-                                    Send
+                                  <button
+                                    type="button"
+                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                    onClick={() => void addIssueComment(card.issue.id)}
+                                  >
+                                    {issuePendingLabel(card.issue.id) ?? "Send"}
                                   </button>
                                 </div>
                               ) : (
@@ -618,34 +705,49 @@ export default function App() {
                                   {card.issue.loop_id && ["Todo", "Blocked"].includes(card.issue.status) ? (
                                     <button
                                       type="button"
+                                      disabled={Boolean(issuePendingLabel(card.issue.id))}
                                       onClick={() =>
                                         card.issue.status === "Blocked"
                                           ? void retryIssueLoop(card)
-                                          : void runIssueLoop(card.issue.loop_id!)
+                                          : void runIssueLoop(card)
                                       }
                                     >
-                                      {card.issue.status === "Blocked" ? "Retry" : "Run"}
+                                      {issuePendingLabel(card.issue.id) ??
+                                        (card.issue.status === "Blocked" ? "Retry" : "Run")}
                                     </button>
                                   ) : null}
                                   {card.issue.status === "Blocked" ? (
                                     <button
                                       type="button"
+                                      disabled={Boolean(issuePendingLabel(card.issue.id))}
                                       onClick={() => void decideIssue(card.issue.id, "request-review")}
                                     >
-                                      Review
+                                      {issuePendingLabel(card.issue.id) ?? "Review"}
                                     </button>
                                   ) : null}
                                   {card.issue.loop_id && card.issue.status === "Needs Review" ? (
-                                    <button type="button" onClick={() => void retryIssueLoop(card)}>
-                                      Retry
+                                    <button
+                                      type="button"
+                                      disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                      onClick={() => void retryIssueLoop(card)}
+                                    >
+                                      {issuePendingLabel(card.issue.id) ?? "Retry"}
                                     </button>
                                   ) : null}
                                   {["Blocked", "Needs Review"].includes(card.issue.status) ? (
-                                    <button type="button" onClick={() => void decideIssue(card.issue.id, "cancel")}>
-                                      Cancel
+                                    <button
+                                      type="button"
+                                      disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                      onClick={() => void decideIssue(card.issue.id, "cancel")}
+                                    >
+                                      {issuePendingLabel(card.issue.id) ?? "Cancel"}
                                     </button>
                                   ) : null}
-                                  <button type="button" onClick={() => setActiveCommentIssue(card.issue.id)}>
+                                  <button
+                                    type="button"
+                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                    onClick={() => setActiveCommentIssue(card.issue.id)}
+                                  >
                                     Comment
                                   </button>
                                 </div>
