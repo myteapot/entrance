@@ -14,6 +14,8 @@ use entrance_core::{
 };
 use serde::{Deserialize, Serialize};
 
+const PACKET_SCHEMA_VERSION: &str = "entrance.hive.packet.v1";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopCreateRequest {
     pub title: String,
@@ -951,6 +953,14 @@ fn emit_and_admit(
     route_to: &str,
     payload: serde_json::Value,
 ) -> Result<HiveLoopAdmission> {
+    let packet_payload = typed_packet_payload(
+        contract,
+        object_kind,
+        writer_role,
+        route_from,
+        route_to,
+        payload,
+    );
     let packet_id = store.insert_hive_loop_packet(HiveLoopPacketCreate {
         loop_id: contract.id,
         round: contract.current_round,
@@ -959,7 +969,7 @@ fn emit_and_admit(
         route_from: route_from.to_string(),
         route_to: route_to.to_string(),
         state_code: "submitted".to_string(),
-        payload: payload.clone(),
+        payload: packet_payload.clone(),
     })?;
     let packet = store
         .get_hive_loop_packet(packet_id)?
@@ -974,7 +984,7 @@ fn emit_and_admit(
     });
 
     let (result, reason, policy_json) = match matching_policy {
-        Some(policy) if gate_passes(&policy.gate, &payload) => (
+        Some(policy) if gate_passes(&policy.gate, &packet_payload) => (
             "admitted".to_string(),
             format!("{} passed", policy.gate),
             serde_json::json!(policy),
@@ -1012,19 +1022,86 @@ fn emit_and_admit(
     Ok(admission)
 }
 
+fn typed_packet_payload(
+    contract: &HiveLoopContract,
+    object_kind: &str,
+    writer_role: &str,
+    route_from: &str,
+    route_to: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": PACKET_SCHEMA_VERSION,
+        "loop_id": contract.id,
+        "round": contract.current_round,
+        "object_kind": object_kind,
+        "writer": {
+            "role": writer_role
+        },
+        "route": {
+            "from": route_from,
+            "to": route_to
+        },
+        "state_code": "submitted",
+        "body": body,
+        "receipt_requirements": receipt_requirements_for_packet(object_kind)
+    })
+}
+
+fn receipt_requirements_for_packet(object_kind: &str) -> Vec<&'static str> {
+    match object_kind {
+        "EXPLORATION_PACKET" => vec!["candidate", "constraints"],
+        "EXECUTION_PACKET" => vec!["runtime_probe", "runtime_worker", "artifact"],
+        "VERDICT_PACKET" => vec!["decision", "summary", "score"],
+        _ => Vec::new(),
+    }
+}
+
 fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
+    if !typed_packet_envelope_valid(payload) {
+        return false;
+    }
+    let body = packet_body(payload);
     match gate {
-        "candidate_present" => payload
+        "candidate_present" => body
             .get("candidate")
             .and_then(|value| value.as_str())
             .is_some_and(|value| !value.trim().is_empty()),
-        "runtime_probe_present" => payload.get("runtime_probe").is_some(),
-        "decision_present" => payload
+        "runtime_probe_present" => body.get("runtime_probe").is_some(),
+        "decision_present" => body
             .get("decision")
             .and_then(|value| value.as_str())
             .is_some_and(|value| matches!(value, "keep" | "reject" | "needs-review" | "blocked")),
         _ => false,
     }
+}
+
+fn typed_packet_envelope_valid(payload: &serde_json::Value) -> bool {
+    payload
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        == Some(PACKET_SCHEMA_VERSION)
+        && payload
+            .get("object_kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty())
+        && payload
+            .pointer("/writer/role")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty())
+        && payload
+            .pointer("/route/from")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty())
+        && payload
+            .pointer("/route/to")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty())
+        && payload.get("body").is_some()
+}
+
+fn packet_body(payload: &serde_json::Value) -> &serde_json::Value {
+    payload.get("body").unwrap_or(payload)
 }
 
 fn probe_runtime(runtime: &str) -> serde_json::Value {
@@ -1340,6 +1417,25 @@ mod tests {
         assert_eq!(report.contract.active_phase, "complete");
         assert_eq!(report.policies.len(), 3);
         assert_eq!(report.packets.len(), 3);
+        assert!(report.packets.iter().all(|packet| packet
+            .payload
+            .get("schema_version")
+            .and_then(|value| value.as_str())
+            == Some(PACKET_SCHEMA_VERSION)));
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/candidate")
+                .and_then(|value| value.as_str()),
+            Some("Run a local MVP loop through Hive")
+        );
+        assert_eq!(
+            report.packets[1]
+                .payload
+                .pointer("/receipt_requirements/1")
+                .and_then(|value| value.as_str()),
+            Some("runtime_worker")
+        );
         assert_eq!(report.admissions.len(), 3);
         assert!(report
             .admissions
