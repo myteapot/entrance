@@ -193,6 +193,7 @@ type IssueDoctorSummary = {
   health: string;
   summary: string;
   next_actions: string[];
+  runtime: string;
   current_round: number;
   counts: {
     round_receipt_required_count: number;
@@ -491,6 +492,32 @@ export default function App() {
   };
   const issueRetryRunArgs = (card: IssueCard) =>
     mergeRunArgs(doctorRunArgs(card, "entrance hive issue retry-run"), workerLimitRunArgs());
+  const runArgsSummary = (args: LoopRunArgs, fallbackRuntime?: string) => {
+    const runtime = args.runtime ?? fallbackRuntime;
+    const parts = runtime ? [runtime] : [];
+    if (args.workerAttempts && args.workerAttempts > 1) parts.push(`${args.workerAttempts}x`);
+    if (args.workerTimeoutSecs) parts.push(`${args.workerTimeoutSecs}s`);
+    return parts.join(" ");
+  };
+  const issueRuntimeSummary = (card: IssueCard, retry: boolean) =>
+    runArgsSummary(
+      retry ? issueRetryRunArgs(card) : issueRunArgs(card),
+      card.doctor?.runtime || card.trace?.worker_kind || undefined,
+    );
+  const issueRuntimeActionLabel = (card: IssueCard, retry: boolean) => {
+    const pending = issuePendingLabel(card.issue.id);
+    if (pending) return pending;
+    const verb = retry ? "Retry" : "Run";
+    const summary = issueRuntimeSummary(card, retry);
+    return summary ? `${verb} ${summary}` : verb;
+  };
+  const issueRuntimeActionAriaLabel = (card: IssueCard, retry: boolean, surface: string) => {
+    const verb = retry ? "Retry" : "Run";
+    const summary = issueRuntimeSummary(card, retry);
+    return summary
+      ? `${verb} issue #${card.issue.id} from ${surface} with ${summary}`
+      : `${verb} issue #${card.issue.id} from ${surface}`;
+  };
 
   const runHiveLoop = async (loop: HiveLoop) => {
     if (loopPendingLabel(loop.id)) return;
@@ -651,6 +678,10 @@ export default function App() {
       "request-review": "Review",
       cancel: "Cancel",
     })[option] ?? option;
+  const issueDecisionButtonLabel = (card: IssueCard, option: string) =>
+    option === "retry"
+      ? issueRuntimeActionLabel(card, true)
+      : issuePendingLabel(card.issue.id) ?? issueOptionLabel(option);
 
   const issueOptionDisabled = (card: IssueCard, option: string) =>
     Boolean(issuePendingLabel(card.issue.id)) || (option === "retry" && !card.issue.loop_id);
@@ -1225,12 +1256,16 @@ export default function App() {
                             {card.trace.human_options.map((option) => (
                               <button
                                 type="button"
-                                aria-label={`${issueOptionLabel(option)} issue #${card.issue.id} from detail`}
+                                aria-label={
+                                  option === "retry"
+                                    ? issueRuntimeActionAriaLabel(card, true, "detail")
+                                    : `${issueOptionLabel(option)} issue #${card.issue.id} from detail`
+                                }
                                 data-testid={`issue-action-detail-${option}-${card.issue.id}`}
                                 disabled={issueOptionDisabled(card, option)}
                                 onClick={() => runIssueOption(card, option)}
                               >
-                                {issuePendingLabel(card.issue.id) ?? issueOptionLabel(option)}
+                                {issueDecisionButtonLabel(card, option)}
                               </button>
                             ))}
                           </div>
@@ -1256,12 +1291,16 @@ export default function App() {
                             {issueDecisionOptions(card).map((option) => (
                               <button
                                 type="button"
-                                aria-label={`${issueOptionLabel(option)} issue #${card.issue.id} from detail composer`}
+                                aria-label={
+                                  option === "retry"
+                                    ? issueRuntimeActionAriaLabel(card, true, "detail composer")
+                                    : `${issueOptionLabel(option)} issue #${card.issue.id} from detail composer`
+                                }
                                 data-testid={`issue-action-detail-composer-${option}-${card.issue.id}`}
                                 disabled={issueOptionDisabled(card, option)}
                                 onClick={() => runIssueOption(card, option)}
                               >
-                                {issuePendingLabel(card.issue.id) ?? issueOptionLabel(option)}
+                                {issueDecisionButtonLabel(card, option)}
                               </button>
                             ))}
                             <button
@@ -1583,12 +1622,16 @@ export default function App() {
                                   {issueDecisionOptions(card).map((option) => (
                                     <button
                                       type="button"
-                                      aria-label={`${issueOptionLabel(option)} issue #${card.issue.id} from board composer`}
+                                      aria-label={
+                                        option === "retry"
+                                          ? issueRuntimeActionAriaLabel(card, true, "board composer")
+                                          : `${issueOptionLabel(option)} issue #${card.issue.id} from board composer`
+                                      }
                                       data-testid={`issue-action-board-composer-${option}-${card.issue.id}`}
                                       disabled={issueOptionDisabled(card, option)}
                                       onClick={() => runIssueOption(card, option)}
                                     >
-                                      {issuePendingLabel(card.issue.id) ?? issueOptionLabel(option)}
+                                      {issueDecisionButtonLabel(card, option)}
                                     </button>
                                   ))}
                                   <button
@@ -1606,11 +1649,11 @@ export default function App() {
                                   {card.issue.loop_id && ["Todo", "Blocked"].includes(card.issue.status) ? (
                                     <button
                                       type="button"
-                                      aria-label={
-                                        card.issue.status === "Blocked"
-                                          ? `Retry issue #${card.issue.id} from board`
-                                          : `Run issue #${card.issue.id} from board`
-                                      }
+                                      aria-label={issueRuntimeActionAriaLabel(
+                                        card,
+                                        card.issue.status === "Blocked",
+                                        "board",
+                                      )}
                                       data-testid={`issue-action-board-${
                                         card.issue.status === "Blocked" ? "retry" : "run"
                                       }-${card.issue.id}`}
@@ -1621,8 +1664,7 @@ export default function App() {
                                           : void runIssueLoop(card)
                                       }
                                     >
-                                      {issuePendingLabel(card.issue.id) ??
-                                        (card.issue.status === "Blocked" ? "Retry" : "Run")}
+                                      {issueRuntimeActionLabel(card, card.issue.status === "Blocked")}
                                     </button>
                                   ) : null}
                                   {card.issue.status === "Blocked" ? (
@@ -1639,12 +1681,12 @@ export default function App() {
                                   {card.issue.loop_id && card.issue.status === "Needs Review" ? (
                                     <button
                                       type="button"
-                                      aria-label={`Retry issue #${card.issue.id} from board`}
+                                      aria-label={issueRuntimeActionAriaLabel(card, true, "board")}
                                       data-testid={`issue-action-board-retry-${card.issue.id}`}
                                       disabled={Boolean(issuePendingLabel(card.issue.id))}
                                       onClick={() => void retryIssueLoop(card)}
                                     >
-                                      {issuePendingLabel(card.issue.id) ?? "Retry"}
+                                      {issueRuntimeActionLabel(card, true)}
                                     </button>
                                   ) : null}
                                   {["Todo", "Blocked", "Needs Review"].includes(card.issue.status) ? (

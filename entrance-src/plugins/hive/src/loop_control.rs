@@ -353,6 +353,7 @@ pub struct IssueDoctorSummary {
     pub health: String,
     pub summary: String,
     pub next_actions: Vec<String>,
+    pub runtime: String,
     pub current_round: i64,
     pub counts: HiveLoopDoctorCounts,
     pub failed_checks: Vec<String>,
@@ -3661,6 +3662,7 @@ fn issue_doctor_summary(
             &contract.runtime,
             audit_passed,
         ),
+        runtime: contract.runtime.clone(),
         counts: doctor_counts(trace),
         failed_checks: trace.audit_failed_checks.clone(),
         audit_failure_details: trace.audit_failure_details.clone(),
@@ -6203,6 +6205,7 @@ mod tests {
             .as_ref()
             .expect("issue card should include doctor summary");
         assert_eq!(issue_doctor.health, "ok");
+        assert_eq!(issue_doctor.runtime, "local");
         assert_eq!(issue_doctor.counts.round_role_worker_ok_count, 3);
         assert!(issue_doctor.worker_failures.is_empty());
         let trace_report =

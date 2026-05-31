@@ -293,6 +293,7 @@ fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
         "summary": card.issue.summary,
         "doctor": card.doctor.as_ref().map(|doctor| serde_json::json!({
             "health": doctor.health,
+            "runtime": doctor.runtime.as_str(),
             "summary": doctor.summary,
             "next_actions": doctor.next_actions.iter().take(3).collect::<Vec<_>>()
         })),
@@ -391,7 +392,7 @@ fn compact_issue_actions(card: &IssueCard) -> Vec<serde_json::Value> {
         actions.push(compact_issue_action(
             "run",
             "Run",
-            format!("entrance hive issue run {} --compact", card.issue.id),
+            compact_run_command(card),
         ));
     }
     actions.extend(
@@ -454,6 +455,18 @@ fn compact_retry_command(card: &IssueCard) -> Option<String> {
         .iter()
         .find(|action| action.contains("entrance hive issue retry-run"))
         .cloned()
+}
+
+fn compact_run_command(card: &IssueCard) -> String {
+    match card.doctor.as_ref().map(|doctor| doctor.runtime.as_str()) {
+        Some(runtime) if !runtime.is_empty() => {
+            format!(
+                "entrance hive issue run {} --runtime {} --compact",
+                card.issue.id, runtime
+            )
+        }
+        _ => format!("entrance hive issue run {} --compact", card.issue.id),
+    }
 }
 
 fn compact_issue_action(action: &str, label: &str, command: String) -> serde_json::Value {
