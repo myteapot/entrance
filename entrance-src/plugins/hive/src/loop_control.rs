@@ -1081,7 +1081,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         &admissions,
         &evidence,
     ));
-    let issue_surface = issue_surface_audit(store, loop_id, &issues, &evidence)?;
+    let issue_surface = issue_surface_audit(store, &contract, &issues, &evidence)?;
 
     let mut stage_evidence_errors = stage_evidence_audit_errors(&contract, &stages, &evidence);
     stage_evidence_errors.extend(evidence_worker_policy_audit_errors(&stages, &evidence));
@@ -3173,7 +3173,7 @@ struct IssueSurfaceAudit {
 
 fn issue_surface_audit(
     store: &Store,
-    loop_id: i64,
+    contract: &HiveLoopContract,
     issues: &[HiveIssue],
     evidence: &[HiveLoopEvidence],
 ) -> Result<IssueSurfaceAudit> {
@@ -3182,18 +3182,22 @@ fn issue_surface_audit(
     if issues.is_empty() {
         audit.errors.push(serde_json::json!({
             "scope": "loop",
-            "loop_id": loop_id,
+            "loop_id": contract.id,
             "errors": ["issue.missing"]
         }));
     }
 
     for issue in issues {
         let mut issue_errors = Vec::new();
-        if issue.loop_id != Some(loop_id) {
+        if issue.loop_id != Some(contract.id) {
             issue_errors.push("issue.loop_id".to_string());
         }
         if !issue_status_allowed(&issue.status) {
             issue_errors.push("issue.status".to_string());
+        }
+        let expected_status = issue_status_for_contract_status(&contract.status);
+        if expected_status.is_some_and(|expected| issue.status != expected) {
+            issue_errors.push("issue.contract_status_binding".to_string());
         }
         if issue.title.trim().is_empty() {
             issue_errors.push("issue.title".to_string());
@@ -3208,6 +3212,9 @@ fn issue_surface_audit(
             audit.errors.push(serde_json::json!({
                 "scope": "issue",
                 "issue_id": issue.id,
+                "contract_status": contract.status,
+                "expected_status": expected_status,
+                "actual_status": issue.status,
                 "errors": issue_errors
             }));
         }
@@ -3231,6 +3238,18 @@ fn issue_surface_audit(
     }
 
     Ok(audit)
+}
+
+fn issue_status_for_contract_status(status: &str) -> Option<&'static str> {
+    match status {
+        "todo" => Some("Todo"),
+        "running" => Some("Doing"),
+        "blocked" => Some("Blocked"),
+        "needs-review" => Some("Needs Review"),
+        "rejected" => Some("Canceled"),
+        "kept" => Some("Done"),
+        _ => None,
+    }
 }
 
 fn issue_comment_audit_error(
@@ -9089,6 +9108,92 @@ mod tests {
                 .is_some_and(|fields| fields
                     .iter()
                     .any(|field| field.as_str() == Some("comment.payload.schema_version"))))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_surface_audit_rejects_issue_contract_status_drift() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-issue-status-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Issue status drift loop".to_string(),
+                goal: "Detect drift between contract and issue status".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let run_report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let issue_id = run_report.issues[0].issue.id;
+        assert_eq!(run_report.contract.status, "kept");
+        assert_eq!(run_report.issues[0].issue.status, "Done");
+
+        store
+            .update_hive_issue_status(issue_id, "Todo", Some("drifted issue status"))
+            .expect("issue status should be mutated for audit probe");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let issue_surface_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "issue_surface")
+            .expect("issue surface audit should exist");
+        assert!(!issue_surface_check.passed);
+        let errors = issue_surface_check
+            .details
+            .pointer("/issue_surface_errors")
+            .and_then(|value| value.as_array())
+            .expect("issue surface errors should be listed");
+        assert!(errors.iter().any(|error| {
+            error
+                .pointer("/expected_status")
+                .and_then(|value| value.as_str())
+                == Some("Done")
+                && error
+                    .pointer("/actual_status")
+                    .and_then(|value| value.as_str())
+                    == Some("Todo")
+                && error
+                    .pointer("/errors")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|fields| {
+                        fields
+                            .iter()
+                            .any(|field| field.as_str() == Some("issue.contract_status_binding"))
+                    })
+        }));
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "issue_surface:issue:issue.contract_status_binding"));
 
         let _ = fs::remove_dir_all(root);
     }
