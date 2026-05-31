@@ -68,8 +68,8 @@ versioned typed packets, receipt-aware admission gates, versioned admission
 receipts, stage evidence, and the versioned final verdict.
 `hive policy registry` exposes the typed gate registry plus runtime worker
 policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
-and required worker receipt fields. `hive loop policies <id>` shows the active
-policy rows loaded into a specific loop contract.
+required worker receipt fields, and role binding. `hive loop policies <id>`
+shows the active policy rows loaded into a specific loop contract.
 `hive loop trace <id>` returns the compact round-aware health view, including
 the evaluator score vector and current-round worker duration/timeout totals,
 without packet transcripts.
@@ -80,14 +80,16 @@ operator options, and short transcript excerpts.
 active policies, runtime policy, typed packets, admission receipts, worker
 receipts, verdict packets, and linked issue surface. The active policy check
 verifies the canonical Explorer/Doer/Evaluator route and gate contract. The
-admission check verifies that the recorded packet, policy, gate spec, receipt
-requirements, missing receipts, gate result, and final admission result still
-bind to each other. The verdict check verifies decision bindings, score-vector
-metrics, gate booleans, human options, and reason-code evidence bindings. The
-issue surface check verifies issue status, typed comments, operator
-comment/decision evidence, and the author/action/body bindings between evidence
-and its linked comment. Runtime policy checks the current round so a successful
-retry can replace a previously blocked runtime attempt.
+worker and runtime policy checks verify that worker receipts carry a role and
+that the role still matches the packet writer. The admission check verifies that
+the recorded packet, policy, gate spec, receipt requirements, missing receipts,
+gate result, and final admission result still bind to each other. The verdict
+check verifies decision bindings, score-vector metrics, gate booleans, human
+options, and reason-code evidence bindings. The issue surface check verifies
+issue status, typed comments, operator comment/decision evidence, and the
+author/action/body bindings between evidence and its linked comment. Runtime
+policy checks the current round so a successful retry can replace a previously
+blocked runtime attempt.
 `hive loop doctor <id>` is the first CLI stop after a run: it combines trace and
 audit state into one health summary with counts, failed checks, missing
 receipts, worker failures, specific audit failure details, and suggested next

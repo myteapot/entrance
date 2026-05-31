@@ -25,10 +25,12 @@ Admission receipts include the packet receipt requirements, missing receipt
 fields, and a boolean satisfied flag. Default MVP gates admit packets only when
 their typed receipt requirements are present. Worker receipts are stricter than
 plain presence checks: `role_worker` and `runtime_worker` must have `ok=true`
-before the packet can pass admission.
+before the packet can pass admission, and loop audit verifies the worker `role`
+still matches the packet writer role.
 `hive policy registry` is the current source for both typed admission gate
 specs and runtime worker policy: supported runtimes, sandbox mode, timeout and
-attempt bounds, env overrides, and required worker receipt metadata.
+attempt bounds, env overrides, role binding, and required worker receipt
+metadata.
 Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
@@ -45,11 +47,12 @@ Worker attempts default to 1, can be overridden with `--worker-attempts <n>` or
 `ENTRANCE_HIVE_WORKER_ATTEMPTS`, and are recorded as attempt count/max attempts
 plus the raw attempt receipts on codex workers.
 Loop audit includes a `worker_receipts` check that verifies worker receipts
-carry bounded timeout and attempt metadata, plus a `runtime_policy` check that
-verifies the contract runtime and current-round worker receipt kind/mode values
-against the registry. The `active_policy_registry` check verifies the canonical
-Explorer/Doer/Evaluator route and gate contract, including gate expected object
-kind and required receipts. The `admission_receipts` check verifies the stored
+carry bounded timeout and attempt metadata plus the expected role, and a
+`runtime_policy` check that verifies the contract runtime and current-round
+worker receipt kind/mode/role values against the registry and packet writer.
+The `active_policy_registry` check verifies the canonical Explorer/Doer/Evaluator
+route and gate contract, including gate expected object kind and required
+receipts. The `admission_receipts` check verifies the stored
 admission receipt against the packet row, policy route, gate spec, required
 receipt list, missing receipt list, gate result, and final admitted/rejected
 result. The `verdict_packets` check verifies decision bindings, required

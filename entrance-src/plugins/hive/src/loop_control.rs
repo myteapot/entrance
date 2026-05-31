@@ -897,6 +897,8 @@ fn runtime_policy_registry() -> RuntimePolicyRegistry {
             attempts_env: "ENTRANCE_HIVE_WORKER_ATTEMPTS".to_string(),
             required_receipt_fields: vec![
                 "kind".to_string(),
+                "mode".to_string(),
+                "role".to_string(),
                 "ok".to_string(),
                 "timeout_secs".to_string(),
                 "attempt_count".to_string(),
@@ -1809,6 +1811,20 @@ fn worker_receipt_audit_errors(packet: &HiveLoopPacket) -> Option<serde_json::Va
     {
         errors.push("kind".to_string());
     }
+    if worker
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .map_or(true, |value| value.trim().is_empty())
+    {
+        errors.push("mode".to_string());
+    }
+    let worker_role = worker.get("role").and_then(|value| value.as_str());
+    if worker_role.map_or(true, |value| value.trim().is_empty()) {
+        errors.push("role".to_string());
+    }
+    if worker_role.is_some_and(|role| role != packet.writer_role) {
+        errors.push("role_binding".to_string());
+    }
     if worker.get("ok").and_then(|value| value.as_bool()).is_none() {
         errors.push("ok".to_string());
     }
@@ -1833,6 +1849,8 @@ fn worker_receipt_audit_errors(packet: &HiveLoopPacket) -> Option<serde_json::Va
         Some(serde_json::json!({
             "packet_id": packet.id,
             "object_kind": packet.object_kind,
+            "writer_role": packet.writer_role,
+            "worker_role": worker_role,
             "errors": errors
         }))
     }
@@ -1857,14 +1875,17 @@ fn runtime_policy_audit_errors(
         .filter(|packet| packet.round == contract.current_round)
     {
         for (receipt, worker) in packet_worker_receipts(packet) {
-            let worker_errors = runtime_worker_policy_errors(&registry, worker);
+            let worker_errors =
+                runtime_worker_policy_errors(&registry, worker, &packet.writer_role);
             if !worker_errors.is_empty() {
                 errors.push(serde_json::json!({
                     "scope": "worker_receipt",
                     "packet_id": packet.id,
                     "object_kind": packet.object_kind,
+                    "writer_role": packet.writer_role,
                     "receipt": receipt,
                     "kind": worker.get("kind").and_then(|value| value.as_str()),
+                    "worker_role": worker.get("role").and_then(|value| value.as_str()),
                     "errors": worker_errors
                 }));
             }
@@ -1890,6 +1911,7 @@ fn packet_worker_receipts<'a>(
 fn runtime_worker_policy_errors(
     registry: &RuntimePolicyRegistry,
     worker: &serde_json::Value,
+    expected_role: &str,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     let kind = worker.get("kind").and_then(|value| value.as_str());
@@ -1901,6 +1923,14 @@ fn runtime_worker_policy_errors(
         }
         None if kind.is_some() => errors.push("kind.unsupported".to_string()),
         None => errors.push("kind".to_string()),
+    }
+
+    let role = worker.get("role").and_then(|value| value.as_str());
+    if role.map_or(true, |value| value.trim().is_empty()) {
+        errors.push("role".to_string());
+    }
+    if role.is_some_and(|value| value != expected_role) {
+        errors.push("role_binding".to_string());
     }
 
     match worker.get("timeout_secs").and_then(|value| value.as_u64()) {
@@ -4366,6 +4396,7 @@ fn run_role_worker(
                 return serde_json::json!({
                     "ok": false,
                     "kind": "codex",
+                    "mode": "codex-exec",
                     "role": role,
                     "skipped": true,
                     "timeout_secs": timeout_secs,
@@ -4379,6 +4410,7 @@ fn run_role_worker(
         other => serde_json::json!({
             "ok": false,
             "kind": "unsupported",
+            "mode": "unsupported",
             "role": role,
             "runtime": other,
             "skipped": true,
@@ -4705,6 +4737,12 @@ mod tests {
             .required_receipt_fields
             .iter()
             .any(|field| field == "timeout_secs"));
+        assert!(registry
+            .runtime
+            .worker
+            .required_receipt_fields
+            .iter()
+            .any(|field| field == "role"));
         let verdict_gate = registry
             .gates
             .iter()
@@ -5824,6 +5862,117 @@ mod tests {
                 .human_options,
             vec!["comment", "retry", "cancel"]
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_receipt_audit_rejects_role_drift() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-worker-role-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Worker role audit loop".to_string(),
+                goal: "Catch worker receipt role drift".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let doer_packet = report
+            .packets
+            .iter()
+            .find(|packet| packet.object_kind == "EXECUTION_PACKET")
+            .expect("doer packet should exist");
+        let mut payload = doer_packet.payload.clone();
+        *payload
+            .pointer_mut("/body/role_worker/role")
+            .expect("role worker role should exist") = serde_json::json!("explorer");
+        *payload
+            .pointer_mut("/body/runtime_worker/role")
+            .expect("runtime worker role should exist") = serde_json::json!("explorer");
+        store
+            .insert_hive_loop_packet(HiveLoopPacketCreate {
+                loop_id: report.contract.id,
+                round: report.contract.current_round,
+                object_kind: "EXECUTION_PACKET".to_string(),
+                writer_role: "doer".to_string(),
+                route_from: "doer".to_string(),
+                route_to: "evaluator".to_string(),
+                state_code: "submitted".to_string(),
+                payload,
+            })
+            .expect("drifted packet should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let worker_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "worker_receipts")
+            .expect("worker receipt audit should exist");
+        assert!(!worker_check.passed);
+        assert!(worker_check
+            .details
+            .pointer("/worker_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("role_binding"))))));
+        let runtime_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "runtime_policy")
+            .expect("runtime policy audit should exist");
+        assert!(!runtime_check.passed);
+        assert!(runtime_check
+            .details
+            .pointer("/runtime_policy_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("role_binding"))))));
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "worker_receipts:role_binding"));
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "runtime_policy:worker_receipt:role_binding"));
 
         let _ = fs::remove_dir_all(root);
     }
