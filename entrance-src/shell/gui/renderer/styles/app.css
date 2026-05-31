@@ -533,6 +533,12 @@
   background: rgba(255, 255, 255, 0.025);
 }
 
+.evidence-row--selected {
+  border-color: rgba(121, 215, 167, 0.58);
+  background: rgba(121, 215, 167, 0.1);
+  box-shadow: 0 0 0 1px rgba(121, 215, 167, 0.2);
+}
+
 .evidence-row p {
   margin: 8px 0 0;
 }
@@ -603,15 +609,30 @@
 }
 
 .comment-tags span,
+.comment-tags button,
 .comment-more {
   display: inline-flex;
+  align-items: center;
   margin-top: 0;
   padding: 2px 6px;
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--text-dim);
+  background: transparent;
   font-size: 0.72rem;
+  font-family: inherit;
   line-height: 1.2;
+}
+
+.comment-tags button {
+  cursor: pointer;
+}
+
+.comment-tags button:hover,
+.comment-tags button:focus-visible {
+  border-color: rgba(121, 215, 167, 0.42);
+  color: var(--text);
+  background: rgba(121, 215, 167, 0.1);
 }
 
 .comment-more {

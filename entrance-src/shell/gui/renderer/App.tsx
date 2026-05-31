@@ -231,6 +231,10 @@ type LoopRunArgs = {
   workerTimeoutSecs?: number;
   workerAttempts?: number;
 };
+type CommentPill = {
+  label: string;
+  evidenceId?: number;
+};
 
 const COMMENT_CARD_PREVIEW_LIMIT = 132;
 const COMMENT_DETAIL_PREVIEW_LIMIT = 360;
@@ -269,14 +273,15 @@ const commentPills = (comment: IssueComment) => {
   const phase =
     commentPayloadString(comment, "phase") ?? commentPayloadString(comment, "next_phase");
   const evidenceId = commentPayloadNumber(comment, "evidence_id");
+  const schema = commentSchemaLabel(comment);
   return [
-    source,
-    action ? COMMENT_ACTION_LABELS[action] ?? action : null,
-    decision && decision !== action ? decision : null,
-    phase,
-    evidenceId ? `E#${evidenceId}` : null,
-    commentSchemaLabel(comment),
-  ].filter((value): value is string => Boolean(value));
+    source ? { label: source } : null,
+    action ? { label: COMMENT_ACTION_LABELS[action] ?? action } : null,
+    decision && decision !== action ? { label: decision } : null,
+    phase ? { label: phase } : null,
+    evidenceId ? { label: `E#${evidenceId}`, evidenceId } : null,
+    schema ? { label: schema } : null,
+  ].filter((value): value is CommentPill => Boolean(value?.label));
 };
 
 const commentPreview = (comment: IssueComment, limit: number) => {
@@ -302,6 +307,7 @@ const operatorEventStatusLabel = (event: OperatorEvent) => {
 
 export default function App() {
   let issueDetailPanel: HTMLElement | undefined;
+  const evidenceRows = new Map<number, HTMLElement>();
 
   const [view, setView] = createSignal<View>("status");
   const [launcherQuery, setLauncherQuery] = createSignal("");
@@ -313,6 +319,7 @@ export default function App() {
   const [loopWorkerTimeoutSecs, setLoopWorkerTimeoutSecs] = createSignal("");
   const [loopWorkerAttempts, setLoopWorkerAttempts] = createSignal("");
   const [selectedIssueId, setSelectedIssueId] = createSignal<number | null>(null);
+  const [selectedEvidenceId, setSelectedEvidenceId] = createSignal<number | null>(null);
   const [activeCommentComposer, setActiveCommentComposer] =
     createSignal<ActiveCommentComposer | null>(null);
   const [commentBody, setCommentBody] = createSignal("");
@@ -362,6 +369,29 @@ export default function App() {
       issueDetailPanel?.scrollIntoView({ block: "start", behavior: "auto" });
     }, 50);
   };
+  const focusEvidence = (issueId: number, evidenceId: number) => {
+    setSelectedIssueId(issueId);
+    setSelectedEvidenceId(evidenceId);
+    window.setTimeout(() => {
+      (evidenceRows.get(evidenceId) ?? issueDetailPanel)?.scrollIntoView({
+        block: "center",
+        behavior: "auto",
+      });
+    }, 50);
+  };
+  const commentPillNode = (issueId: number, pill: CommentPill) =>
+    pill.evidenceId ? (
+      <button
+        type="button"
+        class="comment-tag-button"
+        aria-label={`Show evidence #${pill.evidenceId} for issue #${issueId}`}
+        onClick={() => focusEvidence(issueId, pill.evidenceId ?? 0)}
+      >
+        {pill.label}
+      </button>
+    ) : (
+      <span>{pill.label}</span>
+    );
 
   const refreshAll = async () => {
     await Promise.all([
@@ -1446,9 +1476,7 @@ export default function App() {
                               <div class="comment-line-head">
                                 <strong>{comment.author}</strong>
                                 <div class="comment-tags">
-                                  {commentPills(comment).map((pill) => (
-                                    <span>{pill}</span>
-                                  ))}
+                                  {commentPills(comment).map((pill) => commentPillNode(card.issue.id, pill))}
                                 </div>
                               </div>
                               <span>{commentPreview(comment, COMMENT_DETAIL_PREVIEW_LIMIT)}</span>
@@ -1506,7 +1534,15 @@ export default function App() {
                           <div class="evidence-ledger">
                             <h4>Evidence</h4>
                             {card.trace.evidence.map((evidence) => (
-                              <div class="evidence-row">
+                              <div
+                                class={
+                                  selectedEvidenceId() === evidence.id
+                                    ? "evidence-row evidence-row--selected"
+                                    : "evidence-row"
+                                }
+                                data-testid={`evidence-row-${evidence.id}`}
+                                ref={(element) => evidenceRows.set(evidence.id, element)}
+                              >
                                 <div class="stage-row-head">
                                   <strong>{evidence.stage_role ?? evidence.kind}</strong>
                                   <span>#{evidence.id}</span>
@@ -1744,9 +1780,9 @@ export default function App() {
                                     <div class="comment-line-head">
                                       <strong>{comment.author}</strong>
                                       <div class="comment-tags">
-                                        {commentPills(comment).slice(0, 3).map((pill) => (
-                                          <span>{pill}</span>
-                                        ))}
+                                        {commentPills(comment)
+                                          .slice(0, 3)
+                                          .map((pill) => commentPillNode(card.issue.id, pill))}
                                       </div>
                                     </div>
                                     <span>{commentPreview(comment, COMMENT_CARD_PREVIEW_LIMIT)}</span>
