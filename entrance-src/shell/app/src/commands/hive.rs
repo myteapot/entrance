@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck, HiveLoopAuditReport,
-    HiveLoopCreateRequest, HiveLoopRunRequest, IssueCard, IssueCommentRequest,
+    HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard, IssueCommentRequest,
     IssueDecisionRequest, IssueRunRequest, ReviewDecision,
 };
 
@@ -485,93 +485,19 @@ fn compact_stage_rows(card: &IssueCard) -> Vec<serde_json::Value> {
 }
 
 fn compact_issue_actions(card: &IssueCard) -> Vec<serde_json::Value> {
-    let mut actions = Vec::new();
-    if card.issue.loop_id.is_some() && card.issue.status == "Todo" {
-        actions.push(compact_issue_action(
-            "run",
-            "Run",
-            compact_run_command(card),
-        ));
-    }
-    actions.extend(
-        compact_issue_options(card)
-            .into_iter()
-            .filter_map(|option| compact_issue_option_action(card, &option)),
-    );
-    actions
+    card.actions.iter().map(compact_issue_action).collect()
 }
 
-fn compact_issue_options(card: &IssueCard) -> Vec<String> {
-    if let Some(trace) = &card.trace {
-        return trace.human_options.clone();
-    }
-    match card.issue.status.as_str() {
-        "Todo" => vec!["comment", "cancel"],
-        "Blocked" => vec!["comment", "retry", "request-review", "cancel"],
-        "Needs Review" => vec!["comment", "retry", "cancel"],
-        "Doing" | "Done" | "Canceled" => vec!["comment"],
-        _ => vec!["comment"],
-    }
-    .into_iter()
-    .map(ToOwned::to_owned)
-    .collect()
-}
-
-fn compact_issue_option_action(card: &IssueCard, option: &str) -> Option<serde_json::Value> {
-    let issue_id = card.issue.id;
-    match option {
-        "comment" => Some(compact_issue_action(
-            "comment",
-            "Comment",
-            format!("entrance hive issue comment {issue_id} --body <text> --compact"),
-        )),
-        "retry" => Some(compact_issue_action(
-            "retry",
-            "Retry",
-            compact_retry_command(card).unwrap_or_else(|| {
-                format!("entrance hive issue retry-run {issue_id} --body <note> --compact")
-            }),
-        )),
-        "request-review" => Some(compact_issue_action(
-            "request-review",
-            "Review",
-            format!("entrance hive issue decide {issue_id} request-review --body <note> --compact"),
-        )),
-        "cancel" => Some(compact_issue_action(
-            "cancel",
-            "Cancel",
-            format!("entrance hive issue decide {issue_id} cancel --body <note> --compact"),
-        )),
-        _ => None,
-    }
-}
-
-fn compact_retry_command(card: &IssueCard) -> Option<String> {
-    card.doctor
-        .as_ref()?
-        .next_actions
-        .iter()
-        .find(|action| action.contains("entrance hive issue retry-run"))
-        .cloned()
-}
-
-fn compact_run_command(card: &IssueCard) -> String {
-    match card.doctor.as_ref().map(|doctor| doctor.runtime.as_str()) {
-        Some(runtime) if !runtime.is_empty() => {
-            format!(
-                "entrance hive issue run {} --runtime {} --compact",
-                card.issue.id, runtime
-            )
-        }
-        _ => format!("entrance hive issue run {} --compact", card.issue.id),
-    }
-}
-
-fn compact_issue_action(action: &str, label: &str, command: String) -> serde_json::Value {
+fn compact_issue_action(action: &IssueAction) -> serde_json::Value {
     serde_json::json!({
-        "action": action,
-        "label": label,
-        "command": command
+        "schema_version": action.schema_version,
+        "action": action.action,
+        "label": action.label,
+        "command": action.command,
+        "source": action.source,
+        "input": action.input,
+        "destructive": action.destructive,
+        "runtime": action.runtime
     })
 }
 
@@ -609,7 +535,25 @@ mod tests {
         compact_issue_board, compact_issue_detail, compact_loop_audit, flag_present, flag_value,
     };
     use entrance_core::{HiveComment, HiveIssue};
-    use entrance_hive::{HiveLoopAuditCheck, HiveLoopAuditReport, IssueCard};
+    use entrance_hive::{HiveLoopAuditCheck, HiveLoopAuditReport, IssueAction, IssueCard};
+
+    fn test_issue_action(action: &str, label: &str, command: &str) -> IssueAction {
+        IssueAction {
+            schema_version: "entrance.hive.issue_action.v1".to_string(),
+            action: action.to_string(),
+            label: label.to_string(),
+            command: command.to_string(),
+            source: "status_fallback".to_string(),
+            input: match action {
+                "run" => "none",
+                "comment" => "body",
+                _ => "note",
+            }
+            .to_string(),
+            destructive: action == "cancel",
+            runtime: None,
+        }
+    }
 
     #[test]
     fn flags_read_values_and_presence_independently() {
@@ -644,6 +588,28 @@ mod tests {
                 payload: serde_json::json!({}),
                 created_at: "2026-01-01T00:01:00Z".to_string(),
             }],
+            actions: vec![
+                test_issue_action(
+                    "comment",
+                    "Comment",
+                    "entrance hive issue comment 7 --body <text> --compact",
+                ),
+                test_issue_action(
+                    "retry",
+                    "Retry",
+                    "entrance hive issue retry-run 7 --body <note> --compact",
+                ),
+                test_issue_action(
+                    "request-review",
+                    "Review",
+                    "entrance hive issue decide 7 request-review --body <note> --compact",
+                ),
+                test_issue_action(
+                    "cancel",
+                    "Cancel",
+                    "entrance hive issue decide 7 cancel --body <note> --compact",
+                ),
+            ],
             trace: None,
             doctor: None,
         };
@@ -736,6 +702,18 @@ mod tests {
                 }),
                 created_at: "2026-01-01T00:02:00Z".to_string(),
             }],
+            actions: vec![
+                test_issue_action(
+                    "comment",
+                    "Comment",
+                    "entrance hive issue comment 7 --body <text> --compact",
+                ),
+                test_issue_action(
+                    "retry",
+                    "Retry",
+                    "entrance hive issue retry-run 7 --body <note> --compact",
+                ),
+            ],
             trace: None,
             doctor: None,
         });
@@ -782,6 +760,14 @@ mod tests {
                 }),
                 created_at: "2026-01-01T00:01:00Z".to_string(),
             }],
+            actions: vec![
+                test_issue_action("run", "Run", "entrance hive issue run 9 --compact"),
+                test_issue_action(
+                    "comment",
+                    "Comment",
+                    "entrance hive issue comment 9 --body <text> --compact",
+                ),
+            ],
             trace: None,
             doctor: None,
         });

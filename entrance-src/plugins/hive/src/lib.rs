@@ -17,8 +17,8 @@ pub use http::{HiveCallback, HiveCallbackRequest};
 pub use loop_control::{
     HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDoctorReport,
     HiveLoopEvidenceReport, HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest,
-    HiveLoopTraceReport, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueRunRequest,
-    PolicyRegistryReport,
+    HiveLoopTraceReport, IssueAction, IssueCard, IssueCommentRequest, IssueDecisionRequest,
+    IssueRunRequest, PolicyRegistryReport,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};

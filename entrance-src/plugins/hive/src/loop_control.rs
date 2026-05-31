@@ -22,6 +22,7 @@ const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
 const WORKER_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.worker_receipt.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
 const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
+const ISSUE_ACTION_SCHEMA_VERSION: &str = "entrance.hive.issue_action.v1";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
@@ -294,8 +295,21 @@ pub struct HiveLoopDoctorCheck {
 pub struct IssueCard {
     pub issue: HiveIssue,
     pub comments: Vec<HiveComment>,
+    pub actions: Vec<IssueAction>,
     pub trace: Option<IssueTraceSummary>,
     pub doctor: Option<IssueDoctorSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueAction {
+    pub schema_version: String,
+    pub action: String,
+    pub label: String,
+    pub command: String,
+    pub source: String,
+    pub input: String,
+    pub destructive: bool,
+    pub runtime: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3866,12 +3880,160 @@ fn issue_card_from_issue(store: &Store, issue: HiveIssue) -> Result<IssueCard> {
         .zip(trace.as_ref())
         .map(|(loop_id, trace)| issue_doctor_summary(store, loop_id, &issue, trace))
         .transpose()?;
+    let actions = issue_actions(&issue, trace.as_ref(), doctor.as_ref());
     Ok(IssueCard {
         issue,
         comments,
+        actions,
         trace,
         doctor,
     })
+}
+
+fn issue_actions(
+    issue: &HiveIssue,
+    trace: Option<&IssueTraceSummary>,
+    doctor: Option<&IssueDoctorSummary>,
+) -> Vec<IssueAction> {
+    let mut actions = Vec::new();
+    let runtime = doctor
+        .map(|doctor| doctor.runtime.as_str())
+        .filter(|runtime| !runtime.is_empty());
+
+    if issue.loop_id.is_some() && issue.status == "Todo" {
+        actions.push(issue_action(
+            "run",
+            "Run",
+            issue_run_action_command(issue, doctor, runtime),
+            "runtime",
+            "none",
+            false,
+            runtime,
+        ));
+    }
+
+    let source = if trace.is_some() {
+        "human_options"
+    } else {
+        "status_fallback"
+    };
+    let options = trace
+        .map(|trace| trace.human_options.clone())
+        .unwrap_or_else(|| issue_human_options(Some(issue), &[], &[]));
+    for option in options {
+        match option.as_str() {
+            "comment" => actions.push(issue_action(
+                "comment",
+                "Comment",
+                format!(
+                    "entrance hive issue comment {} --body <text> --compact",
+                    issue.id
+                ),
+                source,
+                "body",
+                false,
+                None,
+            )),
+            "retry" => actions.push(issue_action(
+                "retry",
+                "Retry",
+                issue_retry_action_command(issue.id, doctor, runtime),
+                source,
+                "note",
+                false,
+                runtime,
+            )),
+            "request-review" => actions.push(issue_action(
+                "request-review",
+                "Review",
+                format!(
+                    "entrance hive issue decide {} request-review --body <note> --compact",
+                    issue.id
+                ),
+                source,
+                "note",
+                false,
+                None,
+            )),
+            "cancel" => actions.push(issue_action(
+                "cancel",
+                "Cancel",
+                format!(
+                    "entrance hive issue decide {} cancel --body <note> --compact",
+                    issue.id
+                ),
+                source,
+                "note",
+                true,
+                None,
+            )),
+            _ => {}
+        }
+    }
+
+    actions
+}
+
+fn issue_action(
+    action: &str,
+    label: &str,
+    command: String,
+    source: &str,
+    input: &str,
+    destructive: bool,
+    runtime: Option<&str>,
+) -> IssueAction {
+    IssueAction {
+        schema_version: ISSUE_ACTION_SCHEMA_VERSION.to_string(),
+        action: action.to_string(),
+        label: label.to_string(),
+        command,
+        source: source.to_string(),
+        input: input.to_string(),
+        destructive,
+        runtime: runtime.map(ToOwned::to_owned),
+    }
+}
+
+fn issue_run_action_command(
+    issue: &HiveIssue,
+    doctor: Option<&IssueDoctorSummary>,
+    runtime: Option<&str>,
+) -> String {
+    doctor
+        .and_then(|doctor| {
+            doctor
+                .next_actions
+                .iter()
+                .find(|action| action.contains("entrance hive issue run"))
+                .cloned()
+        })
+        .unwrap_or_else(|| match runtime {
+            Some(runtime) => format!(
+                "entrance hive issue run {} --runtime {} --compact",
+                issue.id, runtime
+            ),
+            None => format!("entrance hive issue run {} --compact", issue.id),
+        })
+}
+
+fn issue_retry_action_command(
+    issue_id: i64,
+    doctor: Option<&IssueDoctorSummary>,
+    runtime: Option<&str>,
+) -> String {
+    doctor
+        .and_then(|doctor| {
+            doctor
+                .next_actions
+                .iter()
+                .find(|action| action.contains("entrance hive issue retry-run"))
+                .cloned()
+        })
+        .unwrap_or_else(|| match runtime {
+            Some(runtime) => retry_run_command(issue_id, runtime),
+            None => format!("entrance hive issue retry-run {issue_id} --body <note> --compact"),
+        })
 }
 
 fn issue_doctor_summary(
@@ -8535,6 +8697,22 @@ mod tests {
         )
         .expect("loop should block");
         let issue_id = blocked.issues[0].issue.id;
+        assert_eq!(
+            blocked.issues[0]
+                .actions
+                .iter()
+                .map(|action| action.action.as_str())
+                .collect::<Vec<_>>(),
+            vec!["comment", "retry", "request-review", "cancel"]
+        );
+        let review_action = blocked.issues[0]
+            .actions
+            .iter()
+            .find(|action| action.action == "request-review")
+            .expect("blocked issue should expose review action");
+        assert_eq!(review_action.schema_version, ISSUE_ACTION_SCHEMA_VERSION);
+        assert_eq!(review_action.source, "human_options");
+        assert_eq!(review_action.input, "note");
 
         let review_card = decide_issue(
             &store,
@@ -8553,6 +8731,14 @@ mod tests {
         assert_eq!(review_card.issue.status, "Needs Review");
         assert_eq!(review_contract.status, "needs-review");
         assert_eq!(review_contract.active_phase, "human-review");
+        assert_eq!(
+            review_card
+                .actions
+                .iter()
+                .map(|action| action.action.as_str())
+                .collect::<Vec<_>>(),
+            vec!["comment", "retry", "cancel"]
+        );
         let review_doctor = review_card
             .doctor
             .as_ref()
