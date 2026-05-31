@@ -830,6 +830,15 @@ impl Store {
             .map_err(Into::into)
     }
 
+    pub fn update_hive_loop_policy_gate(&self, id: i64, gate: &str) -> Result<()> {
+        let connection = self.connection();
+        connection.execute(
+            "UPDATE hive_loop_policies SET gate = ?2 WHERE id = ?1",
+            params![id, gate],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_hive_loop_packet(&self, row: HiveLoopPacketCreate) -> Result<i64> {
         let now = timestamp();
         let payload_json = serde_json::to_string(&row.payload)?;

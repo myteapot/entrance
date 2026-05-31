@@ -171,6 +171,16 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             ]
         }),
     )?;
+    if explorer_admission.result != "admitted" {
+        return block_on_admission_rejection(
+            store,
+            &contract,
+            issue_id,
+            "explorer",
+            Some(explorer_stage),
+            &explorer_admission,
+        );
+    }
     store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
         stage_id: Some(explorer_stage),
@@ -219,6 +229,16 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "artifact": "hive-loop-ledger"
         }),
     )?;
+    if doer_admission.result != "admitted" {
+        return block_on_admission_rejection(
+            store,
+            &contract,
+            issue_id,
+            "doer",
+            Some(doer_stage),
+            &doer_admission,
+        );
+    }
     store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
         stage_id: Some(doer_stage),
@@ -273,6 +293,16 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "complete",
         typed_verdict.packet_payload(),
     )?;
+    if evaluator_admission.result != "admitted" {
+        return block_on_admission_rejection(
+            store,
+            &contract,
+            issue_id,
+            "evaluator",
+            Some(evaluator_stage),
+            &evaluator_admission,
+        );
+    }
     store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
         stage_id: Some(evaluator_stage),
@@ -431,6 +461,94 @@ fn add_system_comment(
         payload,
     })?;
     Ok(())
+}
+
+fn block_on_admission_rejection(
+    store: &Store,
+    contract: &HiveLoopContract,
+    issue_id: Option<i64>,
+    phase: &str,
+    stage_id: Option<i64>,
+    admission: &HiveLoopAdmission,
+) -> Result<HiveLoopReport> {
+    let summary = format!(
+        "Compiler admission blocked at {phase}: {}.",
+        admission.reason
+    );
+    let evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+        loop_id: contract.id,
+        stage_id,
+        round: contract.current_round,
+        kind: "admission_rejection".to_string(),
+        summary: summary.clone(),
+        path: None,
+        payload: serde_json::json!({
+            "phase": phase,
+            "admission_id": admission.id,
+            "packet_id": admission.packet_id,
+            "result": admission.result,
+            "reason": admission.reason,
+            "policy": admission.policy.clone(),
+            "operator_options": ["fix-policy", "retry", "request-human-review"]
+        }),
+    })?;
+
+    store.insert_hive_loop_verdict(HiveLoopVerdictCreate {
+        loop_id: contract.id,
+        round: contract.current_round,
+        decision: "blocked".to_string(),
+        summary: summary.clone(),
+        score: serde_json::json!({
+            "gates_passed": false,
+            "admission_passed": false,
+            "stage_completeness": stage_completeness_for_phase(phase),
+            "runtime_readiness": serde_json::Value::Null,
+            "operator_review_needed": true,
+            "reason_code": "admission_rejected"
+        }),
+        evidence: serde_json::json!({
+            "evidence_id": evidence_id,
+            "admission_id": admission.id,
+            "packet_id": admission.packet_id,
+            "phase": phase,
+            "reason_code": "admission_rejected"
+        }),
+    })?;
+
+    store.update_hive_loop_contract_state(contract.id, "blocked", phase, contract.current_round)?;
+
+    if let Some(issue_id) = issue_id {
+        store.update_hive_issue_status(issue_id, "Blocked", Some(&summary))?;
+        add_system_comment(
+            store,
+            issue_id,
+            &summary,
+            serde_json::json!({
+                "loop_id": contract.id,
+                "phase": phase,
+                "decision": "blocked",
+                "reason_code": "admission_rejected",
+                "admission": {
+                    "id": admission.id,
+                    "packet_id": admission.packet_id,
+                    "result": admission.result,
+                    "reason": admission.reason
+                },
+                "operator_options": ["fix-policy", "retry", "request-human-review"]
+            }),
+        )?;
+    }
+
+    report(store, contract.id)
+}
+
+fn stage_completeness_for_phase(phase: &str) -> f64 {
+    match phase {
+        "explorer" => 0.33,
+        "doer" => 0.66,
+        "evaluator" => 1.0,
+        _ => 0.0,
+    }
 }
 
 impl VerdictDecision {
@@ -664,10 +782,6 @@ fn emit_and_admit(
         .into_iter()
         .find(|admission| admission.id == admission_id)
         .expect("newly created admission should exist");
-
-    if result != "admitted" {
-        anyhow::bail!("admission rejected for {object_kind}: {reason}");
-    }
 
     Ok(admission)
 }
@@ -945,6 +1059,84 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(true)
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejected_admission_records_blocked_report_and_issue() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-admission-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Admission loop".to_string(),
+                goal: "Block on a policy gate".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+
+        let execution_policy = created
+            .policies
+            .iter()
+            .find(|policy| policy.object_kind == "EXECUTION_PACKET")
+            .expect("execution policy should exist");
+        store
+            .update_hive_loop_policy_gate(execution_policy.id, "unknown_gate")
+            .expect("policy gate should be updated");
+
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+            },
+        )
+        .expect("admission rejection should still return a report");
+
+        assert_eq!(report.contract.status, "blocked");
+        assert_eq!(report.contract.active_phase, "doer");
+        assert_eq!(report.issues[0].issue.status, "Blocked");
+        assert_eq!(report.verdicts.len(), 1);
+        assert_eq!(report.verdicts[0].decision, "blocked");
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .get("reason_code")
+                .and_then(|value| value.as_str()),
+            Some("admission_rejected")
+        );
+        assert!(report
+            .admissions
+            .iter()
+            .any(|admission| admission.result == "rejected"
+                && admission.reason == "unknown_gate failed"));
+        assert!(report
+            .evidence
+            .iter()
+            .any(|evidence| evidence.kind == "admission_rejection"));
+        assert!(report
+            .issues
+            .first()
+            .expect("issue should exist")
+            .comments
+            .iter()
+            .any(|comment| comment.body.contains("Compiler admission blocked at doer")));
 
         let _ = fs::remove_dir_all(root);
     }
