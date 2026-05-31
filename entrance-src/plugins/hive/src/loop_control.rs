@@ -126,6 +126,13 @@ pub struct HiveLoopTraceReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceReport {
+    pub contract: HiveLoopContract,
+    pub current_round: i64,
+    pub evidence: Vec<IssueEvidenceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueCard {
     pub issue: HiveIssue,
     pub comments: Vec<HiveComment>,
@@ -166,6 +173,7 @@ pub struct IssueTraceSummary {
     pub worker_kind: Option<String>,
     pub worker_mode: Option<String>,
     pub worker_ok: Option<bool>,
+    pub evidence: Vec<IssueEvidenceSummary>,
     pub stages: Vec<IssueStageSummary>,
 }
 
@@ -173,6 +181,21 @@ pub struct IssueTraceSummary {
 pub struct ScoreVectorMetric {
     pub name: String,
     pub value: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueEvidenceSummary {
+    pub id: i64,
+    pub round: i64,
+    pub stage_role: Option<String>,
+    pub kind: String,
+    pub summary: String,
+    pub schema_version: Option<String>,
+    pub admission_result: Option<String>,
+    pub worker_kind: Option<String>,
+    pub worker_mode: Option<String>,
+    pub worker_ok: Option<bool>,
+    pub transcript_excerpt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -609,6 +632,24 @@ pub fn trace(store: &Store, loop_id: i64) -> Result<HiveLoopTraceReport> {
     })
 }
 
+pub fn evidence_report(store: &Store, loop_id: i64) -> Result<HiveLoopEvidenceReport> {
+    let contract = store
+        .get_hive_loop_contract(loop_id)?
+        .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
+    let stages = store.list_hive_loop_stages(loop_id)?;
+    let stage_roles = stage_role_map(&stages);
+    let evidence = store
+        .list_hive_loop_evidence(loop_id)?
+        .iter()
+        .map(|row| issue_evidence_summary(row, &stage_roles))
+        .collect();
+    Ok(HiveLoopEvidenceReport {
+        current_round: contract.current_round,
+        contract,
+        evidence,
+    })
+}
+
 pub fn panel(store: &Store) -> Result<Vec<IssueCard>> {
     store
         .list_hive_issues()?
@@ -800,6 +841,7 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
     let stages = store.list_hive_loop_stages(loop_id)?;
     let evidence = store.list_hive_loop_evidence(loop_id)?;
     let verdicts = store.list_hive_loop_verdicts(loop_id)?;
+    let stage_roles = stage_role_map(&stages);
     let packet_rounds = packets
         .iter()
         .map(|packet| (packet.id, packet.round))
@@ -945,8 +987,66 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
         worker_ok: worker
             .and_then(|value| value.get("ok"))
             .and_then(|value| value.as_bool()),
+        evidence: evidence
+            .iter()
+            .filter(|row| row.round == current_round)
+            .map(|row| issue_evidence_summary(row, &stage_roles))
+            .collect(),
         stages: issue_stage_summaries(&stages, &evidence, current_round),
     })
+}
+
+fn stage_role_map(stages: &[HiveLoopStage]) -> HashMap<i64, String> {
+    stages
+        .iter()
+        .map(|stage| (stage.id, stage.role.clone()))
+        .collect()
+}
+
+fn issue_evidence_summary(
+    row: &HiveLoopEvidence,
+    stage_roles: &HashMap<i64, String>,
+) -> IssueEvidenceSummary {
+    let worker = row.payload.get("worker");
+    IssueEvidenceSummary {
+        id: row.id,
+        round: row.round,
+        stage_role: row
+            .stage_id
+            .and_then(|stage_id| stage_roles.get(&stage_id).cloned()),
+        kind: row.kind.clone(),
+        summary: row.summary.clone(),
+        schema_version: schema_version(&row.payload),
+        admission_result: row
+            .payload
+            .get("admission")
+            .or_else(|| row.payload.get("result"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        worker_kind: worker
+            .and_then(|value| value.get("kind"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        worker_mode: worker
+            .and_then(|value| value.get("mode"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        worker_ok: worker
+            .and_then(|value| value.get("ok"))
+            .and_then(|value| value.as_bool()),
+        transcript_excerpt: worker
+            .and_then(worker_transcript_excerpt)
+            .map(|value| truncate_text(&value, 240)),
+    }
+}
+
+fn worker_transcript_excerpt(worker: &serde_json::Value) -> Option<String> {
+    ["last_message", "error", "stderr", "stdout"]
+        .into_iter()
+        .filter_map(|key| worker.get(key).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn issue_stage_summaries(
@@ -2526,6 +2626,20 @@ mod tests {
         assert_eq!(trace.human_options, vec!["comment"]);
         assert_eq!(trace.worker_kind.as_deref(), Some("local"));
         assert_eq!(trace.worker_ok, Some(true));
+        assert_eq!(trace.evidence.len(), 3);
+        let doer_evidence = trace
+            .evidence
+            .iter()
+            .find(|evidence| evidence.kind == "execution_packet")
+            .expect("doer evidence summary should exist");
+        assert_eq!(doer_evidence.stage_role.as_deref(), Some("doer"));
+        assert_eq!(doer_evidence.admission_result.as_deref(), Some("admitted"));
+        assert_eq!(doer_evidence.worker_kind.as_deref(), Some("local"));
+        assert_eq!(doer_evidence.worker_ok, Some(true));
+        assert!(doer_evidence
+            .transcript_excerpt
+            .as_deref()
+            .is_some_and(|excerpt| excerpt.contains("Local doer worker")));
         assert_eq!(
             trace
                 .stages
@@ -2598,6 +2712,14 @@ mod tests {
             trace_report.trace.last_gate_expected_object_kind.as_deref(),
             Some("VERDICT_PACKET")
         );
+        let evidence_report = super::evidence_report(&store, created.contract.id)
+            .expect("loop evidence report should resolve");
+        assert_eq!(evidence_report.evidence.len(), 3);
+        assert!(evidence_report.evidence.iter().any(|evidence| {
+            evidence.stage_role.as_deref() == Some("evaluator")
+                && evidence.kind == "verdict_packet"
+                && evidence.worker_ok == Some(true)
+        }));
 
         let rerun = run(
             &store,

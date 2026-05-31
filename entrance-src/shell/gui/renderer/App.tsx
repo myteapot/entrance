@@ -112,6 +112,19 @@ type IssueCard = {
     worker_kind: string | null;
     worker_mode: string | null;
     worker_ok: boolean | null;
+    evidence: Array<{
+      id: number;
+      round: number;
+      stage_role: string | null;
+      kind: string;
+      summary: string;
+      schema_version: string | null;
+      admission_result: string | null;
+      worker_kind: string | null;
+      worker_mode: string | null;
+      worker_ok: boolean | null;
+      transcript_excerpt: string | null;
+    }>;
     stages: Array<{
       role: string;
       status: string;
@@ -478,6 +491,12 @@ export default function App() {
     return `${stage.worker_kind}/${state}`;
   };
 
+  const evidenceWorkerLabel = (evidence: NonNullable<IssueCard["trace"]>["evidence"][number]) => {
+    if (!evidence.worker_kind) return "worker pending";
+    const state = evidence.worker_ok === true ? "ok" : "blocked";
+    return `${evidence.worker_kind}/${state}`;
+  };
+
   const scoreMetricLabel = (name: string) =>
     ({
       stage_completeness: "stage",
@@ -806,6 +825,39 @@ export default function App() {
                                   </span>
                                 </div>
                                 <p class="muted">{stage.evidence_summary ?? "No evidence summary"}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {card.trace?.evidence.length ? (
+                          <div class="evidence-ledger">
+                            <h4>Evidence</h4>
+                            {card.trace.evidence.map((evidence) => (
+                              <div class="evidence-row">
+                                <div class="stage-row-head">
+                                  <strong>{evidence.stage_role ?? evidence.kind}</strong>
+                                  <span>#{evidence.id}</span>
+                                </div>
+                                <p>{evidence.summary}</p>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">{evidence.kind}</span>
+                                  <span class="trace-pill">{evidence.admission_result ?? "admission pending"}</span>
+                                  <span
+                                    class={
+                                      evidence.worker_ok === false
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {evidenceWorkerLabel(evidence)}
+                                  </span>
+                                  {evidence.schema_version ? (
+                                    <span class="trace-pill">{schemaLabel(evidence.schema_version)}</span>
+                                  ) : null}
+                                </div>
+                                {evidence.transcript_excerpt ? (
+                                  <p class="muted">{evidence.transcript_excerpt}</p>
+                                ) : null}
                               </div>
                             ))}
                           </div>
