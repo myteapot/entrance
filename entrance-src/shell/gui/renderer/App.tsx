@@ -473,8 +473,14 @@ export default function App() {
       workerAttempts: parsePositive(valueAfter("--worker-attempts")),
     };
   };
-  const doctorRunArgs = (card: IssueCard, commandNeedle: string) =>
-    commandRunArgs(card.doctor?.next_actions.find((action) => action.includes(commandNeedle)));
+  const doctorRunArgs = (card: IssueCard, commandNeedles: string | string[]) => {
+    const needles = Array.isArray(commandNeedles) ? commandNeedles : [commandNeedles];
+    return commandRunArgs(
+      card.doctor?.next_actions.find((action) =>
+        needles.some((needle) => action.includes(needle)),
+      ),
+    );
+  };
   const mergeRunArgs = (...argsList: LoopRunArgs[]) => {
     const merged: LoopRunArgs = {};
     argsList.forEach((args) => {
@@ -487,7 +493,7 @@ export default function App() {
   const hasRunArgs = (args: LoopRunArgs) =>
     Boolean(args.runtime || args.workerTimeoutSecs || args.workerAttempts);
   const issueRunArgs = (card: IssueCard) => {
-    const doctorArgs = doctorRunArgs(card, "entrance hive loop run");
+    const doctorArgs = doctorRunArgs(card, ["entrance hive issue run", "entrance hive loop run"]);
     return hasRunArgs(doctorArgs)
       ? mergeRunArgs(doctorArgs, workerLimitRunArgs())
       : loopRunArgs();
