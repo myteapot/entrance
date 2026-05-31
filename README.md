@@ -17,7 +17,7 @@
 
 ## Validation
 
-README-only changes do not require the full product validation suite. For source changes, run validation from `entrance-src/`:
+For source changes, run validation from `entrance-src/`:
 
 ```bash
 cargo check --workspace
