@@ -11,7 +11,7 @@ use entrance_core::LauncherQuery;
 use entrance_drawer::VaultSecret;
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest,
-    IssueCommentRequest, ReviewDecision,
+    IssueCommentRequest, IssueDecisionRequest, ReviewDecision,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -447,6 +447,32 @@ async fn handle_invoke(
                         .and_then(|value| value.as_str())
                         .unwrap_or_default()
                         .to_string(),
+                })?,
+            )?)
+        }
+        "hive_issue_decide" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_decide requires `issueId`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.issue_decide(IssueDecisionRequest {
+                    issue_id,
+                    action: args
+                        .get("action")
+                        .and_then(|value| value.as_str())
+                        .context("hive_issue_decide requires `action`")?
+                        .to_string(),
+                    author: args
+                        .get("author")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("human")
+                        .to_string(),
+                    body: args
+                        .get("body")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned),
                 })?,
             )?)
         }

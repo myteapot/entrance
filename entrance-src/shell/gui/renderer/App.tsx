@@ -200,6 +200,32 @@ export default function App() {
     await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
   };
 
+  const decideIssue = async (issueId: number, action: string) => {
+    await bridge.invoke("hive_issue_decide", {
+      issueId,
+      action,
+      author: "human",
+    });
+    setBanner(`Issue #${issueId} ${issueActionLabel(action)}.`);
+    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+  };
+
+  const retryIssueLoop = async (card: IssueCard) => {
+    await bridge.invoke("hive_issue_decide", {
+      issueId: card.issue.id,
+      action: "retry",
+      author: "human",
+    });
+    if (card.issue.loop_id) {
+      await bridge.invoke("hive_loop_run", {
+        id: card.issue.loop_id,
+        runtime: loopRuntime(),
+      });
+    }
+    setBanner(`Issue #${card.issue.id} retried.`);
+    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+  };
+
   const addIssueComment = async (issueId: number) => {
     if (!commentBody().trim()) return;
     await bridge.invoke("hive_issue_comment", {
@@ -236,6 +262,13 @@ export default function App() {
     });
     await refetchLauncher();
   };
+
+  const issueActionLabel = (action: string) =>
+    ({
+      retry: "retried",
+      "request-review": "sent to review",
+      cancel: "canceled",
+    })[action] ?? action;
 
   return (
     <div class="app-shell">
@@ -466,8 +499,33 @@ export default function App() {
                               ) : (
                                 <div class="record-actions">
                                   {card.issue.loop_id && ["Todo", "Blocked"].includes(card.issue.status) ? (
-                                    <button type="button" onClick={() => void runIssueLoop(card.issue.loop_id!)}>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        card.issue.status === "Blocked"
+                                          ? void retryIssueLoop(card)
+                                          : void runIssueLoop(card.issue.loop_id!)
+                                      }
+                                    >
                                       {card.issue.status === "Blocked" ? "Retry" : "Run"}
+                                    </button>
+                                  ) : null}
+                                  {card.issue.status === "Blocked" ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => void decideIssue(card.issue.id, "request-review")}
+                                    >
+                                      Review
+                                    </button>
+                                  ) : null}
+                                  {card.issue.loop_id && card.issue.status === "Needs Review" ? (
+                                    <button type="button" onClick={() => void retryIssueLoop(card)}>
+                                      Retry
+                                    </button>
+                                  ) : null}
+                                  {["Blocked", "Needs Review"].includes(card.issue.status) ? (
+                                    <button type="button" onClick={() => void decideIssue(card.issue.id, "cancel")}>
+                                      Cancel
                                     </button>
                                   ) : null}
                                   <button type="button" onClick={() => setActiveCommentIssue(card.issue.id)}>

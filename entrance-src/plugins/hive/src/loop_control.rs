@@ -70,6 +70,21 @@ pub struct IssueCommentRequest {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueDecisionRequest {
+    pub issue_id: i64,
+    pub action: String,
+    pub author: String,
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IssueDecisionAction {
+    Retry,
+    RequestReview,
+    Cancel,
+}
+
 pub fn create(store: &Store, request: HiveLoopCreateRequest) -> Result<HiveLoopReport> {
     let loop_id = store.insert_hive_loop_contract(HiveLoopContractCreate {
         title: request.title.clone(),
@@ -426,6 +441,55 @@ pub fn add_comment(store: &Store, request: IssueCommentRequest) -> Result<IssueC
     Ok(IssueCard { issue, comments })
 }
 
+pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<IssueCard> {
+    let action = parse_issue_decision_action(&request.action)?;
+    let issue = store
+        .get_hive_issue(request.issue_id)?
+        .with_context(|| format!("unknown hive issue `{}`", request.issue_id))?;
+    let author = default_text(request.author, "human");
+    let note = request.body.as_deref().unwrap_or_default().trim();
+    let mut next_round = None;
+
+    if let Some(loop_id) = issue.loop_id {
+        let contract = store
+            .get_hive_loop_contract(loop_id)?
+            .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
+        let round = match action {
+            IssueDecisionAction::Retry => contract.current_round + 1,
+            IssueDecisionAction::RequestReview | IssueDecisionAction::Cancel => {
+                contract.current_round
+            }
+        };
+        store.update_hive_loop_contract_state(
+            loop_id,
+            action.contract_status(),
+            action.contract_phase(),
+            round,
+        )?;
+        next_round = Some(round);
+    }
+
+    store.update_hive_issue_status(
+        issue.id,
+        action.issue_status(),
+        Some(action.issue_summary(next_round).as_str()),
+    )?;
+    store.insert_hive_comment(HiveCommentCreate {
+        issue_id: issue.id,
+        author,
+        body: action.comment_body(next_round, note),
+        payload: serde_json::json!({
+            "source": "operator",
+            "action": action.as_str(),
+            "loop_id": issue.loop_id,
+            "next_round": next_round,
+            "note": note
+        }),
+    })?;
+
+    issue_card(store, issue.id)
+}
+
 fn insert_stage(
     store: &Store,
     contract: &HiveLoopContract,
@@ -446,6 +510,14 @@ fn insert_stage(
         started_at: Some(now.clone()),
         completed_at: Some(now),
     })
+}
+
+fn issue_card(store: &Store, issue_id: i64) -> Result<IssueCard> {
+    let issue = store
+        .get_hive_issue(issue_id)?
+        .with_context(|| format!("unknown hive issue `{issue_id}`"))?;
+    let comments = store.list_hive_comments(issue.id)?;
+    Ok(IssueCard { issue, comments })
 }
 
 fn add_system_comment(
@@ -548,6 +620,71 @@ fn stage_completeness_for_phase(phase: &str) -> f64 {
         "doer" => 0.66,
         "evaluator" => 1.0,
         _ => 0.0,
+    }
+}
+
+impl IssueDecisionAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Retry => "retry",
+            Self::RequestReview => "request-review",
+            Self::Cancel => "cancel",
+        }
+    }
+
+    fn issue_status(self) -> &'static str {
+        match self {
+            Self::Retry => "Todo",
+            Self::RequestReview => "Needs Review",
+            Self::Cancel => "Canceled",
+        }
+    }
+
+    fn contract_status(self) -> &'static str {
+        match self {
+            Self::Retry => "todo",
+            Self::RequestReview => "needs-review",
+            Self::Cancel => "rejected",
+        }
+    }
+
+    fn contract_phase(self) -> &'static str {
+        match self {
+            Self::Retry => "explorer",
+            Self::RequestReview => "human-review",
+            Self::Cancel => "complete",
+        }
+    }
+
+    fn issue_summary(self, next_round: Option<i64>) -> String {
+        match self {
+            Self::Retry => format!(
+                "Human chose retry; loop returned to Explorer for round {}.",
+                next_round.unwrap_or(1)
+            ),
+            Self::RequestReview => "Human requested review before the loop continues.".to_string(),
+            Self::Cancel => "Human canceled this loop issue.".to_string(),
+        }
+    }
+
+    fn comment_body(self, next_round: Option<i64>, note: &str) -> String {
+        let base = self.issue_summary(next_round);
+        if note.is_empty() {
+            base
+        } else {
+            format!("{base} Note: {note}")
+        }
+    }
+}
+
+fn parse_issue_decision_action(value: &str) -> Result<IssueDecisionAction> {
+    match value {
+        "retry" => Ok(IssueDecisionAction::Retry),
+        "request-review" => Ok(IssueDecisionAction::RequestReview),
+        "cancel" => Ok(IssueDecisionAction::Cancel),
+        other => anyhow::bail!(
+            "unsupported issue decision `{other}`; expected retry, request-review, or cancel"
+        ),
     }
 }
 
@@ -1137,6 +1274,112 @@ mod tests {
             .comments
             .iter()
             .any(|comment| comment.body.contains("Compiler admission blocked at doer")));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_decisions_update_issue_comment_and_loop_contract() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-decision-action-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Human decision loop".to_string(),
+                goal: "Exercise issue decisions".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "unsupported-agent".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let blocked = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("unsupported-agent".to_string()),
+                decision: None,
+            },
+        )
+        .expect("loop should block");
+        let issue_id = blocked.issues[0].issue.id;
+
+        let review_card = decide_issue(
+            &store,
+            IssueDecisionRequest {
+                issue_id,
+                action: "request-review".to_string(),
+                author: "human".to_string(),
+                body: Some("Need policy owner".to_string()),
+            },
+        )
+        .expect("issue should move to review");
+        let review_contract = store
+            .get_hive_loop_contract(created.contract.id)
+            .expect("contract query should succeed")
+            .expect("contract should exist");
+        assert_eq!(review_card.issue.status, "Needs Review");
+        assert_eq!(review_contract.status, "needs-review");
+        assert_eq!(review_contract.active_phase, "human-review");
+        assert!(review_card
+            .comments
+            .iter()
+            .any(|comment| comment.body.contains("Need policy owner")));
+
+        let retry_card = decide_issue(
+            &store,
+            IssueDecisionRequest {
+                issue_id,
+                action: "retry".to_string(),
+                author: "human".to_string(),
+                body: None,
+            },
+        )
+        .expect("issue should retry");
+        let retry_contract = store
+            .get_hive_loop_contract(created.contract.id)
+            .expect("contract query should succeed")
+            .expect("contract should exist");
+        assert_eq!(retry_card.issue.status, "Todo");
+        assert_eq!(retry_contract.status, "todo");
+        assert_eq!(retry_contract.active_phase, "explorer");
+        assert_eq!(
+            retry_contract.current_round,
+            blocked.contract.current_round + 1
+        );
+
+        let cancel_card = decide_issue(
+            &store,
+            IssueDecisionRequest {
+                issue_id,
+                action: "cancel".to_string(),
+                author: "human".to_string(),
+                body: None,
+            },
+        )
+        .expect("issue should cancel");
+        let cancel_contract = store
+            .get_hive_loop_contract(created.contract.id)
+            .expect("contract query should succeed")
+            .expect("contract should exist");
+        assert_eq!(cancel_card.issue.status, "Canceled");
+        assert_eq!(cancel_contract.status, "rejected");
+        assert_eq!(cancel_contract.active_phase, "complete");
+        assert!(cancel_card
+            .comments
+            .iter()
+            .any(|comment| comment.body.contains("Human canceled")));
 
         let _ = fs::remove_dir_all(root);
     }

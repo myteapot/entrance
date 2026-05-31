@@ -1004,6 +1004,18 @@ impl Store {
             .map_err(Into::into)
     }
 
+    pub fn get_hive_issue(&self, id: i64) -> Result<Option<HiveIssue>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, loop_id, title, status, summary, created_at, updated_at
+             FROM hive_issues WHERE id = ?1 LIMIT 1",
+        )?;
+        statement
+            .query_row(params![id], map_hive_issue)
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn list_hive_issues_for_loop(&self, loop_id: i64) -> Result<Vec<HiveIssue>> {
         let connection = self.connection();
         let mut statement = connection.prepare(

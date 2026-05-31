@@ -12,6 +12,7 @@ cargo run -p entrance-app --bin entrance -- hive loop create --title "Local loop
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime local --decision reject
 cargo run -p entrance-app --bin entrance -- hive issue list
+cargo run -p entrance-app --bin entrance -- hive issue decide 1 request-review --body "Need human call"
 cargo run -p entrance-app --bin entrance -- launcher list
 ```
 
@@ -23,6 +24,9 @@ The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as blocked verdicts.
 For evaluator-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
+Human decisions are available through `hive issue decide <id>
+<retry|request-review|cancel>` and are recorded as operator comments while
+also moving the linked loop contract state.
 
 ## Daemon
 
