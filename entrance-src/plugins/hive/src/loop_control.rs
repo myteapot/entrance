@@ -1216,14 +1216,16 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
             "issue_surface",
             issue_surface.errors.is_empty(),
             format!(
-                "{} linked issues, {} comments, and {} operator evidence rows inspected; {} issue surface issues.",
+                "{} linked issues, {} comments, {} actions, and {} operator evidence rows inspected; {} issue surface issues.",
                 issues.len(),
                 issue_surface.comment_count,
+                issue_surface.action_count,
                 issue_surface.operator_evidence_count,
                 issue_surface.errors.len()
             ),
             serde_json::json!({
                 "issue_ids": issues.iter().map(|issue| issue.id).collect::<Vec<_>>(),
+                "action_count": issue_surface.action_count,
                 "comment_count": issue_surface.comment_count,
                 "operator_evidence_count": issue_surface.operator_evidence_count,
                 "issue_surface_errors": issue_surface.errors
@@ -3181,6 +3183,7 @@ fn expected_human_options_for_decision(decision: &str) -> Vec<String> {
 #[derive(Default)]
 struct IssueSurfaceAudit {
     comment_count: usize,
+    action_count: usize,
     operator_evidence_count: usize,
     errors: Vec<serde_json::Value>,
 }
@@ -3232,6 +3235,15 @@ fn issue_surface_audit(
                 "errors": issue_errors
             }));
         }
+        if let Some(loop_id) = issue.loop_id.filter(|loop_id| *loop_id == contract.id) {
+            let trace = issue_trace_summary_without_audit(store, loop_id, Some(issue))?;
+            let doctor = issue_doctor_summary(store, loop_id, issue, &trace)?;
+            let actions = issue_actions(issue, Some(&trace), Some(&doctor));
+            audit.action_count += actions.len();
+            if let Some(error) = issue_action_audit_error(issue, contract, &trace, &actions) {
+                audit.errors.push(error);
+            }
+        }
 
         for comment in &comments {
             comments_by_id.insert(comment.id, comment.clone());
@@ -3263,6 +3275,183 @@ fn issue_status_for_contract_status(status: &str) -> Option<&'static str> {
         "rejected" => Some("Canceled"),
         "kept" => Some("Done"),
         _ => None,
+    }
+}
+
+fn issue_action_audit_error(
+    issue: &HiveIssue,
+    contract: &HiveLoopContract,
+    trace: &IssueTraceSummary,
+    actions: &[IssueAction],
+) -> Option<serde_json::Value> {
+    let mut errors = Vec::new();
+    let mut expected_actions = Vec::new();
+    if issue.loop_id == Some(contract.id) && issue.status == "Todo" {
+        expected_actions.push("run".to_string());
+    }
+    expected_actions.extend(trace.human_options.clone());
+    let action_names = actions
+        .iter()
+        .map(|action| action.action.clone())
+        .collect::<Vec<_>>();
+    if action_names != expected_actions {
+        errors.push("action.sequence".to_string());
+    }
+    let mut seen = HashMap::new();
+    for action in actions {
+        *seen.entry(action.action.as_str()).or_insert(0usize) += 1;
+        issue_action_field_errors(issue, contract, action, &expected_actions, &mut errors);
+    }
+    if actions.is_empty() {
+        errors.push("action.missing".to_string());
+    }
+    if seen.values().any(|count| *count > 1) {
+        errors.push("action.duplicate".to_string());
+    }
+
+    if errors.is_empty() {
+        return None;
+    }
+    errors.sort();
+    errors.dedup();
+    Some(serde_json::json!({
+        "scope": "issue_action",
+        "issue_id": issue.id,
+        "status": issue.status,
+        "expected_actions": expected_actions,
+        "actual_actions": action_names,
+        "errors": errors
+    }))
+}
+
+fn issue_action_field_errors(
+    issue: &HiveIssue,
+    contract: &HiveLoopContract,
+    action: &IssueAction,
+    expected_actions: &[String],
+    errors: &mut Vec<String>,
+) {
+    if action.schema_version != ISSUE_ACTION_SCHEMA_VERSION {
+        errors.push("action.schema_version".to_string());
+    }
+    if !matches!(
+        action.action.as_str(),
+        "run" | "comment" | "retry" | "request-review" | "cancel"
+    ) {
+        errors.push("action.name".to_string());
+    }
+    if !expected_actions
+        .iter()
+        .any(|expected| expected == &action.action)
+    {
+        errors.push("action.unexpected".to_string());
+    }
+    let expected_label = match action.action.as_str() {
+        "run" => Some("Run"),
+        "comment" => Some("Comment"),
+        "retry" => Some("Retry"),
+        "request-review" => Some("Review"),
+        "cancel" => Some("Cancel"),
+        _ => None,
+    };
+    if expected_label.is_some_and(|label| action.label != label) {
+        errors.push("action.label".to_string());
+    }
+    let expected_source = if action.action == "run" {
+        "runtime"
+    } else {
+        "human_options"
+    };
+    if action.source != expected_source {
+        errors.push("action.source".to_string());
+    }
+    let expected_input = match action.action.as_str() {
+        "run" => Some("none"),
+        "comment" => Some("body"),
+        "retry" | "request-review" | "cancel" => Some("note"),
+        _ => None,
+    };
+    if expected_input.is_some_and(|input| action.input != input) {
+        errors.push("action.input".to_string());
+    }
+    if action.destructive != (action.action == "cancel") {
+        errors.push("action.destructive".to_string());
+    }
+    match action.action.as_str() {
+        "run" => {
+            if action.runtime.as_deref() != Some(contract.runtime.as_str()) {
+                errors.push("action.runtime".to_string());
+            }
+            if !action
+                .command
+                .starts_with(&format!("entrance hive issue run {}", issue.id))
+                || !action.command.contains("--compact")
+                || !action
+                    .command
+                    .contains(&format!("--runtime {}", contract.runtime))
+            {
+                errors.push("action.command".to_string());
+            }
+        }
+        "comment" => {
+            if action.runtime.is_some() {
+                errors.push("action.runtime".to_string());
+            }
+            if action.command
+                != format!(
+                    "entrance hive issue comment {} --body <text> --compact",
+                    issue.id
+                )
+            {
+                errors.push("action.command".to_string());
+            }
+        }
+        "retry" => {
+            if action.runtime.as_deref() != Some(contract.runtime.as_str()) {
+                errors.push("action.runtime".to_string());
+            }
+            if !action
+                .command
+                .starts_with(&format!("entrance hive issue retry-run {}", issue.id))
+                || !action.command.contains("--body <note>")
+                || !action.command.contains("--compact")
+            {
+                errors.push("action.command".to_string());
+            }
+            if contract.runtime == "codex"
+                && (!action.command.contains("--runtime codex")
+                    || !action.command.contains("--worker-attempts 2"))
+            {
+                errors.push("action.command".to_string());
+            }
+        }
+        "request-review" => {
+            if action.runtime.is_some() {
+                errors.push("action.runtime".to_string());
+            }
+            if action.command
+                != format!(
+                    "entrance hive issue decide {} request-review --body <note> --compact",
+                    issue.id
+                )
+            {
+                errors.push("action.command".to_string());
+            }
+        }
+        "cancel" => {
+            if action.runtime.is_some() {
+                errors.push("action.runtime".to_string());
+            }
+            if action.command
+                != format!(
+                    "entrance hive issue decide {} cancel --body <note> --compact",
+                    issue.id
+                )
+            {
+                errors.push("action.command".to_string());
+            }
+        }
+        _ => {}
     }
 }
 
@@ -4088,6 +4277,23 @@ fn issue_trace_summary(
     loop_id: i64,
     issue: Option<&HiveIssue>,
 ) -> Result<IssueTraceSummary> {
+    issue_trace_summary_inner(store, loop_id, issue, true)
+}
+
+fn issue_trace_summary_without_audit(
+    store: &Store,
+    loop_id: i64,
+    issue: Option<&HiveIssue>,
+) -> Result<IssueTraceSummary> {
+    issue_trace_summary_inner(store, loop_id, issue, false)
+}
+
+fn issue_trace_summary_inner(
+    store: &Store,
+    loop_id: i64,
+    issue: Option<&HiveIssue>,
+    include_audit: bool,
+) -> Result<IssueTraceSummary> {
     let current_round = store
         .get_hive_loop_contract(loop_id)?
         .map(|contract| contract.current_round)
@@ -4145,7 +4351,11 @@ fn issue_trace_summary(
         .filter_map(|packet| packet_role_worker(&packet.payload))
         .filter(|worker| worker_ok(worker))
         .count();
-    let audit_report = audit(store, loop_id).ok();
+    let audit_report = if include_audit {
+        audit(store, loop_id).ok()
+    } else {
+        None
+    };
     let audit_failed_checks = audit_report
         .as_ref()
         .map(|report| {
@@ -8713,6 +8923,36 @@ mod tests {
         assert_eq!(review_action.schema_version, ISSUE_ACTION_SCHEMA_VERSION);
         assert_eq!(review_action.source, "human_options");
         assert_eq!(review_action.input, "note");
+        let mut corrupt_actions = blocked.issues[0].actions.clone();
+        corrupt_actions.retain(|action| action.action != "request-review");
+        corrupt_actions[0].schema_version = "bad.schema".to_string();
+        corrupt_actions[1].source = "status_fallback".to_string();
+        corrupt_actions
+            .iter_mut()
+            .find(|action| action.action == "cancel")
+            .expect("cancel action should exist")
+            .destructive = false;
+        let action_error = issue_action_audit_error(
+            &blocked.issues[0].issue,
+            &blocked.contract,
+            blocked.issues[0]
+                .trace
+                .as_ref()
+                .expect("blocked issue should include trace"),
+            &corrupt_actions,
+        )
+        .expect("corrupt action metadata should fail audit");
+        let action_error_fields = action_error
+            .pointer("/errors")
+            .and_then(|value| value.as_array())
+            .expect("action errors should be listed")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(action_error_fields.contains(&"action.sequence"));
+        assert!(action_error_fields.contains(&"action.schema_version"));
+        assert!(action_error_fields.contains(&"action.source"));
+        assert!(action_error_fields.contains(&"action.destructive"));
 
         let review_card = decide_issue(
             &store,
