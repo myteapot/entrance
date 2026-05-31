@@ -300,13 +300,22 @@
   margin-top: 14px;
 }
 
-.decision-options span {
+.decision-options button {
   padding: 6px 10px;
   border: 1px solid rgba(230, 184, 79, 0.26);
   border-radius: 999px;
   background: rgba(230, 184, 79, 0.08);
   color: var(--text);
   font-size: 0.82rem;
+}
+
+.decision-options button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.comment-box--detail {
+  margin-top: 14px;
 }
 
 .stage-timeline {

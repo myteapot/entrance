@@ -341,6 +341,11 @@ export default function App() {
     }
   };
 
+  const openIssueComment = (issueId: number) => {
+    setSelectedIssueId(issueId);
+    setActiveCommentIssue(issueId);
+  };
+
   const addIssueComment = async (issueId: number) => {
     if (!commentBody().trim() || issuePendingLabel(issueId)) return;
     setSelectedIssueId(issueId);
@@ -399,6 +404,34 @@ export default function App() {
       "request-review": "Reviewing",
       cancel: "Canceling",
     })[action] ?? "Working";
+
+  const issueOptionLabel = (option: string) =>
+    ({
+      comment: "Comment",
+      retry: "Retry",
+      "request-review": "Review",
+      cancel: "Cancel",
+    })[option] ?? option;
+
+  const issueOptionDisabled = (card: IssueCard, option: string) =>
+    Boolean(issuePendingLabel(card.issue.id)) || (option === "retry" && !card.issue.loop_id);
+
+  const runIssueOption = (card: IssueCard, option: string) => {
+    setSelectedIssueId(card.issue.id);
+    if (option === "comment") {
+      openIssueComment(card.issue.id);
+      return;
+    }
+    if (option === "retry") {
+      void retryIssueLoop(card);
+      return;
+    }
+    if (option === "request-review" || option === "cancel") {
+      void decideIssue(card.issue.id, option);
+      return;
+    }
+    setBanner(`Unsupported issue option ${option}.`);
+  };
 
   const schemaLabel = (schema: string | null | undefined) =>
     schema ? schema.split(".").slice(-2).join(".") : "pending";
@@ -690,8 +723,30 @@ export default function App() {
                         {card.trace?.human_options.length ? (
                           <div class="decision-options">
                             {card.trace.human_options.map((option) => (
-                              <span>{option}</span>
+                              <button
+                                type="button"
+                                disabled={issueOptionDisabled(card, option)}
+                                onClick={() => runIssueOption(card, option)}
+                              >
+                                {issuePendingLabel(card.issue.id) ?? issueOptionLabel(option)}
+                              </button>
                             ))}
+                          </div>
+                        ) : null}
+                        {activeCommentIssue() === card.issue.id ? (
+                          <div class="comment-box comment-box--detail">
+                            <textarea
+                              value={commentBody()}
+                              onInput={(event) => setCommentBody(event.currentTarget.value)}
+                              placeholder="Comment"
+                            />
+                            <button
+                              type="button"
+                              disabled={Boolean(issuePendingLabel(card.issue.id))}
+                              onClick={() => void addIssueComment(card.issue.id)}
+                            >
+                              {issuePendingLabel(card.issue.id) ?? "Send"}
+                            </button>
                           </div>
                         ) : null}
                         {card.trace?.stages.length ? (
@@ -889,10 +944,7 @@ export default function App() {
                                   <button
                                     type="button"
                                     disabled={Boolean(issuePendingLabel(card.issue.id))}
-                                    onClick={() => {
-                                      setSelectedIssueId(card.issue.id);
-                                      setActiveCommentIssue(card.issue.id);
-                                    }}
+                                    onClick={() => openIssueComment(card.issue.id)}
                                   >
                                     Comment
                                   </button>
