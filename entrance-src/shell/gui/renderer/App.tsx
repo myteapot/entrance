@@ -438,21 +438,21 @@ export default function App() {
   };
   const actionErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
-  const loopRunArgs = (): LoopRunArgs => {
+  const workerLimitRunArgs = (): LoopRunArgs => {
     const timeoutText = loopWorkerTimeoutSecs().trim();
     const workerTimeoutSecs = timeoutText ? Number.parseInt(timeoutText, 10) : undefined;
     const attemptsText = loopWorkerAttempts().trim();
     const workerAttempts = attemptsText ? Number.parseInt(attemptsText, 10) : undefined;
     return {
-      runtime: loopRuntime(),
       workerTimeoutSecs: workerTimeoutSecs && workerTimeoutSecs > 0 ? workerTimeoutSecs : undefined,
       workerAttempts: workerAttempts && workerAttempts > 0 ? workerAttempts : undefined,
     };
   };
-  const doctorRetryRunArgs = (card: IssueCard): LoopRunArgs => {
-    const command = card.doctor?.next_actions.find((action) =>
-      action.includes("entrance hive issue retry-run"),
-    );
+  const loopRunArgs = (): LoopRunArgs => ({
+    runtime: loopRuntime(),
+    ...workerLimitRunArgs(),
+  });
+  const commandRunArgs = (command: string | undefined): LoopRunArgs => {
     if (!command) return {};
     const tokens = command.split(/\s+/);
     const valueAfter = (flag: string) => {
@@ -470,6 +470,8 @@ export default function App() {
       workerAttempts: parsePositive(valueAfter("--worker-attempts")),
     };
   };
+  const doctorRunArgs = (card: IssueCard, commandNeedle: string) =>
+    commandRunArgs(card.doctor?.next_actions.find((action) => action.includes(commandNeedle)));
   const mergeRunArgs = (...argsList: LoopRunArgs[]) => {
     const merged: LoopRunArgs = {};
     argsList.forEach((args) => {
@@ -479,8 +481,16 @@ export default function App() {
     });
     return merged;
   };
+  const hasRunArgs = (args: LoopRunArgs) =>
+    Boolean(args.runtime || args.workerTimeoutSecs || args.workerAttempts);
+  const issueRunArgs = (card: IssueCard) => {
+    const doctorArgs = doctorRunArgs(card, "entrance hive loop run");
+    return hasRunArgs(doctorArgs)
+      ? mergeRunArgs(doctorArgs, workerLimitRunArgs())
+      : loopRunArgs();
+  };
   const issueRetryRunArgs = (card: IssueCard) =>
-    mergeRunArgs(doctorRetryRunArgs(card), loopRunArgs());
+    mergeRunArgs(doctorRunArgs(card, "entrance hive issue retry-run"), workerLimitRunArgs());
 
   const runHiveLoop = async (loop: HiveLoop) => {
     if (loopPendingLabel(loop.id)) return;
@@ -508,7 +518,7 @@ export default function App() {
     try {
       await bridge.invoke("hive_issue_run", {
         issueId: card.issue.id,
-        ...loopRunArgs(),
+        ...issueRunArgs(card),
       });
       setBanner(`Loop #${card.issue.loop_id} finished.`);
       await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
