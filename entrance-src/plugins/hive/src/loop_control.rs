@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 const PACKET_SCHEMA_VERSION: &str = "entrance.hive.packet.v1";
 const ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.admission.v1";
+const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopCreateRequest {
@@ -600,21 +601,8 @@ fn block_on_admission_rejection(
         round: contract.current_round,
         decision: "blocked".to_string(),
         summary: summary.clone(),
-        score: serde_json::json!({
-            "gates_passed": false,
-            "admission_passed": false,
-            "stage_completeness": stage_completeness_for_phase(phase),
-            "runtime_readiness": serde_json::Value::Null,
-            "operator_review_needed": true,
-            "reason_code": "admission_rejected"
-        }),
-        evidence: serde_json::json!({
-            "evidence_id": evidence_id,
-            "admission_id": admission.id,
-            "packet_id": admission.packet_id,
-            "phase": phase,
-            "reason_code": "admission_rejected"
-        }),
+        score: admission_rejection_score_payload(phase),
+        evidence: admission_rejection_verdict_evidence_payload(evidence_id, phase, admission),
     })?;
 
     store.update_hive_loop_contract_state(contract.id, "blocked", phase, contract.current_round)?;
@@ -651,6 +639,48 @@ fn stage_completeness_for_phase(phase: &str) -> f64 {
         "evaluator" => 1.0,
         _ => 0.0,
     }
+}
+
+fn admission_rejection_score_payload(phase: &str) -> serde_json::Value {
+    let stage_completeness = stage_completeness_for_phase(phase);
+    serde_json::json!({
+        "schema_version": VERDICT_SCHEMA_VERSION,
+        "decision": "blocked",
+        "reason_code": "admission_rejected",
+        "gates_passed": false,
+        "operator_review_needed": true,
+        "score_vector": {
+            "stage_completeness": stage_completeness,
+            "runtime_readiness": serde_json::Value::Null,
+            "evidence_presence": 1.0,
+            "admission_integrity": 0.0
+        },
+        "gate_results": {
+            "admission_passed": false,
+            "blocked_phase": phase
+        },
+        "human_options": ["comment", "retry", "request-review", "cancel"]
+    })
+}
+
+fn admission_rejection_verdict_evidence_payload(
+    evidence_id: i64,
+    phase: &str,
+    admission: &HiveLoopAdmission,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": VERDICT_SCHEMA_VERSION,
+        "decision": "blocked",
+        "reason_code": "admission_rejected",
+        "evidence_id": evidence_id,
+        "admission_id": admission.id,
+        "packet_id": admission.packet_id,
+        "phase": phase,
+        "source": {
+            "evaluator": "hive-loop-control",
+            "admission_receipt": admission.policy.clone()
+        }
+    })
 }
 
 impl IssueDecisionAction {
@@ -753,24 +783,60 @@ impl VerdictDecision {
     fn gates_passed(self) -> bool {
         matches!(self, Self::Keep)
     }
+
+    fn human_options(self) -> Vec<&'static str> {
+        match self {
+            Self::Keep => vec!["comment"],
+            Self::Reject => vec!["comment", "retry"],
+            Self::NeedsReview => vec!["comment", "retry", "cancel"],
+            Self::Blocked => vec!["comment", "retry", "request-review", "cancel"],
+        }
+    }
 }
 
 impl TypedVerdict {
     fn score_payload(&self) -> serde_json::Value {
+        let runtime_readiness = if self.runtime_ready { 1.0 } else { 0.0 };
         serde_json::json!({
+            "schema_version": VERDICT_SCHEMA_VERSION,
+            "decision": self.decision.as_str(),
+            "reason_code": self.reason_code,
             "gates_passed": self.decision.gates_passed(),
-            "stage_completeness": 1.0,
-            "runtime_readiness": if self.runtime_ready { 1.0 } else { 0.0 },
             "operator_review_needed": self.decision.operator_review_required(),
-            "reason_code": self.reason_code
+            "score_vector": {
+                "stage_completeness": 1.0,
+                "runtime_readiness": runtime_readiness,
+                "evidence_presence": if self.evidence_count > 0 { 1.0 } else { 0.0 },
+                "admission_integrity": 1.0
+            },
+            "gate_results": {
+                "three_stages_recorded": true,
+                "evidence_recorded": self.evidence_count > 0,
+                "runtime_ready": self.runtime_ready,
+                "decision_allowed": matches!(
+                    self.decision,
+                    VerdictDecision::Keep
+                        | VerdictDecision::Reject
+                        | VerdictDecision::NeedsReview
+                        | VerdictDecision::Blocked
+                )
+            },
+            "human_options": self.decision.human_options()
         })
     }
 
     fn evidence_payload(&self, runtime: &str) -> serde_json::Value {
         serde_json::json!({
+            "schema_version": VERDICT_SCHEMA_VERSION,
+            "decision": self.decision.as_str(),
+            "reason_code": self.reason_code,
             "evidence_count": self.evidence_count + 1,
             "runtime": runtime,
-            "reason_code": self.reason_code
+            "runtime_ready": self.runtime_ready,
+            "source": {
+                "evaluator": "hive-loop-control",
+                "round_evidence_before_verdict": self.evidence_count
+            }
         })
     }
 
@@ -1524,6 +1590,27 @@ mod tests {
         );
         assert_eq!(report.verdicts.len(), 1);
         assert_eq!(report.verdicts[0].decision, "keep");
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(VERDICT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/score_vector/runtime_readiness")
+                .and_then(|value| value.as_f64()),
+            Some(1.0)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .evidence
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(VERDICT_SCHEMA_VERSION)
+        );
         assert_eq!(report.issues[0].issue.status, "Done");
         assert!(report.issues[0].comments.len() >= 3);
 
@@ -1581,6 +1668,20 @@ mod tests {
         assert_eq!(report.contract.active_phase, "complete");
         assert_eq!(report.verdicts.len(), 1);
         assert_eq!(report.verdicts[0].decision, "blocked");
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(VERDICT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/score_vector/runtime_readiness")
+                .and_then(|value| value.as_f64()),
+            Some(0.0)
+        );
         assert_eq!(report.issues[0].issue.status, "Blocked");
         assert!(report
             .issues
@@ -1644,6 +1745,20 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("quality_gate_failed")
         );
+        assert_eq!(
+            rejected_report.verdicts[0]
+                .score
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(VERDICT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            rejected_report.verdicts[0]
+                .score
+                .pointer("/human_options/1")
+                .and_then(|value| value.as_str()),
+            Some("retry")
+        );
 
         let review = create(
             &store,
@@ -1678,6 +1793,13 @@ mod tests {
                 .get("operator_review_needed")
                 .and_then(|value| value.as_bool()),
             Some(true)
+        );
+        assert_eq!(
+            review_report.verdicts[0]
+                .score
+                .pointer("/human_options/2")
+                .and_then(|value| value.as_str()),
+            Some("cancel")
         );
 
         let _ = fs::remove_dir_all(root);
@@ -1740,6 +1862,27 @@ mod tests {
                 .get("reason_code")
                 .and_then(|value| value.as_str()),
             Some("admission_rejected")
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(VERDICT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/score_vector/admission_integrity")
+                .and_then(|value| value.as_f64()),
+            Some(0.0)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .evidence
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(VERDICT_SCHEMA_VERSION)
         );
         assert!(report
             .admissions
