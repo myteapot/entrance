@@ -701,12 +701,16 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         && worker_ok(&evaluator_worker);
     let runtime_failure = runtime_failure(&runtime_probe, &runtime_worker);
     let decision_override = parse_decision_override(request.decision.as_deref())?;
+    let round_stage_evidence_count = evidence
+        .iter()
+        .filter(|row| row.round == contract.current_round && stage_bound_evidence_kind(&row.kind))
+        .count();
     let typed_verdict = build_verdict(
         decision_override,
         runtime_ready,
         runtime_failure,
         &runtime,
-        evidence.len(),
+        round_stage_evidence_count,
     );
     let evaluator_stage = insert_stage(
         store,
@@ -714,7 +718,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "evaluator",
         &typed_verdict.summary,
         serde_json::json!({
-            "evidence_count": evidence.len(),
+            "evidence_count": round_stage_evidence_count,
             "eval_space": contract.eval_space
         }),
         serde_json::json!({
@@ -722,7 +726,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "role_worker": evaluator_worker,
             "gates": {
                 "three_stages_recorded": true,
-                "evidence_recorded": !evidence.is_empty(),
+                "evidence_recorded": round_stage_evidence_count > 0,
                 "runtime_ready": typed_verdict.runtime_ready
             }
         }),
@@ -1001,12 +1005,19 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .filter_map(worker_receipt_audit_errors)
         .collect::<Vec<_>>();
     let runtime_policy_errors = runtime_policy_audit_errors(&contract, &packets);
+    let evidence = store.list_hive_loop_evidence(loop_id)?;
     let mut verdict_errors = verdicts
         .iter()
         .filter_map(verdict_audit_errors)
         .collect::<Vec<_>>();
     verdict_errors.extend(verdict_sequence_audit_errors(&contract, &verdicts));
-    let evidence = store.list_hive_loop_evidence(loop_id)?;
+    verdict_errors.extend(verdict_evidence_binding_audit_errors(
+        &contract,
+        &verdicts,
+        &packets,
+        &admissions,
+        &evidence,
+    ));
     let issue_surface = issue_surface_audit(store, loop_id, &issues, &evidence)?;
 
     let stage_evidence_errors = stage_evidence_audit_errors(&contract, &stages, &evidence);
@@ -2621,6 +2632,231 @@ fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> 
             "errors": errors
         }))
     }
+}
+
+fn verdict_evidence_binding_audit_errors(
+    contract: &HiveLoopContract,
+    verdicts: &[HiveLoopVerdict],
+    packets: &[HiveLoopPacket],
+    admissions: &[HiveLoopAdmission],
+    evidence: &[HiveLoopEvidence],
+) -> Vec<serde_json::Value> {
+    let packets_by_id = packets
+        .iter()
+        .map(|packet| (packet.id, packet))
+        .collect::<HashMap<_, _>>();
+    let admissions_by_id = admissions
+        .iter()
+        .map(|admission| (admission.id, admission))
+        .collect::<HashMap<_, _>>();
+    let evidence_by_id = evidence
+        .iter()
+        .map(|row| (row.id, row))
+        .collect::<HashMap<_, _>>();
+    let mut errors = Vec::new();
+
+    for verdict in verdicts {
+        let reason_code = verdict
+            .evidence
+            .get("reason_code")
+            .and_then(|value| value.as_str());
+        let verdict_errors = if reason_code == Some("admission_rejected") {
+            admission_rejection_verdict_binding_errors(
+                contract,
+                verdict,
+                &packets_by_id,
+                &admissions_by_id,
+                &evidence_by_id,
+            )
+        } else {
+            standard_verdict_binding_errors(verdict, packets, evidence)
+        };
+        if !verdict_errors.is_empty() {
+            errors.push(serde_json::json!({
+                "scope": "verdict_evidence",
+                "verdict_id": verdict.id,
+                "round": verdict.round,
+                "decision": verdict.decision,
+                "reason_code": reason_code,
+                "errors": verdict_errors
+            }));
+        }
+    }
+
+    errors.sort_by_key(|error| {
+        (
+            error
+                .get("round")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
+            error
+                .get("verdict_id")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
+        )
+    });
+    errors
+}
+
+fn standard_verdict_binding_errors(
+    verdict: &HiveLoopVerdict,
+    packets: &[HiveLoopPacket],
+    evidence: &[HiveLoopEvidence],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let round_stage_evidence = evidence
+        .iter()
+        .filter(|row| row.round == verdict.round && stage_bound_evidence_kind(&row.kind))
+        .collect::<Vec<_>>();
+    let expected_evidence_count = round_stage_evidence.len() as i64;
+    match verdict
+        .evidence
+        .get("evidence_count")
+        .and_then(|value| value.as_i64())
+    {
+        Some(count) if count == expected_evidence_count => {}
+        _ => errors.push("evidence.count".to_string()),
+    }
+
+    let evidence_before_verdict = round_stage_evidence
+        .iter()
+        .filter(|row| row.kind != "verdict_packet")
+        .count() as i64;
+    match verdict
+        .evidence
+        .pointer("/source/round_evidence_before_verdict")
+        .and_then(|value| value.as_i64())
+    {
+        Some(count) if count == evidence_before_verdict => {}
+        _ => errors.push("evidence.source_round_count".to_string()),
+    }
+
+    let score_runtime_ready = verdict
+        .score
+        .pointer("/gate_results/runtime_ready")
+        .and_then(|value| value.as_bool());
+    let evidence_runtime_ready = verdict
+        .evidence
+        .get("runtime_ready")
+        .and_then(|value| value.as_bool());
+    match (evidence_runtime_ready, score_runtime_ready) {
+        (Some(evidence_value), Some(score_value)) if evidence_value == score_value => {}
+        _ => errors.push("evidence.runtime_ready".to_string()),
+    }
+
+    let evaluator_packet = packets.iter().find(|packet| {
+        packet.round == verdict.round
+            && packet.object_kind == "VERDICT_PACKET"
+            && packet.writer_role == "evaluator"
+    });
+    let expected_worker = evaluator_packet.and_then(|packet| packet_role_worker(&packet.payload));
+    match (verdict.evidence.get("role_worker"), expected_worker) {
+        (Some(actual), Some(expected)) if actual == expected => {}
+        (Some(_), Some(_)) => errors.push("evidence.role_worker_binding".to_string()),
+        _ => errors.push("evidence.role_worker".to_string()),
+    }
+    if verdict
+        .evidence
+        .pointer("/source/evaluator")
+        .and_then(|value| value.as_str())
+        != Some("hive-loop-control")
+    {
+        errors.push("evidence.source_evaluator".to_string());
+    }
+
+    errors
+}
+
+fn admission_rejection_verdict_binding_errors(
+    contract: &HiveLoopContract,
+    verdict: &HiveLoopVerdict,
+    packets_by_id: &HashMap<i64, &HiveLoopPacket>,
+    admissions_by_id: &HashMap<i64, &HiveLoopAdmission>,
+    evidence_by_id: &HashMap<i64, &HiveLoopEvidence>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let evidence_id = verdict
+        .evidence
+        .get("evidence_id")
+        .and_then(|value| value.as_i64());
+    let admission_id = verdict
+        .evidence
+        .get("admission_id")
+        .and_then(|value| value.as_i64());
+    let packet_id = verdict
+        .evidence
+        .get("packet_id")
+        .and_then(|value| value.as_i64());
+    let phase = verdict
+        .evidence
+        .get("phase")
+        .and_then(|value| value.as_str());
+
+    let linked_evidence = evidence_id.and_then(|evidence_id| evidence_by_id.get(&evidence_id));
+    match linked_evidence {
+        Some(row) if row.kind == "admission_rejection" && row.round == verdict.round => {}
+        Some(_) => errors.push("evidence.link".to_string()),
+        None => errors.push("evidence.link".to_string()),
+    }
+
+    let linked_admission =
+        admission_id.and_then(|admission_id| admissions_by_id.get(&admission_id));
+    match linked_admission {
+        Some(admission) if admission.result == "rejected" => {}
+        Some(_) => errors.push("admission.result".to_string()),
+        None => errors.push("admission.link".to_string()),
+    }
+
+    match (linked_admission, packet_id) {
+        (Some(admission), Some(packet_id)) if admission.packet_id == packet_id => {}
+        _ => errors.push("admission.packet_binding".to_string()),
+    }
+    if !packet_id.is_some_and(|packet_id| packets_by_id.contains_key(&packet_id)) {
+        errors.push("packet.link".to_string());
+    }
+
+    if let Some(row) = linked_evidence {
+        if row.payload.get("phase").and_then(|value| value.as_str()) != phase {
+            errors.push("evidence.phase_binding".to_string());
+        }
+        if row
+            .payload
+            .get("admission_id")
+            .and_then(|value| value.as_i64())
+            != admission_id
+        {
+            errors.push("evidence.admission_binding".to_string());
+        }
+        if row
+            .payload
+            .get("packet_id")
+            .and_then(|value| value.as_i64())
+            != packet_id
+        {
+            errors.push("evidence.packet_binding".to_string());
+        }
+    }
+    if contract.status == "blocked"
+        && verdict.round == contract.current_round
+        && phase != Some(contract.active_phase.as_str())
+    {
+        errors.push("evidence.phase".to_string());
+    }
+    if let Some(admission) = linked_admission {
+        if verdict.evidence.pointer("/source/admission_receipt") != Some(&admission.policy) {
+            errors.push("evidence.admission_receipt_binding".to_string());
+        }
+    }
+    if verdict
+        .evidence
+        .pointer("/source/evaluator")
+        .and_then(|value| value.as_str())
+        != Some("hive-loop-control")
+    {
+        errors.push("evidence.source_evaluator".to_string());
+    }
+
+    errors
 }
 
 fn verdict_score_vector_errors(score_vector: &serde_json::Value, decision: &str) -> Vec<String> {
@@ -5835,6 +6071,99 @@ mod tests {
         assert!(fields.contains(&"score.score_vector.runtime_readiness"));
         assert!(fields.contains(&"evidence.decision_binding"));
         assert!(fields.contains(&"reason_code.binding"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verdict_audit_rejects_drifted_evidence_bindings() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-verdict-evidence-binding-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Verdict evidence binding loop".to_string(),
+                goal: "Detect drifted verdict evidence bindings".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let verdict = report
+            .verdicts
+            .first()
+            .expect("run should record a verdict");
+        let mut evidence = verdict.evidence.clone();
+        evidence["evidence_count"] = serde_json::json!(999);
+        evidence["runtime_ready"] = serde_json::json!(false);
+        evidence["role_worker"]["ok"] = serde_json::json!(false);
+        store
+            .insert_hive_loop_verdict(HiveLoopVerdictCreate {
+                loop_id: verdict.loop_id,
+                round: verdict.round,
+                decision: verdict.decision.clone(),
+                summary: verdict.summary.clone(),
+                score: verdict.score.clone(),
+                evidence,
+            })
+            .expect("drifted verdict should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let verdict_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "verdict_packets")
+            .expect("verdict audit should exist");
+        assert!(!verdict_check.passed);
+        for expected in [
+            "evidence.count",
+            "evidence.runtime_ready",
+            "evidence.role_worker_binding",
+        ] {
+            assert!(
+                verdict_check
+                    .details
+                    .pointer("/verdict_errors")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|errors| errors.iter().any(|error| error
+                        .pointer("/errors")
+                        .and_then(|value| value.as_array())
+                        .is_some_and(|fields| fields
+                            .iter()
+                            .any(|field| field.as_str() == Some(expected))))),
+                "expected verdict evidence binding error {expected}"
+            );
+        }
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "verdict_packets:verdict_evidence:evidence.count"));
 
         let _ = fs::remove_dir_all(root);
     }

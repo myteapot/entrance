@@ -63,10 +63,13 @@ policy route, gate spec, required receipt list, missing receipt list, gate
 result, and final admitted/rejected result. The `verdict_packets` check verifies
 terminal rounds have exactly one verdict, then checks decision bindings,
 required score-vector metrics, gate booleans, human options, and reason-code
-evidence bindings. The `issue_surface` check verifies linked issue status,
-typed comments, operator comment/decision evidence, and evidence-to-comment
-author/action/body bindings so the control plane is auditable instead of only
-visible. Trace, Doctor, and Panel summaries expose
+evidence bindings. It also binds standard verdict evidence back to round
+evidence counts, runtime readiness, and the evaluator worker receipt, while
+admission-rejection verdicts bind back to the rejected admission, packet, and
+admission-rejection evidence row. The `issue_surface` check verifies linked
+issue status, typed comments, operator comment/decision evidence, and
+evidence-to-comment author/action/body bindings so the control plane is
+auditable instead of only visible. Trace, Doctor, and Panel summaries expose
 both failed audit check names and extracted audit failure detail codes, so an
 operator can see the exact binding that broke without opening raw JSON first.
 For evaluator-path testing, `hive loop run` accepts

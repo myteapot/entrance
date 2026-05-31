@@ -91,7 +91,9 @@ verifies that every packet has exactly one admission and that the recorded
 packet, policy, gate spec, receipt requirements, missing receipts, gate result,
 and final admission result still bind to each other. The verdict check verifies
 one verdict per round for terminal loops plus decision bindings, score-vector
-metrics, gate booleans, human options, and reason-code evidence bindings. The
+metrics, gate booleans, human options, reason-code evidence bindings, evaluator
+worker bindings, evidence counts, runtime readiness, and admission-rejection
+evidence/admission/packet links. The
 issue surface check verifies issue status, typed comments, operator
 comment/decision evidence, and the author/action/body bindings between evidence
 and its linked comment. Runtime policy checks the
