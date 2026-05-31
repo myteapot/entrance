@@ -386,16 +386,24 @@ export default function App() {
   };
 
   const createHiveLoop = async () => {
-    await bridge.invoke("hive_loop_create", {
+    const report = await bridge.invoke<{ issues: IssueCard[] }>("hive_loop_create", {
       title: loopTitle() || "Untitled loop",
       goal: loopGoal() || loopTitle() || "Run an Entrance loop",
       runtime: loopRuntime(),
       approachSpace: ["Explore the smallest runnable MVP"],
       evalSpace: ["CLI loop run produces a keep/reject/block verdict"],
     });
+    const createdIssueId = report.issues[0]?.issue.id ?? null;
+    if (createdIssueId !== null) {
+      setSelectedIssueId(createdIssueId);
+    }
     setLoopTitle("");
     setLoopGoal("");
-    setBanner("Loop contract created.");
+    setBanner(
+      createdIssueId === null
+        ? "Loop contract created."
+        : `Loop contract created as issue #${createdIssueId}.`,
+    );
     await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
   };
 
