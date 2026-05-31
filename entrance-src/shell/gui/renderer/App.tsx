@@ -123,6 +123,8 @@ type IssueCard = {
       blocked_phase: string | null;
       missing_receipts: string[];
       operator_options: string[];
+      operator_author: string | null;
+      operator_action: string | null;
       worker_kind: string | null;
       worker_mode: string | null;
       worker_ok: boolean | null;
@@ -866,6 +868,12 @@ export default function App() {
                                   {evidence.operator_options.map((option) => (
                                     <span class="trace-pill">{option}</span>
                                   ))}
+                                  {evidence.operator_author ? (
+                                    <span class="trace-pill">operator {evidence.operator_author}</span>
+                                  ) : null}
+                                  {evidence.operator_action ? (
+                                    <span class="trace-pill">{evidence.operator_action}</span>
+                                  ) : null}
                                 </div>
                                 {evidence.transcript_excerpt ? (
                                   <p class="muted">{evidence.transcript_excerpt}</p>

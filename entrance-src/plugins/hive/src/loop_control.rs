@@ -196,6 +196,8 @@ pub struct IssueEvidenceSummary {
     pub blocked_phase: Option<String>,
     pub missing_receipts: Vec<String>,
     pub operator_options: Vec<String>,
+    pub operator_author: Option<String>,
+    pub operator_action: Option<String>,
     pub worker_kind: Option<String>,
     pub worker_mode: Option<String>,
     pub worker_ok: Option<bool>,
@@ -1086,6 +1088,8 @@ fn issue_evidence_summary(
             .map(ToOwned::to_owned),
         missing_receipts: string_array_at(&row.payload, "/admission_receipt/receipt/missing"),
         operator_options: string_array_at(&row.payload, "/operator_options"),
+        operator_author: string_at(&row.payload, "/operator/author"),
+        operator_action: string_at(&row.payload, "/operator/action"),
         worker_kind: worker
             .and_then(|value| value.get("kind"))
             .and_then(|value| value.as_str())
@@ -1186,6 +1190,13 @@ fn string_array_at(value: &serde_json::Value, pointer: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn string_at(value: &serde_json::Value, pointer: &str) -> Option<String> {
+    value
+        .pointer(pointer)
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
 }
 
 fn human_options(value: &serde_json::Value) -> Vec<String> {
@@ -3328,6 +3339,22 @@ mod tests {
                     .and_then(|value| value.as_str())
                     == Some("request-review")
         }));
+        let review_decision_summary = review_card
+            .trace
+            .as_ref()
+            .expect("review card should retain loop trace")
+            .evidence
+            .iter()
+            .find(|evidence| evidence.kind == "operator_decision")
+            .expect("review decision should be summarized");
+        assert_eq!(
+            review_decision_summary.operator_author.as_deref(),
+            Some("human")
+        );
+        assert_eq!(
+            review_decision_summary.operator_action.as_deref(),
+            Some("request-review")
+        );
 
         let retry_card = decide_issue(
             &store,
@@ -3508,6 +3535,7 @@ mod tests {
             evidence.kind == "operator_comment"
                 && evidence.summary == "Please inspect the missing role worker receipt."
                 && evidence.schema_version.as_deref() == Some(OPERATOR_COMMENT_SCHEMA_VERSION)
+                && evidence.operator_author.as_deref() == Some("operator")
         }));
         assert!(add_comment(
             &store,
