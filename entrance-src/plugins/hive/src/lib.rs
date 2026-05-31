@@ -15,10 +15,10 @@ pub use dispatch::DispatchSummary;
 pub use engine::{EngineEvent, EngineReport};
 pub use http::{HiveCallback, HiveCallbackRequest};
 pub use loop_control::{
-    HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDoctorReport,
-    HiveLoopEvidenceReport, HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest,
-    HiveLoopTraceReport, IssueAction, IssueCard, IssueCommentRequest, IssueDecisionRequest,
-    IssueRunRequest, PolicyRegistryReport,
+    HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDoctorCounts,
+    HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport, HiveLoopReport,
+    HiveLoopRunRequest, HiveLoopTraceReport, IssueAction, IssueCard, IssueCommentRequest,
+    IssueDecisionRequest, IssueDoctorSummary, IssueRunRequest, PolicyRegistryReport,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};

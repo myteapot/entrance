@@ -391,7 +391,20 @@ fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
             "health": doctor.health,
             "runtime": doctor.runtime.as_str(),
             "summary": doctor.summary,
-            "next_actions": doctor.next_actions.iter().take(3).collect::<Vec<_>>()
+            "counts": {
+                "audit_failed": doctor.counts.audit_failed_count,
+                "receipt_missing": doctor.counts.round_receipt_missing_count,
+                "receipt_required": doctor.counts.round_receipt_required_count,
+                "retry_exhausted": doctor.counts.round_worker_retry_exhausted_count,
+                "worker_duration_ms": doctor.counts.round_worker_duration_ms,
+                "worker_ok": doctor.counts.round_role_worker_ok_count,
+                "worker_timeouts": doctor.counts.round_worker_timeout_count,
+                "workers": doctor.counts.round_role_worker_count
+            },
+            "failed_checks": doctor.failed_checks.iter().take(3).collect::<Vec<_>>(),
+            "missing_receipts": doctor.missing_receipts.iter().take(3).collect::<Vec<_>>(),
+            "next_actions": doctor.next_actions.iter().take(3).collect::<Vec<_>>(),
+            "worker_failures": doctor.worker_failures.iter().take(3).collect::<Vec<_>>()
         })),
         "trace": card.trace.as_ref().map(|trace| serde_json::json!({
             "round": trace.current_round,
@@ -535,7 +548,10 @@ mod tests {
         compact_issue_board, compact_issue_detail, compact_loop_audit, flag_present, flag_value,
     };
     use entrance_core::{HiveComment, HiveIssue};
-    use entrance_hive::{HiveLoopAuditCheck, HiveLoopAuditReport, IssueAction, IssueCard};
+    use entrance_hive::{
+        HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopDoctorCounts, IssueAction, IssueCard,
+        IssueDoctorSummary,
+    };
 
     fn test_issue_action(action: &str, label: &str, command: &str) -> IssueAction {
         IssueAction {
@@ -552,6 +568,50 @@ mod tests {
             .to_string(),
             destructive: action == "cancel",
             runtime: None,
+        }
+    }
+
+    fn test_worker_failure_doctor() -> IssueDoctorSummary {
+        IssueDoctorSummary {
+            schema_version: "entrance.hive.doctor.v1".to_string(),
+            health: "worker_failed".to_string(),
+            summary: "Loop #3 has worker timeout evidence.".to_string(),
+            next_actions: vec![
+                "entrance hive loop audit 3 --compact".to_string(),
+                "entrance hive loop evidence 3".to_string(),
+                "entrance hive issue retry-run 7 --body <note> --compact".to_string(),
+            ],
+            runtime: "codex".to_string(),
+            current_round: 2,
+            counts: HiveLoopDoctorCounts {
+                packet_count: 4,
+                admission_count: 4,
+                evidence_count: 4,
+                verdict_count: 2,
+                round_packet_count: 1,
+                round_admission_count: 1,
+                round_evidence_count: 1,
+                round_verdict_count: 1,
+                receipt_required_count: 14,
+                receipt_missing_count: 1,
+                round_receipt_required_count: 3,
+                round_receipt_missing_count: 1,
+                role_worker_count: 4,
+                role_worker_ok_count: 3,
+                round_role_worker_count: 1,
+                round_role_worker_ok_count: 0,
+                round_worker_duration_ms: 1004,
+                round_worker_timeout_count: 1,
+                round_worker_retry_exhausted_count: 1,
+                audit_failed_count: 1,
+            },
+            failed_checks: vec!["worker_receipts".to_string()],
+            audit_failure_details: vec!["worker_receipts: role_worker".to_string()],
+            missing_receipts: vec!["role_worker".to_string()],
+            worker_failures: vec![
+                "explorer:exploration_packet worker=codex ok=false receipt=false retry_exhausted"
+                    .to_string(),
+            ],
         }
     }
 
@@ -611,7 +671,7 @@ mod tests {
                 ),
             ],
             trace: None,
-            doctor: None,
+            doctor: Some(test_worker_failure_doctor()),
         };
 
         let board = compact_issue_board(&[card]);
@@ -674,6 +734,24 @@ mod tests {
                 .pointer("/issues/0/actions/3/command")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue decide 7 cancel --body <note> --compact")
+        );
+        assert_eq!(
+            blocked
+                .pointer("/issues/0/doctor/counts/worker_timeouts")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            blocked
+                .pointer("/issues/0/doctor/counts/retry_exhausted")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            blocked
+                .pointer("/issues/0/doctor/worker_failures/0")
+                .and_then(|value| value.as_str()),
+            Some("explorer:exploration_packet worker=codex ok=false receipt=false retry_exhausted")
         );
         let issue = blocked
             .pointer("/issues/0")
