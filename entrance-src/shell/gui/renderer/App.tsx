@@ -104,6 +104,17 @@ type IssueCard = {
     worker_kind: string | null;
     worker_mode: string | null;
     worker_ok: boolean | null;
+    stages: Array<{
+      role: string;
+      status: string;
+      summary: string | null;
+      evidence_kind: string | null;
+      evidence_summary: string | null;
+      admission_result: string | null;
+      worker_kind: string | null;
+      worker_mode: string | null;
+      worker_ok: boolean | null;
+    }>;
   } | null;
 };
 
@@ -420,6 +431,12 @@ export default function App() {
   const traceCountLabel = (label: string, current: number, total: number) =>
     total > current ? `${label} ${current}/${total}` : `${label} ${current}`;
 
+  const stageWorkerLabel = (stage: NonNullable<IssueCard["trace"]>["stages"][number]) => {
+    if (!stage.worker_kind) return "worker pending";
+    const state = stage.worker_ok === true ? "ok" : "blocked";
+    return `${stage.worker_kind}/${state}`;
+  };
+
   const issueDetailRows = (card: IssueCard) => {
     const trace = card.trace;
     return [
@@ -665,6 +682,33 @@ export default function App() {
                             </div>
                           ))}
                         </dl>
+                        {card.trace?.stages.length ? (
+                          <div class="stage-timeline">
+                            {card.trace.stages.map((stage) => (
+                              <div class="stage-row">
+                                <div class="stage-row-head">
+                                  <strong>{stage.role}</strong>
+                                  <span>{stage.status}</span>
+                                </div>
+                                <p>{stage.summary ?? "No stage summary"}</p>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">{stage.evidence_kind ?? "evidence pending"}</span>
+                                  <span class="trace-pill">{stage.admission_result ?? "admission pending"}</span>
+                                  <span
+                                    class={
+                                      stage.worker_ok === false
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {stageWorkerLabel(stage)}
+                                  </span>
+                                </div>
+                                <p class="muted">{stage.evidence_summary ?? "No evidence summary"}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                         <div class="comment-stack comment-stack--detail">
                           {card.comments.map((comment) => (
                             <div class="comment-line">

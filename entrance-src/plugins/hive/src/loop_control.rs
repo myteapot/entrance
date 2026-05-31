@@ -108,6 +108,20 @@ pub struct IssueTraceSummary {
     pub worker_kind: Option<String>,
     pub worker_mode: Option<String>,
     pub worker_ok: Option<bool>,
+    pub stages: Vec<IssueStageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueStageSummary {
+    pub role: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub evidence_kind: Option<String>,
+    pub evidence_summary: Option<String>,
+    pub admission_result: Option<String>,
+    pub worker_kind: Option<String>,
+    pub worker_mode: Option<String>,
+    pub worker_ok: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -616,6 +630,7 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
         .unwrap_or(1);
     let packets = store.list_hive_loop_packets(loop_id)?;
     let admissions = store.list_hive_loop_admissions(loop_id)?;
+    let stages = store.list_hive_loop_stages(loop_id)?;
     let evidence = store.list_hive_loop_evidence(loop_id)?;
     let verdicts = store.list_hive_loop_verdicts(loop_id)?;
     let packet_rounds = packets
@@ -745,7 +760,55 @@ fn issue_trace_summary(store: &Store, loop_id: i64) -> Result<IssueTraceSummary>
         worker_ok: worker
             .and_then(|value| value.get("ok"))
             .and_then(|value| value.as_bool()),
+        stages: issue_stage_summaries(&stages, &evidence, current_round),
     })
+}
+
+fn issue_stage_summaries(
+    stages: &[HiveLoopStage],
+    evidence: &[HiveLoopEvidence],
+    current_round: i64,
+) -> Vec<IssueStageSummary> {
+    stages
+        .iter()
+        .filter(|stage| stage.round == current_round)
+        .map(|stage| {
+            let stage_evidence = evidence
+                .iter()
+                .rev()
+                .find(|row| row.stage_id == Some(stage.id));
+            let worker = stage_evidence
+                .and_then(|row| row.payload.get("worker"))
+                .or_else(|| stage.output.get("role_worker"))
+                .or_else(|| stage.output.get("runtime_worker"));
+            IssueStageSummary {
+                role: stage.role.clone(),
+                status: stage.status.clone(),
+                summary: stage.summary.clone(),
+                evidence_kind: stage_evidence.map(|row| row.kind.clone()),
+                evidence_summary: stage_evidence.map(|row| row.summary.clone()),
+                admission_result: stage_evidence
+                    .and_then(|row| {
+                        row.payload
+                            .get("admission")
+                            .or_else(|| row.payload.get("result"))
+                    })
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                worker_kind: worker
+                    .and_then(|value| value.get("kind"))
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                worker_mode: worker
+                    .and_then(|value| value.get("mode"))
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                worker_ok: worker
+                    .and_then(|value| value.get("ok"))
+                    .and_then(|value| value.as_bool()),
+            }
+        })
+        .collect()
 }
 
 fn schema_version(value: &serde_json::Value) -> Option<String> {
@@ -2020,6 +2083,26 @@ mod tests {
         assert_eq!(trace.last_decision.as_deref(), Some("keep"));
         assert_eq!(trace.worker_kind.as_deref(), Some("local"));
         assert_eq!(trace.worker_ok, Some(true));
+        assert_eq!(
+            trace
+                .stages
+                .iter()
+                .map(|stage| stage.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["explorer", "doer", "evaluator"]
+        );
+        let doer_trace = trace
+            .stages
+            .iter()
+            .find(|stage| stage.role == "doer")
+            .expect("doer stage trace should exist");
+        assert_eq!(
+            doer_trace.evidence_kind.as_deref(),
+            Some("execution_packet")
+        );
+        assert_eq!(doer_trace.admission_result.as_deref(), Some("admitted"));
+        assert_eq!(doer_trace.worker_kind.as_deref(), Some("local"));
+        assert_eq!(doer_trace.worker_ok, Some(true));
         assert_eq!(
             report.verdicts[0]
                 .score
