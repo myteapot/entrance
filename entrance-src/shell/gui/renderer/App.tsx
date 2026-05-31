@@ -1842,60 +1842,36 @@ export default function App() {
                                 </div>
                               ) : (
                                 <div class="record-actions">
-                                  {card.issue.loop_id && ["Todo", "Blocked"].includes(card.issue.status) ? (
+                                  {card.issue.loop_id && card.issue.status === "Todo" ? (
                                     <button
                                       type="button"
                                       aria-label={issueRuntimeActionAriaLabel(
                                         card,
-                                        card.issue.status === "Blocked",
+                                        false,
                                         "board",
                                       )}
-                                      data-testid={`issue-action-board-${
-                                        card.issue.status === "Blocked" ? "retry" : "run"
-                                      }-${card.issue.id}`}
+                                      data-testid={`issue-action-board-run-${card.issue.id}`}
                                       disabled={Boolean(issuePendingLabel(card.issue.id))}
-                                      onClick={() =>
-                                        card.issue.status === "Blocked"
-                                          ? void retryIssueLoop(card)
-                                          : void runIssueLoop(card)
+                                      onClick={() => void runIssueLoop(card)}
+                                    >
+                                      {issueRuntimeActionLabel(card, false)}
+                                    </button>
+                                  ) : null}
+                                  {issueDecisionOptions(card).map((option) => (
+                                    <button
+                                      type="button"
+                                      aria-label={
+                                        option === "retry"
+                                          ? issueRuntimeActionAriaLabel(card, true, "board")
+                                          : `${issueOptionLabel(option)} issue #${card.issue.id} from board`
                                       }
+                                      data-testid={`issue-action-board-${option}-${card.issue.id}`}
+                                      disabled={issueOptionDisabled(card, option)}
+                                      onClick={() => runIssueOption(card, option)}
                                     >
-                                      {issueRuntimeActionLabel(card, card.issue.status === "Blocked")}
+                                      {issueDecisionButtonLabel(card, option)}
                                     </button>
-                                  ) : null}
-                                  {card.issue.status === "Blocked" ? (
-                                    <button
-                                      type="button"
-                                      aria-label={`Review issue #${card.issue.id} from board`}
-                                      data-testid={`issue-action-board-review-${card.issue.id}`}
-                                      disabled={Boolean(issuePendingLabel(card.issue.id))}
-                                      onClick={() => void decideIssue(card.issue.id, "request-review")}
-                                    >
-                                      {issuePendingLabel(card.issue.id) ?? "Review"}
-                                    </button>
-                                  ) : null}
-                                  {card.issue.loop_id && card.issue.status === "Needs Review" ? (
-                                    <button
-                                      type="button"
-                                      aria-label={issueRuntimeActionAriaLabel(card, true, "board")}
-                                      data-testid={`issue-action-board-retry-${card.issue.id}`}
-                                      disabled={Boolean(issuePendingLabel(card.issue.id))}
-                                      onClick={() => void retryIssueLoop(card)}
-                                    >
-                                      {issueRuntimeActionLabel(card, true)}
-                                    </button>
-                                  ) : null}
-                                  {["Todo", "Blocked", "Needs Review"].includes(card.issue.status) ? (
-                                    <button
-                                      type="button"
-                                      aria-label={`Cancel issue #${card.issue.id} from board`}
-                                      data-testid={`issue-action-board-cancel-${card.issue.id}`}
-                                      disabled={Boolean(issuePendingLabel(card.issue.id))}
-                                      onClick={() => void decideIssue(card.issue.id, "cancel")}
-                                    >
-                                      {issuePendingLabel(card.issue.id) ?? "Cancel"}
-                                    </button>
-                                  ) : null}
+                                  ))}
                                   <button
                                     type="button"
                                     aria-label={`Show issue #${card.issue.id} details`}
