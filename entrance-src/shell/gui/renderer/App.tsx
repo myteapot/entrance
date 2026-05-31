@@ -294,6 +294,8 @@ const operatorEventStatusLabel = (event: OperatorEvent) => {
 };
 
 export default function App() {
+  let issueDetailPanel: HTMLElement | undefined;
+
   const [view, setView] = createSignal<View>("status");
   const [launcherQuery, setLauncherQuery] = createSignal("");
   const [hiveTitle, setHiveTitle] = createSignal("");
@@ -348,6 +350,11 @@ export default function App() {
     return cards.find((card) => card.issue.id === issueId) ?? cards[0];
   });
   const selectedIssueDoctor = createMemo(() => selectedIssueCard()?.doctor ?? null);
+  const revealIssueDetail = () => {
+    window.setTimeout(() => {
+      issueDetailPanel?.scrollIntoView({ block: "start", behavior: "auto" });
+    }, 50);
+  };
 
   const refreshAll = async () => {
     await Promise.all([
@@ -405,6 +412,9 @@ export default function App() {
         : `Loop contract created as issue #${createdIssueId}.`,
     );
     await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+    if (createdIssueId !== null) {
+      revealIssueDetail();
+    }
   };
 
   const setPendingLoop = (loopId: number, label: string | null) => {
@@ -1209,7 +1219,12 @@ export default function App() {
                   </button>
                 </article>
 
-                <article class="panel panel--detail">
+                <article
+                  class="panel panel--detail"
+                  ref={(element) => {
+                    issueDetailPanel = element;
+                  }}
+                >
                   <p class="panel-kicker">Issue</p>
                   <Show when={selectedIssueCard()} keyed fallback={<p class="muted">No issues</p>}>
                     {(card) => (
@@ -1284,26 +1299,6 @@ export default function App() {
                             </div>
                           )}
                         </Show>
-                        <dl class="detail-grid">
-                          {issueDetailRows(card).map(([label, value]) => (
-                            <div>
-                              <dt>{label}</dt>
-                              <dd>{value}</dd>
-                            </div>
-                          ))}
-                        </dl>
-                        {card.trace?.operator_events.length ? (
-                          <div class="operator-trail">
-                            <h4>Operator Trail</h4>
-                            {card.trace.operator_events.map((event) => (
-                              <div class="operator-event">
-                                <strong>{operatorEventLabel(event)}</strong>
-                                <span>{operatorEventStatusLabel(event)}</span>
-                                <p>{event.note ?? event.summary}</p>
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
                         {card.trace?.human_options.length ? (
                           <div class="decision-options">
                             {card.issue.loop_id && card.issue.status === "Todo" ? (
@@ -1331,6 +1326,26 @@ export default function App() {
                               >
                                 {issueDecisionButtonLabel(card, option)}
                               </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        <dl class="detail-grid">
+                          {issueDetailRows(card).map(([label, value]) => (
+                            <div>
+                              <dt>{label}</dt>
+                              <dd>{value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                        {card.trace?.operator_events.length ? (
+                          <div class="operator-trail">
+                            <h4>Operator Trail</h4>
+                            {card.trace.operator_events.map((event) => (
+                              <div class="operator-event">
+                                <strong>{operatorEventLabel(event)}</strong>
+                                <span>{operatorEventStatusLabel(event)}</span>
+                                <p>{event.note ?? event.summary}</p>
+                              </div>
                             ))}
                           </div>
                         ) : null}
@@ -1776,7 +1791,10 @@ export default function App() {
                                     type="button"
                                     aria-label={`Show issue #${card.issue.id} details`}
                                     data-testid={`issue-action-board-details-${card.issue.id}`}
-                                    onClick={() => setSelectedIssueId(card.issue.id)}
+                                    onClick={() => {
+                                      setSelectedIssueId(card.issue.id);
+                                      revealIssueDetail();
+                                    }}
                                   >
                                     Details
                                   </button>
