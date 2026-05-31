@@ -1491,9 +1491,7 @@ fn doctor_next_actions(
         "blocked" => {
             actions.push(format!("entrance hive loop evidence {loop_id}"));
             if let Some(issue_id) = issue_id {
-                actions.push(format!(
-                    "entrance hive issue decide {issue_id} retry --body <note>"
-                ));
+                actions.push(retry_run_command(issue_id, runtime));
                 actions.push(format!(
                     "entrance hive issue decide {issue_id} request-review --body <note>"
                 ));
@@ -1502,9 +1500,7 @@ fn doctor_next_actions(
         "needs_review" => {
             if let Some(issue_id) = issue_id {
                 actions.push(format!("entrance hive issue show {issue_id}"));
-                actions.push(format!(
-                    "entrance hive issue decide {issue_id} retry --body <note>"
-                ));
+                actions.push(retry_run_command(issue_id, runtime));
             }
         }
         "rejected" => {
@@ -1520,9 +1516,7 @@ fn doctor_next_actions(
             actions.push(format!("entrance hive loop evidence {loop_id}"));
             actions.push(format!("entrance hive loop doctor {loop_id}"));
             if let Some(issue_id) = issue_id {
-                actions.push(format!(
-                    "entrance hive issue decide {issue_id} retry --body <note>"
-                ));
+                actions.push(retry_run_command(issue_id, runtime));
             }
         }
         _ => {
@@ -1551,6 +1545,15 @@ fn audit_check(
         summary,
         details,
     }
+}
+
+fn retry_run_command(issue_id: i64, runtime: &str) -> String {
+    if runtime == "codex" {
+        return format!(
+            "entrance hive issue retry-run {issue_id} --body <note> --runtime codex --worker-attempts 2 --compact"
+        );
+    }
+    format!("entrance hive issue retry-run {issue_id} --body <note> --compact")
 }
 
 fn stage_sequence_audit_errors(
@@ -6280,6 +6283,18 @@ mod tests {
     }
 
     #[test]
+    fn doctor_retry_action_uses_more_attempts_for_codex() {
+        assert_eq!(
+            retry_run_command(7, "codex"),
+            "entrance hive issue retry-run 7 --body <note> --runtime codex --worker-attempts 2 --compact"
+        );
+        assert_eq!(
+            retry_run_command(7, "local"),
+            "entrance hive issue retry-run 7 --body <note> --compact"
+        );
+    }
+
+    #[test]
     fn verdict_audit_rejects_inconsistent_score_contract() {
         let root = std::env::temp_dir().join(format!(
             "entrance-hive-loop-verdict-audit-test-{}",
@@ -6937,7 +6952,7 @@ mod tests {
         assert!(doctor_report
             .next_actions
             .iter()
-            .any(|action| action.contains("retry --body")));
+            .any(|action| action.contains("issue retry-run")));
         let audit_report =
             super::audit(&store, created.contract.id).expect("blocked audit should resolve");
         let runtime_policy_check = audit_report
@@ -7785,7 +7800,7 @@ mod tests {
         assert!(review_doctor
             .next_actions
             .iter()
-            .any(|action| action.contains("retry --body")));
+            .any(|action| action.contains("issue retry-run")));
         assert!(!review_doctor
             .next_actions
             .iter()
