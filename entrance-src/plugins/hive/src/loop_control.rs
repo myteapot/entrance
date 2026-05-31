@@ -1009,6 +1009,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
     let evidence = store.list_hive_loop_evidence(loop_id)?;
     let issue_surface = issue_surface_audit(store, loop_id, &issues, &evidence)?;
 
+    let stage_evidence_errors = stage_evidence_audit_errors(&contract, &stages, &evidence);
     let checks = vec![
         audit_check(
             "contract_loaded",
@@ -1043,6 +1044,16 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
                 stage_sequence_errors.len()
             ),
             serde_json::json!({ "stage_sequence_errors": stage_sequence_errors }),
+        ),
+        audit_check(
+            "stage_evidence",
+            stage_evidence_errors.is_empty(),
+            format!(
+                "{} evidence rows inspected; {} stage evidence issues.",
+                evidence.len(),
+                stage_evidence_errors.len()
+            ),
+            serde_json::json!({ "stage_evidence_errors": stage_evidence_errors }),
         ),
         audit_check(
             "packet_sequence",
@@ -1593,6 +1604,170 @@ fn expected_stage_roles_for_contract(contract: &HiveLoopContract) -> Vec<&'stati
         },
         _ => Vec::new(),
     }
+}
+
+fn stage_evidence_audit_errors(
+    contract: &HiveLoopContract,
+    stages: &[HiveLoopStage],
+    evidence: &[HiveLoopEvidence],
+) -> Vec<serde_json::Value> {
+    let mut errors = Vec::new();
+    let stages_by_id = stages
+        .iter()
+        .map(|stage| (stage.id, stage))
+        .collect::<HashMap<_, _>>();
+    let mut stage_evidence_groups: HashMap<(i64, &str), Vec<&HiveLoopEvidence>> = HashMap::new();
+
+    for row in evidence {
+        match row.stage_id {
+            Some(stage_id) => {
+                let mut row_errors = Vec::new();
+                if row.round < 1 || row.round > contract.current_round {
+                    row_errors.push("evidence.round");
+                }
+                if let Some(stage) = stages_by_id.get(&stage_id) {
+                    if row.round != stage.round {
+                        row_errors.push("evidence.stage_round");
+                    }
+                    let expected_kind = expected_stage_evidence_kind(contract, stage);
+                    if stage.round == contract.current_round
+                        && expected_kind.is_some_and(|expected| expected != row.kind)
+                    {
+                        row_errors.push("evidence.kind");
+                    } else if !stage_evidence_kind_allowed_for_role(&stage.role, &row.kind) {
+                        row_errors.push("evidence.kind");
+                    }
+                } else {
+                    row_errors.push("evidence.stage_link");
+                }
+                if !row_errors.is_empty() {
+                    errors.push(serde_json::json!({
+                        "scope": "evidence_row",
+                        "evidence_id": row.id,
+                        "stage_id": stage_id,
+                        "round": row.round,
+                        "kind": row.kind,
+                        "errors": row_errors
+                    }));
+                }
+                stage_evidence_groups
+                    .entry((stage_id, row.kind.as_str()))
+                    .or_default()
+                    .push(row);
+            }
+            None if stage_bound_evidence_kind(&row.kind) => {
+                errors.push(serde_json::json!({
+                    "scope": "evidence_row",
+                    "evidence_id": row.id,
+                    "round": row.round,
+                    "kind": row.kind,
+                    "errors": ["evidence.stage_id"]
+                }));
+            }
+            None => {}
+        }
+    }
+
+    for ((stage_id, kind), rows) in stage_evidence_groups {
+        if rows.len() > 1 {
+            let stage = stages_by_id.get(&stage_id);
+            errors.push(serde_json::json!({
+                "scope": "evidence_stage",
+                "stage_id": stage_id,
+                "round": stage.map(|stage| stage.round),
+                "role": stage.map(|stage| stage.role.as_str()),
+                "kind": kind,
+                "evidence_ids": rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+                "errors": ["evidence.stage_duplicate"]
+            }));
+        }
+    }
+
+    let expected_roles = expected_stage_roles_for_contract(contract);
+    for stage in stages.iter().filter(|stage| {
+        stage.round == contract.current_round
+            && expected_roles
+                .iter()
+                .any(|role| *role == stage.role.as_str())
+    }) {
+        let Some(expected_kind) = expected_stage_evidence_kind(contract, stage) else {
+            continue;
+        };
+        if !evidence
+            .iter()
+            .any(|row| row.stage_id == Some(stage.id) && row.kind == expected_kind)
+        {
+            errors.push(serde_json::json!({
+                "scope": "stage",
+                "stage_id": stage.id,
+                "round": stage.round,
+                "role": stage.role,
+                "expected_kind": expected_kind,
+                "errors": ["evidence.stage_missing"]
+            }));
+        }
+    }
+
+    errors.sort_by_key(|error| {
+        (
+            error
+                .get("round")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
+            error
+                .get("scope")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            error
+                .get("stage_id")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
+            error
+                .get("kind")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        )
+    });
+    errors
+}
+
+fn expected_stage_evidence_kind(
+    contract: &HiveLoopContract,
+    stage: &HiveLoopStage,
+) -> Option<&'static str> {
+    if contract.status == "blocked"
+        && stage.round == contract.current_round
+        && contract.active_phase == stage.role
+        && matches!(
+            contract.active_phase.as_str(),
+            "explorer" | "doer" | "evaluator"
+        )
+    {
+        return Some("admission_rejection");
+    }
+    canonical_stage_evidence_kind(&stage.role)
+}
+
+fn canonical_stage_evidence_kind(role: &str) -> Option<&'static str> {
+    match role {
+        "explorer" => Some("exploration_packet"),
+        "doer" => Some("execution_packet"),
+        "evaluator" => Some("verdict_packet"),
+        _ => None,
+    }
+}
+
+fn stage_evidence_kind_allowed_for_role(role: &str, kind: &str) -> bool {
+    canonical_stage_evidence_kind(role) == Some(kind) || kind == "admission_rejection"
+}
+
+fn stage_bound_evidence_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "exploration_packet" | "execution_packet" | "verdict_packet" | "admission_rejection"
+    )
 }
 
 fn packet_sequence_audit_errors(packets: &[HiveLoopPacket]) -> Vec<serde_json::Value> {
@@ -6344,6 +6519,88 @@ mod tests {
             .audit_failure_details
             .iter()
             .any(|detail| detail == "runtime_policy:worker_receipt:role_binding"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stage_evidence_audit_rejects_duplicate_stage_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-stage-evidence-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Stage evidence audit loop".to_string(),
+                goal: "Catch duplicated stage evidence in one round".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let doer_evidence = report
+            .evidence
+            .iter()
+            .find(|row| row.kind == "execution_packet")
+            .expect("doer evidence should exist");
+        store
+            .insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+                loop_id: doer_evidence.loop_id,
+                stage_id: doer_evidence.stage_id,
+                round: doer_evidence.round,
+                kind: doer_evidence.kind.clone(),
+                summary: doer_evidence.summary.clone(),
+                path: doer_evidence.path.clone(),
+                payload: doer_evidence.payload.clone(),
+            })
+            .expect("duplicated evidence should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let evidence_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "stage_evidence")
+            .expect("stage evidence audit should exist");
+        assert!(!evidence_check.passed);
+        assert!(evidence_check
+            .details
+            .pointer("/stage_evidence_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("evidence.stage_duplicate"))))));
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| { detail == "stage_evidence:evidence_stage:evidence.stage_duplicate" }));
 
         let _ = fs::remove_dir_all(root);
     }

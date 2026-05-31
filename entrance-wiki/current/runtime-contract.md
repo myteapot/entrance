@@ -48,11 +48,13 @@ Worker attempts default to 1, can be overridden with `--worker-attempts <n>` or
 plus the raw attempt receipts on codex workers.
 Loop audit includes a `stage_sequence` check that rejects duplicate role stages
 in one round and verifies terminal loops still have the expected current-round
-Explorer/Doer/Evaluator stages, a `packet_sequence` check that rejects duplicate
-route packets in one round, a `worker_receipts` check that verifies worker
-receipts carry bounded timeout and attempt metadata plus the expected role, and
-a `runtime_policy` check that verifies the contract runtime and current-round
-worker receipt kind/mode/role values against the registry and packet writer.
+Explorer/Doer/Evaluator stages, a `stage_evidence` check that verifies each
+expected stage has exactly one stage-bound evidence row with the expected kind,
+a `packet_sequence` check that rejects duplicate route packets in one round, a
+`worker_receipts` check that verifies worker receipts carry bounded timeout and
+attempt metadata plus the expected role, and a `runtime_policy` check that
+verifies the contract runtime and current-round worker receipt kind/mode/role
+values against the registry and packet writer.
 The `active_policy_registry` check verifies the canonical Explorer/Doer/Evaluator
 route and gate contract, including gate expected object kind and required
 receipts. The `admission_receipts` check verifies every packet has exactly one
