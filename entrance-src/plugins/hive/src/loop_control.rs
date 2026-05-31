@@ -15,6 +15,7 @@ use entrance_core::{
 use serde::{Deserialize, Serialize};
 
 const PACKET_SCHEMA_VERSION: &str = "entrance.hive.packet.v1";
+const ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.admission.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopCreateRequest {
@@ -589,7 +590,7 @@ fn block_on_admission_rejection(
             "packet_id": admission.packet_id,
             "result": admission.result,
             "reason": admission.reason,
-            "policy": admission.policy.clone(),
+            "admission_receipt": admission.policy.clone(),
             "operator_options": ["fix-policy", "retry", "request-human-review"]
         }),
     })?;
@@ -983,35 +984,41 @@ fn emit_and_admit(
             && policy.route_to == packet.route_to
     });
 
-    let (result, reason, policy_json) = match matching_policy {
-        Some(policy) if gate_passes(&policy.gate, &packet_payload) => (
-            "admitted".to_string(),
-            format!("{} passed", policy.gate),
-            serde_json::json!(policy),
-        ),
-        Some(policy) => (
-            "rejected".to_string(),
-            format!("{} failed", policy.gate),
-            serde_json::json!(policy),
-        ),
+    let (result, reason, gate_name, gate_passed) = match matching_policy {
+        Some(policy) => {
+            let passed = gate_passes(&policy.gate, &packet_payload);
+            let result = if passed { "admitted" } else { "rejected" };
+            let outcome = if passed { "passed" } else { "failed" };
+            (
+                result.to_string(),
+                format!("{} {outcome}", policy.gate),
+                Some(policy.gate.as_str()),
+                Some(passed),
+            )
+        }
         None => (
             "rejected".to_string(),
             "no active policy matched packet writer and route".to_string(),
-            serde_json::json!({
-                "object_kind": object_kind,
-                "writer_role": writer_role,
-                "route_from": route_from,
-                "route_to": route_to
-            }),
+            None,
+            None,
         ),
     };
+    let admission_receipt = typed_admission_receipt(
+        &packet,
+        &packet_payload,
+        matching_policy,
+        &result,
+        &reason,
+        gate_name,
+        gate_passed,
+    );
 
     let admission_id = store.insert_hive_loop_admission(HiveLoopAdmissionCreate {
         loop_id: contract.id,
         packet_id,
         result: result.clone(),
         reason: reason.clone(),
-        policy: policy_json,
+        policy: admission_receipt,
     })?;
     let admission = store
         .list_hive_loop_admissions(contract.id)?
@@ -1055,6 +1062,47 @@ fn receipt_requirements_for_packet(object_kind: &str) -> Vec<&'static str> {
         "VERDICT_PACKET" => vec!["decision", "summary", "score"],
         _ => Vec::new(),
     }
+}
+
+fn typed_admission_receipt(
+    packet: &HiveLoopPacket,
+    packet_payload: &serde_json::Value,
+    policy: Option<&HiveLoopPolicy>,
+    result: &str,
+    reason: &str,
+    gate_name: Option<&str>,
+    gate_passed: Option<bool>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": ADMISSION_SCHEMA_VERSION,
+        "result": result,
+        "reason": reason,
+        "packet": {
+            "id": packet.id,
+            "schema_version": packet_payload
+                .get("schema_version")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown"),
+            "object_kind": &packet.object_kind,
+            "writer_role": &packet.writer_role,
+            "route_from": &packet.route_from,
+            "route_to": &packet.route_to,
+            "state_code": &packet.state_code
+        },
+        "policy": policy.map(|policy| serde_json::json!({
+            "id": policy.id,
+            "object_kind": &policy.object_kind,
+            "writer_role": &policy.writer_role,
+            "route_from": &policy.route_from,
+            "route_to": &policy.route_to,
+            "gate": &policy.gate,
+            "status": &policy.status
+        })),
+        "gate": {
+            "name": gate_name,
+            "passed": gate_passed
+        }
+    })
 }
 
 fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
@@ -1441,6 +1489,25 @@ mod tests {
             .admissions
             .iter()
             .all(|admission| admission.result == "admitted"));
+        assert!(report.admissions.iter().all(|admission| admission
+            .policy
+            .get("schema_version")
+            .and_then(|value| value.as_str())
+            == Some(ADMISSION_SCHEMA_VERSION)));
+        assert_eq!(
+            report.admissions[0]
+                .policy
+                .pointer("/gate/passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            report.admissions[0]
+                .policy
+                .pointer("/packet/schema_version")
+                .and_then(|value| value.as_str()),
+            Some(PACKET_SCHEMA_VERSION)
+        );
         assert_eq!(report.stages.len(), 3);
         assert_eq!(report.evidence.len(), 3);
         let execution_evidence = report
@@ -1679,6 +1746,32 @@ mod tests {
             .iter()
             .any(|admission| admission.result == "rejected"
                 && admission.reason == "unknown_gate failed"));
+        let rejected_admission = report
+            .admissions
+            .iter()
+            .find(|admission| admission.result == "rejected")
+            .expect("rejected admission should be recorded");
+        assert_eq!(
+            rejected_admission
+                .policy
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(ADMISSION_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            rejected_admission
+                .policy
+                .pointer("/packet/object_kind")
+                .and_then(|value| value.as_str()),
+            Some("EXECUTION_PACKET")
+        );
+        assert_eq!(
+            rejected_admission
+                .policy
+                .pointer("/gate/passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
         assert!(report
             .evidence
             .iter()
