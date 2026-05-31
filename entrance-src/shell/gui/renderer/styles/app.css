@@ -551,6 +551,12 @@
   overflow: auto;
 }
 
+.comment-stack--detail h4 {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--text-dim);
+}
+
 .comment-line,
 .comment-box {
   padding: 10px;

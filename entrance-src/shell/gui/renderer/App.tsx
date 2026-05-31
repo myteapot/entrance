@@ -1344,26 +1344,6 @@ export default function App() {
                             ))}
                           </div>
                         ) : null}
-                        <dl class="detail-grid">
-                          {issueDetailRows(card).map(([label, value]) => (
-                            <div>
-                              <dt>{label}</dt>
-                              <dd>{value}</dd>
-                            </div>
-                          ))}
-                        </dl>
-                        {card.trace?.operator_events.length ? (
-                          <div class="operator-trail">
-                            <h4>Operator Trail</h4>
-                            {card.trace.operator_events.map((event) => (
-                              <div class="operator-event">
-                                <strong>{operatorEventLabel(event)}</strong>
-                                <span>{operatorEventStatusLabel(event)}</span>
-                                <p>{event.note ?? event.summary}</p>
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
                         {commentComposerActive(card.issue.id, "detail") ? (
                           <div class="comment-box comment-box--detail">
                             <textarea
@@ -1407,6 +1387,42 @@ export default function App() {
                             >
                               Close
                             </button>
+                          </div>
+                        ) : null}
+                        <div class="comment-stack comment-stack--detail">
+                          <h4>Comments</h4>
+                          {card.comments.map((comment) => (
+                            <div class="comment-line comment-line--detail">
+                              <div class="comment-line-head">
+                                <strong>{comment.author}</strong>
+                                <div class="comment-tags">
+                                  {commentPills(comment).map((pill) => (
+                                    <span>{pill}</span>
+                                  ))}
+                                </div>
+                              </div>
+                              <span>{commentPreview(comment, COMMENT_DETAIL_PREVIEW_LIMIT)}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <dl class="detail-grid">
+                          {issueDetailRows(card).map(([label, value]) => (
+                            <div>
+                              <dt>{label}</dt>
+                              <dd>{value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                        {card.trace?.operator_events.length ? (
+                          <div class="operator-trail">
+                            <h4>Operator Trail</h4>
+                            {card.trace.operator_events.map((event) => (
+                              <div class="operator-event">
+                                <strong>{operatorEventLabel(event)}</strong>
+                                <span>{operatorEventStatusLabel(event)}</span>
+                                <p>{event.note ?? event.summary}</p>
+                              </div>
+                            ))}
                           </div>
                         ) : null}
                         {card.trace?.stages.length ? (
@@ -1534,21 +1550,6 @@ export default function App() {
                             ))}
                           </div>
                         ) : null}
-                        <div class="comment-stack comment-stack--detail">
-                          {card.comments.map((comment) => (
-                            <div class="comment-line comment-line--detail">
-                              <div class="comment-line-head">
-                                <strong>{comment.author}</strong>
-                                <div class="comment-tags">
-                                  {commentPills(comment).map((pill) => (
-                                    <span>{pill}</span>
-                                  ))}
-                                </div>
-                              </div>
-                              <span>{commentPreview(comment, COMMENT_DETAIL_PREVIEW_LIMIT)}</span>
-                            </div>
-                          ))}
-                        </div>
                       </>
                     )}
                   </Show>
