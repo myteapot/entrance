@@ -354,6 +354,8 @@ fn compact_recent_evidence(card: &IssueCard, limit: usize) -> Vec<serde_json::Va
                 "admission": row.admission_result,
                 "worker": row.worker_kind.as_ref().map(|kind| serde_json::json!({
                     "kind": kind,
+                    "command": row.worker_command.as_ref().map(|command| compact_text(command, 220)),
+                    "cwd": row.worker_cwd.as_ref().map(|cwd| compact_text(cwd, 180)),
                     "ok": row.worker_ok,
                     "receipt_ok": row.worker_receipt_ok,
                     "duration_ms": row.worker_duration_ms,

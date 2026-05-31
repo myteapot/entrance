@@ -407,6 +407,8 @@ pub struct IssueEvidenceSummary {
     pub worker_attempt_count: Option<u64>,
     pub worker_max_attempts: Option<u64>,
     pub worker_retry_exhausted: Option<bool>,
+    pub worker_command: Option<String>,
+    pub worker_cwd: Option<String>,
     pub worker_action: Option<String>,
     pub worker_evidence_summary: Option<String>,
     pub worker_gate_count: Option<usize>,
@@ -3978,6 +3980,14 @@ fn issue_evidence_summary(
         worker_retry_exhausted: worker
             .and_then(|value| value.get("retry_exhausted"))
             .and_then(|value| value.as_bool()),
+        worker_command: worker
+            .and_then(|value| value.get("command"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        worker_cwd: worker
+            .and_then(|value| value.get("cwd"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
         worker_action: worker_receipt
             .as_ref()
             .and_then(|receipt| receipt.get("action"))
@@ -5406,6 +5416,8 @@ fn run_codex_worker_attempt(
     let cwd = std::env::current_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| ".".to_string());
+    let command_display = codex_command_display(&cwd, &output_path);
+    let prompt_chars = prompt.chars().count();
 
     let mut command = Command::new("codex");
     command
@@ -5453,6 +5465,10 @@ fn run_codex_worker_attempt(
                 "status": output.status_code,
                 "duration_ms": output.duration_ms,
                 "timeout_secs": timeout_secs,
+                "command": command_display,
+                "cwd": cwd,
+                "output_last_message_path": output_path.display().to_string(),
+                "prompt_chars": prompt_chars,
                 "receipt_ok": receipt_ok,
                 "receipt": receipt,
                 "receipt_errors": receipt_errors,
@@ -5470,10 +5486,22 @@ fn run_codex_worker_attempt(
             "started_at": started_at,
             "completed_at": chrono::Utc::now().to_rfc3339(),
             "timeout_secs": timeout_secs,
+            "command": command_display,
+            "cwd": cwd,
+            "output_last_message_path": output_path.display().to_string(),
+            "prompt_chars": prompt_chars,
             "error": error.to_string(),
             "last_message": truncate_text(&last_message, 4000)
         }),
     }
+}
+
+fn codex_command_display(cwd: &str, output_path: &std::path::Path) -> String {
+    format!(
+        "codex -a never exec --ephemeral --skip-git-repo-check --sandbox read-only -C {} --output-last-message {} --json <prompt>",
+        cwd,
+        output_path.display()
+    )
 }
 
 fn codex_worker_success(output: &TimedCommandOutput, receipt_ok: Option<bool>) -> bool {
@@ -6388,6 +6416,47 @@ mod tests {
         assert!(prompt.contains(r#""action": "compile-candidate""#));
         assert!(prompt.contains("action` must be a non-empty JSON string"));
         assert!(prompt.contains("Never return `action` as an object"));
+    }
+
+    #[test]
+    fn evidence_summary_exposes_codex_worker_command_context() {
+        let evidence = HiveLoopEvidence {
+            id: 9,
+            loop_id: 3,
+            stage_id: None,
+            round: 1,
+            kind: "execution_packet".to_string(),
+            summary: "Doer ran `codex` runtime worker.".to_string(),
+            path: None,
+            payload: serde_json::json!({
+                "worker": {
+                    "ok": true,
+                    "kind": "codex",
+                    "mode": "codex-exec",
+                    "role": "doer",
+                    "command": "codex -a never exec --sandbox read-only <prompt>",
+                    "cwd": "/tmp/entrance-src",
+                    "receipt_ok": true,
+                    "receipt": {
+                        "ok": true,
+                        "role": "doer",
+                        "action": "record-local-loop-ledger",
+                        "evidence_summary": "codex accepted the packet",
+                        "gates": { "packet_received": true }
+                    }
+                }
+            }),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let summary = issue_evidence_summary(&evidence, &HashMap::new());
+
+        assert_eq!(
+            summary.worker_command.as_deref(),
+            Some("codex -a never exec --sandbox read-only <prompt>")
+        );
+        assert_eq!(summary.worker_cwd.as_deref(), Some("/tmp/entrance-src"));
+        assert_eq!(summary.worker_action.as_deref(), Some("record-local-loop-ledger"));
     }
 
     #[test]

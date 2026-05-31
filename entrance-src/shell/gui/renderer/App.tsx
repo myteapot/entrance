@@ -155,6 +155,8 @@ type IssueCard = {
       worker_attempt_count: number | null;
       worker_max_attempts: number | null;
       worker_retry_exhausted: boolean | null;
+      worker_command: string | null;
+      worker_cwd: string | null;
       worker_action: string | null;
       worker_evidence_summary: string | null;
       worker_gate_count: number | null;
@@ -798,6 +800,12 @@ export default function App() {
       ? `attempts ${evidence.worker_attempt_count}`
       : `attempts ${evidence.worker_attempt_count}/${evidence.worker_max_attempts}`;
   };
+  const workerCommandLabel = (command: string | null) => {
+    if (!command) return null;
+    return command.startsWith("codex ")
+      ? "cmd codex exec"
+      : `cmd ${command.split(/\s+/).slice(0, 2).join(" ")}`;
+  };
 
   const scoreMetricLabel = (name: string) =>
     ({
@@ -1392,6 +1400,9 @@ export default function App() {
                                   {workerAttemptLabel(evidence) ? (
                                     <span class="trace-pill">{workerAttemptLabel(evidence)}</span>
                                   ) : null}
+                                  {workerCommandLabel(evidence.worker_command) ? (
+                                    <span class="trace-pill">{workerCommandLabel(evidence.worker_command)}</span>
+                                  ) : null}
                                   {evidence.worker_action ? (
                                     <span class="trace-pill">{evidence.worker_action}</span>
                                   ) : null}
@@ -1425,6 +1436,9 @@ export default function App() {
                                 </div>
                                 {evidence.worker_evidence_summary ? (
                                   <p class="muted">{evidence.worker_evidence_summary}</p>
+                                ) : null}
+                                {evidence.worker_cwd ? (
+                                  <p class="muted">cwd {evidence.worker_cwd}</p>
                                 ) : null}
                                 {evidence.transcript_excerpt ? (
                                   <p class="muted">{evidence.transcript_excerpt}</p>
