@@ -761,6 +761,17 @@ impl Store {
         Ok(())
     }
 
+    pub fn update_hive_loop_contract_runtime(&self, id: i64, runtime: &str) -> Result<()> {
+        let connection = self.connection();
+        connection.execute(
+            "UPDATE hive_loop_contracts
+             SET runtime = ?2, updated_at = ?3
+             WHERE id = ?1",
+            params![id, runtime, timestamp()],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_hive_loop_stage(&self, row: HiveLoopStageCreate) -> Result<i64> {
         let now = timestamp();
         let input_json = serde_json::to_string(&row.input)?;

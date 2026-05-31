@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest,
-    IssueCommentRequest, IssueDecisionRequest, ReviewDecision,
+    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, ReviewDecision,
 };
 
 use crate::{app::AppServices, cli, print_json};
@@ -10,7 +10,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list\n  entrance hive issue show <id>\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list\n  entrance hive issue show <id>\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>]"
             );
             Ok(())
         }
@@ -160,6 +160,26 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 author: flag_value(rest, "--author").unwrap_or("human").to_string(),
                 body: flag_value(rest, "--body").map(ToOwned::to_owned),
             })?)
+        }
+        [scope, action, id, rest @ ..]
+            if scope == "issue" && (action == "run" || action == "retry-run") =>
+        {
+            print_json(
+                &services.hive.issue_run(IssueRunRequest {
+                    issue_id: id.parse::<i64>()?,
+                    runtime: flag_value(rest, "--runtime").map(ToOwned::to_owned),
+                    decision: flag_value(rest, "--decision").map(ToOwned::to_owned),
+                    worker_timeout_secs: flag_value(rest, "--worker-timeout-secs")
+                        .map(str::parse)
+                        .transpose()?,
+                    worker_attempts: flag_value(rest, "--worker-attempts")
+                        .map(str::parse)
+                        .transpose()?,
+                    retry: action == "retry-run",
+                    author: flag_value(rest, "--author").unwrap_or("human").to_string(),
+                    body: flag_value(rest, "--body").map(ToOwned::to_owned),
+                })?,
+            )
         }
         _ => bail!("unsupported hive command"),
     }

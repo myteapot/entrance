@@ -44,8 +44,8 @@ Worker attempts default to 1, can be overridden with `--worker-attempts <n>` or
 plus the raw attempt receipts on codex workers.
 Loop audit includes a `worker_receipts` check that verifies worker receipts
 carry bounded timeout and attempt metadata, plus a `runtime_policy` check that
-verifies contract runtimes and worker receipt kind/mode values against the
-registry. The `issue_surface` check verifies linked issue status, typed
+verifies the contract runtime and current-round worker receipt kind/mode values
+against the registry. The `issue_surface` check verifies linked issue status, typed
 comments, and operator comment/decision evidence so the control plane is
 auditable instead of only visible.
 For evaluator-path testing, `hive loop run` accepts
@@ -53,6 +53,10 @@ For evaluator-path testing, `hive loop run` accepts
 Human decisions are available through `hive issue decide <id>
 <retry|request-review|cancel>` and are recorded as operator comments while
 also moving the linked loop contract state.
+For the issue-first control plane, `hive issue run <id>` runs a `Todo` issue
+directly, and `hive issue retry-run <id> --body <note>` records the retry
+decision before running the linked loop. Runtime overrides on a run are written
+back to the loop contract so later audits inspect the actual runtime used.
 `hive loop run` only starts work when the linked contract is in `todo`; for
 running or terminal states it returns the current report without appending
 duplicate packets, admissions, evidence, verdicts, or comments.

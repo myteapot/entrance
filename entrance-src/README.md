@@ -79,6 +79,8 @@ operator options, and short transcript excerpts.
 active policies, runtime policy, typed packets, admission receipts, worker
 receipts, verdict packets, and linked issue surface. The issue surface check
 verifies issue status, typed comments, and operator comment/decision evidence.
+Runtime policy checks the current round so a successful retry can replace a
+previously blocked runtime attempt.
 `hive loop doctor <id>` is the first CLI stop after a run: it combines trace and
 audit state into one health summary with counts, failed checks, missing
 receipts, worker failures, and suggested next commands.
@@ -96,7 +98,9 @@ The evaluator decision can be overridden for local simulation with
 Admission gates reject failed worker receipts, so a role worker with `ok=false`
 blocks at the compiler boundary instead of being treated as valid evidence.
 `hive loop run` is idempotent for non-`todo` contracts; use
-`hive issue decide <id> retry` to start a new round.
+`hive issue retry-run <id>` to record a retry decision and immediately run the
+linked loop. `hive issue run <id>` runs a `Todo` issue without requiring the
+operator to look up its loop id.
 Issue cards expose round-aware trace chips so a retry shows the new current
 round separately from the loop's accumulated history.
 

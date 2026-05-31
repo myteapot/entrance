@@ -17,7 +17,7 @@ pub use http::{HiveCallback, HiveCallbackRequest};
 pub use loop_control::{
     HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDoctorReport, HiveLoopEvidenceReport,
     HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest, HiveLoopTraceReport, IssueCard,
-    IssueCommentRequest, IssueDecisionRequest, PolicyRegistryReport,
+    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, PolicyRegistryReport,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};
@@ -143,6 +143,10 @@ impl HivePlugin {
 
     pub fn issue_decide(&self, request: IssueDecisionRequest) -> Result<IssueCard> {
         loop_control::decide_issue(&self.store, request)
+    }
+
+    pub fn issue_run(&self, request: IssueRunRequest) -> Result<HiveLoopReport> {
+        loop_control::run_issue(&self.store, request)
     }
 
     pub fn bootstrap_run(&self, row: HiveRunCreate) -> Result<i64> {

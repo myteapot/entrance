@@ -11,7 +11,7 @@ use entrance_core::LauncherQuery;
 use entrance_drawer::VaultSecret;
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest,
-    IssueCommentRequest, IssueDecisionRequest, ReviewDecision,
+    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, ReviewDecision,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -523,6 +523,47 @@ async fn handle_invoke(
                         .and_then(|value| value.as_str())
                         .context("hive_issue_decide requires `action`")?
                         .to_string(),
+                    author: args
+                        .get("author")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("human")
+                        .to_string(),
+                    body: args
+                        .get("body")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned),
+                })?,
+            )?)
+        }
+        "hive_issue_run" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_run requires `issueId`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.issue_run(IssueRunRequest {
+                    issue_id,
+                    runtime: args
+                        .get("runtime")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned),
+                    decision: args
+                        .get("decision")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned),
+                    worker_timeout_secs: args
+                        .get("workerTimeoutSecs")
+                        .or_else(|| args.get("worker_timeout_secs"))
+                        .and_then(|value| value.as_u64()),
+                    worker_attempts: args
+                        .get("workerAttempts")
+                        .or_else(|| args.get("worker_attempts"))
+                        .and_then(|value| value.as_u64()),
+                    retry: args
+                        .get("retry")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
                     author: args
                         .get("author")
                         .and_then(|value| value.as_str())

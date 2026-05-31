@@ -365,8 +365,8 @@ export default function App() {
     setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Running");
     try {
-      await bridge.invoke("hive_loop_run", {
-        id: card.issue.loop_id,
+      await bridge.invoke("hive_issue_run", {
+        issueId: card.issue.id,
         ...loopRunArgs(),
       });
       setBanner(`Loop #${card.issue.loop_id} finished.`);
@@ -404,19 +404,14 @@ export default function App() {
     setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Retrying");
     try {
-      await bridge.invoke("hive_issue_decide", {
+      await bridge.invoke("hive_issue_run", {
         issueId: card.issue.id,
-        action: "retry",
+        retry: true,
         author: "human",
         body: issueDecisionNote(card.issue.id) || undefined,
+        ...loopRunArgs(),
       });
       clearIssueComposer(card.issue.id);
-      if (card.issue.loop_id) {
-        await bridge.invoke("hive_loop_run", {
-          id: card.issue.loop_id,
-          ...loopRunArgs(),
-        });
-      }
       setBanner(`Issue #${card.issue.id} retried.`);
       await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
     } catch (error) {

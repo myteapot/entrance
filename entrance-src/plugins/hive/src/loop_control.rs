@@ -371,6 +371,18 @@ pub struct IssueDecisionRequest {
     pub body: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueRunRequest {
+    pub issue_id: i64,
+    pub runtime: Option<String>,
+    pub decision: Option<String>,
+    pub worker_timeout_secs: Option<u64>,
+    pub worker_attempts: Option<u64>,
+    pub retry: bool,
+    pub author: String,
+    pub body: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IssueDecisionAction {
     Retry,
@@ -431,6 +443,11 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
 
     if contract.status != "todo" {
         return report(store, contract.id);
+    }
+
+    if runtime != contract.runtime {
+        store.update_hive_loop_contract_runtime(contract.id, &runtime)?;
+        contract.runtime = runtime.clone();
     }
 
     let runtime_probe = probe_runtime(&runtime);
@@ -982,11 +999,12 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
             "runtime_policy",
             runtime_policy_errors.is_empty(),
             format!(
-                "Runtime `{}` and worker receipts inspected; {} runtime policy issues.",
+                "Runtime `{}` and current-round worker receipts inspected; {} runtime policy issues.",
                 contract.runtime,
                 runtime_policy_errors.len()
             ),
             serde_json::json!({
+                "current_round": contract.current_round,
                 "supported_runtimes": runtime_policy_registry()
                     .supported
                     .iter()
@@ -1486,7 +1504,10 @@ fn runtime_policy_audit_errors(
         }));
     }
 
-    for packet in packets {
+    for packet in packets
+        .iter()
+        .filter(|packet| packet.round == contract.current_round)
+    {
         for (receipt, worker) in packet_worker_receipts(packet) {
             let worker_errors = runtime_worker_policy_errors(&registry, worker);
             if !worker_errors.is_empty() {
@@ -1928,6 +1949,45 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
     )?;
 
     issue_card(store, issue.id)
+}
+
+pub fn run_issue(store: &Store, request: IssueRunRequest) -> Result<HiveLoopReport> {
+    let issue = store
+        .get_hive_issue(request.issue_id)?
+        .with_context(|| format!("unknown hive issue `{}`", request.issue_id))?;
+    let loop_id = issue
+        .loop_id
+        .with_context(|| format!("hive issue #{} is not linked to a loop", issue.id))?;
+
+    if request.retry {
+        decide_issue(
+            store,
+            IssueDecisionRequest {
+                issue_id: issue.id,
+                action: "retry".to_string(),
+                author: default_text(request.author, "human"),
+                body: request.body.clone(),
+            },
+        )?;
+    } else if issue.status != "Todo" {
+        anyhow::bail!(
+            "hive issue run requires issue #{} to be `Todo`; current status is `{}`. Use `hive issue retry-run {}` to record a retry decision first.",
+            issue.id,
+            issue.status,
+            issue.id
+        );
+    }
+
+    run(
+        store,
+        HiveLoopRunRequest {
+            loop_id,
+            runtime: request.runtime,
+            decision: request.decision,
+            worker_timeout_secs: request.worker_timeout_secs,
+            worker_attempts: request.worker_attempts,
+        },
+    )
 }
 
 fn ensure_issue_decision_allowed(
@@ -5338,6 +5398,129 @@ mod tests {
             .expect_err("human-canceled issue should not retry")
             .to_string()
             .contains("not allowed"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_run_executes_todo_and_retry_control_flow() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-issue-run-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let todo = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Issue run todo loop".to_string(),
+                goal: "Run a Todo issue from the issue surface".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("todo loop should be created");
+        let todo_report = run_issue(
+            &store,
+            IssueRunRequest {
+                issue_id: todo.issues[0].issue.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: Some(5),
+                worker_attempts: Some(1),
+                retry: false,
+                author: "human".to_string(),
+                body: None,
+            },
+        )
+        .expect("todo issue should run");
+        assert_eq!(todo_report.contract.status, "kept");
+        assert_eq!(todo_report.issues[0].issue.status, "Done");
+
+        let blocked = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Issue retry-run loop".to_string(),
+                goal: "Retry a blocked issue from the issue surface".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "unsupported-agent".to_string(),
+            },
+        )
+        .expect("blocked loop should be created");
+        let blocked_report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: blocked.contract.id,
+                runtime: Some("unsupported-agent".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("unsupported runtime should block");
+        let blocked_issue_id = blocked_report.issues[0].issue.id;
+        let blocked_run = run_issue(
+            &store,
+            IssueRunRequest {
+                issue_id: blocked_issue_id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: Some(5),
+                worker_attempts: Some(1),
+                retry: false,
+                author: "human".to_string(),
+                body: None,
+            },
+        );
+        assert!(blocked_run
+            .expect_err("blocked issue should require retry-run")
+            .to_string()
+            .contains("retry-run"));
+
+        let retry_report = run_issue(
+            &store,
+            IssueRunRequest {
+                issue_id: blocked_issue_id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: Some(5),
+                worker_attempts: Some(1),
+                retry: true,
+                author: "human".to_string(),
+                body: Some("Retry with local runtime".to_string()),
+            },
+        )
+        .expect("retry-run should record decision and execute");
+        assert_eq!(retry_report.contract.status, "kept");
+        assert_eq!(retry_report.contract.current_round, 2);
+        assert_eq!(retry_report.issues[0].issue.status, "Done");
+        assert!(retry_report.issues[0]
+            .comments
+            .iter()
+            .any(|comment| comment.body.contains("Retry with local runtime")));
+        let operator_decisions = store
+            .list_hive_loop_evidence(blocked.contract.id)
+            .expect("evidence should list")
+            .into_iter()
+            .filter(|evidence| evidence.kind == "operator_decision")
+            .collect::<Vec<_>>();
+        assert_eq!(operator_decisions.len(), 1);
+        assert_eq!(operator_decisions[0].round, 2);
+        let audit_report =
+            super::audit(&store, blocked.contract.id).expect("retry audit should resolve");
+        assert!(audit_report.passed);
 
         let _ = fs::remove_dir_all(root);
     }
