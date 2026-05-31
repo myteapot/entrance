@@ -960,6 +960,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
     let policies = store.list_hive_loop_policies(loop_id)?;
     let packets = store.list_hive_loop_packets(loop_id)?;
     let admissions = store.list_hive_loop_admissions(loop_id)?;
+    let stages = store.list_hive_loop_stages(loop_id)?;
     let verdicts = store.list_hive_loop_verdicts(loop_id)?;
     let issues = store.list_hive_issues_for_loop(loop_id)?;
     let packet_by_id = packets
@@ -972,6 +973,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .filter(|policy| policy.status == "active")
         .collect::<Vec<_>>();
     let policy_errors = active_policy_audit_errors(&active_policies);
+    let stage_sequence_errors = stage_sequence_audit_errors(&contract, &stages);
     let packet_sequence_errors = packet_sequence_audit_errors(&packets);
     let packet_errors = packets
         .iter()
@@ -1031,6 +1033,16 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
                 "expected_policy_count": DEFAULT_LOOP_POLICIES.len(),
                 "policy_errors": policy_errors
             }),
+        ),
+        audit_check(
+            "stage_sequence",
+            stage_sequence_errors.is_empty(),
+            format!(
+                "{} stages inspected; {} stage sequence issues.",
+                stages.len(),
+                stage_sequence_errors.len()
+            ),
+            serde_json::json!({ "stage_sequence_errors": stage_sequence_errors }),
         ),
         audit_check(
             "packet_sequence",
@@ -1472,6 +1484,114 @@ fn audit_check(
         passed,
         summary,
         details,
+    }
+}
+
+fn stage_sequence_audit_errors(
+    contract: &HiveLoopContract,
+    stages: &[HiveLoopStage],
+) -> Vec<serde_json::Value> {
+    let mut errors = Vec::new();
+    let mut groups: HashMap<(i64, &str), Vec<&HiveLoopStage>> = HashMap::new();
+    for stage in stages {
+        let mut row_errors = Vec::new();
+        if stage.round < 1 || stage.round > contract.current_round {
+            row_errors.push("stage.round");
+        }
+        if !canonical_stage_roles().contains(&stage.role.as_str()) {
+            row_errors.push("stage.role");
+        }
+        if stage.status != "done" {
+            row_errors.push("stage.status");
+        }
+        if !row_errors.is_empty() {
+            errors.push(serde_json::json!({
+                "scope": "stage_row",
+                "stage_id": stage.id,
+                "round": stage.round,
+                "role": stage.role,
+                "status": stage.status,
+                "current_round": contract.current_round,
+                "errors": row_errors
+            }));
+        }
+        groups
+            .entry((stage.round, stage.role.as_str()))
+            .or_default()
+            .push(stage);
+    }
+
+    for ((round, role), role_stages) in groups {
+        if role_stages.len() > 1 {
+            errors.push(serde_json::json!({
+                "scope": "stage_role",
+                "round": round,
+                "role": role,
+                "stage_ids": role_stages.iter().map(|stage| stage.id).collect::<Vec<_>>(),
+                "errors": ["stage.role_duplicate"]
+            }));
+        }
+    }
+
+    let expected_roles = expected_stage_roles_for_contract(contract);
+    if !expected_roles.is_empty() {
+        let missing_roles = expected_roles
+            .iter()
+            .copied()
+            .filter(|role| {
+                !stages.iter().any(|stage| {
+                    stage.round == contract.current_round && stage.role.as_str() == *role
+                })
+            })
+            .collect::<Vec<_>>();
+        if !missing_roles.is_empty() {
+            errors.push(serde_json::json!({
+                "scope": "stage_round",
+                "round": contract.current_round,
+                "status": contract.status,
+                "active_phase": contract.active_phase,
+                "expected_roles": expected_roles,
+                "missing_roles": missing_roles,
+                "errors": ["stage.role_missing"]
+            }));
+        }
+    }
+
+    errors.sort_by_key(|error| {
+        (
+            error
+                .get("round")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_default(),
+            error
+                .get("scope")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            error
+                .get("role")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        )
+    });
+    errors
+}
+
+fn canonical_stage_roles() -> [&'static str; 3] {
+    ["explorer", "doer", "evaluator"]
+}
+
+fn expected_stage_roles_for_contract(contract: &HiveLoopContract) -> Vec<&'static str> {
+    match contract.status.as_str() {
+        "kept" | "rejected" | "needs-review" => canonical_stage_roles().to_vec(),
+        "blocked" => match contract.active_phase.as_str() {
+            "explorer" => vec!["explorer"],
+            "doer" => vec!["explorer", "doer"],
+            "evaluator" | "complete" | "human-review" => canonical_stage_roles().to_vec(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
     }
 }
 
@@ -6224,6 +6344,100 @@ mod tests {
             .audit_failure_details
             .iter()
             .any(|detail| detail == "runtime_policy:worker_receipt:role_binding"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stage_sequence_audit_rejects_replayed_stages() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-stage-sequence-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Stage replay audit loop".to_string(),
+                goal: "Catch replayed stages in one round".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let doer_stage = report
+            .stages
+            .iter()
+            .find(|stage| stage.role == "doer")
+            .expect("doer stage should exist");
+        store
+            .insert_hive_loop_stage(HiveLoopStageCreate {
+                loop_id: doer_stage.loop_id,
+                round: doer_stage.round,
+                role: doer_stage.role.clone(),
+                status: doer_stage.status.clone(),
+                summary: doer_stage.summary.clone(),
+                input: doer_stage.input.clone(),
+                output: doer_stage.output.clone(),
+                started_at: doer_stage.started_at.clone(),
+                completed_at: doer_stage.completed_at.clone(),
+            })
+            .expect("replayed stage should insert");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let sequence_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "stage_sequence")
+            .expect("stage sequence audit should exist");
+        assert!(!sequence_check.passed);
+        assert!(sequence_check
+            .details
+            .pointer("/stage_sequence_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("stage.role_duplicate"))))));
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "stage_sequence:stage_role:stage.role_duplicate"));
+        let doctor_report = super::doctor(&store, created.contract.id)
+            .expect("doctor should include audit details");
+        assert!(doctor_report
+            .failed_checks
+            .iter()
+            .any(|check| check == "stage_sequence"));
+        assert!(doctor_report
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "stage_sequence:stage_role:stage.role_duplicate"));
 
         let _ = fs::remove_dir_all(root);
     }
