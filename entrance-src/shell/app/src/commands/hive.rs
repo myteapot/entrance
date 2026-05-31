@@ -10,7 +10,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -163,19 +163,29 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         }
         [scope, action, id, rest @ ..] if scope == "issue" && action == "comment" => {
             let body = flag_value(rest, "--body").unwrap_or_default();
-            print_json(&services.hive.issue_comment(IssueCommentRequest {
+            let card = services.hive.issue_comment(IssueCommentRequest {
                 issue_id: id.parse::<i64>()?,
                 author: flag_value(rest, "--author").unwrap_or("human").to_string(),
                 body: body.to_string(),
-            })?)
+            })?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_detail(&card))
+            } else {
+                print_json(&card)
+            }
         }
         [scope, action, id, decision, rest @ ..] if scope == "issue" && action == "decide" => {
-            print_json(&services.hive.issue_decide(IssueDecisionRequest {
+            let card = services.hive.issue_decide(IssueDecisionRequest {
                 issue_id: id.parse::<i64>()?,
                 action: decision.to_string(),
                 author: flag_value(rest, "--author").unwrap_or("human").to_string(),
                 body: flag_value(rest, "--body").map(ToOwned::to_owned),
-            })?)
+            })?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_detail(&card))
+            } else {
+                print_json(&card)
+            }
         }
         [scope, action, id, rest @ ..]
             if scope == "issue" && (action == "run" || action == "retry-run") =>
@@ -385,7 +395,7 @@ fn compact_issue_actions(card: &IssueCard) -> Vec<serde_json::Value> {
     actions.extend(
         compact_issue_options(card)
             .into_iter()
-            .filter_map(|option| compact_issue_option_action(card.issue.id, &option)),
+            .filter_map(|option| compact_issue_option_action(card, &option)),
     );
     actions
 }
@@ -406,30 +416,42 @@ fn compact_issue_options(card: &IssueCard) -> Vec<String> {
     .collect()
 }
 
-fn compact_issue_option_action(issue_id: i64, option: &str) -> Option<serde_json::Value> {
+fn compact_issue_option_action(card: &IssueCard, option: &str) -> Option<serde_json::Value> {
+    let issue_id = card.issue.id;
     match option {
         "comment" => Some(compact_issue_action(
             "comment",
             "Comment",
-            format!("entrance hive issue comment {issue_id} --body <text>"),
+            format!("entrance hive issue comment {issue_id} --body <text> --compact"),
         )),
         "retry" => Some(compact_issue_action(
             "retry",
             "Retry",
-            format!("entrance hive issue retry-run {issue_id} --body <note> --compact"),
+            compact_retry_command(card).unwrap_or_else(|| {
+                format!("entrance hive issue retry-run {issue_id} --body <note> --compact")
+            }),
         )),
         "request-review" => Some(compact_issue_action(
             "request-review",
             "Review",
-            format!("entrance hive issue decide {issue_id} request-review --body <note>"),
+            format!("entrance hive issue decide {issue_id} request-review --body <note> --compact"),
         )),
         "cancel" => Some(compact_issue_action(
             "cancel",
             "Cancel",
-            format!("entrance hive issue decide {issue_id} cancel --body <note>"),
+            format!("entrance hive issue decide {issue_id} cancel --body <note> --compact"),
         )),
         _ => None,
     }
+}
+
+fn compact_retry_command(card: &IssueCard) -> Option<String> {
+    card.doctor
+        .as_ref()?
+        .next_actions
+        .iter()
+        .find(|action| action.contains("entrance hive issue retry-run"))
+        .cloned()
 }
 
 fn compact_issue_action(action: &str, label: &str, command: String) -> serde_json::Value {
@@ -529,6 +551,12 @@ mod tests {
         );
         assert_eq!(
             blocked
+                .pointer("/issues/0/actions/0/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue comment 7 --body <text> --compact")
+        );
+        assert_eq!(
+            blocked
                 .pointer("/issues/0/actions/1/command")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue retry-run 7 --body <note> --compact")
@@ -538,6 +566,18 @@ mod tests {
                 .pointer("/issues/0/actions/2/action")
                 .and_then(|value| value.as_str()),
             Some("request-review")
+        );
+        assert_eq!(
+            blocked
+                .pointer("/issues/0/actions/2/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue decide 7 request-review --body <note> --compact")
+        );
+        assert_eq!(
+            blocked
+                .pointer("/issues/0/actions/3/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue decide 7 cancel --body <note> --compact")
         );
         let issue = blocked
             .pointer("/issues/0")

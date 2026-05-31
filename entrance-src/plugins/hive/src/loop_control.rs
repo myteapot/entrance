@@ -1493,19 +1493,19 @@ fn doctor_next_actions(
             if let Some(issue_id) = issue_id {
                 actions.push(retry_run_command(issue_id, runtime));
                 actions.push(format!(
-                    "entrance hive issue decide {issue_id} request-review --body <note>"
+                    "entrance hive issue decide {issue_id} request-review --body <note> --compact"
                 ));
             }
         }
         "needs_review" => {
             if let Some(issue_id) = issue_id {
-                actions.push(format!("entrance hive issue show {issue_id}"));
+                actions.push(format!("entrance hive issue show {issue_id} --compact"));
                 actions.push(retry_run_command(issue_id, runtime));
             }
         }
         "rejected" => {
             if let Some(issue_id) = issue_id {
-                actions.push(format!("entrance hive issue show {issue_id}"));
+                actions.push(format!("entrance hive issue show {issue_id} --compact"));
             }
         }
         "audit_failed" => {
@@ -6953,6 +6953,13 @@ mod tests {
             .next_actions
             .iter()
             .any(|action| action.contains("issue retry-run")));
+        assert!(doctor_report.next_actions.iter().any(|action| action
+            == &format!(
+                "entrance hive issue decide {} request-review --body <note> --compact",
+                doctor_report
+                    .issue_id
+                    .expect("blocked doctor should have issue")
+            )));
         let audit_report =
             super::audit(&store, created.contract.id).expect("blocked audit should resolve");
         let runtime_policy_check = audit_report
@@ -7801,6 +7808,10 @@ mod tests {
             .next_actions
             .iter()
             .any(|action| action.contains("issue retry-run")));
+        assert!(review_doctor
+            .next_actions
+            .iter()
+            .any(|action| action.contains("issue show") && action.contains("--compact")));
         assert!(!review_doctor
             .next_actions
             .iter()
