@@ -50,6 +50,7 @@ Local agent-loop MVP:
 ```powershell
 .\entrance.exe hive loop create --title "README loop" --goal "Run a constrained agent loop" --runtime codex
 .\entrance.exe hive loop run 1 --runtime codex
+.\entrance.exe hive loop run 1 --runtime codex --compact
 .\entrance.exe hive loop run 1 --runtime local --decision needs-review
 .\entrance.exe hive loop show 1
 .\entrance.exe hive loop trace 1
@@ -66,6 +67,9 @@ Local agent-loop MVP:
 `hive loop run` records a minimal compiler path in SQLite: active policies,
 versioned typed packets, receipt-aware admission gates, versioned admission
 receipts, stage evidence, and the versioned final verdict.
+Add `--compact` to `hive loop run`, `hive issue run`, or
+`hive issue retry-run` to print the Doctor summary after execution instead of
+the full packet/evidence transcript-heavy report.
 `hive policy registry` exposes the typed gate registry plus runtime worker
 policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
 required worker receipt fields, and role binding. `hive loop policies <id>`

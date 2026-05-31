@@ -10,7 +10,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list\n  entrance hive issue show <id>\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id>\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list\n  entrance hive issue show <id>\n  entrance hive issue comment <id> --body <text>\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -105,9 +105,10 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action] if scope == "policy" && action == "registry" => {
             print_json(&services.hive.policy_registry())
         }
-        [scope, action, id, rest @ ..] if scope == "loop" && action == "run" => print_json(
-            &services.hive.loop_run(HiveLoopRunRequest {
-                loop_id: id.parse::<i64>()?,
+        [scope, action, id, rest @ ..] if scope == "loop" && action == "run" => {
+            let loop_id = id.parse::<i64>()?;
+            let report = services.hive.loop_run(HiveLoopRunRequest {
+                loop_id,
                 runtime: flag_value(rest, "--runtime").map(ToOwned::to_owned),
                 decision: flag_value(rest, "--decision").map(ToOwned::to_owned),
                 worker_timeout_secs: flag_value(rest, "--worker-timeout-secs")
@@ -116,8 +117,13 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 worker_attempts: flag_value(rest, "--worker-attempts")
                     .map(str::parse)
                     .transpose()?,
-            })?,
-        ),
+            })?;
+            if flag_present(rest, "--compact") {
+                print_json(&services.hive.loop_doctor(loop_id)?)
+            } else {
+                print_json(&report)
+            }
+        }
         [scope, action, rest @ ..] if scope == "loop" && action == "create" => {
             let title = flag_value(rest, "--title").unwrap_or("Untitled loop");
             let goal = flag_value(rest, "--goal").unwrap_or(title);
@@ -164,22 +170,25 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action, id, rest @ ..]
             if scope == "issue" && (action == "run" || action == "retry-run") =>
         {
-            print_json(
-                &services.hive.issue_run(IssueRunRequest {
-                    issue_id: id.parse::<i64>()?,
-                    runtime: flag_value(rest, "--runtime").map(ToOwned::to_owned),
-                    decision: flag_value(rest, "--decision").map(ToOwned::to_owned),
-                    worker_timeout_secs: flag_value(rest, "--worker-timeout-secs")
-                        .map(str::parse)
-                        .transpose()?,
-                    worker_attempts: flag_value(rest, "--worker-attempts")
-                        .map(str::parse)
-                        .transpose()?,
-                    retry: action == "retry-run",
-                    author: flag_value(rest, "--author").unwrap_or("human").to_string(),
-                    body: flag_value(rest, "--body").map(ToOwned::to_owned),
-                })?,
-            )
+            let report = services.hive.issue_run(IssueRunRequest {
+                issue_id: id.parse::<i64>()?,
+                runtime: flag_value(rest, "--runtime").map(ToOwned::to_owned),
+                decision: flag_value(rest, "--decision").map(ToOwned::to_owned),
+                worker_timeout_secs: flag_value(rest, "--worker-timeout-secs")
+                    .map(str::parse)
+                    .transpose()?,
+                worker_attempts: flag_value(rest, "--worker-attempts")
+                    .map(str::parse)
+                    .transpose()?,
+                retry: action == "retry-run",
+                author: flag_value(rest, "--author").unwrap_or("human").to_string(),
+                body: flag_value(rest, "--body").map(ToOwned::to_owned),
+            })?;
+            if flag_present(rest, "--compact") {
+                print_json(&services.hive.loop_doctor(report.contract.id)?)
+            } else {
+                print_json(&report)
+            }
         }
         _ => bail!("unsupported hive command"),
     }
@@ -191,6 +200,10 @@ fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         .map(|values| values[1].as_str())
 }
 
+fn flag_present(args: &[String], flag: &str) -> bool {
+    args.iter().any(|value| value == flag)
+}
+
 fn csv_values(value: Option<&str>) -> Vec<String> {
     value
         .unwrap_or_default()
@@ -199,4 +212,22 @@ fn csv_values(value: Option<&str>) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{flag_present, flag_value};
+
+    #[test]
+    fn flags_read_values_and_presence_independently() {
+        let args = vec![
+            "--runtime".to_string(),
+            "codex".to_string(),
+            "--compact".to_string(),
+        ];
+        assert_eq!(flag_value(&args, "--runtime"), Some("codex"));
+        assert_eq!(flag_value(&args, "--compact"), None);
+        assert!(flag_present(&args, "--compact"));
+        assert!(!flag_present(&args, "--missing"));
+    }
 }

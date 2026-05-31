@@ -11,6 +11,7 @@ cargo run -p entrance-app --bin entrance -- hive summary
 cargo run -p entrance-app --bin entrance -- hive loop create --title "Local loop" --goal "Run the Hive loop MVP" --runtime codex
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex --worker-timeout-secs 20 --worker-attempts 2
+cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex --compact
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime local --decision reject
 cargo run -p entrance-app --bin entrance -- hive issue list
 cargo run -p entrance-app --bin entrance -- hive issue show 1
@@ -21,6 +22,9 @@ cargo run -p entrance-app --bin entrance -- launcher list
 `hive loop run` returns the local compiler trace for the round: policy rows,
 versioned typed packet envelopes, versioned admission receipts, evidence, and
 versioned verdict receipts.
+Use `--compact` on `hive loop run`, `hive issue run`, or `hive issue retry-run`
+when running `codex`; the loop still records full worker transcripts in SQLite,
+but the CLI prints the Doctor summary instead of the full report.
 Admission receipts include the packet receipt requirements, missing receipt
 fields, and a boolean satisfied flag. Default MVP gates admit packets only when
 their typed receipt requirements are present. Worker receipts are stricter than
