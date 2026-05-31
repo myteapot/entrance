@@ -437,6 +437,24 @@
   background: rgba(255, 255, 255, 0.025);
 }
 
+.audit-preview {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.audit-preview span {
+  display: block;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 193, 7, 0.08);
+  color: #ffd86b;
+  font-size: 0.74rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
 .panel--board .issue-card .trace-strip {
   max-height: 156px;
   overflow: hidden;

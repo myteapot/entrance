@@ -756,6 +756,17 @@ export default function App() {
 
   const cardDoctor = (card: IssueCard) => card.doctor;
 
+  const cardAuditFailureDetails = (card: IssueCard) =>
+    card.doctor?.audit_failure_details.length
+      ? card.doctor.audit_failure_details
+      : card.trace?.audit_failure_details ?? [];
+
+  const compactAuditFailureDetail = (detail: string) => {
+    const parts = detail.split(":").filter(Boolean);
+    if (parts.length < 2) return detail;
+    return `${parts[0]} / ${parts[parts.length - 1]}`;
+  };
+
   const issueDetailRows = (card: IssueCard) => {
     const trace = card.trace;
     return [
@@ -1339,6 +1350,18 @@ export default function App() {
                                   </div>
                                 )}
                               </Show>
+                              {cardAuditFailureDetails(card).length ? (
+                                <div class="audit-preview">
+                                  {cardAuditFailureDetails(card)
+                                    .slice(0, 2)
+                                    .map((detail) => (
+                                      <span title={detail}>{compactAuditFailureDetail(detail)}</span>
+                                    ))}
+                                  {cardAuditFailureDetails(card).length > 2 ? (
+                                    <span>+{cardAuditFailureDetails(card).length - 2} more</span>
+                                  ) : null}
+                                </div>
+                              ) : null}
                               {card.trace ? (
                                 <div class="trace-strip">
                                   <span class="trace-pill">R {card.trace.current_round}</span>
