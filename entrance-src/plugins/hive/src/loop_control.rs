@@ -977,6 +977,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
     let stages = store.list_hive_loop_stages(loop_id)?;
     let verdicts = store.list_hive_loop_verdicts(loop_id)?;
     let issues = store.list_hive_issues_for_loop(loop_id)?;
+    let evidence = store.list_hive_loop_evidence(loop_id)?;
     let packet_by_id = packets
         .iter()
         .map(|packet| (packet.id, packet))
@@ -987,7 +988,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .filter(|policy| policy.status == "active")
         .collect::<Vec<_>>();
     let policy_errors = active_policy_audit_errors(&active_policies);
-    let stage_sequence_errors = stage_sequence_audit_errors(&contract, &stages);
+    let stage_sequence_errors = stage_sequence_audit_errors(&contract, &stages, &evidence);
     let packet_sequence_errors = packet_sequence_audit_errors(&packets);
     let packet_errors = packets
         .iter()
@@ -1015,7 +1016,6 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .filter_map(worker_receipt_audit_errors)
         .collect::<Vec<_>>();
     let runtime_policy_errors = runtime_policy_audit_errors(&contract, &packets);
-    let evidence = store.list_hive_loop_evidence(loop_id)?;
     let mut verdict_errors = verdicts
         .iter()
         .filter_map(verdict_audit_errors)
@@ -1559,6 +1559,7 @@ fn retry_run_command(issue_id: i64, runtime: &str) -> String {
 fn stage_sequence_audit_errors(
     contract: &HiveLoopContract,
     stages: &[HiveLoopStage],
+    evidence: &[HiveLoopEvidence],
 ) -> Vec<serde_json::Value> {
     let mut errors = Vec::new();
     let mut groups: HashMap<(i64, &str), Vec<&HiveLoopStage>> = HashMap::new();
@@ -1602,7 +1603,10 @@ fn stage_sequence_audit_errors(
         }
     }
 
-    let expected_roles = expected_stage_roles_for_contract(contract);
+    let admission_rejection_role =
+        current_round_admission_rejection_role(contract, stages, evidence);
+    let expected_roles =
+        expected_stage_roles_for_contract(contract, admission_rejection_role.as_deref());
     if !expected_roles.is_empty() {
         let missing_roles = expected_roles
             .iter()
@@ -1651,10 +1655,22 @@ fn canonical_stage_roles() -> [&'static str; 3] {
     ["explorer", "doer", "evaluator"]
 }
 
-fn expected_stage_roles_for_contract(contract: &HiveLoopContract) -> Vec<&'static str> {
+fn expected_stage_roles_for_contract(
+    contract: &HiveLoopContract,
+    admission_rejection_role: Option<&str>,
+) -> Vec<&'static str> {
     match contract.status.as_str() {
-        "kept" | "rejected" | "needs-review" => canonical_stage_roles().to_vec(),
+        "kept" | "rejected" => canonical_stage_roles().to_vec(),
+        "needs-review"
+            if contract.active_phase == "human-review" && admission_rejection_role.is_some() =>
+        {
+            expected_stage_roles_through(admission_rejection_role.unwrap_or_default())
+        }
+        "needs-review" => canonical_stage_roles().to_vec(),
         "blocked" => match contract.active_phase.as_str() {
+            _ if admission_rejection_role.is_some() => {
+                expected_stage_roles_through(admission_rejection_role.unwrap_or_default())
+            }
             "explorer" => vec!["explorer"],
             "doer" => vec!["explorer", "doer"],
             "evaluator" | "complete" | "human-review" => canonical_stage_roles().to_vec(),
@@ -1662,6 +1678,40 @@ fn expected_stage_roles_for_contract(contract: &HiveLoopContract) -> Vec<&'stati
         },
         _ => Vec::new(),
     }
+}
+
+fn expected_stage_roles_through(role: &str) -> Vec<&'static str> {
+    match role {
+        "explorer" => vec!["explorer"],
+        "doer" => vec!["explorer", "doer"],
+        "evaluator" => canonical_stage_roles().to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+fn current_round_admission_rejection_role(
+    contract: &HiveLoopContract,
+    stages: &[HiveLoopStage],
+    evidence: &[HiveLoopEvidence],
+) -> Option<String> {
+    let stages_by_id = stages
+        .iter()
+        .map(|stage| (stage.id, stage))
+        .collect::<HashMap<_, _>>();
+    evidence.iter().find_map(|row| {
+        if row.round != contract.current_round || row.kind != "admission_rejection" {
+            return None;
+        }
+        row.stage_id
+            .and_then(|stage_id| stages_by_id.get(&stage_id))
+            .map(|stage| stage.role.clone())
+            .or_else(|| {
+                row.payload
+                    .get("phase")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned)
+            })
+    })
 }
 
 fn stage_evidence_audit_errors(
@@ -1676,6 +1726,9 @@ fn stage_evidence_audit_errors(
         .collect::<HashMap<_, _>>();
     let mut stage_evidence_groups: HashMap<(i64, &str), Vec<&HiveLoopEvidence>> = HashMap::new();
 
+    let admission_rejection_role =
+        current_round_admission_rejection_role(contract, stages, evidence);
+
     for row in evidence {
         match row.stage_id {
             Some(stage_id) => {
@@ -1687,7 +1740,11 @@ fn stage_evidence_audit_errors(
                     if row.round != stage.round {
                         row_errors.push("evidence.stage_round");
                     }
-                    let expected_kind = expected_stage_evidence_kind(contract, stage);
+                    let expected_kind = expected_stage_evidence_kind(
+                        contract,
+                        stage,
+                        admission_rejection_role.as_deref(),
+                    );
                     if stage.round == contract.current_round
                         && expected_kind.is_some_and(|expected| expected != row.kind)
                     {
@@ -1741,14 +1798,17 @@ fn stage_evidence_audit_errors(
         }
     }
 
-    let expected_roles = expected_stage_roles_for_contract(contract);
+    let expected_roles =
+        expected_stage_roles_for_contract(contract, admission_rejection_role.as_deref());
     for stage in stages.iter().filter(|stage| {
         stage.round == contract.current_round
             && expected_roles
                 .iter()
                 .any(|role| *role == stage.role.as_str())
     }) {
-        let Some(expected_kind) = expected_stage_evidence_kind(contract, stage) else {
+        let Some(expected_kind) =
+            expected_stage_evidence_kind(contract, stage, admission_rejection_role.as_deref())
+        else {
             continue;
         };
         if !evidence
@@ -1794,7 +1854,13 @@ fn stage_evidence_audit_errors(
 fn expected_stage_evidence_kind(
     contract: &HiveLoopContract,
     stage: &HiveLoopStage,
+    admission_rejection_role: Option<&str>,
 ) -> Option<&'static str> {
+    if stage.round == contract.current_round
+        && admission_rejection_role.is_some_and(|role| role == stage.role.as_str())
+    {
+        return Some("admission_rejection");
+    }
     if contract.status == "blocked"
         && stage.round == contract.current_round
         && contract.active_phase == stage.role
@@ -7804,6 +7870,8 @@ mod tests {
             .as_ref()
             .expect("review card should include doctor summary");
         assert_eq!(review_doctor.health, "needs_review");
+        assert_eq!(review_doctor.counts.audit_failed_count, 1);
+        assert_eq!(review_doctor.failed_checks, vec!["runtime_policy"]);
         assert!(review_doctor
             .next_actions
             .iter()
@@ -7853,6 +7921,7 @@ mod tests {
             .trace
             .as_ref()
             .expect("review card should retain loop trace");
+        assert_eq!(review_trace.audit_failed_count, 1);
         assert_eq!(review_trace.operator_event_count, 1);
         assert_eq!(review_trace.round_operator_event_count, 1);
         assert_eq!(
@@ -7882,6 +7951,21 @@ mod tests {
             review_decision_summary.operator_action.as_deref(),
             Some("request-review")
         );
+        let review_audit =
+            super::audit(&store, created.contract.id).expect("review audit should resolve");
+        assert!(!review_audit.passed);
+        assert!(review_audit
+            .checks
+            .iter()
+            .any(|check| check.name == "stage_sequence" && check.passed));
+        assert!(review_audit
+            .checks
+            .iter()
+            .any(|check| check.name == "stage_evidence" && check.passed));
+        assert!(review_audit
+            .checks
+            .iter()
+            .any(|check| check.name == "runtime_policy" && !check.passed));
 
         let retry_card = decide_issue(
             &store,

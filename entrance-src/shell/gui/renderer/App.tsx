@@ -607,6 +607,8 @@ export default function App() {
 
   const issueOptionDisabled = (card: IssueCard, option: string) =>
     Boolean(issuePendingLabel(card.issue.id)) || (option === "retry" && !card.issue.loop_id);
+  const issueDecisionOptions = (card: IssueCard) =>
+    card.trace?.human_options.filter((option) => option !== "comment") ?? [];
 
   const runIssueOption = (card: IssueCard, option: string) => {
     setSelectedIssueId(card.issue.id);
@@ -1204,6 +1206,17 @@ export default function App() {
                             >
                               {issuePendingLabel(card.issue.id) ?? "Send"}
                             </button>
+                            {issueDecisionOptions(card).map((option) => (
+                              <button
+                                type="button"
+                                aria-label={`${issueOptionLabel(option)} issue #${card.issue.id} from detail composer`}
+                                data-testid={`issue-action-detail-composer-${option}-${card.issue.id}`}
+                                disabled={issueOptionDisabled(card, option)}
+                                onClick={() => runIssueOption(card, option)}
+                              >
+                                {issuePendingLabel(card.issue.id) ?? issueOptionLabel(option)}
+                              </button>
+                            ))}
                             <button
                               type="button"
                               aria-label={`Close detail issue #${card.issue.id} comment`}
@@ -1520,19 +1533,17 @@ export default function App() {
                                   >
                                     {issuePendingLabel(card.issue.id) ?? "Send"}
                                   </button>
-                                  {card.trace?.human_options
-                                    .filter((option) => option !== "comment")
-                                    .map((option) => (
-                                      <button
-                                        type="button"
-                                        aria-label={`${issueOptionLabel(option)} issue #${card.issue.id} from board composer`}
-                                        data-testid={`issue-action-board-composer-${option}-${card.issue.id}`}
-                                        disabled={issueOptionDisabled(card, option)}
-                                        onClick={() => runIssueOption(card, option)}
-                                      >
-                                        {issuePendingLabel(card.issue.id) ?? issueOptionLabel(option)}
-                                      </button>
-                                    ))}
+                                  {issueDecisionOptions(card).map((option) => (
+                                    <button
+                                      type="button"
+                                      aria-label={`${issueOptionLabel(option)} issue #${card.issue.id} from board composer`}
+                                      data-testid={`issue-action-board-composer-${option}-${card.issue.id}`}
+                                      disabled={issueOptionDisabled(card, option)}
+                                      onClick={() => runIssueOption(card, option)}
+                                    >
+                                      {issuePendingLabel(card.issue.id) ?? issueOptionLabel(option)}
+                                    </button>
+                                  ))}
                                   <button
                                     type="button"
                                     aria-label={`Close board issue #${card.issue.id} comment`}
