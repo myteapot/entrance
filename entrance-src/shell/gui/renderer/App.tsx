@@ -263,6 +263,11 @@ type ConnectorQueueReport = {
   publish_required_count: number;
   providers: ConnectorQueueProvider[];
   issues: ConnectorQueueIssue[];
+  commands?: {
+    refresh?: string | null;
+    provider?: string | null;
+    publish_plan?: string | null;
+  } | null;
 };
 
 type ConnectorQueueProvider = {
@@ -297,12 +302,52 @@ type ConnectorQueueIssue = {
   current: boolean | null;
   reason: string | null;
   path: string | null;
+  current_sha256?: string | null;
+  remote_sha256?: string | null;
+  current_comment_count?: number | null;
+  remote_comment_count?: number | null;
   failed_checks: string[];
   failed_check_count: number;
   commands: {
     publish: string | null;
     readback: string | null;
     admit: string | null;
+  };
+};
+
+type ConnectorPublishPlan = {
+  schema_version: string;
+  plan_id: string;
+  provider_filter: string | null;
+  provider_known: boolean;
+  issue_count: number;
+  can_execute: boolean;
+  reason: string;
+  blockers: string[];
+  issues: Array<{
+    id: number | null;
+    provider: string | null;
+    path: string | null;
+    current_sha256: string | null;
+  }>;
+  commands: {
+    plan: string;
+    execute: string | null;
+  };
+};
+
+type ConnectorPublishExecuteReport = {
+  schema_version: string;
+  executed: boolean;
+  reason: string;
+  plan_id?: string | null;
+  current_plan_id?: string | null;
+  issue_count?: number | null;
+  issue_ids?: number[];
+  failed_checks?: string[];
+  after?: {
+    publish_required_count?: number | null;
+    current_count?: number | null;
   };
 };
 
@@ -546,6 +591,9 @@ export default function App() {
   const [drawerTitle, setDrawerTitle] = createSignal("");
   const [drawerBody, setDrawerBody] = createSignal("");
   const [banner, setBanner] = createSignal<string>("");
+  const [connectorPublishPlan, setConnectorPublishPlan] =
+    createSignal<ConnectorPublishPlan | null>(null);
+  const [connectorPublishAction, setConnectorPublishAction] = createSignal<string | null>(null);
 
   const [status, { refetch: refetchStatus }] = createResource(async () =>
     bridge.invoke<AppStatus>("status"),
@@ -646,6 +694,7 @@ export default function App() {
     );
 
   const refreshAll = async () => {
+    setConnectorPublishPlan(null);
     await Promise.all([
       refetchStatus(),
       refetchDrawerSummary(),
@@ -822,6 +871,7 @@ export default function App() {
     if (issuePendingLabel(card.issue.id)) return;
     setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Publishing");
+    setConnectorPublishPlan(null);
     try {
       const report = await bridge.invoke<IssueMirrorPublishReport>("hive_issue_mirror_publish", {
         issueId: card.issue.id,
@@ -832,6 +882,51 @@ export default function App() {
     } finally {
       setPendingIssue(card.issue.id, null);
       refetchIssueCardsQuietly();
+    }
+  };
+  const planConnectorPublish = async () => {
+    if (connectorPublishAction()) return;
+    setConnectorPublishAction("Planning");
+    try {
+      const plan = await bridge.invoke<ConnectorPublishPlan>("hive_connector_publish_plan", {});
+      setConnectorPublishPlan(plan);
+      setBanner(
+        plan.can_execute
+          ? `Connector publish plan ${compactText(plan.plan_id, 12)}: ${plan.issue_count} issues.`
+          : `Connector publish plan blocked: ${plan.reason}`,
+      );
+    } catch (error) {
+      setBanner(`Connector publish plan failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setConnectorPublishAction(null);
+      void refetchConnectorQueue();
+    }
+  };
+  const executeConnectorPublishPlan = async () => {
+    const plan = connectorPublishPlan();
+    if (!plan?.can_execute || connectorPublishAction()) return;
+    setConnectorPublishAction("Executing");
+    try {
+      const report = await bridge.invoke<ConnectorPublishExecuteReport>(
+        "hive_connector_publish_execute",
+        { planId: plan.plan_id },
+      );
+      if (report.executed) {
+        setBanner(
+          `Connector publish executed ${compactText(plan.plan_id, 12)}: ${report.issue_count ?? 0} issues.`,
+        );
+        setConnectorPublishPlan(null);
+      } else {
+        setBanner(`Connector publish skipped: ${report.reason}`);
+        if (report.current_plan_id) {
+          setConnectorPublishPlan(null);
+        }
+      }
+    } catch (error) {
+      setBanner(`Connector publish execute failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setConnectorPublishAction(null);
+      await Promise.all([refetchIssueCards(), refetchConnectorQueue()]);
     }
   };
   const verifyIssueMirror = async (card: IssueCard) => {
@@ -1508,6 +1603,10 @@ export default function App() {
     issuePendingLabel(card.issue.id) === "Reading" ? "Reading" : "Readback";
   const issueMirrorAdmitLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Admitting" ? "Admitting" : "Admit";
+  const connectorPublishPlanLabel = () =>
+    connectorPublishAction() === "Planning" ? "Planning" : "Plan";
+  const connectorPublishExecuteLabel = () =>
+    connectorPublishAction() === "Executing" ? "Executing" : "Execute";
 
   const compactAuditFailureDetail = (detail: string) => {
     const parts = detail.split(":").filter(Boolean);
@@ -2244,7 +2343,35 @@ export default function App() {
                         ? `${connectorPublishRequiredCount()} publish required`
                         : "all current"}
                     </span>
+                    {connectorPublishPlan() ? (
+                      <span title={connectorPublishPlan()?.plan_id}>
+                        plan {compactText(connectorPublishPlan()?.plan_id ?? "", 12)}
+                      </span>
+                    ) : null}
                   </div>
+                  <button
+                    type="button"
+                    aria-label="Plan connector queue publish"
+                    data-testid="connector-publish-queue-plan"
+                    disabled={Boolean(connectorPublishAction())}
+                    title={connectorQueue()?.commands?.publish_plan ?? "entrance hive connector publish-plan --compact"}
+                    onClick={() => void planConnectorPublish()}
+                  >
+                    {connectorPublishPlanLabel()}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Execute connector queue publish plan"
+                    data-testid="connector-publish-queue-execute"
+                    disabled={
+                      Boolean(connectorPublishAction()) ||
+                      !connectorPublishPlan()?.can_execute
+                    }
+                    title={connectorPublishPlan()?.commands.execute ?? "publish plan required"}
+                    onClick={() => void executeConnectorPublishPlan()}
+                  >
+                    {connectorPublishExecuteLabel()}
+                  </button>
                   {connectorQueueProviders().map((provider) => (
                     <span
                       class={`connector-provider connector-provider--${connectorQueueProviderTone(provider)}`}

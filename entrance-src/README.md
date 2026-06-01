@@ -62,6 +62,8 @@ Local agent-loop MVP:
 .\entrance.exe hive connector registry --compact
 .\entrance.exe hive connector queue --compact
 .\entrance.exe hive connector queue --provider linear --compact
+.\entrance.exe hive connector publish-plan --compact
+.\entrance.exe hive connector publish-execute --plan-id <sha256> --compact
 .\entrance.exe hive issue list
 .\entrance.exe hive issue show 1
 .\entrance.exe hive issue connector-admission 1 --compact
@@ -124,9 +126,12 @@ the issue is bound to a loop, mirrors it into the loop ledger as
 Compact issue surfaces include connector mirror status: `hive issue show
 <id> --compact` exposes the issue's `connector` block, and `hive issue list
 --compact` also returns a `connector_queue` for publish-required mirrors.
-`hive connector queue --compact` exposes the provider-scoped publish queue and
-`hive connector queue --provider <name> --compact` narrows the dry-run plan to a
-single issue-surface provider. `hive connector registry --compact` exposes
+`hive connector queue --compact` exposes the provider-scoped publish queue,
+`hive connector queue --provider <name> --compact` narrows the queue to a
+single issue-surface provider, and `hive connector publish-plan --compact`
+produces a digest-bound two-step plan before
+`hive connector publish-execute --plan-id <sha256> --compact` writes local
+connector mirrors. `hive connector registry --compact` exposes
 active/planned issue-surface providers, provider-specific admission status, and
 the connector admission gate, while `hive issue
 connector-admission <id> --compact` dry-runs whether the current mirror can be

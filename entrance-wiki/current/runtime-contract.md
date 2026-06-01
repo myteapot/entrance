@@ -18,6 +18,8 @@ cargo run -p entrance-app --bin entrance -- hive issue show 1
 cargo run -p entrance-app --bin entrance -- hive connector registry --compact
 cargo run -p entrance-app --bin entrance -- hive connector queue --compact
 cargo run -p entrance-app --bin entrance -- hive connector queue --provider linear --compact
+cargo run -p entrance-app --bin entrance -- hive connector publish-plan --compact
+cargo run -p entrance-app --bin entrance -- hive connector publish-execute --plan-id <sha256> --compact
 cargo run -p entrance-app --bin entrance -- hive issue connector-admission 1 --compact
 cargo run -p entrance-app --bin entrance -- hive issue decide 1 request-review --body "Need human call"
 cargo run -p entrance-app --bin entrance -- launcher list
@@ -119,7 +121,11 @@ it distinguishes active local/file providers from planned Linear/GitHub
 providers, names the admission gate, and exposes provider-specific admission
 status/blockers. `hive connector queue --compact` returns a provider-scoped
 publish queue, and `--provider <name>` narrows the dry-run plan to one
-issue-surface provider. `hive issue connector-admission <id>
+issue-surface provider. `hive connector publish-plan --compact` creates a
+digest-bound local mirror publish plan from the current queue; `hive connector
+publish-execute --plan-id <sha256> --compact` recomputes that plan and refuses
+to execute if the queue or issue mirror digest changed. `hive issue
+connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`.
 Provider overrides are read from `entrance.toml` under `[connectors.<provider>]`.

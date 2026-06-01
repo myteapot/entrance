@@ -26,6 +26,8 @@ const ISSUE_MIRROR_AUDIT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_audi
 const ISSUE_MIRROR_READBACK_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_readback.v1";
 const ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_admission.v1";
 const CONNECTOR_PUBLISH_HINT_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_hint.v1";
+const CONNECTOR_PUBLISH_PLAN_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_plan.v1";
+const CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_execute.v1";
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
@@ -49,7 +51,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -165,6 +167,21 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action, rest @ ..] if scope == "connector" && action == "queue" => print_json(
             &connector_queue_report(services, flag_value(rest, "--provider"))?,
         ),
+        [scope, action, rest @ ..] if scope == "connector" && action == "publish-plan" => {
+            print_json(&connector_publish_plan_report(
+                services,
+                flag_value(rest, "--provider"),
+            )?)
+        }
+        [scope, action, rest @ ..] if scope == "connector" && action == "publish-execute" => {
+            let plan_id = flag_value(rest, "--plan-id")
+                .context("hive connector publish-execute requires --plan-id <sha256>")?;
+            print_json(&execute_connector_publish_plan(
+                services,
+                flag_value(rest, "--provider"),
+                plan_id,
+            )?)
+        }
         [scope, action, id, rest @ ..] if scope == "loop" && action == "run" => {
             let loop_id = id.parse::<i64>()?;
             let report = services.hive.loop_run(HiveLoopRunRequest {
@@ -2356,6 +2373,86 @@ pub(crate) fn connector_queue_report(
     ))
 }
 
+pub(crate) fn connector_publish_plan_report(
+    services: &AppServices,
+    provider_filter: Option<&str>,
+) -> Result<serde_json::Value> {
+    let queue = connector_queue_report(services, provider_filter)?;
+    compact_connector_publish_plan(&queue)
+}
+
+pub(crate) fn execute_connector_publish_plan(
+    services: &AppServices,
+    provider_filter: Option<&str>,
+    expected_plan_id: &str,
+) -> Result<serde_json::Value> {
+    let plan = connector_publish_plan_report(services, provider_filter)?;
+    let current_plan_id = plan
+        .pointer("/plan_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if current_plan_id != expected_plan_id {
+        return Ok(serde_json::json!({
+            "schema_version": CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION,
+            "executed": false,
+            "reason": "plan_id_mismatch",
+            "expected_plan_id": expected_plan_id,
+            "current_plan_id": current_plan_id.as_str(),
+            "failed_checks": ["connector_publish_plan_current"],
+            "current_plan": plan
+        }));
+    }
+    let can_execute = plan
+        .pointer("/can_execute")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !can_execute {
+        return Ok(serde_json::json!({
+            "schema_version": CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION,
+            "executed": false,
+            "reason": plan.pointer("/reason").and_then(|value| value.as_str()).unwrap_or("plan_not_executable"),
+            "plan_id": current_plan_id.as_str(),
+            "failed_checks": plan.pointer("/blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "current_plan": plan
+        }));
+    }
+
+    let issue_ids = plan
+        .pointer("/issues")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|issue| issue.pointer("/id").and_then(|value| value.as_i64()))
+        .collect::<Vec<_>>();
+    let mut published = Vec::new();
+    for issue_id in &issue_ids {
+        published.push(publish_issue_mirror_to_file(services, *issue_id, None)?);
+    }
+    let after_queue = connector_queue_report(services, provider_filter)?;
+    Ok(serde_json::json!({
+        "schema_version": CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION,
+        "executed": true,
+        "reason": "plan_executed",
+        "plan_id": current_plan_id.as_str(),
+        "provider_filter": plan.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+        "issue_count": issue_ids.len(),
+        "issue_ids": issue_ids,
+        "published": published,
+        "after": {
+            "publish_required_count": after_queue.pointer("/publish_required_count").and_then(|value| value.as_u64()),
+            "current_count": after_queue.pointer("/current_count").and_then(|value| value.as_u64()),
+            "queue": after_queue
+        },
+        "commands": {
+            "refresh": "entrance hive connector queue --compact",
+            "plan": connector_publish_plan_command(provider_filter),
+            "execute": format!("{} --plan-id {} --compact", connector_publish_execute_command_prefix(provider_filter), current_plan_id)
+        }
+    }))
+}
+
 fn connector_provider_for_surface<'a>(
     registry: &'a ConnectorRegistryReport,
     provider_name: &str,
@@ -2459,9 +2556,161 @@ fn compact_connector_queue(
         "issues": publish_required,
         "commands": {
             "refresh": "entrance hive connector queue --compact",
-            "provider": "entrance hive connector queue --provider <name> --compact"
+            "provider": "entrance hive connector queue --provider <name> --compact",
+            "publish_plan": connector_publish_plan_command(provider_filter.as_deref())
         }
     })
+}
+
+fn compact_connector_publish_plan(queue: &serde_json::Value) -> Result<serde_json::Value> {
+    let provider_filter = queue
+        .pointer("/provider_filter")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let provider_known = queue
+        .pointer("/provider_known")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let issues = queue
+        .pointer("/issues")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(compact_connector_publish_plan_issue)
+        .collect::<Vec<_>>();
+    let mut blockers = Vec::new();
+    if !provider_known {
+        blockers.push("provider_unknown".to_string());
+    }
+    for issue in &issues {
+        if issue
+            .pointer("/id")
+            .and_then(|value| value.as_i64())
+            .is_none()
+        {
+            blockers.push("issue_id_missing".to_string());
+        }
+        if issue
+            .pointer("/commands/publish")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
+        {
+            blockers.push("publish_command_missing".to_string());
+        }
+        if issue
+            .pointer("/current_sha256")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
+        {
+            blockers.push("current_digest_missing".to_string());
+        }
+    }
+    blockers.sort();
+    blockers.dedup();
+    let basis = serde_json::json!({
+        "schema_version": CONNECTOR_PUBLISH_PLAN_SCHEMA_VERSION,
+        "provider_filter": provider_filter,
+        "issues": issues.clone()
+    });
+    let plan_id = json_sha256(&basis)?;
+    let can_execute = blockers.is_empty() && !issues.is_empty();
+    let reason = if !provider_known {
+        "provider_unknown"
+    } else if issues.is_empty() {
+        "queue_empty"
+    } else if blockers.is_empty() {
+        "ready"
+    } else {
+        "plan_blocked"
+    };
+    Ok(serde_json::json!({
+        "schema_version": CONNECTOR_PUBLISH_PLAN_SCHEMA_VERSION,
+        "plan_id": plan_id,
+        "provider_filter": basis.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+        "provider_known": provider_known,
+        "issue_count": issues.len(),
+        "can_execute": can_execute,
+        "reason": reason,
+        "blockers": blockers,
+        "issues": issues,
+        "basis": basis,
+        "commands": {
+            "refresh": "entrance hive connector queue --compact",
+            "plan": connector_publish_plan_command(
+                queue.pointer("/provider_filter").and_then(|value| value.as_str())
+            ),
+            "execute": if can_execute {
+                Some(format!(
+                    "{} --plan-id {} --compact",
+                    connector_publish_execute_command_prefix(
+                        queue.pointer("/provider_filter").and_then(|value| value.as_str())
+                    ),
+                    plan_id
+                ))
+            } else {
+                None
+            }
+        }
+    }))
+}
+
+fn compact_connector_publish_plan_issue(issue: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "id": issue.pointer("/id").and_then(|value| value.as_i64()),
+        "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
+        "provider": issue.pointer("/provider").and_then(|value| value.as_str()),
+        "provider_status": issue.pointer("/provider_status").and_then(|value| value.as_str()),
+        "review_surface": issue.pointer("/review_surface").and_then(|value| value.as_str()),
+        "status": issue.pointer("/status").and_then(|value| value.as_str()),
+        "reason": issue.pointer("/reason").and_then(|value| value.as_str()),
+        "path": issue.pointer("/path").and_then(|value| value.as_str()),
+        "current_sha256": issue.pointer("/current_sha256").and_then(|value| value.as_str()),
+        "remote_sha256": issue.pointer("/remote_sha256").and_then(|value| value.as_str()),
+        "current_comment_count": issue.pointer("/current_comment_count").and_then(|value| value.as_u64()),
+        "remote_comment_count": issue.pointer("/remote_comment_count").and_then(|value| value.as_u64()),
+        "failed_checks": issue.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "admission_status": issue.pointer("/admission_status").and_then(|value| value.as_str()),
+        "admission_blockers": issue.pointer("/admission_blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "commands": {
+            "publish": issue.pointer("/commands/publish").and_then(|value| value.as_str()),
+            "readback": issue.pointer("/commands/readback").and_then(|value| value.as_str()),
+            "admit": issue.pointer("/commands/admit").and_then(|value| value.as_str())
+        },
+        "dry_run_action": {
+            "schema_version": "entrance.hive.connector_publish_plan_item.v1",
+            "action": "publish",
+            "remote_write": false,
+            "would_write": "local connector mirror file"
+        }
+    })
+}
+
+fn connector_publish_plan_command(provider_filter: Option<&str>) -> String {
+    format!(
+        "{} --compact",
+        connector_command_with_provider("entrance hive connector publish-plan", provider_filter)
+    )
+}
+
+fn connector_publish_execute_command_prefix(provider_filter: Option<&str>) -> String {
+    connector_command_with_provider("entrance hive connector publish-execute", provider_filter)
+}
+
+fn connector_command_with_provider(base: &str, provider_filter: Option<&str>) -> String {
+    match normalized_provider_filter(provider_filter) {
+        Some(provider) => format!("{base} --provider {provider}"),
+        None => base.to_string(),
+    }
+}
+
+fn json_sha256(value: &serde_json::Value) -> Result<String> {
+    let payload = serde_json::to_vec(value)?;
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    Ok(encode_hex(&hasher.finalize()))
 }
 
 fn compact_connector_queue_provider(
@@ -2571,6 +2820,10 @@ fn compact_connector_queue_issue(
         "current": issue.pointer("/connector/current").and_then(|value| value.as_bool()),
         "reason": issue.pointer("/connector/reason").and_then(|value| value.as_str()),
         "path": issue.pointer("/connector/path").and_then(|value| value.as_str()),
+        "current_sha256": issue.pointer("/connector/current_sha256").and_then(|value| value.as_str()),
+        "remote_sha256": issue.pointer("/connector/remote_sha256").and_then(|value| value.as_str()),
+        "current_comment_count": issue.pointer("/connector/current_comment_count").and_then(|value| value.as_u64()),
+        "remote_comment_count": issue.pointer("/connector/remote_comment_count").and_then(|value| value.as_u64()),
         "failed_checks": failed_checks,
         "failed_check_count": failed_check_count,
         "commands": {
@@ -2825,14 +3078,14 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        compact_connector_queue, compact_issue_board, compact_issue_detail, compact_issue_mirror,
-        compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
-        compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
-        compact_issue_mirror_publish, compact_issue_mirror_readback,
-        compact_issue_mirror_readback_summary, compact_issue_mirror_status,
-        compact_issue_mirror_sync, compact_issue_mirror_verify, compact_loop_audit,
-        default_issue_mirror_path, flag_present, flag_value, issue_mirror_sync_receipt,
-        mirror_receipt_path, MirrorFileDigest,
+        compact_connector_publish_plan, compact_connector_queue, compact_issue_board,
+        compact_issue_detail, compact_issue_mirror, compact_issue_mirror_admission,
+        compact_issue_mirror_admission_summary, compact_issue_mirror_audit,
+        compact_issue_mirror_audit_summary, compact_issue_mirror_publish,
+        compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
+        compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
+        compact_loop_audit, default_issue_mirror_path, flag_present, flag_value,
+        issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -3199,6 +3452,10 @@ mod tests {
                     "review_surface": "file:local-board",
                     "reason": "mirror_stale",
                     "path": "/tmp/issue.json",
+                    "current_sha256": "sha-file-current",
+                    "remote_sha256": "sha-file-remote",
+                    "current_comment_count": 4,
+                    "remote_comment_count": 3,
                     "failed_checks": ["remote_digest_current"],
                     "publish_command": "entrance hive issue mirror-publish 7 --compact",
                     "readback_command": "entrance hive issue mirror-readback 7 --record --compact"
@@ -3228,6 +3485,9 @@ mod tests {
                     "provider": "linear",
                     "review_surface": "linear:ENT-9",
                     "reason": "mirror_file_missing",
+                    "path": "/tmp/linear.json",
+                    "current_sha256": "sha-linear-current",
+                    "current_comment_count": 2,
                     "failed_checks": ["remote_file_present"],
                     "publish_command": "entrance hive issue mirror-publish 9 --compact",
                     "readback_command": "entrance hive issue mirror-readback 9 --record --compact",
@@ -3279,6 +3539,18 @@ mod tests {
                 .pointer("/issues/0/commands/publish")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue mirror-publish 7 --compact")
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/current_sha256")
+                .and_then(|value| value.as_str()),
+            Some("sha-file-current")
+        );
+        assert_eq!(
+            queue
+                .pointer("/commands/publish_plan")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive connector publish-plan --compact")
         );
         assert_eq!(
             queue
@@ -3335,6 +3607,92 @@ mod tests {
                 .pointer("/issues/0/admission_blockers/0")
                 .and_then(|value| value.as_str()),
             Some("provider_not_active")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/commands/publish_plan")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive connector publish-plan --provider linear --compact")
+        );
+    }
+
+    #[test]
+    fn compact_connector_publish_plan_is_digest_bound() {
+        let registry = test_connector_registry();
+        let issues = vec![serde_json::json!({
+            "id": 7,
+            "loop_id": 3,
+            "title": "Loop #3: connector stale",
+            "status": "Done",
+            "connector": {
+                "publish_required": true,
+                "current": false,
+                "provider": "file",
+                "review_surface": "file:local-board",
+                "reason": "mirror_stale",
+                "path": "/tmp/issue.json",
+                "current_sha256": "sha-before",
+                "remote_sha256": "sha-remote",
+                "current_comment_count": 4,
+                "remote_comment_count": 3,
+                "failed_checks": ["remote_digest_current"],
+                "publish_command": "entrance hive issue mirror-publish 7 --compact",
+                "readback_command": "entrance hive issue mirror-readback 7 --record --compact"
+            }
+        })];
+        let queue = compact_connector_queue(&registry, &issues, None);
+        let plan = compact_connector_publish_plan(&queue).expect("plan should render");
+
+        assert_eq!(
+            plan.pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_publish_plan.v1")
+        );
+        assert_eq!(
+            plan.pointer("/can_execute")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            plan.pointer("/issues/0/current_sha256")
+                .and_then(|value| value.as_str()),
+            Some("sha-before")
+        );
+        assert!(plan
+            .pointer("/commands/execute")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .starts_with("entrance hive connector publish-execute --plan-id "));
+
+        let changed_issues = vec![serde_json::json!({
+            "id": 7,
+            "loop_id": 3,
+            "title": "Loop #3: connector stale",
+            "status": "Done",
+            "connector": {
+                "publish_required": true,
+                "current": false,
+                "provider": "file",
+                "review_surface": "file:local-board",
+                "reason": "mirror_stale",
+                "path": "/tmp/issue.json",
+                "current_sha256": "sha-after",
+                "remote_sha256": "sha-remote",
+                "current_comment_count": 5,
+                "remote_comment_count": 3,
+                "failed_checks": ["remote_digest_current"],
+                "publish_command": "entrance hive issue mirror-publish 7 --compact",
+                "readback_command": "entrance hive issue mirror-readback 7 --record --compact"
+            }
+        })];
+        let changed_queue = compact_connector_queue(&registry, &changed_issues, None);
+        let changed_plan =
+            compact_connector_publish_plan(&changed_queue).expect("changed plan should render");
+        assert_ne!(
+            plan.pointer("/plan_id").and_then(|value| value.as_str()),
+            changed_plan
+                .pointer("/plan_id")
+                .and_then(|value| value.as_str())
         );
     }
 
