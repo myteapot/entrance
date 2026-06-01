@@ -29,6 +29,9 @@ const ISSUE_MIRROR_ROUNDTRIP_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_
 const CONNECTOR_PUBLISH_HINT_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_hint.v1";
 const CONNECTOR_PUBLISH_PLAN_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_plan.v1";
 const CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_execute.v1";
+const CONNECTOR_ROUNDTRIP_PLAN_SCHEMA_VERSION: &str = "entrance.hive.connector_roundtrip_plan.v1";
+const CONNECTOR_ROUNDTRIP_EXECUTE_SCHEMA_VERSION: &str =
+    "entrance.hive.connector_roundtrip_execute.v1";
 const CONNECTOR_WRITER_ADAPTER_SCHEMA_VERSION: &str = "entrance.hive.connector_writer_adapter.v1";
 const CONNECTOR_WRITE_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.connector_write_receipt.v1";
 const CONNECTOR_REMOTE_CONTRACT_SCHEMA_VERSION: &str = "entrance.hive.connector_remote_contract.v1";
@@ -58,7 +61,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -188,6 +191,28 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 flag_value(rest, "--provider"),
                 plan_id,
             )?)
+        }
+        [scope, action, rest @ ..] if scope == "connector" && action == "roundtrip-plan" => {
+            let report = connector_roundtrip_plan_report(services, flag_value(rest, "--provider"))?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_connector_roundtrip_plan_summary(&report))
+            } else {
+                print_json(&report)
+            }
+        }
+        [scope, action, rest @ ..] if scope == "connector" && action == "roundtrip-execute" => {
+            let plan_id = flag_value(rest, "--plan-id")
+                .context("hive connector roundtrip-execute requires --plan-id <sha256>")?;
+            let report = execute_connector_roundtrip_plan(
+                services,
+                flag_value(rest, "--provider"),
+                plan_id,
+            )?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_connector_roundtrip_execute_summary(&report))
+            } else {
+                print_json(&report)
+            }
         }
         [scope, action, id, rest @ ..] if scope == "loop" && action == "run" => {
             let loop_id = id.parse::<i64>()?;
@@ -3317,6 +3342,102 @@ pub(crate) fn execute_connector_publish_plan(
     }))
 }
 
+pub(crate) fn connector_roundtrip_plan_report(
+    services: &AppServices,
+    provider_filter: Option<&str>,
+) -> Result<serde_json::Value> {
+    let queue = connector_queue_report(services, provider_filter)?;
+    compact_connector_roundtrip_plan(&queue)
+}
+
+pub(crate) fn execute_connector_roundtrip_plan(
+    services: &AppServices,
+    provider_filter: Option<&str>,
+    expected_plan_id: &str,
+) -> Result<serde_json::Value> {
+    let plan = connector_roundtrip_plan_report(services, provider_filter)?;
+    let current_plan_id = plan
+        .pointer("/plan_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if current_plan_id != expected_plan_id {
+        return Ok(serde_json::json!({
+            "schema_version": CONNECTOR_ROUNDTRIP_EXECUTE_SCHEMA_VERSION,
+            "executed": false,
+            "reason": "plan_id_mismatch",
+            "expected_plan_id": expected_plan_id,
+            "current_plan_id": current_plan_id.as_str(),
+            "failed_checks": ["connector_roundtrip_plan_current"],
+            "current_plan": plan
+        }));
+    }
+    let can_execute = plan
+        .pointer("/can_execute")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !can_execute {
+        return Ok(serde_json::json!({
+            "schema_version": CONNECTOR_ROUNDTRIP_EXECUTE_SCHEMA_VERSION,
+            "executed": false,
+            "reason": plan.pointer("/reason").and_then(|value| value.as_str()).unwrap_or("plan_not_executable"),
+            "plan_id": current_plan_id.as_str(),
+            "failed_checks": plan.pointer("/blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "current_plan": plan
+        }));
+    }
+
+    let plan_issues = plan
+        .pointer("/issues")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let issue_ids = plan_issues
+        .iter()
+        .filter_map(|issue| issue.pointer("/id").and_then(|value| value.as_i64()))
+        .collect::<Vec<_>>();
+    let recorded =
+        record_connector_roundtrip_execute_issues(services, &plan, &plan_issues, &current_plan_id)?;
+    let mut roundtrips = Vec::new();
+    for issue_id in &issue_ids {
+        roundtrips.push(roundtrip_issue_mirror_file(
+            services, *issue_id, None, true,
+        )?);
+    }
+    let completed_count = roundtrips
+        .iter()
+        .filter(|report| {
+            report
+                .pointer("/completed")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        })
+        .count();
+    let after_queue = connector_queue_report(services, provider_filter)?;
+    Ok(serde_json::json!({
+        "schema_version": CONNECTOR_ROUNDTRIP_EXECUTE_SCHEMA_VERSION,
+        "executed": true,
+        "reason": if completed_count == issue_ids.len() { "plan_executed" } else { "roundtrip_incomplete" },
+        "plan_id": current_plan_id.as_str(),
+        "provider_filter": plan.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+        "issue_count": issue_ids.len(),
+        "completed_count": completed_count,
+        "issue_ids": issue_ids,
+        "recorded": recorded,
+        "roundtrips": roundtrips,
+        "after": {
+            "publish_required_count": after_queue.pointer("/publish_required_count").and_then(|value| value.as_u64()),
+            "current_count": after_queue.pointer("/current_count").and_then(|value| value.as_u64()),
+            "queue": after_queue
+        },
+        "commands": {
+            "refresh": "entrance hive connector queue --compact",
+            "plan": connector_roundtrip_plan_command(provider_filter),
+            "execute": format!("{} --plan-id {} --compact", connector_roundtrip_execute_command_prefix(provider_filter), current_plan_id)
+        }
+    }))
+}
+
 fn record_connector_publish_execute_issues(
     services: &AppServices,
     plan: &serde_json::Value,
@@ -3458,6 +3579,156 @@ fn record_connector_publish_execute_issue(
 
     Ok(serde_json::json!({
         "schema_version": "entrance.hive.connector_publish_execute_record.v1",
+        "issue_id": issue_id,
+        "comment_id": comment_id,
+        "evidence_id": evidence_id,
+        "comment_body": body,
+        "plan_id": plan_id
+    }))
+}
+
+fn record_connector_roundtrip_execute_issues(
+    services: &AppServices,
+    plan: &serde_json::Value,
+    plan_issues: &[serde_json::Value],
+    plan_id: &str,
+) -> Result<Vec<serde_json::Value>> {
+    plan_issues
+        .iter()
+        .map(|issue_plan| {
+            record_connector_roundtrip_execute_issue(services, plan, issue_plan, plan_id)
+        })
+        .collect()
+}
+
+fn record_connector_roundtrip_execute_issue(
+    services: &AppServices,
+    plan: &serde_json::Value,
+    issue_plan: &serde_json::Value,
+    plan_id: &str,
+) -> Result<serde_json::Value> {
+    let issue_id = issue_plan
+        .pointer("/id")
+        .and_then(|value| value.as_i64())
+        .context("connector roundtrip plan issue missing id")?;
+    let issue = services
+        .kernel
+        .store
+        .get_hive_issue(issue_id)?
+        .with_context(|| format!("unknown hive issue `{issue_id}`"))?;
+    let contract = issue
+        .loop_id
+        .map(|loop_id| services.kernel.store.get_hive_loop_contract(loop_id))
+        .transpose()?
+        .flatten();
+    let loop_id = issue.loop_id;
+    let round = contract
+        .as_ref()
+        .map(|contract| contract.current_round)
+        .unwrap_or(1);
+    let phase = contract
+        .as_ref()
+        .map(|contract| contract.active_phase.as_str());
+    let short_plan = compact_digest_label(plan_id);
+    let issue_count = plan
+        .pointer("/issue_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let body =
+        format!("Connector roundtrip plan {short_plan} executed for {issue_count} issue(s).");
+    let issue_ids = plan
+        .pointer("/issues")
+        .and_then(|value| value.as_array())
+        .map(|issues| {
+            issues
+                .iter()
+                .filter_map(|issue| issue.pointer("/id").and_then(|value| value.as_i64()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let comment_id = services
+        .kernel
+        .store
+        .insert_hive_comment(HiveCommentCreate {
+            issue_id,
+            author: "hive".to_string(),
+            body: body.clone(),
+            payload: serde_json::json!({
+                "schema_version": SYSTEM_COMMENT_SCHEMA_VERSION,
+                "source": "hive",
+                "action": "connector_roundtrip_execute",
+                "loop_id": loop_id,
+                "round": round,
+                "status": issue.status.as_str(),
+                "phase": phase,
+                "connector_roundtrip": {
+                    "schema_version": CONNECTOR_ROUNDTRIP_EXECUTE_SCHEMA_VERSION,
+                    "result": "executed",
+                    "plan_id": plan_id,
+                    "provider_filter": plan.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+                    "issue_count": issue_count,
+                    "issue_ids": issue_ids,
+                    "issue_plan": issue_plan,
+                    "commands": plan.pointer("/commands").cloned().unwrap_or_else(|| serde_json::json!({}))
+                }
+            }),
+        })?;
+
+    let evidence_id = if let Some(loop_id) = issue.loop_id {
+        Some(services.kernel.store.insert_hive_loop_evidence(
+            HiveLoopEvidenceCreate {
+                loop_id,
+                stage_id: None,
+                round,
+                kind: "connector_roundtrip_execute".to_string(),
+                summary: body.clone(),
+                path: issue_plan
+                    .pointer("/path")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                payload: serde_json::json!({
+                    "schema_version": CONNECTOR_ROUNDTRIP_EXECUTE_SCHEMA_VERSION,
+                    "source": "issue/status/comment",
+                    "result": "executed",
+                    "issue": {
+                        "id": issue.id,
+                        "status": issue.status.as_str(),
+                        "comment_id": comment_id
+                    },
+                    "loop": {
+                        "id": loop_id,
+                        "status": contract.as_ref().map(|contract| contract.status.as_str()),
+                        "phase": phase,
+                        "round": round
+                    },
+                    "operator": {
+                        "author": "hive",
+                        "action": "connector_roundtrip_execute",
+                        "comment_body": body
+                    },
+                    "connector": {
+                        "provider": issue_plan.pointer("/provider").cloned().unwrap_or(serde_json::Value::Null),
+                        "provider_status": issue_plan.pointer("/provider_status").cloned().unwrap_or(serde_json::Value::Null),
+                        "review_surface": issue_plan.pointer("/review_surface").cloned().unwrap_or(serde_json::Value::Null),
+                        "path": issue_plan.pointer("/path").cloned().unwrap_or(serde_json::Value::Null)
+                    },
+                    "plan": {
+                        "schema_version": plan.pointer("/schema_version").cloned().unwrap_or(serde_json::Value::Null),
+                        "plan_id": plan_id,
+                        "provider_filter": plan.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+                        "issue_count": issue_count,
+                        "issue_ids": issue_ids,
+                        "issue": issue_plan
+                    }
+                }),
+            },
+        )?)
+    } else {
+        None
+    };
+
+    Ok(serde_json::json!({
+        "schema_version": "entrance.hive.connector_roundtrip_execute_record.v1",
         "issue_id": issue_id,
         "comment_id": comment_id,
         "evidence_id": evidence_id,
@@ -3737,7 +4008,8 @@ fn compact_connector_queue(
         "commands": {
             "refresh": "entrance hive connector queue --compact",
             "provider": "entrance hive connector queue --provider <name> --compact",
-            "publish_plan": connector_publish_plan_command(provider_filter.as_deref())
+            "publish_plan": connector_publish_plan_command(provider_filter.as_deref()),
+            "roundtrip_plan": connector_roundtrip_plan_command(provider_filter.as_deref())
         }
     })
 }
@@ -3847,6 +4119,274 @@ fn compact_connector_publish_plan(queue: &serde_json::Value) -> Result<serde_jso
     }))
 }
 
+fn compact_connector_roundtrip_plan(queue: &serde_json::Value) -> Result<serde_json::Value> {
+    let provider_filter = queue
+        .pointer("/provider_filter")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let provider_known = queue
+        .pointer("/provider_known")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let issues = queue
+        .pointer("/issues")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(compact_connector_roundtrip_plan_issue)
+        .collect::<Vec<_>>();
+    let mut blockers = Vec::new();
+    if !provider_known {
+        blockers.push("provider_unknown".to_string());
+    }
+    for issue in &issues {
+        if issue
+            .pointer("/id")
+            .and_then(|value| value.as_i64())
+            .is_none()
+        {
+            blockers.push("issue_id_missing".to_string());
+        }
+        if issue
+            .pointer("/commands/roundtrip")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
+        {
+            blockers.push("roundtrip_command_missing".to_string());
+        }
+        if issue
+            .pointer("/current_sha256")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
+        {
+            blockers.push("current_digest_missing".to_string());
+        }
+        if issue
+            .pointer("/supports_readback")
+            .and_then(|value| value.as_bool())
+            != Some(true)
+        {
+            blockers.push("readback_not_supported".to_string());
+        }
+        if issue
+            .pointer("/supports_admission")
+            .and_then(|value| value.as_bool())
+            != Some(true)
+        {
+            blockers.push("admission_not_supported".to_string());
+        }
+        blockers.extend(
+            issue
+                .pointer("/publish_blockers")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(ToOwned::to_owned),
+        );
+    }
+    blockers.sort();
+    blockers.dedup();
+    let basis = serde_json::json!({
+        "schema_version": CONNECTOR_ROUNDTRIP_PLAN_SCHEMA_VERSION,
+        "provider_filter": provider_filter,
+        "issues": issues.clone()
+    });
+    let plan_id = json_sha256(&basis)?;
+    let can_execute = blockers.is_empty() && !issues.is_empty();
+    let reason = if !provider_known {
+        "provider_unknown"
+    } else if issues.is_empty() {
+        "queue_empty"
+    } else if blockers.is_empty() {
+        "ready"
+    } else {
+        "plan_blocked"
+    };
+    Ok(serde_json::json!({
+        "schema_version": CONNECTOR_ROUNDTRIP_PLAN_SCHEMA_VERSION,
+        "plan_id": plan_id,
+        "provider_filter": basis.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+        "provider_known": provider_known,
+        "issue_count": issues.len(),
+        "can_execute": can_execute,
+        "reason": reason,
+        "blockers": blockers,
+        "issues": issues,
+        "basis": basis,
+        "commands": {
+            "refresh": "entrance hive connector queue --compact",
+            "plan": connector_roundtrip_plan_command(
+                queue.pointer("/provider_filter").and_then(|value| value.as_str())
+            ),
+            "execute": if can_execute {
+                Some(format!(
+                    "{} --plan-id {} --compact",
+                    connector_roundtrip_execute_command_prefix(
+                        queue.pointer("/provider_filter").and_then(|value| value.as_str())
+                    ),
+                    plan_id
+                ))
+            } else {
+                None
+            }
+        }
+    }))
+}
+
+fn compact_connector_roundtrip_plan_summary(plan: &serde_json::Value) -> serde_json::Value {
+    let issues = plan
+        .pointer("/issues")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|issue| {
+            let current_sha256 = issue
+                .pointer("/current_sha256")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            serde_json::json!({
+                "id": issue.pointer("/id").and_then(|value| value.as_i64()),
+                "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
+                "provider": issue.pointer("/provider").and_then(|value| value.as_str()),
+                "provider_status": issue.pointer("/provider_status").and_then(|value| value.as_str()),
+                "status": issue.pointer("/status").and_then(|value| value.as_str()),
+                "review_surface": issue.pointer("/review_surface").and_then(|value| value.as_str()),
+                "reason": issue.pointer("/reason").and_then(|value| value.as_str()),
+                "current_sha256": current_sha256,
+                "current_digest": compact_digest_label(current_sha256),
+                "commands": {
+                    "roundtrip": issue.pointer("/commands/roundtrip").and_then(|value| value.as_str())
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": "entrance.hive.connector_roundtrip_plan.compact.v1",
+        "plan_id": plan.pointer("/plan_id").and_then(|value| value.as_str()),
+        "provider_filter": plan.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+        "provider_known": plan.pointer("/provider_known").and_then(|value| value.as_bool()),
+        "issue_count": plan.pointer("/issue_count").and_then(|value| value.as_u64()),
+        "can_execute": plan.pointer("/can_execute").and_then(|value| value.as_bool()),
+        "reason": plan.pointer("/reason").and_then(|value| value.as_str()),
+        "blockers": plan.pointer("/blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "issues": issues,
+        "commands": plan.pointer("/commands").cloned().unwrap_or_else(|| serde_json::json!({}))
+    })
+}
+
+fn compact_connector_roundtrip_execute_summary(report: &serde_json::Value) -> serde_json::Value {
+    let recorded = report
+        .pointer("/recorded")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|record| {
+            serde_json::json!({
+                "issue_id": record.pointer("/issue_id").and_then(|value| value.as_i64()),
+                "comment_id": record.pointer("/comment_id").and_then(|value| value.as_i64()),
+                "evidence_id": record.pointer("/evidence_id").and_then(|value| value.as_i64())
+            })
+        })
+        .collect::<Vec<_>>();
+    let roundtrips = report
+        .pointer("/roundtrips")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|roundtrip| {
+            serde_json::json!({
+                "issue_id": roundtrip.pointer("/issue_id").and_then(|value| value.as_i64()),
+                "provider": roundtrip.pointer("/provider").and_then(|value| value.as_str()),
+                "review_surface": roundtrip.pointer("/review_surface").and_then(|value| value.as_str()),
+                "completed": roundtrip.pointer("/completed").and_then(|value| value.as_bool()),
+                "stage_count": roundtrip.pointer("/stage_count").and_then(|value| value.as_u64()),
+                "passed_stage_count": roundtrip.pointer("/passed_stage_count").and_then(|value| value.as_u64()),
+                "recorded_evidence_ids": roundtrip
+                    .pointer("/recorded_evidence_ids")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+                "remote": roundtrip.pointer("/remote").cloned().unwrap_or(serde_json::Value::Null),
+                "failed_stages": roundtrip
+                    .pointer("/failed_stages")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]))
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": "entrance.hive.connector_roundtrip_execute.compact.v1",
+        "executed": report.pointer("/executed").and_then(|value| value.as_bool()),
+        "reason": report.pointer("/reason").and_then(|value| value.as_str()),
+        "plan_id": report.pointer("/plan_id").and_then(|value| value.as_str()),
+        "current_plan_id": report.pointer("/current_plan_id").and_then(|value| value.as_str()),
+        "provider_filter": report.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+        "issue_count": report.pointer("/issue_count").and_then(|value| value.as_u64()),
+        "completed_count": report.pointer("/completed_count").and_then(|value| value.as_u64()),
+        "issue_ids": report.pointer("/issue_ids").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "failed_checks": report.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "recorded": recorded,
+        "roundtrips": roundtrips,
+        "after": {
+            "publish_required_count": report.pointer("/after/publish_required_count").and_then(|value| value.as_u64()),
+            "current_count": report.pointer("/after/current_count").and_then(|value| value.as_u64()),
+            "total": report.pointer("/after/queue/total").and_then(|value| value.as_u64())
+        },
+        "commands": report.pointer("/commands").cloned().unwrap_or_else(|| serde_json::json!({}))
+    })
+}
+
+fn compact_connector_roundtrip_plan_issue(issue: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "id": issue.pointer("/id").and_then(|value| value.as_i64()),
+        "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
+        "provider": issue.pointer("/provider").and_then(|value| value.as_str()),
+        "provider_status": issue.pointer("/provider_status").and_then(|value| value.as_str()),
+        "configured": issue.pointer("/configured").and_then(|value| value.as_bool()),
+        "supports_publish": issue.pointer("/supports_publish").and_then(|value| value.as_bool()),
+        "supports_readback": issue.pointer("/supports_readback").and_then(|value| value.as_bool()),
+        "supports_admission": issue.pointer("/supports_admission").and_then(|value| value.as_bool()),
+        "mode": issue.pointer("/mode").and_then(|value| value.as_str()),
+        "storage": issue.pointer("/storage").and_then(|value| value.as_str()),
+        "review_surface": issue.pointer("/review_surface").and_then(|value| value.as_str()),
+        "status": issue.pointer("/status").and_then(|value| value.as_str()),
+        "reason": issue.pointer("/reason").and_then(|value| value.as_str()),
+        "path": issue.pointer("/path").and_then(|value| value.as_str()),
+        "current_sha256": issue.pointer("/current_sha256").and_then(|value| value.as_str()),
+        "remote_sha256": issue.pointer("/remote_sha256").and_then(|value| value.as_str()),
+        "current_comment_count": issue.pointer("/current_comment_count").and_then(|value| value.as_u64()),
+        "remote_comment_count": issue.pointer("/remote_comment_count").and_then(|value| value.as_u64()),
+        "failed_checks": issue.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "admission_status": issue.pointer("/admission_status").and_then(|value| value.as_str()),
+        "admission_blockers": issue.pointer("/admission_blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "can_publish": issue.pointer("/can_publish").and_then(|value| value.as_bool()).unwrap_or(false),
+        "publish_blockers": issue.pointer("/publish_blockers").cloned().unwrap_or_else(|| serde_json::json!(["connector_writer_unknown"])),
+        "adapter": issue.pointer("/adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "commands": {
+            "publish": issue.pointer("/commands/publish").and_then(|value| value.as_str()),
+            "readback": issue.pointer("/commands/readback").and_then(|value| value.as_str()),
+            "admit": issue.pointer("/commands/admit").and_then(|value| value.as_str()),
+            "roundtrip": issue.pointer("/commands/roundtrip").and_then(|value| value.as_str())
+        },
+        "dry_run_action": {
+            "schema_version": "entrance.hive.connector_roundtrip_plan_item.v1",
+            "action": "roundtrip",
+            "remote_write": issue.pointer("/dry_run_action/remote_write").and_then(|value| value.as_bool()).unwrap_or(false),
+            "would_write": issue
+                .pointer("/dry_run_action/would_write")
+                .and_then(|value| value.as_str())
+                .unwrap_or("blocked provider adapter")
+        }
+    })
+}
+
 fn compact_connector_publish_plan_issue(issue: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "id": issue.pointer("/id").and_then(|value| value.as_i64()),
@@ -3875,7 +4415,8 @@ fn compact_connector_publish_plan_issue(issue: &serde_json::Value) -> serde_json
         "commands": {
             "publish": issue.pointer("/commands/publish").and_then(|value| value.as_str()),
             "readback": issue.pointer("/commands/readback").and_then(|value| value.as_str()),
-            "admit": issue.pointer("/commands/admit").and_then(|value| value.as_str())
+            "admit": issue.pointer("/commands/admit").and_then(|value| value.as_str()),
+            "roundtrip": issue.pointer("/commands/roundtrip").and_then(|value| value.as_str())
         },
         "dry_run_action": {
             "schema_version": "entrance.hive.connector_publish_plan_item.v1",
@@ -3898,6 +4439,17 @@ fn connector_publish_plan_command(provider_filter: Option<&str>) -> String {
 
 fn connector_publish_execute_command_prefix(provider_filter: Option<&str>) -> String {
     connector_command_with_provider("entrance hive connector publish-execute", provider_filter)
+}
+
+fn connector_roundtrip_plan_command(provider_filter: Option<&str>) -> String {
+    format!(
+        "{} --compact",
+        connector_command_with_provider("entrance hive connector roundtrip-plan", provider_filter)
+    )
+}
+
+fn connector_roundtrip_execute_command_prefix(provider_filter: Option<&str>) -> String {
+    connector_command_with_provider("entrance hive connector roundtrip-execute", provider_filter)
 }
 
 fn connector_command_with_provider(base: &str, provider_filter: Option<&str>) -> String {
@@ -4045,6 +4597,9 @@ fn compact_connector_queue_issue(
                 .and_then(|value| value.as_str()),
             "admit": issue
                 .pointer("/connector/admit_command")
+                .and_then(|value| value.as_str()),
+            "roundtrip": issue
+                .pointer("/connector/roundtrip_command")
                 .and_then(|value| value.as_str())
         },
         "dry_run_action": {
@@ -4296,17 +4851,18 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        compact_connector_publish_plan, compact_connector_queue, compact_issue_board,
-        compact_issue_connector_admission_preview, compact_issue_detail, compact_issue_mirror,
-        compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
-        compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
-        compact_issue_mirror_publish, compact_issue_mirror_readback,
-        compact_issue_mirror_readback_summary, compact_issue_mirror_roundtrip,
-        compact_issue_mirror_roundtrip_summary, compact_issue_mirror_status,
-        compact_issue_mirror_sync, compact_issue_mirror_verify, compact_loop_audit,
-        connector_admission_preview_checks, connector_write_receipt, connector_writer_blockers,
-        default_issue_mirror_path, default_issue_mirror_path_for_provider, flag_present,
-        flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
+        compact_connector_publish_plan, compact_connector_queue, compact_connector_roundtrip_plan,
+        compact_issue_board, compact_issue_connector_admission_preview, compact_issue_detail,
+        compact_issue_mirror, compact_issue_mirror_admission,
+        compact_issue_mirror_admission_summary, compact_issue_mirror_audit,
+        compact_issue_mirror_audit_summary, compact_issue_mirror_publish,
+        compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
+        compact_issue_mirror_roundtrip, compact_issue_mirror_roundtrip_summary,
+        compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
+        compact_loop_audit, connector_admission_preview_checks, connector_write_receipt,
+        connector_writer_blockers, default_issue_mirror_path,
+        default_issue_mirror_path_for_provider, flag_present, flag_value,
+        issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
         issue_mirror_sync_receipt_for_provider, mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
@@ -4685,7 +5241,8 @@ mod tests {
                     "remote_comment_count": 3,
                     "failed_checks": ["remote_digest_current"],
                     "publish_command": "entrance hive issue mirror-publish 7 --compact",
-                    "readback_command": "entrance hive issue mirror-readback 7 --record --compact"
+                    "readback_command": "entrance hive issue mirror-readback 7 --record --compact",
+                    "roundtrip_command": "entrance hive issue mirror-roundtrip 7 --compact"
                 }
             }),
             serde_json::json!({
@@ -4718,7 +5275,8 @@ mod tests {
                     "failed_checks": ["remote_file_present"],
                     "publish_command": "entrance hive issue mirror-publish 9 --compact",
                     "readback_command": "entrance hive issue mirror-readback 9 --record --compact",
-                    "admit_command": "entrance hive issue mirror-admit 9 --record --compact"
+                    "admit_command": "entrance hive issue mirror-admit 9 --record --compact",
+                    "roundtrip_command": "entrance hive issue mirror-roundtrip 9 --compact"
                 }
             }),
         ];
@@ -4778,6 +5336,18 @@ mod tests {
                 .pointer("/commands/publish_plan")
                 .and_then(|value| value.as_str()),
             Some("entrance hive connector publish-plan --compact")
+        );
+        assert_eq!(
+            queue
+                .pointer("/commands/roundtrip_plan")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive connector roundtrip-plan --compact")
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/commands/roundtrip")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-roundtrip 7 --compact")
         );
         assert_eq!(
             queue
@@ -4894,6 +5464,12 @@ mod tests {
                 .pointer("/commands/publish_plan")
                 .and_then(|value| value.as_str()),
             Some("entrance hive connector publish-plan --provider linear --compact")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/commands/roundtrip_plan")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive connector roundtrip-plan --provider linear --compact")
         );
 
         let linear_plan =
@@ -5070,7 +5646,8 @@ mod tests {
                 "remote_comment_count": 3,
                 "failed_checks": ["remote_digest_current"],
                 "publish_command": "entrance hive issue mirror-publish 7 --compact",
-                "readback_command": "entrance hive issue mirror-readback 7 --record --compact"
+                "readback_command": "entrance hive issue mirror-readback 7 --record --compact",
+                "roundtrip_command": "entrance hive issue mirror-roundtrip 7 --compact"
             }
         })];
         let queue = compact_connector_queue(&registry, &issues, None);
@@ -5115,7 +5692,8 @@ mod tests {
                 "remote_comment_count": 3,
                 "failed_checks": ["remote_digest_current"],
                 "publish_command": "entrance hive issue mirror-publish 7 --compact",
-                "readback_command": "entrance hive issue mirror-readback 7 --record --compact"
+                "readback_command": "entrance hive issue mirror-readback 7 --record --compact",
+                "roundtrip_command": "entrance hive issue mirror-roundtrip 7 --compact"
             }
         })];
         let changed_queue = compact_connector_queue(&registry, &changed_issues, None);
@@ -5127,6 +5705,143 @@ mod tests {
                 .pointer("/plan_id")
                 .and_then(|value| value.as_str())
         );
+    }
+
+    #[test]
+    fn compact_connector_roundtrip_plan_is_digest_bound_and_gated() {
+        let registry = test_connector_registry();
+        let issues = vec![serde_json::json!({
+            "id": 7,
+            "loop_id": 3,
+            "title": "Loop #3: connector stale",
+            "status": "Done",
+            "connector": {
+                "publish_required": true,
+                "current": false,
+                "provider": "file",
+                "review_surface": "file:local-board",
+                "reason": "mirror_stale",
+                "path": "/tmp/issue.json",
+                "current_sha256": "sha-before",
+                "remote_sha256": "sha-remote",
+                "current_comment_count": 4,
+                "remote_comment_count": 3,
+                "failed_checks": ["remote_digest_current"],
+                "publish_command": "entrance hive issue mirror-publish 7 --compact",
+                "readback_command": "entrance hive issue mirror-readback 7 --record --compact",
+                "admit_command": "entrance hive issue mirror-admit 7 --record --compact",
+                "roundtrip_command": "entrance hive issue mirror-roundtrip 7 --compact"
+            }
+        })];
+        let queue = compact_connector_queue(&registry, &issues, None);
+        let plan = compact_connector_roundtrip_plan(&queue).expect("roundtrip plan should render");
+
+        assert_eq!(
+            plan.pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_roundtrip_plan.v1")
+        );
+        assert_eq!(
+            plan.pointer("/can_execute")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            plan.pointer("/issues/0/commands/roundtrip")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-roundtrip 7 --compact")
+        );
+        assert_eq!(
+            plan.pointer("/issues/0/dry_run_action/action")
+                .and_then(|value| value.as_str()),
+            Some("roundtrip")
+        );
+        assert!(plan
+            .pointer("/commands/execute")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .starts_with("entrance hive connector roundtrip-execute --plan-id "));
+
+        let changed_issues = vec![serde_json::json!({
+            "id": 7,
+            "loop_id": 3,
+            "title": "Loop #3: connector stale",
+            "status": "Done",
+            "connector": {
+                "publish_required": true,
+                "current": false,
+                "provider": "file",
+                "review_surface": "file:local-board",
+                "reason": "mirror_stale",
+                "path": "/tmp/issue.json",
+                "current_sha256": "sha-after",
+                "remote_sha256": "sha-remote",
+                "current_comment_count": 5,
+                "remote_comment_count": 3,
+                "failed_checks": ["remote_digest_current"],
+                "publish_command": "entrance hive issue mirror-publish 7 --compact",
+                "readback_command": "entrance hive issue mirror-readback 7 --record --compact",
+                "admit_command": "entrance hive issue mirror-admit 7 --record --compact",
+                "roundtrip_command": "entrance hive issue mirror-roundtrip 7 --compact"
+            }
+        })];
+        let changed_queue = compact_connector_queue(&registry, &changed_issues, None);
+        let changed_plan = compact_connector_roundtrip_plan(&changed_queue)
+            .expect("changed roundtrip plan should render");
+        assert_ne!(
+            plan.pointer("/plan_id").and_then(|value| value.as_str()),
+            changed_plan
+                .pointer("/plan_id")
+                .and_then(|value| value.as_str())
+        );
+
+        let blocked_issues = vec![serde_json::json!({
+            "id": 9,
+            "loop_id": 5,
+            "title": "Loop #5: connector linear planned",
+            "status": "Blocked",
+            "connector": {
+                "publish_required": true,
+                "current": false,
+                "provider": "linear",
+                "review_surface": "linear:ENT-9",
+                "reason": "mirror_file_missing",
+                "path": "/tmp/linear.json",
+                "current_sha256": "sha-linear-current",
+                "current_comment_count": 2,
+                "failed_checks": ["remote_file_present"],
+                "publish_command": "entrance hive issue mirror-publish 9 --compact",
+                "readback_command": "entrance hive issue mirror-readback 9 --record --compact",
+                "admit_command": "entrance hive issue mirror-admit 9 --record --compact",
+                "roundtrip_command": "entrance hive issue mirror-roundtrip 9 --compact"
+            }
+        })];
+        let blocked_queue = compact_connector_queue(&registry, &blocked_issues, Some("linear"));
+        let blocked_plan = compact_connector_roundtrip_plan(&blocked_queue)
+            .expect("blocked roundtrip plan should render");
+        assert_eq!(
+            blocked_plan
+                .pointer("/can_execute")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            blocked_plan
+                .pointer("/commands/execute")
+                .and_then(|value| value.as_str()),
+            None
+        );
+        let blockers = blocked_plan
+            .pointer("/blockers")
+            .and_then(|value| value.as_array())
+            .expect("blocked plan blockers should be present")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(blockers.contains(&"provider_not_active"));
+        assert!(blockers.contains(&"publish_not_supported"));
+        assert!(blockers.contains(&"readback_not_supported"));
+        assert!(blockers.contains(&"admission_not_supported"));
     }
 
     #[test]

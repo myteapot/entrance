@@ -139,7 +139,13 @@ connector write receipt with adapter, status, comment surface, mirror digest,
 and readback command. `hive issue mirror-roundtrip <id> --compact` runs the
 issue-scoped publish -> readback -> admission path as one typed operation; when
 readback/admission observations record local comments or evidence, it republishes
-those ledger events and finishes with a final readback. The built-in
+those ledger events and finishes with a final readback. `hive connector
+roundtrip-plan --compact` and `hive connector roundtrip-execute --plan-id
+<sha256> --compact` lift that operation to the current connector queue: the plan
+is digest-bound to the queued issue mirrors plus provider capabilities, and
+execution records a typed connector roundtrip comment/evidence on every issue
+before running each issue's publish/readback/admission/final-readback path. The
+built-in
 `remote-fixture:` review surface is an active file-backed remote issue API
 fixture: it emits
 `entrance.hive.connector_remote_write_receipt.v1` and verifies

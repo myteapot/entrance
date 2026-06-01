@@ -131,7 +131,14 @@ the mirror, and each publish returns a typed connector write receipt with
 adapter, status, comment surface, digest, and readback command. `hive issue
 mirror-roundtrip <id> --compact` wraps the issue-scoped publish -> readback ->
 admission workflow into one typed report; recorded readback/admission
-observations are republished before the final readback check. The active
+observations are republished before the final readback check. `hive connector
+roundtrip-plan --compact` creates a digest-bound queue plan for that same
+roundtrip operation, including provider writer/readback/admission blockers, and
+`hive connector roundtrip-execute --plan-id <sha256> --compact` recomputes the
+plan before executing it. Successful queue execution records a typed
+`connector_roundtrip_execute` comment/evidence on every issue, then runs the
+issue-scoped roundtrip and returns a compact per-issue completion summary. The
+active
 `remote-fixture:` provider is a file-backed remote issue API fixture that writes
 `entrance.hive.connector_remote_write_receipt.v1` and verifies
 `entrance.hive.connector_remote_readback.v1` without contacting a third-party

@@ -289,6 +289,7 @@ type ConnectorQueueReport = {
     refresh?: string | null;
     provider?: string | null;
     publish_plan?: string | null;
+    roundtrip_plan?: string | null;
   } | null;
 };
 
@@ -377,6 +378,24 @@ type ConnectorPublishExecuteReport = {
   plan_id?: string | null;
   current_plan_id?: string | null;
   issue_count?: number | null;
+  issue_ids?: number[];
+  failed_checks?: string[];
+  after?: {
+    publish_required_count?: number | null;
+    current_count?: number | null;
+  };
+};
+
+type ConnectorRoundtripPlan = ConnectorPublishPlan;
+
+type ConnectorRoundtripExecuteReport = {
+  schema_version: string;
+  executed: boolean;
+  reason: string;
+  plan_id?: string | null;
+  current_plan_id?: string | null;
+  issue_count?: number | null;
+  completed_count?: number | null;
   issue_ids?: number[];
   failed_checks?: string[];
   after?: {
@@ -651,6 +670,9 @@ export default function App() {
   const [connectorPublishPlan, setConnectorPublishPlan] =
     createSignal<ConnectorPublishPlan | null>(null);
   const [connectorPublishAction, setConnectorPublishAction] = createSignal<string | null>(null);
+  const [connectorRoundtripPlan, setConnectorRoundtripPlan] =
+    createSignal<ConnectorRoundtripPlan | null>(null);
+  const [connectorRoundtripAction, setConnectorRoundtripAction] = createSignal<string | null>(null);
 
   const [status, { refetch: refetchStatus }] = createResource(async () =>
     bridge.invoke<AppStatus>("status"),
@@ -765,6 +787,7 @@ export default function App() {
 
   const refreshAll = async () => {
     setConnectorPublishPlan(null);
+    setConnectorRoundtripPlan(null);
     await Promise.all([
       refetchStatus(),
       refetchDrawerSummary(),
@@ -942,6 +965,7 @@ export default function App() {
     setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Publishing");
     setConnectorPublishPlan(null);
+    setConnectorRoundtripPlan(null);
     try {
       const report = await bridge.invoke<IssueMirrorPublishReport>("hive_issue_mirror_publish", {
         issueId: card.issue.id,
@@ -1008,6 +1032,55 @@ export default function App() {
       setBanner(`Connector publish execute failed: ${actionErrorMessage(error)}`);
     } finally {
       setConnectorPublishAction(null);
+      await Promise.all([refetchIssueCards(), refetchConnectorQueue()]);
+    }
+  };
+  const planConnectorRoundtrip = async () => {
+    if (connectorRoundtripAction()) return;
+    setConnectorRoundtripAction("Planning");
+    try {
+      const plan = await bridge.invoke<ConnectorRoundtripPlan>("hive_connector_roundtrip_plan", {});
+      setConnectorRoundtripPlan(plan);
+      const blockers = plan.blockers?.length
+        ? `: ${plan.blockers.slice(0, 3).join(", ")}`
+        : "";
+      setBanner(
+        plan.can_execute
+          ? `Connector roundtrip plan ${compactText(plan.plan_id, 12)}: ${plan.issue_count} issues.`
+          : `Connector roundtrip plan blocked: ${plan.reason}${blockers}`,
+      );
+    } catch (error) {
+      setBanner(`Connector roundtrip plan failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setConnectorRoundtripAction(null);
+      void refetchConnectorQueue();
+    }
+  };
+  const executeConnectorRoundtripPlan = async () => {
+    const plan = connectorRoundtripPlan();
+    if (!plan?.can_execute || connectorRoundtripAction()) return;
+    setConnectorRoundtripAction("Executing");
+    try {
+      const report = await bridge.invoke<ConnectorRoundtripExecuteReport>(
+        "hive_connector_roundtrip_execute",
+        { planId: plan.plan_id },
+      );
+      if (report.executed) {
+        setBanner(
+          `Connector roundtrip executed ${compactText(plan.plan_id, 12)}: ${report.completed_count ?? 0}/${report.issue_count ?? 0} completed.`,
+        );
+        setConnectorRoundtripPlan(null);
+        setConnectorPublishPlan(null);
+      } else {
+        setBanner(`Connector roundtrip skipped: ${report.reason}`);
+        if (report.current_plan_id) {
+          setConnectorRoundtripPlan(null);
+        }
+      }
+    } catch (error) {
+      setBanner(`Connector roundtrip execute failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setConnectorRoundtripAction(null);
       await Promise.all([refetchIssueCards(), refetchConnectorQueue()]);
     }
   };
@@ -1092,6 +1165,7 @@ export default function App() {
     setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Roundtrip");
     setConnectorPublishPlan(null);
+    setConnectorRoundtripPlan(null);
     try {
       const report = await bridge.invoke<IssueMirrorRoundtripReport>("hive_issue_mirror_roundtrip", {
         issueId: card.issue.id,
@@ -1742,6 +1816,10 @@ export default function App() {
     connectorPublishAction() === "Planning" ? "Planning" : "Plan";
   const connectorPublishExecuteLabel = () =>
     connectorPublishAction() === "Executing" ? "Executing" : "Execute";
+  const connectorRoundtripPlanLabel = () =>
+    connectorRoundtripAction() === "Planning" ? "Planning" : "Plan RT";
+  const connectorRoundtripExecuteLabel = () =>
+    connectorRoundtripAction() === "Executing" ? "Running" : "Run RT";
 
   const compactAuditFailureDetail = (detail: string) => {
     const parts = detail.split(":").filter(Boolean);
@@ -2499,6 +2577,11 @@ export default function App() {
                         plan {compactText(connectorPublishPlan()?.plan_id ?? "", 12)}
                       </span>
                     ) : null}
+                    {connectorRoundtripPlan() ? (
+                      <span title={connectorRoundtripPlan()?.plan_id}>
+                        rt {compactText(connectorRoundtripPlan()?.plan_id ?? "", 12)}
+                      </span>
+                    ) : null}
                   </div>
                   <button
                     type="button"
@@ -2522,6 +2605,29 @@ export default function App() {
                     onClick={() => void executeConnectorPublishPlan()}
                   >
                     {connectorPublishExecuteLabel()}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Plan connector queue roundtrip"
+                    data-testid="connector-roundtrip-queue-plan"
+                    disabled={Boolean(connectorRoundtripAction())}
+                    title={connectorQueue()?.commands?.roundtrip_plan ?? "entrance hive connector roundtrip-plan --compact"}
+                    onClick={() => void planConnectorRoundtrip()}
+                  >
+                    {connectorRoundtripPlanLabel()}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Execute connector queue roundtrip plan"
+                    data-testid="connector-roundtrip-queue-execute"
+                    disabled={
+                      Boolean(connectorRoundtripAction()) ||
+                      !connectorRoundtripPlan()?.can_execute
+                    }
+                    title={connectorRoundtripPlan()?.commands.execute ?? "roundtrip plan required"}
+                    onClick={() => void executeConnectorRoundtripPlan()}
+                  >
+                    {connectorRoundtripExecuteLabel()}
                   </button>
                   {connectorQueueProviders().map((provider) => (
                     <span

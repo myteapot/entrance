@@ -20,9 +20,10 @@ use crate::{
     app::AppServices,
     commands::hive::{
         admit_issue_mirror_file, audit_issue_mirror_file, connector_publish_plan_report,
-        connector_queue_report, execute_connector_publish_plan, issue_connector_admission_preview,
-        issue_mirror_status, publish_issue_mirror_to_file, readback_issue_mirror_file,
-        roundtrip_issue_mirror_file, sync_issue_mirror_to_file, verify_issue_mirror_file,
+        connector_queue_report, connector_roundtrip_plan_report, execute_connector_publish_plan,
+        execute_connector_roundtrip_plan, issue_connector_admission_preview, issue_mirror_status,
+        publish_issue_mirror_to_file, readback_issue_mirror_file, roundtrip_issue_mirror_file,
+        sync_issue_mirror_to_file, verify_issue_mirror_file,
     },
 };
 
@@ -547,6 +548,28 @@ async fn handle_invoke(
                 .and_then(|value| value.as_str())
                 .context("hive_connector_publish_execute requires `planId`")?;
             Ok(execute_connector_publish_plan(
+                &state.services,
+                args.get("provider")
+                    .or_else(|| args.get("providerName"))
+                    .or_else(|| args.get("provider_name"))
+                    .and_then(|value| value.as_str()),
+                plan_id,
+            )?)
+        }
+        "hive_connector_roundtrip_plan" => Ok(connector_roundtrip_plan_report(
+            &state.services,
+            args.get("provider")
+                .or_else(|| args.get("providerName"))
+                .or_else(|| args.get("provider_name"))
+                .and_then(|value| value.as_str()),
+        )?),
+        "hive_connector_roundtrip_execute" => {
+            let plan_id = args
+                .get("planId")
+                .or_else(|| args.get("plan_id"))
+                .and_then(|value| value.as_str())
+                .context("hive_connector_roundtrip_execute requires `planId`")?;
+            Ok(execute_connector_roundtrip_plan(
                 &state.services,
                 args.get("provider")
                     .or_else(|| args.get("providerName"))
