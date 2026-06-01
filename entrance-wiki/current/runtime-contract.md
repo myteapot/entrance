@@ -107,6 +107,9 @@ actions visible without opening the raw evidence stream.
 Issue human options are status-aware: `Blocked` issues can retry, request
 review, or cancel; `Needs Review` issues can retry or cancel; `Todo` issues can
 be canceled before running; terminal human-canceled issues only allow comments.
+Compact issue surfaces also expose connector mirror drift: `hive issue show
+<id> --compact` includes a `connector` block, while `hive issue list --compact`
+adds a `connector_queue` with publish-required issue ids and commands.
 
 ## Daemon
 

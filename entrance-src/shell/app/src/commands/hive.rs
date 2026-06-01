@@ -27,6 +27,14 @@ const ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_
 const CONNECTOR_PUBLISH_HINT_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_hint.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
+const ISSUE_STATUSES: &[&str] = &[
+    "Todo",
+    "Doing",
+    "Blocked",
+    "Needs Review",
+    "Done",
+    "Canceled",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MirrorFileDigest {
@@ -184,7 +192,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             let report = services.hive.loop_create(request)?;
             if flag_present(rest, "--compact") {
                 if let Some(card) = report.issues.first() {
-                    print_json(&compact_issue_detail(card))
+                    print_json(&compact_issue_detail_with_connector_status(services, card))
                 } else {
                     print_json(&report)
                 }
@@ -195,7 +203,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action, rest @ ..] if scope == "issue" && action == "list" => {
             let cards = services.hive.panel()?;
             if flag_present(rest, "--compact") {
-                print_json(&compact_issue_board(&cards))
+                print_json(&compact_issue_board_with_connector_status(services, &cards))
             } else {
                 print_json(&cards)
             }
@@ -203,7 +211,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action, id, rest @ ..] if scope == "issue" && action == "show" => {
             let card = services.hive.issue_report(id.parse::<i64>()?)?;
             if flag_present(rest, "--compact") {
-                print_json(&compact_issue_detail(&card))
+                print_json(&compact_issue_detail_with_connector_status(services, &card))
             } else {
                 print_json(&card)
             }
@@ -282,7 +290,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 body: body.to_string(),
             })?;
             if flag_present(rest, "--compact") {
-                print_json(&compact_issue_detail(&card))
+                print_json(&compact_issue_detail_with_connector_status(services, &card))
             } else {
                 print_json(&card)
             }
@@ -295,7 +303,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 body: flag_value(rest, "--body").map(ToOwned::to_owned),
             })?;
             if flag_present(rest, "--compact") {
-                print_json(&compact_issue_detail(&card))
+                print_json(&compact_issue_detail_with_connector_status(services, &card))
             } else {
                 print_json(&card)
             }
@@ -320,7 +328,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             })?;
             if flag_present(rest, "--compact") {
                 let card = services.hive.issue_report(issue_id)?;
-                print_json(&compact_issue_detail(&card))
+                print_json(&compact_issue_detail_with_connector_status(services, &card))
             } else {
                 print_json(&report)
             }
@@ -349,16 +357,9 @@ fn csv_values(value: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn compact_issue_board(cards: &[IssueCard]) -> serde_json::Value {
-    const STATUSES: &[&str] = &[
-        "Todo",
-        "Doing",
-        "Blocked",
-        "Needs Review",
-        "Done",
-        "Canceled",
-    ];
-    let columns = STATUSES
+    let columns = ISSUE_STATUSES
         .iter()
         .map(|status| {
             let issues = cards
@@ -380,10 +381,63 @@ fn compact_issue_board(cards: &[IssueCard]) -> serde_json::Value {
     })
 }
 
+fn compact_issue_board_with_connector_status(
+    services: &AppServices,
+    cards: &[IssueCard],
+) -> serde_json::Value {
+    let issues = cards
+        .iter()
+        .map(|card| compact_issue_card_with_connector_status(services, card))
+        .collect::<Vec<_>>();
+    let columns = ISSUE_STATUSES
+        .iter()
+        .map(|status| {
+            let column_issues = issues
+                .iter()
+                .filter(|issue| {
+                    issue.pointer("/status").and_then(|value| value.as_str()) == Some(*status)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "status": status,
+                "count": column_issues.len(),
+                "issues": column_issues
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue_board.compact.v1",
+        "total": cards.len(),
+        "columns": columns,
+        "connector_queue": compact_connector_queue(&issues)
+    })
+}
+
+#[cfg(test)]
 fn compact_issue_detail(card: &IssueCard) -> serde_json::Value {
     serde_json::json!({
         "schema_version": "entrance.hive.issue.compact.v1",
         "issue": compact_issue_card(card),
+        "recent_comments": compact_recent_comments(card, 5),
+        "recent_evidence": compact_recent_evidence(card, 5),
+        "stages": compact_stage_rows(card)
+    })
+}
+
+fn compact_issue_detail_with_connector_status(
+    services: &AppServices,
+    card: &IssueCard,
+) -> serde_json::Value {
+    let issue = compact_issue_card_with_connector_status(services, card);
+    let connector = issue
+        .pointer("/connector")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue.compact.v1",
+        "issue": issue,
+        "connector": connector,
         "recent_comments": compact_recent_comments(card, 5),
         "recent_evidence": compact_recent_evidence(card, 5),
         "stages": compact_stage_rows(card)
@@ -1962,6 +2016,72 @@ fn compact_audit_counts(details: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(counts)
 }
 
+fn compact_issue_card_with_connector_status(
+    services: &AppServices,
+    card: &IssueCard,
+) -> serde_json::Value {
+    let mut issue = compact_issue_card(card);
+    if let Some(object) = issue.as_object_mut() {
+        object.insert(
+            "connector".to_string(),
+            compact_connector_status_for_issue(services, card.issue.id),
+        );
+    }
+    issue
+}
+
+fn compact_connector_status_for_issue(services: &AppServices, issue_id: i64) -> serde_json::Value {
+    issue_mirror_status(services, issue_id, None).unwrap_or_else(|error| {
+        serde_json::json!({
+            "schema_version": ISSUE_MIRROR_STATUS_SCHEMA_VERSION,
+            "current": false,
+            "publish_required": null,
+            "reason": "connector_status_unavailable",
+            "error": error.to_string(),
+            "issue_id": issue_id,
+            "publish_command": format!("entrance hive issue mirror-publish {issue_id} --compact")
+        })
+    })
+}
+
+fn compact_connector_queue(issues: &[serde_json::Value]) -> serde_json::Value {
+    let publish_required = issues
+        .iter()
+        .filter(|issue| {
+            issue
+                .pointer("/connector/publish_required")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        })
+        .map(|issue| {
+            serde_json::json!({
+                "id": issue.pointer("/id").and_then(|value| value.as_i64()),
+                "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
+                "title": issue.pointer("/title").and_then(|value| value.as_str()),
+                "status": issue.pointer("/status").and_then(|value| value.as_str()),
+                "reason": issue.pointer("/connector/reason").and_then(|value| value.as_str()),
+                "path": issue.pointer("/connector/path").and_then(|value| value.as_str()),
+                "failed_check_count": issue
+                    .pointer("/connector/failed_checks")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::len)
+                    .unwrap_or_default(),
+                "publish_command": issue
+                    .pointer("/connector/publish_command")
+                    .and_then(|value| value.as_str()),
+                "readback_command": issue
+                    .pointer("/connector/readback_command")
+                    .and_then(|value| value.as_str())
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": "entrance.hive.connector_queue.compact.v1",
+        "publish_required_count": publish_required.len(),
+        "issues": publish_required
+    })
+}
+
 fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
     let latest_comment = card.comments.last().map(|comment| {
         serde_json::json!({
@@ -2158,7 +2278,7 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        compact_issue_board, compact_issue_detail, compact_issue_mirror,
+        compact_connector_queue, compact_issue_board, compact_issue_detail, compact_issue_mirror,
         compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
         compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
         compact_issue_mirror_publish, compact_issue_mirror_readback,
@@ -2432,6 +2552,75 @@ mod tests {
                 .pointer("/issue/actions/1/command")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue retry-run 7 --body <note> --compact")
+        );
+    }
+
+    #[test]
+    fn compact_connector_queue_collects_publish_required_issues() {
+        let issues = vec![
+            serde_json::json!({
+                "id": 7,
+                "loop_id": 3,
+                "title": "Loop #3: connector stale",
+                "status": "Done",
+                "connector": {
+                    "publish_required": true,
+                    "reason": "mirror_stale",
+                    "path": "/tmp/issue.json",
+                    "failed_checks": ["remote_digest_current"],
+                    "publish_command": "entrance hive issue mirror-publish 7 --compact",
+                    "readback_command": "entrance hive issue mirror-readback 7 --record --compact"
+                }
+            }),
+            serde_json::json!({
+                "id": 8,
+                "loop_id": 4,
+                "title": "Loop #4: connector current",
+                "status": "Done",
+                "connector": {
+                    "publish_required": false,
+                    "reason": "connector_mirror_current"
+                }
+            }),
+        ];
+
+        let queue = compact_connector_queue(&issues);
+
+        assert_eq!(
+            queue
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_queue.compact.v1")
+        );
+        assert_eq!(
+            queue
+                .pointer("/publish_required_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/id")
+                .and_then(|value| value.as_i64()),
+            Some(7)
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/reason")
+                .and_then(|value| value.as_str()),
+            Some("mirror_stale")
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/failed_check_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/publish_command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-publish 7 --compact")
         );
     }
 

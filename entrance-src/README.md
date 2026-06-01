@@ -117,6 +117,9 @@ commands.
 `hive issue comment <id> --body <text>` records a local issue comment and, when
 the issue is bound to a loop, mirrors it into the loop ledger as
 `operator_comment` evidence.
+Compact issue surfaces include connector mirror status: `hive issue show
+<id> --compact` exposes the issue's `connector` block, and `hive issue list
+--compact` also returns a `connector_queue` for publish-required mirrors.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in
