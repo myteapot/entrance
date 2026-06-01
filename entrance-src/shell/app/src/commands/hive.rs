@@ -30,6 +30,10 @@ const CONNECTOR_PUBLISH_PLAN_SCHEMA_VERSION: &str = "entrance.hive.connector_pub
 const CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_execute.v1";
 const CONNECTOR_WRITER_ADAPTER_SCHEMA_VERSION: &str = "entrance.hive.connector_writer_adapter.v1";
 const CONNECTOR_WRITE_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.connector_write_receipt.v1";
+const CONNECTOR_REMOTE_CONTRACT_SCHEMA_VERSION: &str = "entrance.hive.connector_remote_contract.v1";
+const CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION: &str =
+    "entrance.hive.connector_remote_write_receipt.v1";
+const CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION: &str = "entrance.hive.connector_remote_readback.v1";
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
@@ -575,6 +579,8 @@ fn compact_connector_provider(provider: &ConnectorProviderSpec) -> serde_json::V
         "review_surface_prefixes": provider.review_surface_prefixes.iter().map(String::as_str).collect::<Vec<_>>(),
         "capabilities": capabilities,
         "storage": provider.storage.as_str(),
+        "writer_adapter": compact_connector_writer_adapter(&provider.name, Some(provider)),
+        "remote_contract": compact_connector_remote_contract(Some(provider)),
         "notes": compact_text(&provider.notes, 180)
     })
 }
@@ -1621,6 +1627,7 @@ fn compact_issue_mirror_publish_blocked(
         "receipt_path": receipt_path.display().to_string(),
         "failed_checks": blockers,
         "adapter": compact_connector_writer_adapter(&mirror.provider, provider),
+        "remote_contract": compact_connector_remote_contract(provider),
         "publish_command": format!("entrance hive issue mirror-publish {} --compact", mirror.issue.id),
         "registry_command": "entrance hive connector registry --compact",
         "queue_command": format!("entrance hive connector queue --provider {} --compact", mirror.provider)
@@ -1641,6 +1648,7 @@ fn connector_write_receipt(
         "issue": issue_mirror_issue_binding(mirror),
         "loop": issue_mirror_loop_binding(mirror),
         "adapter": compact_connector_writer_adapter(&mirror.provider, provider),
+        "remote_contract": compact_connector_remote_contract(provider),
         "status_surface": {
             "status": mirror.issue.status.as_str(),
             "updated_at": mirror.issue.updated_at.as_str()
@@ -2844,8 +2852,90 @@ fn compact_connector_writer_adapter(
         "supports_admission": provider.map(|provider| provider.supports_admission),
         "storage": provider.map(|provider| provider.storage.as_str()),
         "remote_write": remote_write,
+        "remote_contract": compact_connector_remote_contract(provider),
         "blockers": blockers
     })
+}
+
+fn compact_connector_remote_contract(
+    provider: Option<&ConnectorProviderSpec>,
+) -> serde_json::Value {
+    let Some(provider) = provider else {
+        return serde_json::Value::Null;
+    };
+    if provider.mode != "remote-issue-api" {
+        return serde_json::Value::Null;
+    }
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_CONTRACT_SCHEMA_VERSION,
+        "provider": provider.name.as_str(),
+        "remote_object_kind": connector_remote_object_kind(&provider.name),
+        "surface": {
+            "kind": "issue/status/comment",
+            "identity_fields": ["provider", "review_surface", "external_key"],
+            "status_source": "hive_issue.status",
+            "comment_source": "hive_issue.comments",
+            "comment_mode": "append_missing_comments"
+        },
+        "write": {
+            "operation": "upsert_remote_issue_surface",
+            "receipt_schema_version": CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION,
+            "required_receipt_fields": [
+                "provider",
+                "remote_object_kind",
+                "remote_id",
+                "remote_url",
+                "external_key",
+                "status",
+                "comment_count",
+                "idempotency_key",
+                "source_mirror_sha256"
+            ]
+        },
+        "readback": {
+            "operation": "read_remote_issue_surface",
+            "schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION,
+            "required_checks": [
+                "remote_identity",
+                "remote_status",
+                "remote_comment_surface",
+                "write_receipt_binding"
+            ]
+        },
+        "idempotency": {
+            "key_parts": [
+                "provider",
+                "external_key",
+                "issue.updated_at",
+                "latest_comment.id",
+                "mirror.sha256"
+            ],
+            "conflict_policy": "readback-before-write"
+        },
+        "auth": {
+            "required": provider.auth_required,
+            "env": provider.auth_env.iter().map(String::as_str).collect::<Vec<_>>()
+        },
+        "admission": {
+            "required_before_write": [
+                "connector_writer_adapter.blockers_empty",
+                "remote_auth_configured",
+                "remote_readback_available"
+            ],
+            "required_after_write": [
+                "remote_write_receipt_current",
+                "remote_readback_current"
+            ]
+        }
+    })
+}
+
+fn connector_remote_object_kind(provider_name: &str) -> &'static str {
+    match provider_name {
+        "linear" => "linear.issue",
+        "github" => "github.issue",
+        _ => "remote.issue",
+    }
 }
 
 fn connector_writer_target_label(provider: Option<&ConnectorProviderSpec>) -> &'static str {
@@ -3627,7 +3717,12 @@ mod tests {
             name: name.to_string(),
             display_name: display_name.to_string(),
             status: status.to_string(),
-            mode: "test".to_string(),
+            mode: if name == "linear" || name == "github" {
+                "remote-issue-api"
+            } else {
+                "test"
+            }
+            .to_string(),
             review_surface_prefixes: prefixes.into_iter().map(ToOwned::to_owned).collect(),
             auth_required: false,
             auth_env: Vec::new(),
@@ -4042,6 +4137,30 @@ mod tests {
                 .pointer("/issues/0/publish_blockers/1")
                 .and_then(|value| value.as_str()),
             Some("publish_not_supported")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/adapter/remote_contract/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_remote_contract.v1")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/adapter/remote_contract/remote_object_kind")
+                .and_then(|value| value.as_str()),
+            Some("linear.issue")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/adapter/remote_contract/write/receipt_schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_remote_write_receipt.v1")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/adapter/remote_contract/readback/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_remote_readback.v1")
         );
         assert_eq!(
             linear_queue

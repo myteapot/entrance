@@ -254,6 +254,28 @@ type ConnectorProviderAdmission = {
   dry_run_command: string;
 };
 
+type ConnectorRemoteContract = {
+  schema_version: string;
+  provider: string;
+  remote_object_kind: string;
+  write: {
+    receipt_schema_version: string;
+  };
+  readback: {
+    schema_version: string;
+  };
+};
+
+type ConnectorWriterAdapter = {
+  schema_version: string;
+  provider: string;
+  driver: string;
+  mode: string | null;
+  remote_write: boolean;
+  blockers: string[];
+  remote_contract?: ConnectorRemoteContract | null;
+};
+
 type ConnectorQueueReport = {
   schema_version: string;
   provider_filter: string | null;
@@ -281,6 +303,7 @@ type ConnectorQueueProvider = {
   admission_status: string | null;
   admission_blockers: string[];
   storage: string;
+  adapter?: ConnectorWriterAdapter | null;
   issue_count: number;
   current_count: number;
   publish_required_count: number;
@@ -302,6 +325,7 @@ type ConnectorQueueIssue = {
   storage?: string | null;
   can_publish?: boolean | null;
   publish_blockers?: string[];
+  adapter?: ConnectorWriterAdapter | null;
   admission_status: string | null;
   admission_blockers: string[];
   review_surface: string | null;
@@ -1602,6 +1626,20 @@ export default function App() {
     provider.status === "active" && provider.configured ? "active" : "planned";
   const connectorQueueProviderTone = (provider: ConnectorQueueProvider) =>
     provider.status === "active" && provider.configured ? "active" : "planned";
+  const connectorQueueProviderTitle = (provider: ConnectorQueueProvider) => {
+    const adapter = provider.adapter;
+    const contract = adapter?.remote_contract;
+    const parts = [provider.queue_command];
+    if (adapter?.blockers?.length) {
+      parts.push(`writer blockers: ${adapter.blockers.join(", ")}`);
+    }
+    if (contract) {
+      parts.push(
+        `remote contract: ${contract.remote_object_kind}, write ${contract.write.receipt_schema_version}, readback ${contract.readback.schema_version}`,
+      );
+    }
+    return parts.join(" | ");
+  };
   const connectorStatusStrip = (card: IssueCard, surface: string) =>
     card.connector ? (
       <div
@@ -2415,7 +2453,7 @@ export default function App() {
                   {connectorQueueProviders().map((provider) => (
                     <span
                       class={`connector-provider connector-provider--${connectorQueueProviderTone(provider)}`}
-                      title={provider.queue_command}
+                      title={connectorQueueProviderTitle(provider)}
                     >
                       <strong>{provider.name}</strong>
                       <span>{provider.publish_required_count} queued</span>

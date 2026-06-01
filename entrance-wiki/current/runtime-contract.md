@@ -129,8 +129,11 @@ mirror digest, or provider writer capability changed. Successful execution
 records a typed connector publish comment/evidence on each issue before writing
 the mirror, and each publish returns a typed connector write receipt with
 adapter, status, comment surface, digest, and readback command. Planned
-Linear/GitHub providers remain visible with adapter blockers, but they cannot be
-executed until a real writer is active. `hive issue
+Linear/GitHub providers remain visible with adapter blockers and an
+`entrance.hive.connector_remote_contract.v1` that specifies remote object kind,
+write receipt schema, readback schema, idempotency key parts, auth env, and
+required pre/post-write checks, but they cannot be executed until a real writer
+is active. `hive issue
 connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`.
