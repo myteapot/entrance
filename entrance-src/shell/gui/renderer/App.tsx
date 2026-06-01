@@ -298,6 +298,10 @@ type IssueMirrorReadbackReport = {
   recorded?: {
     comment_id: number;
     evidence_id: number | null;
+    publish?: {
+      required: boolean;
+      command: string;
+    } | null;
   } | null;
 };
 type IssueMirrorAdmissionReport = {
@@ -316,6 +320,10 @@ type IssueMirrorAdmissionReport = {
   recorded?: {
     comment_id: number;
     evidence_id: number | null;
+    publish?: {
+      required: boolean;
+      command: string;
+    } | null;
   } | null;
 };
 type CommentPill = {
@@ -681,13 +689,14 @@ export default function App() {
         record: true,
       });
       const evidenceLabel = report.recorded?.evidence_id ? ` (E#${report.recorded.evidence_id})` : "";
+      const publishLabel = report.recorded?.publish?.required ? "; sync to publish" : "";
       if (report.passed) {
         setBanner(
-          `Read back issue mirror ${compactText(report.current.digest.sha256, 12)}: ${report.remote.surface?.comments.count ?? 0} comments${evidenceLabel}`,
+          `Read back issue mirror ${compactText(report.current.digest.sha256, 12)}: ${report.remote.surface?.comments.count ?? 0} comments${evidenceLabel}${publishLabel}`,
         );
       } else {
         setBanner(
-          `Issue #${card.issue.id} readback failed: ${compactText(report.failed_checks.join(", "), 96)}${evidenceLabel}`,
+          `Issue #${card.issue.id} readback failed: ${compactText(report.failed_checks.join(", "), 96)}${evidenceLabel}${publishLabel}`,
         );
       }
     } catch (error) {
@@ -707,12 +716,14 @@ export default function App() {
       });
       if (report.admitted) {
         const evidenceLabel = report.recorded?.evidence_id ? `E#${report.recorded.evidence_id}` : "recorded";
+        const publishLabel = report.recorded?.publish?.required ? "; sync to publish" : "";
         setBanner(
-          `Admitted connector mirror ${compactText(report.receipt.sha256 ?? "no-sha", 12)}: ${report.decision.route_to} (${evidenceLabel})`,
+          `Admitted connector mirror ${compactText(report.receipt.sha256 ?? "no-sha", 12)}: ${report.decision.route_to} (${evidenceLabel})${publishLabel}`,
         );
       } else {
         const evidenceLabel = report.recorded?.evidence_id ? ` (E#${report.recorded.evidence_id})` : "";
-        setBanner(`Connector admission rejected: ${compactText(report.failed_checks.join(", "), 96)}${evidenceLabel}`);
+        const publishLabel = report.recorded?.publish?.required ? "; sync to publish" : "";
+        setBanner(`Connector admission rejected: ${compactText(report.failed_checks.join(", "), 96)}${evidenceLabel}${publishLabel}`);
       }
     } catch (error) {
       setBanner(`Issue #${card.issue.id} admission failed: ${actionErrorMessage(error)}`);

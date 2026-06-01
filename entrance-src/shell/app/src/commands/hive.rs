@@ -22,6 +22,7 @@ const ISSUE_MIRROR_VERIFY_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_ver
 const ISSUE_MIRROR_AUDIT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_audit.v1";
 const ISSUE_MIRROR_READBACK_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_readback.v1";
 const ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_admission.v1";
+const CONNECTOR_PUBLISH_HINT_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_hint.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 
@@ -726,7 +727,8 @@ fn record_issue_mirror_readback(
         "schema_version": "entrance.hive.issue_mirror_readback_record.v1",
         "comment_id": comment_id,
         "evidence_id": evidence_id,
-        "comment_body": body
+        "comment_body": body,
+        "publish": connector_record_publish_hint(issue_id)
     }))
 }
 
@@ -867,8 +869,20 @@ fn record_issue_mirror_admission(
         "schema_version": "entrance.hive.issue_mirror_admission_record.v1",
         "comment_id": comment_id,
         "evidence_id": evidence_id,
-        "comment_body": body
+        "comment_body": body,
+        "publish": connector_record_publish_hint(issue_id)
     }))
+}
+
+fn connector_record_publish_hint(issue_id: i64) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": CONNECTOR_PUBLISH_HINT_SCHEMA_VERSION,
+        "required": true,
+        "reason": "record_created_local_issue_event",
+        "summary": "Recording this connector observation added a local Hive comment/evidence row; sync to publish the new ledger event to the connector mirror.",
+        "action": "sync",
+        "command": format!("entrance hive issue mirror-sync {}", issue_id)
+    })
 }
 
 fn default_issue_mirror_path(app_root: &Path, external_key: &str) -> PathBuf {
@@ -1477,6 +1491,9 @@ fn compact_issue_mirror_readback_summary(report: &serde_json::Value) -> serde_js
         "recorded": report.pointer("/recorded").cloned(),
         "recorded_comment_id": report.pointer("/recorded/comment_id").and_then(|value| value.as_i64()),
         "recorded_evidence_id": report.pointer("/recorded/evidence_id").and_then(|value| value.as_i64()),
+        "publish_required": report.pointer("/recorded/publish/required").and_then(|value| value.as_bool()),
+        "publish_command": report.pointer("/recorded/publish/command").and_then(|value| value.as_str()),
+        "publish_reason": report.pointer("/recorded/publish/reason").and_then(|value| value.as_str()),
         "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
     })
 }
@@ -1590,6 +1607,9 @@ fn compact_issue_mirror_admission_summary(report: &serde_json::Value) -> serde_j
         "recorded": report.pointer("/recorded").cloned(),
         "recorded_comment_id": report.pointer("/recorded/comment_id").and_then(|value| value.as_i64()),
         "recorded_evidence_id": report.pointer("/recorded/evidence_id").and_then(|value| value.as_i64()),
+        "publish_required": report.pointer("/recorded/publish/required").and_then(|value| value.as_bool()),
+        "publish_command": report.pointer("/recorded/publish/command").and_then(|value| value.as_str()),
+        "publish_reason": report.pointer("/recorded/publish/reason").and_then(|value| value.as_str()),
         "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
     })
 }
@@ -2610,7 +2630,13 @@ mod tests {
                     "schema_version": "entrance.hive.issue_mirror_readback_record.v1",
                     "comment_id": 17,
                     "evidence_id": 23,
-                    "comment_body": "Connector readback current: external issue surface matches Hive."
+                    "comment_body": "Connector readback current: external issue surface matches Hive.",
+                    "publish": {
+                        "schema_version": "entrance.hive.connector_publish_hint.v1",
+                        "required": true,
+                        "reason": "record_created_local_issue_event",
+                        "command": "entrance hive issue mirror-sync 8"
+                    }
                 }),
             );
         let compact_readback = compact_issue_mirror_readback_summary(&recorded_readback);
@@ -2637,6 +2663,18 @@ mod tests {
                 .pointer("/recorded_evidence_id")
                 .and_then(|value| value.as_i64()),
             Some(23)
+        );
+        assert_eq!(
+            compact_readback
+                .pointer("/publish_required")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            compact_readback
+                .pointer("/publish_command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-sync 8")
         );
 
         let mut stale_remote = mirror.clone();
