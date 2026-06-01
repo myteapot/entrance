@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use entrance_core::{HiveCommentCreate, HiveLoopEvidenceCreate};
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck, HiveLoopAuditReport,
     HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard, IssueCommentRequest,
@@ -21,6 +22,7 @@ const ISSUE_MIRROR_VERIFY_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_ver
 const ISSUE_MIRROR_AUDIT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_audit.v1";
 const ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_admission.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
+const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MirrorFileDigest {
@@ -32,7 +34,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -230,8 +232,12 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             }
         }
         [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-admit" => {
-            let report =
-                admit_issue_mirror_file(services, id.parse::<i64>()?, flag_value(rest, "--path"))?;
+            let report = admit_issue_mirror_file(
+                services,
+                id.parse::<i64>()?,
+                flag_value(rest, "--path"),
+                flag_present(rest, "--record"),
+            )?;
             if flag_present(rest, "--compact") {
                 print_json(&compact_issue_mirror_admission_summary(&report))
             } else {
@@ -515,9 +521,158 @@ pub(crate) fn admit_issue_mirror_file(
     services: &AppServices,
     issue_id: i64,
     path: Option<&str>,
+    record: bool,
 ) -> Result<serde_json::Value> {
     let audit = audit_issue_mirror_file(services, issue_id, path)?;
-    Ok(compact_issue_mirror_admission(&audit))
+    let mut admission = compact_issue_mirror_admission(&audit);
+    if record {
+        let recorded = record_issue_mirror_admission(services, &admission)?;
+        if let Some(object) = admission.as_object_mut() {
+            object.insert("recorded".to_string(), recorded);
+        }
+    }
+    Ok(admission)
+}
+
+fn record_issue_mirror_admission(
+    services: &AppServices,
+    admission: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let issue_id = admission
+        .pointer("/issue_id")
+        .and_then(|value| value.as_i64())
+        .context("connector admission missing issue_id")?;
+    let issue = services
+        .kernel
+        .store
+        .get_hive_issue(issue_id)?
+        .with_context(|| format!("unknown hive issue `{issue_id}`"))?;
+    let contract = issue
+        .loop_id
+        .map(|loop_id| services.kernel.store.get_hive_loop_contract(loop_id))
+        .transpose()?
+        .flatten();
+    let admitted = admission
+        .pointer("/admitted")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let result = admission
+        .pointer("/result")
+        .and_then(|value| value.as_str())
+        .unwrap_or(if admitted { "admitted" } else { "rejected" });
+    let route_to = admission
+        .pointer("/decision/route_to")
+        .and_then(|value| value.as_str())
+        .unwrap_or("operator");
+    let failed_checks = admission
+        .pointer("/failed_checks")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let failed_label = failed_checks
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = if admitted {
+        format!("Connector admission admitted: {route_to}.")
+    } else if failed_label.is_empty() {
+        "Connector admission rejected.".to_string()
+    } else {
+        format!("Connector admission rejected: {failed_label}.")
+    };
+    let loop_id = issue.loop_id;
+    let round = contract
+        .as_ref()
+        .map(|contract| contract.current_round)
+        .unwrap_or(1);
+    let phase = contract
+        .as_ref()
+        .map(|contract| contract.active_phase.as_str());
+    let comment_id = services
+        .kernel
+        .store
+        .insert_hive_comment(HiveCommentCreate {
+            issue_id,
+            author: "hive".to_string(),
+            body: body.clone(),
+            payload: serde_json::json!({
+                "schema_version": SYSTEM_COMMENT_SCHEMA_VERSION,
+                "source": "hive",
+                "loop_id": loop_id,
+                "round": round,
+                "status": issue.status.as_str(),
+                "phase": phase,
+                "connector_admission": {
+                    "schema_version": admission.pointer("/schema_version"),
+                    "object_kind": admission.pointer("/object_kind"),
+                    "result": result,
+                    "admitted": admitted,
+                    "gate": admission.pointer("/policy/gate"),
+                    "route_to": route_to,
+                    "failed_checks": failed_checks,
+                    "dry_run": admission.pointer("/dry_run")
+                }
+            }),
+        })?;
+
+    let evidence_id = if let Some(loop_id) = issue.loop_id {
+        Some(services.kernel.store.insert_hive_loop_evidence(
+            HiveLoopEvidenceCreate {
+                loop_id,
+                stage_id: None,
+                round,
+                kind: "connector_admission".to_string(),
+                summary: body.clone(),
+                path: admission
+                    .pointer("/receipt/path")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                payload: serde_json::json!({
+                    "schema_version": ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION,
+                    "source": "issue/status/comment",
+                    "result": result,
+                    "admitted": admitted,
+                    "issue": {
+                        "id": issue.id,
+                        "status": issue.status.as_str(),
+                        "comment_id": comment_id
+                    },
+                    "loop": {
+                        "id": loop_id,
+                        "status": contract.as_ref().map(|contract| contract.status.as_str()),
+                        "phase": phase,
+                        "round": round
+                    },
+                    "connector": {
+                        "provider": admission.pointer("/provider"),
+                        "review_surface": admission.pointer("/review_surface"),
+                        "external_key": admission.pointer("/external_key")
+                    },
+                    "decision": admission.pointer("/decision").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "policy": admission.pointer("/policy").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "receipt": admission.pointer("/receipt").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "failed_checks": admission.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+                    "audit": {
+                        "schema_version": admission.pointer("/audit/schema_version"),
+                        "passed": admission.pointer("/audit/passed"),
+                        "failed_count": admission.pointer("/audit/failed_count"),
+                        "failed_checks": admission.pointer("/audit/failed_checks")
+                    }
+                }),
+            },
+        )?)
+    } else {
+        None
+    };
+
+    Ok(serde_json::json!({
+        "schema_version": "entrance.hive.issue_mirror_admission_record.v1",
+        "comment_id": comment_id,
+        "evidence_id": evidence_id,
+        "comment_body": body
+    }))
 }
 
 fn default_issue_mirror_path(app_root: &Path, external_key: &str) -> PathBuf {
@@ -1038,6 +1193,9 @@ fn compact_issue_mirror_admission_summary(report: &serde_json::Value) -> serde_j
         "path": report.pointer("/receipt/path").and_then(|value| value.as_str()),
         "receipt_path": report.pointer("/receipt/receipt_path").and_then(|value| value.as_str()),
         "sha256": report.pointer("/receipt/sha256").and_then(|value| value.as_str()),
+        "recorded": report.pointer("/recorded").cloned(),
+        "recorded_comment_id": report.pointer("/recorded/comment_id").and_then(|value| value.as_i64()),
+        "recorded_evidence_id": report.pointer("/recorded/evidence_id").and_then(|value| value.as_i64()),
         "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
     })
 }

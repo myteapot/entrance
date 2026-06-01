@@ -556,6 +556,10 @@ async fn handle_invoke(
                     .or_else(|| args.get("outPath"))
                     .or_else(|| args.get("out_path"))
                     .and_then(|value| value.as_str()),
+                args.get("record")
+                    .or_else(|| args.get("recorded"))
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
             )?)
         }
         "hive_issue_comment" => {

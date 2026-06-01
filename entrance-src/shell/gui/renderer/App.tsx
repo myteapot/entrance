@@ -281,6 +281,10 @@ type IssueMirrorAdmissionReport = {
     sha256: string | null;
     path: string | null;
   };
+  recorded?: {
+    comment_id: number;
+    evidence_id: number | null;
+  } | null;
 };
 type CommentPill = {
   label: string;
@@ -642,13 +646,16 @@ export default function App() {
     try {
       const report = await bridge.invoke<IssueMirrorAdmissionReport>("hive_issue_mirror_admit", {
         issueId: card.issue.id,
+        record: true,
       });
       if (report.admitted) {
+        const evidenceLabel = report.recorded?.evidence_id ? `E#${report.recorded.evidence_id}` : "recorded";
         setBanner(
-          `Admitted connector mirror ${compactText(report.receipt.sha256 ?? "no-sha", 12)}: ${report.decision.route_to}`,
+          `Admitted connector mirror ${compactText(report.receipt.sha256 ?? "no-sha", 12)}: ${report.decision.route_to} (${evidenceLabel})`,
         );
       } else {
-        setBanner(`Connector admission rejected: ${compactText(report.failed_checks.join(", "), 96)}`);
+        const evidenceLabel = report.recorded?.evidence_id ? ` (E#${report.recorded.evidence_id})` : "";
+        setBanner(`Connector admission rejected: ${compactText(report.failed_checks.join(", "), 96)}${evidenceLabel}`);
       }
     } catch (error) {
       setBanner(`Issue #${card.issue.id} admission failed: ${actionErrorMessage(error)}`);
@@ -1181,7 +1188,7 @@ export default function App() {
   const issueMirrorVerifyCommand = (card: IssueCard) =>
     `entrance hive issue mirror-audit ${card.issue.id} --compact`;
   const issueMirrorAdmitCommand = (card: IssueCard) =>
-    `entrance hive issue mirror-admit ${card.issue.id} --compact`;
+    `entrance hive issue mirror-admit ${card.issue.id} --record --compact`;
   const issueMirrorSyncLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Syncing" ? "Syncing" : "Sync";
   const issueMirrorVerifyLabel = (card: IssueCard) =>
