@@ -1164,13 +1164,13 @@ fn apply_connector_provider_config(
             provider.status = "active".to_string();
             provider.supports_status = true;
             provider.supports_publish = true;
-            provider.supports_readback = false;
-            provider.supports_admission = false;
+            provider.supports_readback = true;
+            provider.supports_admission = true;
             if provider.storage == "not-configured" {
                 provider.storage = "github-rest-api".to_string();
             }
             provider.notes =
-                "GitHub REST publish writer is active; readback and admission are still pending."
+                "GitHub REST publish/readback connector is active for configured issue targets."
                     .to_string();
         }
         provider.notes = format!("{} Configured from entrance.toml.", provider.notes);
@@ -7158,20 +7158,19 @@ mod tests {
         assert_eq!(github.status, "active");
         assert!(github.configured);
         assert!(github.supports_publish);
-        assert!(!github.supports_readback);
-        assert!(!github.supports_admission);
+        assert!(github.supports_readback);
+        assert!(github.supports_admission);
         assert_eq!(github.storage, "github-rest-api");
-        assert!(github.notes.contains("REST publish writer is active"));
+        assert!(github
+            .notes
+            .contains("REST publish/readback connector is active"));
         let github_admission = registry
             .provider_admissions
             .iter()
             .find(|admission| admission.provider == "github")
             .expect("github admission should be registered");
-        assert_eq!(github_admission.status, "blocked");
-        assert!(github_admission
-            .blockers
-            .iter()
-            .any(|blocker| blocker == "admission_not_supported"));
+        assert_eq!(github_admission.status, "ready");
+        assert!(github_admission.blockers.is_empty());
     }
 
     #[test]

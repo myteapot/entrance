@@ -1094,6 +1094,26 @@ pub(crate) fn readback_issue_mirror_file(
         resolve_issue_mirror_path_for_provider(&services.kernel.root, &mirror, provider, path);
     let receipt_path = mirror_receipt_path(&path);
     let expected_digest = digest_bytes(&mirror_payload(&mirror)?);
+    if let Some(provider) =
+        provider.filter(|provider| connector_provider_is_github_remote(provider))
+    {
+        let receipt = read_receipt(&receipt_path)?;
+        let mut readback = compact_github_issue_mirror_readback(
+            &mirror,
+            &path,
+            &receipt_path,
+            &expected_digest,
+            receipt.as_ref(),
+            provider,
+        );
+        if record {
+            let recorded = record_issue_mirror_readback(services, &readback)?;
+            if let Some(object) = readback.as_object_mut() {
+                object.insert("recorded".to_string(), recorded);
+            }
+        }
+        return Ok(readback);
+    }
     let remote_payload = read_payload_with_digest(&path)?;
     let receipt = read_receipt(&receipt_path)?;
     let verify = compact_issue_mirror_verify(
@@ -1321,11 +1341,20 @@ fn apply_connector_provider_admission_preview(
     );
 
     if admissible {
+        object.insert("admitted".to_string(), serde_json::json!(true));
+        object.insert("result".to_string(), serde_json::json!("admitted"));
+        object.insert(
+            "reason".to_string(),
+            serde_json::json!("connector provider admission passed"),
+        );
+        object.insert("failed_count".to_string(), serde_json::json!(0));
+        object.insert("failed_checks".to_string(), serde_json::json!([]));
         if let Some(decision) = object
             .get_mut("decision")
             .and_then(|value| value.as_object_mut())
         {
             decision.insert("route_to".to_string(), serde_json::json!(route_to));
+            decision.insert("blockers".to_string(), serde_json::json!([]));
         }
         return;
     }
@@ -1784,6 +1813,8 @@ fn default_issue_mirror_path_for_provider(
         || storage == "not-configured"
         || storage == "sqlite"
         || storage.starts_with("sqlite:")
+        || storage.starts_with("https://")
+        || storage.starts_with("http://")
     {
         return default_issue_mirror_path(app_root, external_key);
     }
@@ -2365,6 +2396,15 @@ fn connector_status_reason(failed_checks: &serde_json::Value) -> &'static str {
         Some("remote_binding") => "mirror_binding_stale",
         Some("remote_comment_surface") => "mirror_comment_surface_stale",
         Some("receipt_current") => "mirror_receipt_stale",
+        Some("provider_readback_ready") => "connector_readback_not_ready",
+        Some("remote_auth") => "connector_auth_missing",
+        Some("remote_target_valid") => "remote_target_invalid",
+        Some("remote_issue_read") => "remote_issue_read_failed",
+        Some("remote_comments_read") => "remote_comments_read_failed",
+        Some("remote_identity") => "remote_identity_stale",
+        Some("remote_status") => "remote_status_stale",
+        Some("remote_issue_body") => "remote_issue_body_stale",
+        Some("write_receipt_binding") => "remote_write_receipt_stale",
         _ => "connector_mirror_stale",
     }
 }
@@ -2877,6 +2917,665 @@ fn connector_remote_readback_report(
         "write_receipt": remote_write_receipt,
         "checks": checks
     })
+}
+
+fn compact_github_issue_mirror_readback(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    receipt_path: &Path,
+    expected_digest: &MirrorFileDigest,
+    receipt: Option<&serde_json::Value>,
+    provider: &ConnectorProviderSpec,
+) -> serde_json::Value {
+    let remote_target =
+        connector_remote_target(Some(provider), &mirror.review_surface, &mirror.external_key);
+    let execution = execute_github_remote_readback(provider, &remote_target, receipt);
+    let remote_readback = connector_github_remote_readback_report(
+        mirror,
+        expected_digest,
+        receipt,
+        provider,
+        &remote_target,
+        &execution,
+    );
+    let failed_checks = remote_readback
+        .pointer("/failed_checks")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(["remote_readback_failed"]));
+    let passed = failed_checks
+        .as_array()
+        .map(|checks| checks.is_empty())
+        .unwrap_or(false);
+    let issue_summary = execution
+        .pointer("/issue/response/summary")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let comments_summary = execution
+        .pointer("/comments/response/summary")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({ "count": 0, "items": [] }));
+    let response_digest = execution
+        .pointer("/response_digest")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let checks = remote_readback
+        .pointer("/checks")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let issue_id = mirror.issue.id;
+
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
+        "passed": passed,
+        "failed_count": failed_checks.as_array().map(Vec::len).unwrap_or_default(),
+        "failed_checks": failed_checks,
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue_id": issue_id,
+        "issue_status": mirror.issue.status.as_str(),
+        "loop_id": mirror.issue.loop_id,
+        "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round),
+        "path": path.display().to_string(),
+        "receipt_path": receipt_path.display().to_string(),
+        "current": {
+            "digest": compact_digest(expected_digest),
+            "surface": issue_mirror_readback_surface(mirror),
+            "comments": issue_mirror_comment_surface(mirror)
+        },
+        "remote": {
+            "found": execution.pointer("/issue/success").and_then(|value| value.as_bool()).unwrap_or(false),
+            "parsed": execution.pointer("/issue/response/parsed").and_then(|value| value.as_bool()).unwrap_or(false),
+            "digest": response_digest,
+            "surface": {
+                "schema_version": "entrance.hive.github_issue_surface.v1",
+                "provider": provider.name.as_str(),
+                "remote_target": remote_target,
+                "issue": issue_summary,
+                "comments": comments_summary
+            }
+        },
+        "receipt": {
+            "found": receipt.is_some(),
+            "schema_version": receipt.and_then(|value| json_pointer_str(value, "/schema_version")),
+            "issue_status": receipt.and_then(|value| json_pointer_str(value, "/issue/status")),
+            "loop_round": receipt.and_then(|value| json_pointer_i64(value, "/loop/round")),
+            "remote_write_receipt": receipt.and_then(|value| value.pointer("/remote_write_receipt"))
+        },
+        "remote_contract": compact_connector_remote_contract(Some(provider)),
+        "remote_target": connector_remote_target(
+            Some(provider),
+            &mirror.review_surface,
+            &mirror.external_key
+        ),
+        "remote_readback": remote_readback,
+        "verify": serde_json::Value::Null,
+        "checks": checks,
+        "actions": [
+            compact_loop_action(
+                "publish",
+                "Publish",
+                format!("entrance hive issue mirror-publish {} --compact", issue_id)
+            ),
+            compact_loop_action(
+                "readback",
+                "Readback",
+                format!("entrance hive issue mirror-readback {} --record --compact", issue_id)
+            ),
+            compact_loop_action(
+                "admit",
+                "Admit",
+                format!("entrance hive issue mirror-admit {} --compact", issue_id)
+            ),
+            compact_loop_action(
+                "roundtrip",
+                "Roundtrip",
+                format!("entrance hive issue mirror-roundtrip {} --compact", issue_id)
+            )
+        ]
+    })
+}
+
+fn connector_github_remote_readback_report(
+    mirror: &IssueMirrorReport,
+    expected_digest: &MirrorFileDigest,
+    receipt: Option<&serde_json::Value>,
+    provider: &ConnectorProviderSpec,
+    remote_target: &serde_json::Value,
+    execution: &serde_json::Value,
+) -> serde_json::Value {
+    let source_issue = connector_remote_write_issue_from_mirror(mirror, expected_digest);
+    let expected_title = source_issue
+        .pointer("/title")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Entrance issue");
+    let expected_body = connector_remote_issue_body(&source_issue);
+    let expected_state = connector_github_issue_state(&mirror.issue.status);
+    let expected_state_reason = connector_github_issue_state_reason(&mirror.issue.status);
+    let expected_comment = mirror
+        .comments
+        .last()
+        .map(|_| connector_remote_comment_body(&source_issue));
+    let issue_summary = execution.pointer("/issue/response/summary");
+    let comments_summary = execution.pointer("/comments/response/summary");
+    let remote_issue_number = issue_summary
+        .and_then(|value| value.pointer("/number"))
+        .and_then(|value| value.as_u64());
+    let expected_issue_number = connector_github_readback_issue_number(remote_target, receipt);
+    let remote_state = issue_summary
+        .and_then(|value| value.pointer("/state"))
+        .and_then(|value| value.as_str());
+    let remote_state_reason = issue_summary
+        .and_then(|value| value.pointer("/state_reason"))
+        .and_then(|value| value.as_str());
+    let remote_title = issue_summary
+        .and_then(|value| value.pointer("/title"))
+        .and_then(|value| value.as_str());
+    let remote_body = issue_summary
+        .and_then(|value| value.pointer("/body"))
+        .and_then(|value| value.as_str());
+    let remote_comment_surface_current = expected_comment.as_ref().map_or(true, |expected| {
+        github_readback_comments_contain_body(comments_summary, expected)
+    });
+    let remote_status_current = remote_state == Some(expected_state)
+        && expected_state_reason.map_or(true, |reason| remote_state_reason == Some(reason));
+    let remote_issue_body_current =
+        remote_title == Some(expected_title) && remote_body == Some(expected_body.as_str());
+    let remote_identity_current =
+        expected_issue_number.is_some() && remote_issue_number == expected_issue_number;
+    let remote_write_receipt = receipt.and_then(|value| value.pointer("/remote_write_receipt"));
+    let write_receipt_binding_current = remote_write_receipt
+        .and_then(|value| json_pointer_str(value, "/source_mirror_sha256"))
+        == Some(expected_digest.sha256.as_str());
+    let execution_failed_checks = execution
+        .pointer("/failed_checks")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    let provider_ready =
+        provider.status == "active" && provider.configured && provider.supports_readback;
+    let target_valid = remote_target
+        .pointer("/valid")
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let auth_ready = !execution_failed_checks.contains(&"remote_auth_missing");
+    let issue_read = execution
+        .pointer("/issue/success")
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let comments_read = execution
+        .pointer("/comments/success")
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let checks = vec![
+        readback_check(
+            "provider_readback_ready",
+            "GitHub provider is active, configured, and declares remote readback support.",
+            provider_ready,
+            serde_json::json!({
+                "status": provider.status.as_str(),
+                "configured": provider.configured,
+                "supports_readback": provider.supports_readback
+            }),
+        ),
+        readback_check(
+            "remote_target_valid",
+            "GitHub review surface resolves to an issue target.",
+            target_valid,
+            serde_json::json!({
+                "target": remote_target
+            }),
+        ),
+        readback_check(
+            "remote_auth",
+            "GitHub token is available before remote readback.",
+            auth_ready,
+            serde_json::json!({
+                "auth_env": provider.auth_env.iter().map(String::as_str).collect::<Vec<_>>()
+            }),
+        ),
+        readback_check(
+            "remote_issue_read",
+            "GitHub issue can be read after write.",
+            issue_read,
+            serde_json::json!({
+                "request": execution.pointer("/issue/request"),
+                "http_status": execution.pointer("/issue/http_status"),
+                "failed_check": execution.pointer("/issue/failed_check")
+            }),
+        ),
+        readback_check(
+            "remote_comments_read",
+            "GitHub issue comments can be read after write.",
+            comments_read,
+            serde_json::json!({
+                "request": execution.pointer("/comments/request"),
+                "http_status": execution.pointer("/comments/http_status"),
+                "failed_check": execution.pointer("/comments/failed_check")
+            }),
+        ),
+        readback_check(
+            "remote_identity",
+            "GitHub issue number matches the connector target or write receipt.",
+            remote_identity_current,
+            serde_json::json!({
+                "expected_issue_number": expected_issue_number,
+                "remote_issue_number": remote_issue_number,
+                "remote_id": remote_write_receipt.and_then(|value| json_pointer_str(value, "/remote_id"))
+            }),
+        ),
+        readback_check(
+            "remote_status",
+            "GitHub issue state matches the current Hive issue status.",
+            remote_status_current,
+            serde_json::json!({
+                "expected_state": expected_state,
+                "expected_state_reason": expected_state_reason,
+                "remote_state": remote_state,
+                "remote_state_reason": remote_state_reason
+            }),
+        ),
+        readback_check(
+            "remote_issue_body",
+            "GitHub issue title and body match the current Hive issue mirror.",
+            remote_issue_body_current,
+            serde_json::json!({
+                "expected_title": expected_title,
+                "remote_title": remote_title,
+                "expected_body_sha256": digest_bytes(expected_body.as_bytes()).sha256,
+                "remote_body_sha256": remote_body.map(|body| digest_bytes(body.as_bytes()).sha256)
+            }),
+        ),
+        readback_check(
+            "remote_comment_surface",
+            "GitHub comments include the latest Hive issue comment body.",
+            remote_comment_surface_current,
+            serde_json::json!({
+                "expected_comment_sha256": expected_comment.as_ref().map(|body| digest_bytes(body.as_bytes()).sha256),
+                "remote_comment_count": comments_summary
+                    .and_then(|value| value.pointer("/count"))
+                    .and_then(|value| value.as_u64())
+            }),
+        ),
+        readback_check(
+            "write_receipt_binding",
+            "GitHub readback is bound to the current remote write receipt.",
+            write_receipt_binding_current,
+            serde_json::json!({
+                "receipt_found": receipt.is_some(),
+                "receipt_schema_version": remote_write_receipt.and_then(|value| json_pointer_str(value, "/schema_version")),
+                "source_mirror_sha256": remote_write_receipt.and_then(|value| json_pointer_str(value, "/source_mirror_sha256")),
+                "expected_source_mirror_sha256": expected_digest.sha256.as_str()
+            }),
+        ),
+    ];
+    let failed_checks = checks
+        .iter()
+        .filter(|check| {
+            !check
+                .pointer("/passed")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .filter_map(|check| {
+            check
+                .pointer("/name")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION,
+        "passed": failed_checks.is_empty(),
+        "failed_count": failed_checks.len(),
+        "failed_checks": failed_checks,
+        "provider": provider.name.as_str(),
+        "remote_object_kind": connector_remote_object_kind(&provider.name),
+        "remote_id": connector_remote_id(mirror, provider, remote_target),
+        "remote_url": connector_remote_url(mirror, provider, Path::new(""), remote_target),
+        "external_key": mirror.external_key.as_str(),
+        "remote_target": remote_target,
+        "source_mirror_sha256": expected_digest.sha256.as_str(),
+        "remote_mirror_sha256": execution.pointer("/response_digest/sha256").and_then(|value| value.as_str()),
+        "status": mirror.issue.status.as_str(),
+        "comment_count": mirror.comments.len(),
+        "write_receipt": remote_write_receipt,
+        "execution": execution,
+        "checks": checks
+    })
+}
+
+fn execute_github_remote_readback(
+    provider: &ConnectorProviderSpec,
+    remote_target: &serde_json::Value,
+    receipt: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let provider_name = provider.name.clone();
+    let provider = provider.clone();
+    let remote_target = remote_target.clone();
+    let receipt = receipt.cloned();
+    std::thread::spawn(move || {
+        execute_github_remote_readback_blocking(&provider, &remote_target, receipt.as_ref())
+    })
+    .join()
+    .unwrap_or_else(|_| {
+        serde_json::json!({
+            "schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION,
+            "provider": provider_name,
+            "success": false,
+            "failed_checks": ["remote_readback_thread_panic"],
+            "issue": serde_json::Value::Null,
+            "comments": serde_json::Value::Null
+        })
+    })
+}
+
+fn execute_github_remote_readback_blocking(
+    provider: &ConnectorProviderSpec,
+    remote_target: &serde_json::Value,
+    receipt: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut setup_failed = Vec::new();
+    if provider.status != "active" {
+        setup_failed.push("provider_not_active".to_string());
+    }
+    if !provider.configured {
+        setup_failed.push("connector_not_configured".to_string());
+    }
+    if !provider.supports_readback {
+        setup_failed.push("readback_not_supported".to_string());
+    }
+    if remote_target
+        .pointer("/valid")
+        .and_then(|value| value.as_bool())
+        != Some(true)
+    {
+        setup_failed.push("remote_target_invalid".to_string());
+    }
+    let issue_number = connector_github_readback_issue_number(remote_target, receipt);
+    if issue_number.is_none() {
+        setup_failed.push("github_issue_number_missing".to_string());
+    }
+    setup_failed.sort();
+    setup_failed.dedup();
+    if !setup_failed.is_empty() {
+        return serde_json::json!({
+            "schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION,
+            "provider": provider.name.as_str(),
+            "success": false,
+            "failed_checks": setup_failed,
+            "issue": serde_json::Value::Null,
+            "comments": serde_json::Value::Null
+        });
+    }
+    let Some(token) = connector_provider_auth_token(provider) else {
+        return serde_json::json!({
+            "schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION,
+            "provider": provider.name.as_str(),
+            "success": false,
+            "failed_checks": ["remote_auth_missing"],
+            "issue": serde_json::Value::Null,
+            "comments": serde_json::Value::Null
+        });
+    };
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("Entrance-Hive/2.0")
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return serde_json::json!({
+                "schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION,
+                "provider": provider.name.as_str(),
+                "success": false,
+                "failed_checks": ["http_client_unavailable"],
+                "error": error.to_string(),
+                "issue": serde_json::Value::Null,
+                "comments": serde_json::Value::Null
+            });
+        }
+    };
+    let issue_number = issue_number.unwrap_or_default();
+    let (issue_url, comments_url) = connector_github_readback_urls(remote_target, issue_number);
+    let issue = execute_github_remote_get_operation(&client, &token, "get_issue", &issue_url);
+    let comments =
+        execute_github_remote_get_operation(&client, &token, "list_issue_comments", &comments_url);
+    let mut failed_checks = Vec::new();
+    if issue.pointer("/success").and_then(|value| value.as_bool()) != Some(true) {
+        failed_checks.push(
+            issue
+                .pointer("/failed_check")
+                .and_then(|value| value.as_str())
+                .unwrap_or("remote_issue_read")
+                .to_string(),
+        );
+    }
+    if comments
+        .pointer("/success")
+        .and_then(|value| value.as_bool())
+        != Some(true)
+    {
+        failed_checks.push(
+            comments
+                .pointer("/failed_check")
+                .and_then(|value| value.as_str())
+                .unwrap_or("remote_comments_read")
+                .to_string(),
+        );
+    }
+    failed_checks.sort();
+    failed_checks.dedup();
+    let response_digest = digest_bytes(
+        serde_json::to_vec(&serde_json::json!({
+            "issue": issue.pointer("/response/sha256").and_then(|value| value.as_str()),
+            "comments": comments.pointer("/response/sha256").and_then(|value| value.as_str())
+        }))
+        .unwrap_or_default()
+        .as_slice(),
+    );
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION,
+        "provider": provider.name.as_str(),
+        "remote_object_kind": connector_remote_object_kind(&provider.name),
+        "success": failed_checks.is_empty(),
+        "failed_checks": failed_checks,
+        "issue": issue,
+        "comments": comments,
+        "response_digest": compact_digest(&response_digest)
+    })
+}
+
+fn execute_github_remote_get_operation(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    kind: &str,
+    url: &str,
+) -> serde_json::Value {
+    if url.trim().is_empty() {
+        return serde_json::json!({
+            "kind": kind,
+            "method": "GET",
+            "url": url,
+            "success": false,
+            "failed_check": "remote_url_missing"
+        });
+    }
+    let response = client
+        .get(url)
+        .bearer_auth(token)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2026-03-10")
+        .send();
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return serde_json::json!({
+                "kind": kind,
+                "method": "GET",
+                "url": url,
+                "success": false,
+                "failed_check": "remote_request_failed",
+                "error": error.to_string()
+            });
+        }
+    };
+    let status = response.status().as_u16();
+    let text = match response.text() {
+        Ok(text) => text,
+        Err(error) => {
+            return serde_json::json!({
+                "kind": kind,
+                "method": "GET",
+                "url": url,
+                "success": false,
+                "failed_check": "remote_response_read_failed",
+                "http_status": status,
+                "error": error.to_string()
+            });
+        }
+    };
+    let digest = digest_bytes(text.as_bytes());
+    let parsed = serde_json::from_str::<serde_json::Value>(&text).ok();
+    let parsed_ok = parsed.is_some();
+    let status_success = (200..300).contains(&status);
+    let success = status_success && parsed_ok;
+    serde_json::json!({
+        "kind": kind,
+        "method": "GET",
+        "url": url,
+        "success": success,
+        "failed_check": if success {
+            None::<&str>
+        } else if !status_success {
+            Some("remote_http_status_failed")
+        } else {
+            Some("remote_response_parse_failed")
+        },
+        "http_status": status,
+        "request": {
+            "auth": "Authorization: Bearer <redacted>"
+        },
+        "response": {
+            "bytes": digest.bytes,
+            "sha256": digest.sha256,
+            "parsed": parsed_ok,
+            "summary": parsed.as_ref().map(|value| {
+                if kind == "list_issue_comments" {
+                    compact_github_comments_readback_summary(value)
+                } else {
+                    compact_github_issue_readback_summary(value)
+                }
+            })
+        }
+    })
+}
+
+fn connector_github_readback_urls(
+    remote_target: &serde_json::Value,
+    issue_number: u64,
+) -> (String, String) {
+    let owner = remote_target
+        .pointer("/owner")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let repo = remote_target
+        .pointer("/repo")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let api_base_url = remote_target
+        .pointer("/api_base_url")
+        .and_then(|value| value.as_str())
+        .unwrap_or("https://api.github.com");
+    (
+        format!("{api_base_url}/repos/{owner}/{repo}/issues/{issue_number}"),
+        format!("{api_base_url}/repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=100"),
+    )
+}
+
+fn connector_github_readback_issue_number(
+    remote_target: &serde_json::Value,
+    receipt: Option<&serde_json::Value>,
+) -> Option<u64> {
+    remote_target
+        .pointer("/issue_number")
+        .and_then(|value| value.as_u64())
+        .or_else(|| {
+            receipt
+                .and_then(|value| {
+                    value.pointer(
+                        "/remote_write_receipt/write_execution/operations/0/response/summary/number",
+                    )
+                })
+                .and_then(|value| value.as_u64())
+        })
+        .or_else(|| {
+            receipt
+                .and_then(|value| value.pointer("/remote_write_receipt/remote_id"))
+                .and_then(|value| value.as_str())
+                .and_then(|value| value.rsplit_once('#'))
+                .and_then(|(_, number)| parse_positive_u64(number))
+        })
+}
+
+fn compact_github_issue_readback_summary(response: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "id": response.pointer("/id").and_then(|value| value.as_i64()),
+        "node_id": response.pointer("/node_id").and_then(|value| value.as_str()),
+        "number": response.pointer("/number").and_then(|value| value.as_u64()),
+        "url": response.pointer("/url").and_then(|value| value.as_str()),
+        "html_url": response.pointer("/html_url").and_then(|value| value.as_str()),
+        "state": response.pointer("/state").and_then(|value| value.as_str()),
+        "state_reason": response.pointer("/state_reason").and_then(|value| value.as_str()),
+        "title": response.pointer("/title").and_then(|value| value.as_str()),
+        "body": response.pointer("/body").and_then(|value| value.as_str()),
+        "comments": response.pointer("/comments").and_then(|value| value.as_u64()),
+        "created_at": response.pointer("/created_at").and_then(|value| value.as_str()),
+        "updated_at": response.pointer("/updated_at").and_then(|value| value.as_str())
+    })
+}
+
+fn compact_github_comments_readback_summary(response: &serde_json::Value) -> serde_json::Value {
+    let comments = response
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .take(100)
+                .map(|comment| {
+                    serde_json::json!({
+                        "id": comment.pointer("/id").and_then(|value| value.as_i64()),
+                        "node_id": comment.pointer("/node_id").and_then(|value| value.as_str()),
+                        "url": comment.pointer("/url").and_then(|value| value.as_str()),
+                        "html_url": comment.pointer("/html_url").and_then(|value| value.as_str()),
+                        "body": comment.pointer("/body").and_then(|value| value.as_str()),
+                        "created_at": comment.pointer("/created_at").and_then(|value| value.as_str()),
+                        "updated_at": comment.pointer("/updated_at").and_then(|value| value.as_str())
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    serde_json::json!({
+        "count": response.as_array().map(Vec::len).unwrap_or_default(),
+        "items": comments
+    })
+}
+
+fn github_readback_comments_contain_body(
+    comments_summary: Option<&serde_json::Value>,
+    expected_body: &str,
+) -> bool {
+    comments_summary
+        .and_then(|value| value.pointer("/items"))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .any(|comment| {
+            comment.pointer("/body").and_then(|value| value.as_str()) == Some(expected_body)
+        })
 }
 
 fn compact_issue_mirror_readback_summary(report: &serde_json::Value) -> serde_json::Value {
@@ -4323,10 +5022,11 @@ fn connector_github_remote_target(
     } else {
         String::new()
     };
+    let api_base_url = connector_github_api_base_url(provider);
     let api_url = if valid {
         issue_number.map_or_else(
-            || format!("https://api.github.com/repos/{owner}/{repo}/issues"),
-            |number| format!("https://api.github.com/repos/{owner}/{repo}/issues/{number}"),
+            || format!("{api_base_url}/repos/{owner}/{repo}/issues"),
+            |number| format!("{api_base_url}/repos/{owner}/{repo}/issues/{number}"),
         )
     } else {
         String::new()
@@ -4346,6 +5046,7 @@ fn connector_github_remote_target(
         "write_mode": if issue_number.is_some() { "update_issue" } else { "create_issue" },
         "remote_id": remote_id,
         "remote_url": empty_string_none(remote_url),
+        "api_base_url": api_base_url,
         "api_url": empty_string_none(api_url)
     })
 }
@@ -4633,10 +5334,14 @@ fn connector_github_remote_write_operations(
             .pointer("/repo")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
+        let api_base_url = remote_target
+            .pointer("/api_base_url")
+            .and_then(|value| value.as_str())
+            .unwrap_or("https://api.github.com");
         serde_json::json!({
             "kind": "append_latest_comment",
             "method": "POST",
-            "url": format!("https://api.github.com/repos/{owner}/{repo}/issues/{number}/comments"),
+            "url": format!("{api_base_url}/repos/{owner}/{repo}/issues/{number}/comments"),
             "headers": connector_github_headers(),
             "body": {
                 "body": connector_remote_comment_body(issue)
@@ -5194,6 +5899,15 @@ fn connector_provider_is_remote_fixture(provider: &ConnectorProviderSpec) -> boo
 
 fn connector_provider_is_github_remote(provider: &ConnectorProviderSpec) -> bool {
     provider.name == "github" && provider.mode == "remote-issue-api"
+}
+
+fn connector_github_api_base_url(provider: &ConnectorProviderSpec) -> String {
+    let storage = provider.storage.trim().trim_end_matches('/');
+    if storage.starts_with("https://") || storage.starts_with("http://") {
+        storage.to_string()
+    } else {
+        "https://api.github.com".to_string()
+    }
 }
 
 fn connector_writer_target_label(provider: Option<&ConnectorProviderSpec>) -> &'static str {
@@ -6150,23 +6864,31 @@ fn compact_text(value: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        path::Path,
+        thread,
+    };
 
     use super::{
         compact_connector_publish_plan, compact_connector_queue, compact_connector_roundtrip_plan,
-        compact_issue_board, compact_issue_connector_admission_preview, compact_issue_detail,
-        compact_issue_mirror, compact_issue_mirror_admission,
-        compact_issue_mirror_admission_summary, compact_issue_mirror_audit,
-        compact_issue_mirror_audit_summary, compact_issue_mirror_publish,
-        compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
-        compact_issue_mirror_roundtrip, compact_issue_mirror_roundtrip_summary,
-        compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
-        compact_loop_audit, connector_admission_preview_checks, connector_issue_writer_blockers,
-        connector_remote_target, connector_remote_write_plan, connector_write_receipt,
-        connector_writer_blockers, default_issue_mirror_path,
-        default_issue_mirror_path_for_provider, execute_github_remote_write_plan, flag_present,
-        flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
-        issue_mirror_sync_receipt_for_provider, mirror_receipt_path, MirrorFileDigest,
+        compact_github_issue_mirror_readback, compact_issue_board,
+        compact_issue_connector_admission_preview, compact_issue_detail, compact_issue_mirror,
+        compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
+        compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
+        compact_issue_mirror_publish, compact_issue_mirror_readback,
+        compact_issue_mirror_readback_summary, compact_issue_mirror_roundtrip,
+        compact_issue_mirror_roundtrip_summary, compact_issue_mirror_status,
+        compact_issue_mirror_sync, compact_issue_mirror_verify, compact_loop_audit,
+        connector_admission_preview_checks, connector_issue_writer_blockers,
+        connector_remote_comment_body, connector_remote_issue_body, connector_remote_target,
+        connector_remote_write_issue_from_mirror, connector_remote_write_plan,
+        connector_write_receipt, connector_writer_blockers, default_issue_mirror_path,
+        default_issue_mirror_path_for_provider, digest_bytes, execute_github_remote_readback,
+        execute_github_remote_write_plan, flag_present, flag_value, issue_mirror_roundtrip_stage,
+        issue_mirror_sync_receipt, issue_mirror_sync_receipt_for_provider, mirror_payload,
+        mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -6320,6 +7042,70 @@ mod tests {
             storage: "test".to_string(),
             notes: "test provider".to_string(),
         }
+    }
+
+    fn spawn_github_readback_server(
+        issue_body: String,
+        comment_body: String,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("test request should connect");
+                let mut buffer = [0_u8; 8192];
+                let read = stream.read(&mut buffer).unwrap_or_default();
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let body = if request
+                    .starts_with("GET /repos/owner/repo/issues/77/comments?per_page=100 ")
+                {
+                    serde_json::json!([
+                        {
+                            "id": 9001,
+                            "node_id": "IC_kwDO-test",
+                            "url": "http://localhost/repos/owner/repo/issues/comments/9001",
+                            "html_url": "http://localhost/owner/repo/issues/77#issuecomment-9001",
+                            "body": comment_body.as_str(),
+                            "created_at": "2026-01-01T00:02:00Z",
+                            "updated_at": "2026-01-01T00:02:00Z"
+                        }
+                    ])
+                    .to_string()
+                } else if request.starts_with("GET /repos/owner/repo/issues/77 ") {
+                    serde_json::json!({
+                        "id": 77,
+                        "node_id": "I_kwDO-test",
+                        "number": 77,
+                        "url": "http://localhost/repos/owner/repo/issues/77",
+                        "html_url": "http://localhost/owner/repo/issues/77",
+                        "state": "closed",
+                        "state_reason": "completed",
+                        "title": "Loop #9: GitHub readback",
+                        "body": issue_body.as_str(),
+                        "comments": 1,
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:03:00Z"
+                    })
+                    .to_string()
+                } else {
+                    serde_json::json!({"message": "not found"}).to_string()
+                };
+                let status = if body.contains("not found") {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("test response should write");
+            }
+        });
+        (base_url, handle)
     }
 
     #[test]
@@ -7122,6 +7908,170 @@ mod tests {
     }
 
     #[test]
+    fn github_remote_readback_requires_auth_before_network() {
+        let mut github =
+            test_connector_provider("github", "GitHub", "active", true, true, vec!["github:"]);
+        github.mode = "remote-issue-api".to_string();
+        github.auth_required = true;
+        github.auth_env = vec!["ENTRANCE_TEST_GITHUB_READBACK_MISSING".to_string()];
+        std::env::remove_var("ENTRANCE_TEST_GITHUB_READBACK_MISSING");
+        let target =
+            connector_remote_target(Some(&github), "github:owner/repo#77", "hive-loop-9-issue-9");
+
+        let execution = execute_github_remote_readback(&github, &target, None);
+
+        assert_eq!(
+            execution
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_remote_readback.v1")
+        );
+        assert_eq!(
+            execution
+                .pointer("/success")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            execution
+                .pointer("/failed_checks/0")
+                .and_then(|value| value.as_str()),
+            Some("remote_auth_missing")
+        );
+        assert_eq!(execution.pointer("/issue"), Some(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn github_remote_readback_accepts_issue_and_comment_from_api() {
+        let mut github =
+            test_connector_provider("github", "GitHub", "active", true, true, vec!["github:"]);
+        github.mode = "remote-issue-api".to_string();
+        github.auth_required = true;
+        github.auth_env = vec!["ENTRANCE_TEST_GITHUB_READBACK_TOKEN".to_string()];
+        std::env::set_var("ENTRANCE_TEST_GITHUB_READBACK_TOKEN", "test-token");
+        let mirror = IssueMirrorReport {
+            schema_version: "entrance.hive.issue_mirror.v1".to_string(),
+            provider: "github".to_string(),
+            review_surface: "github:owner/repo#77".to_string(),
+            external_key: "hive-loop-9-issue-9".to_string(),
+            issue: HiveIssue {
+                id: 9,
+                loop_id: Some(9),
+                title: "Loop #9: GitHub readback".to_string(),
+                status: "Done".to_string(),
+                summary: Some("Read back a real GitHub issue surface.".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:03:00Z".to_string(),
+            },
+            loop_contract: Some(HiveLoopContract {
+                id: 9,
+                title: "GitHub readback".to_string(),
+                goal: "Verify GitHub read-after-write.".to_string(),
+                boundary: "Use a local HTTP fixture for unit coverage.".to_string(),
+                approach_space: vec!["GET issue".to_string(), "GET comments".to_string()],
+                eval_space: vec!["readback passes".to_string()],
+                review_surface: "github:owner/repo#77".to_string(),
+                autonomy_level: "run-approved-candidates".to_string(),
+                runtime: "codex".to_string(),
+                status: "kept".to_string(),
+                active_phase: "complete".to_string(),
+                current_round: 1,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:03:00Z".to_string(),
+            }),
+            comments: vec![HiveComment {
+                id: 31,
+                issue_id: 9,
+                author: "hive".to_string(),
+                body: "Evaluator kept the GitHub readback candidate.".to_string(),
+                payload: serde_json::json!({
+                    "schema_version": "entrance.hive.system_comment.v1",
+                    "source": "hive"
+                }),
+                created_at: "2026-01-01T00:02:00Z".to_string(),
+            }],
+            actions: vec![],
+            trace: None,
+            doctor: None,
+        };
+        let digest = digest_bytes(&mirror_payload(&mirror).expect("mirror should serialize"));
+        let source_issue = connector_remote_write_issue_from_mirror(&mirror, &digest);
+        let issue_body = connector_remote_issue_body(&source_issue);
+        let comment_body = connector_remote_comment_body(&source_issue);
+        let (base_url, server) = spawn_github_readback_server(issue_body, comment_body);
+        github.storage = base_url.clone();
+        let target =
+            connector_remote_target(Some(&github), "github:owner/repo#77", "hive-loop-9-issue-9");
+        let expected_api_url = format!("{base_url}/repos/owner/repo/issues/77");
+        assert_eq!(
+            target.pointer("/api_url").and_then(|value| value.as_str()),
+            Some(expected_api_url.as_str())
+        );
+        let path = Path::new("/tmp/root/connectors/github/hive-loop-9-issue-9.json");
+        let receipt_path = mirror_receipt_path(path);
+        let receipt = issue_mirror_sync_receipt_for_provider(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&github),
+        );
+
+        let readback = compact_github_issue_mirror_readback(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&receipt),
+            &github,
+        );
+        server.join().expect("test server should finish");
+        std::env::remove_var("ENTRANCE_TEST_GITHUB_READBACK_TOKEN");
+
+        assert_eq!(
+            readback
+                .pointer("/passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            readback
+                .pointer("/remote_readback/passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            readback
+                .pointer("/remote/surface/issue/number")
+                .and_then(|value| value.as_u64()),
+            Some(77)
+        );
+        assert_eq!(
+            readback
+                .pointer("/remote/surface/comments/count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            readback
+                .pointer("/remote_readback/checks/9/name")
+                .and_then(|value| value.as_str()),
+            Some("write_receipt_binding")
+        );
+        let status = compact_issue_mirror_status(&readback);
+        assert_eq!(
+            status.pointer("/current").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            status
+                .pointer("/publish_required")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn compact_connector_admission_preview_exposes_checks_and_contract() {
         let report = serde_json::json!({
             "schema_version": "entrance.hive.issue_connector_admission_preview.v1",
@@ -7562,6 +8512,16 @@ mod tests {
                 Some(&provider),
             ),
             Path::new("/tmp/root/connectors/issue-mirrors/file-Loop-7.json")
+        );
+
+        provider.storage = "https://api.github.example".to_string();
+        assert_eq!(
+            default_issue_mirror_path_for_provider(
+                Path::new("/tmp/root"),
+                "github:owner/repo#7",
+                Some(&provider),
+            ),
+            Path::new("/tmp/root/connectors/issue-mirrors/github-owner-repo-7.json")
         );
     }
 
