@@ -18,7 +18,8 @@ pub use loop_control::{
     HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDoctorCounts,
     HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport, HiveLoopReport,
     HiveLoopRunRequest, HiveLoopTraceReport, IssueAction, IssueCard, IssueCommentRequest,
-    IssueDecisionRequest, IssueDoctorSummary, IssueRunRequest, PolicyRegistryReport,
+    IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport, IssueRunRequest,
+    PolicyRegistryReport,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};
@@ -136,6 +137,10 @@ impl HivePlugin {
 
     pub fn issue_report(&self, id: i64) -> Result<IssueCard> {
         loop_control::issue(&self.store, id)
+    }
+
+    pub fn issue_mirror(&self, id: i64) -> Result<loop_control::IssueMirrorReport> {
+        loop_control::issue_mirror(&self.store, id)
     }
 
     pub fn issue_comment(&self, request: IssueCommentRequest) -> Result<IssueCard> {

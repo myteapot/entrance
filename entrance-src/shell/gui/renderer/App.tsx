@@ -1080,6 +1080,8 @@ export default function App() {
     card.issue.loop_id ? `entrance hive loop audit ${card.issue.loop_id} --compact` : null;
   const loopEvidenceCommand = (card: IssueCard) =>
     card.issue.loop_id ? `entrance hive loop evidence ${card.issue.loop_id}` : null;
+  const issueMirrorCommand = (card: IssueCard) =>
+    `entrance hive issue mirror ${card.issue.id} --compact`;
 
   const compactAuditFailureDetail = (detail: string) => {
     const parts = detail.split(":").filter(Boolean);
@@ -1523,6 +1525,15 @@ export default function App() {
                                 {issueDecisionButtonLabel(card, action)}
                               </button>
                             ))}
+                            <button
+                              type="button"
+                              aria-label={`Copy issue #${card.issue.id} mirror command from detail`}
+                              data-testid={`issue-action-detail-mirror-${card.issue.id}`}
+                              title={issueMirrorCommand(card)}
+                              onClick={() => void copyCommandAction("issue mirror", issueMirrorCommand(card))}
+                            >
+                              Mirror
+                            </button>
                           </div>
                         ) : null}
                         {card.actions.length ? issueActionContractChips(card, "detail") : null}
@@ -1984,6 +1995,15 @@ export default function App() {
                                     }}
                                   >
                                     Details
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Copy issue #${card.issue.id} mirror command from board`}
+                                    data-testid={`issue-action-board-mirror-${card.issue.id}`}
+                                    title={issueMirrorCommand(card)}
+                                    onClick={() => void copyCommandAction("issue mirror", issueMirrorCommand(card))}
+                                  >
+                                    Mirror
                                   </button>
                                   <button
                                     type="button"

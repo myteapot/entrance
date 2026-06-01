@@ -23,6 +23,7 @@ const WORKER_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.worker_receipt.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
 const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
 const ISSUE_ACTION_SCHEMA_VERSION: &str = "entrance.hive.issue_action.v1";
+const ISSUE_MIRROR_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror.v1";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
@@ -294,6 +295,20 @@ pub struct HiveLoopDoctorCheck {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueCard {
     pub issue: HiveIssue,
+    pub comments: Vec<HiveComment>,
+    pub actions: Vec<IssueAction>,
+    pub trace: Option<IssueTraceSummary>,
+    pub doctor: Option<IssueDoctorSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueMirrorReport {
+    pub schema_version: String,
+    pub provider: String,
+    pub review_surface: String,
+    pub external_key: String,
+    pub issue: HiveIssue,
+    pub loop_contract: Option<HiveLoopContract>,
     pub comments: Vec<HiveComment>,
     pub actions: Vec<IssueAction>,
     pub trace: Option<IssueTraceSummary>,
@@ -3855,6 +3870,52 @@ pub fn panel(store: &Store) -> Result<Vec<IssueCard>> {
 
 pub fn issue(store: &Store, issue_id: i64) -> Result<IssueCard> {
     issue_card(store, issue_id)
+}
+
+pub fn issue_mirror(store: &Store, issue_id: i64) -> Result<IssueMirrorReport> {
+    let card = issue_card(store, issue_id)?;
+    let loop_contract = card
+        .issue
+        .loop_id
+        .map(|loop_id| store.get_hive_loop_contract(loop_id))
+        .transpose()?
+        .flatten();
+    let review_surface = loop_contract
+        .as_ref()
+        .map(|contract| contract.review_surface.clone())
+        .unwrap_or_else(|| "local-hive-panel".to_string());
+    let provider = issue_mirror_provider(&review_surface);
+    let external_key = match card.issue.loop_id {
+        Some(loop_id) => format!("hive-loop-{loop_id}-issue-{}", card.issue.id),
+        None => format!("hive-issue-{}", card.issue.id),
+    };
+
+    Ok(IssueMirrorReport {
+        schema_version: ISSUE_MIRROR_SCHEMA_VERSION.to_string(),
+        provider,
+        review_surface,
+        external_key,
+        issue: card.issue,
+        loop_contract,
+        comments: card.comments,
+        actions: card.actions,
+        trace: card.trace,
+        doctor: card.doctor,
+    })
+}
+
+fn issue_mirror_provider(review_surface: &str) -> String {
+    let value = review_surface.trim();
+    if value.is_empty() {
+        return "local-hive-panel".to_string();
+    }
+    value
+        .split([':', '/', '#', '?'])
+        .next()
+        .filter(|provider| !provider.trim().is_empty())
+        .unwrap_or("local-hive-panel")
+        .trim()
+        .to_string()
 }
 
 pub fn add_comment(store: &Store, request: IssueCommentRequest) -> Result<IssueCard> {
@@ -9603,6 +9664,77 @@ mod tests {
             },
         )
         .is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_mirror_exports_review_surface_and_actions() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-issue-mirror-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Mirror export loop".to_string(),
+                goal: "Export issue/status/comment for an external board".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: "linear:ENT-13".to_string(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let issue_id = created.issues[0].issue.id;
+        add_comment(
+            &store,
+            IssueCommentRequest {
+                issue_id,
+                author: "human".to_string(),
+                body: "Mirror me".to_string(),
+            },
+        )
+        .expect("comment should be recorded before mirror export");
+
+        let mirror = issue_mirror(&store, issue_id).expect("mirror should export");
+
+        assert_eq!(mirror.schema_version, ISSUE_MIRROR_SCHEMA_VERSION);
+        assert_eq!(mirror.provider, "linear");
+        assert_eq!(mirror.review_surface, "linear:ENT-13");
+        assert_eq!(
+            mirror.external_key,
+            format!("hive-loop-{}-issue-{issue_id}", created.contract.id)
+        );
+        assert_eq!(
+            mirror
+                .loop_contract
+                .as_ref()
+                .map(|contract| contract.review_surface.as_str()),
+            Some("linear:ENT-13")
+        );
+        assert!(mirror.comments.iter().any(|comment| {
+            comment.author == "human"
+                && comment.body == "Mirror me"
+                && comment
+                    .payload
+                    .get("schema_version")
+                    .and_then(|value| value.as_str())
+                    == Some(OPERATOR_COMMENT_SCHEMA_VERSION)
+        }));
+        assert!(mirror.actions.iter().any(|action| {
+            action.action == "comment"
+                && action.command
+                    == format!("entrance hive issue comment {issue_id} --body <text> --compact")
+        }));
 
         let _ = fs::remove_dir_all(root);
     }

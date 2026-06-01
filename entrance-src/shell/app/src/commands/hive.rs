@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck, HiveLoopAuditReport,
     HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard, IssueCommentRequest,
-    IssueDecisionRequest, IssueRunRequest, ReviewDecision,
+    IssueDecisionRequest, IssueMirrorReport, IssueRunRequest, ReviewDecision,
 };
 
 use crate::{app::AppServices, cli, print_json};
@@ -11,7 +11,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -176,6 +176,14 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 print_json(&card)
             }
         }
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror" => {
+            let mirror = services.hive.issue_mirror(id.parse::<i64>()?)?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_mirror(&mirror))
+            } else {
+                print_json(&mirror)
+            }
+        }
         [scope, action, id, rest @ ..] if scope == "issue" && action == "comment" => {
             let body = flag_value(rest, "--body").unwrap_or_default();
             let card = services.hive.issue_comment(IssueCommentRequest {
@@ -289,6 +297,72 @@ fn compact_issue_detail(card: &IssueCard) -> serde_json::Value {
         "recent_comments": compact_recent_comments(card, 5),
         "recent_evidence": compact_recent_evidence(card, 5),
         "stages": compact_stage_rows(card)
+    })
+}
+
+fn compact_issue_mirror(mirror: &IssueMirrorReport) -> serde_json::Value {
+    let loop_contract = mirror.loop_contract.as_ref().map(|contract| {
+        serde_json::json!({
+            "id": contract.id,
+            "status": contract.status,
+            "phase": contract.active_phase,
+            "round": contract.current_round,
+            "runtime": contract.runtime,
+            "review_surface": contract.review_surface
+        })
+    });
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue_mirror.compact.v1",
+        "source_schema_version": mirror.schema_version,
+        "provider": mirror.provider,
+        "review_surface": mirror.review_surface,
+        "external_key": mirror.external_key,
+        "refresh_command": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
+        "issue": {
+            "id": mirror.issue.id,
+            "loop_id": mirror.issue.loop_id,
+            "title": mirror.issue.title,
+            "status": mirror.issue.status,
+            "summary": mirror.issue.summary
+        },
+        "loop": loop_contract,
+        "counts": {
+            "actions": mirror.actions.len(),
+            "comments": mirror.comments.len(),
+            "evidence": mirror.trace.as_ref().map(|trace| trace.evidence_count).unwrap_or_default(),
+            "operator_events": mirror.trace.as_ref().map(|trace| trace.operator_event_count).unwrap_or_default()
+        },
+        "trace": mirror.trace.as_ref().map(|trace| serde_json::json!({
+            "round": trace.current_round,
+            "decision": trace.last_decision,
+            "reason_code": trace.reason_code,
+            "human_options": trace.human_options,
+            "audit": {
+                "passed": trace.audit_passed,
+                "failed": trace.audit_failed_count,
+                "failed_checks": trace.audit_failed_checks,
+                "failure_details": trace.audit_failure_details.iter().take(5).collect::<Vec<_>>()
+            },
+            "receipts": {
+                "required": trace.round_receipt_required_count,
+                "missing": trace.round_receipt_missing_count
+            },
+            "workers": {
+                "ok": trace.round_role_worker_ok_count,
+                "total": trace.round_role_worker_count,
+                "duration_ms": trace.round_worker_duration_ms,
+                "timeouts": trace.round_worker_timeout_count,
+                "retry_exhausted": trace.round_worker_retry_exhausted_count
+            }
+        })),
+        "doctor": mirror.doctor.as_ref().map(|doctor| serde_json::json!({
+            "health": doctor.health,
+            "summary": doctor.summary,
+            "next_actions": doctor.next_actions.iter().take(5).collect::<Vec<_>>(),
+            "worker_failures": doctor.worker_failures.iter().take(5).collect::<Vec<_>>()
+        })),
+        "comments": compact_mirror_comments(mirror, 8),
+        "actions": mirror.actions.iter().map(compact_issue_action).collect::<Vec<_>>()
     })
 }
 
@@ -445,6 +519,28 @@ fn compact_recent_comments(card: &IssueCard, limit: usize) -> Vec<serde_json::Va
         .collect()
 }
 
+fn compact_mirror_comments(mirror: &IssueMirrorReport, limit: usize) -> Vec<serde_json::Value> {
+    let mut comments = mirror.comments.iter().rev().take(limit).collect::<Vec<_>>();
+    comments.reverse();
+    comments
+        .into_iter()
+        .map(|comment| {
+            serde_json::json!({
+                "id": comment.id,
+                "author": comment.author,
+                "body": compact_text(&comment.body, 260),
+                "created_at": comment.created_at,
+                "schema_version": comment.payload.get("schema_version").and_then(|value| value.as_str()),
+                "source": comment.payload.get("source").and_then(|value| value.as_str()),
+                "action": comment.payload.get("action").and_then(|value| value.as_str()),
+                "round": comment.payload.get("round").and_then(|value| value.as_i64()),
+                "status": comment.payload.get("status").and_then(|value| value.as_str()),
+                "phase": comment.payload.get("phase").and_then(|value| value.as_str())
+            })
+        })
+        .collect()
+}
+
 fn compact_recent_evidence(card: &IssueCard, limit: usize) -> Vec<serde_json::Value> {
     let Some(trace) = &card.trace else {
         return Vec::new();
@@ -545,12 +641,13 @@ fn compact_text(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_issue_board, compact_issue_detail, compact_loop_audit, flag_present, flag_value,
+        compact_issue_board, compact_issue_detail, compact_issue_mirror, compact_loop_audit,
+        flag_present, flag_value,
     };
-    use entrance_core::{HiveComment, HiveIssue};
+    use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
         HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopDoctorCounts, IssueAction, IssueCard,
-        IssueDoctorSummary,
+        IssueDoctorSummary, IssueMirrorReport,
     };
 
     fn test_issue_action(action: &str, label: &str, command: &str) -> IssueAction {
@@ -812,6 +909,113 @@ mod tests {
                 .pointer("/issue/actions/1/command")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue retry-run 7 --body <note> --compact")
+        );
+    }
+
+    #[test]
+    fn compact_issue_mirror_exports_connector_ready_issue_surface() {
+        let mirror = IssueMirrorReport {
+            schema_version: "entrance.hive.issue_mirror.v1".to_string(),
+            provider: "linear".to_string(),
+            review_surface: "linear:ENT-42".to_string(),
+            external_key: "hive-loop-3-issue-7".to_string(),
+            issue: HiveIssue {
+                id: 7,
+                loop_id: Some(3),
+                title: "Loop #3: mirror contract".to_string(),
+                status: "Done".to_string(),
+                summary: Some("Evaluator kept the candidate.".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:03:00Z".to_string(),
+            },
+            loop_contract: Some(HiveLoopContract {
+                id: 3,
+                title: "mirror contract".to_string(),
+                goal: "Export issue/status/comment as typed mirror".to_string(),
+                boundary: "No external writes".to_string(),
+                approach_space: vec!["mirror local issue".to_string()],
+                eval_space: vec!["compact mirror has comments".to_string()],
+                review_surface: "linear:ENT-42".to_string(),
+                autonomy_level: "run-approved-candidates".to_string(),
+                runtime: "codex".to_string(),
+                status: "kept".to_string(),
+                active_phase: "complete".to_string(),
+                current_round: 2,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:03:00Z".to_string(),
+            }),
+            comments: vec![HiveComment {
+                id: 21,
+                issue_id: 7,
+                author: "human".to_string(),
+                body: "Mirror this to the external board.".to_string(),
+                payload: serde_json::json!({
+                    "schema_version": "entrance.hive.operator_comment.v1",
+                    "source": "operator",
+                    "round": 2,
+                    "status": "Done",
+                    "phase": "complete"
+                }),
+                created_at: "2026-01-01T00:04:00Z".to_string(),
+            }],
+            actions: vec![test_issue_action(
+                "comment",
+                "Comment",
+                "entrance hive issue comment 7 --body <text> --compact",
+            )],
+            trace: None,
+            doctor: Some(test_worker_failure_doctor()),
+        };
+
+        let compact = compact_issue_mirror(&mirror);
+
+        assert_eq!(
+            compact
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror.compact.v1")
+        );
+        assert_eq!(
+            compact
+                .pointer("/provider")
+                .and_then(|value| value.as_str()),
+            Some("linear")
+        );
+        assert_eq!(
+            compact
+                .pointer("/review_surface")
+                .and_then(|value| value.as_str()),
+            Some("linear:ENT-42")
+        );
+        assert_eq!(
+            compact
+                .pointer("/refresh_command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror 7 --compact")
+        );
+        assert_eq!(
+            compact
+                .pointer("/loop/review_surface")
+                .and_then(|value| value.as_str()),
+            Some("linear:ENT-42")
+        );
+        assert_eq!(
+            compact
+                .pointer("/comments/0/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.operator_comment.v1")
+        );
+        assert_eq!(
+            compact
+                .pointer("/comments/0/round")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            compact
+                .pointer("/actions/0/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue comment 7 --body <text> --compact")
         );
     }
 
