@@ -8,7 +8,8 @@ use anyhow::{bail, Context, Result};
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck, HiveLoopAuditReport,
     HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard, IssueCommentRequest,
-    IssueDecisionRequest, IssueMirrorReport, IssueRunRequest, ReviewDecision,
+    IssueDecisionRequest, IssueMirrorReport, IssueRunRequest, PolicyGateSpec, PolicyRegistryReport,
+    ReviewDecision, CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
 };
 use sha2::{Digest, Sha256};
 
@@ -18,7 +19,6 @@ const ISSUE_MIRROR_SYNC_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync.
 const ISSUE_MIRROR_SYNC_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync_receipt.v1";
 const ISSUE_MIRROR_VERIFY_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_verify.v1";
 const ISSUE_MIRROR_AUDIT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_audit.v1";
-const ISSUE_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MirrorFileDigest {
@@ -30,7 +30,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -127,8 +127,13 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action, id] if scope == "loop" && action == "policies" => {
             print_json(&services.hive.loop_policies(id.parse::<i64>()?)?)
         }
-        [scope, action] if scope == "policy" && action == "registry" => {
-            print_json(&services.hive.policy_registry())
+        [scope, action, rest @ ..] if scope == "policy" && action == "registry" => {
+            let report = services.hive.policy_registry();
+            if flag_present(rest, "--compact") {
+                print_json(&compact_policy_registry(&report))
+            } else {
+                print_json(&report)
+            }
         }
         [scope, action, id, rest @ ..] if scope == "loop" && action == "run" => {
             let loop_id = id.parse::<i64>()?;
@@ -335,6 +340,45 @@ fn compact_issue_detail(card: &IssueCard) -> serde_json::Value {
         "recent_comments": compact_recent_comments(card, 5),
         "recent_evidence": compact_recent_evidence(card, 5),
         "stages": compact_stage_rows(card)
+    })
+}
+
+fn compact_policy_registry(report: &PolicyRegistryReport) -> serde_json::Value {
+    let connector_gate = report
+        .gates
+        .iter()
+        .find(|gate| gate.name == CONNECTOR_MIRROR_RECEIPT_GATE)
+        .map(compact_policy_gate);
+    serde_json::json!({
+        "schema_version": "entrance.hive.policy_registry.compact.v1",
+        "source_schema_version": report.schema_version.as_str(),
+        "gate_count": report.gates.len(),
+        "gates": report.gates.iter().map(compact_policy_gate).collect::<Vec<_>>(),
+        "connector_mirror_gate": connector_gate,
+        "runtime": {
+            "supported": report.runtime.supported.iter().map(|runtime| serde_json::json!({
+                "name": runtime.name.as_str(),
+                "mode": runtime.mode.as_str(),
+                "filesystem": runtime.sandbox.filesystem.as_str(),
+                "network": runtime.sandbox.network.as_str()
+            })).collect::<Vec<_>>(),
+            "worker": {
+                "default_timeout_secs": report.runtime.worker.default_timeout_secs,
+                "max_timeout_secs": report.runtime.worker.max_timeout_secs,
+                "default_attempts": report.runtime.worker.default_attempts,
+                "max_attempts": report.runtime.worker.max_attempts
+            }
+        }
+    })
+}
+
+fn compact_policy_gate(gate: &PolicyGateSpec) -> serde_json::Value {
+    serde_json::json!({
+        "name": gate.name.as_str(),
+        "expected_object_kind": gate.expected_object_kind.as_deref(),
+        "check": gate.check.as_str(),
+        "required_receipts": gate.required_receipts.iter().map(String::as_str).collect::<Vec<_>>(),
+        "description": compact_text(&gate.description, 180)
     })
 }
 
@@ -824,9 +868,9 @@ fn compact_issue_mirror_audit(verify: &serde_json::Value) -> serde_json::Value {
         "external_key": verify.pointer("/external_key"),
         "gate": {
             "schema_version": "entrance.hive.policy.v1",
-            "gate": ISSUE_MIRROR_RECEIPT_GATE,
+            "gate": CONNECTOR_MIRROR_RECEIPT_GATE,
             "description": "Connector mirror receipts must match the current Hive issue mirror before external issue/status/comment surfaces trust them.",
-            "expected_object_kind": "ISSUE_MIRROR_SYNC_RECEIPT"
+            "expected_object_kind": CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND
         },
         "verify": verify,
         "checks": checks,

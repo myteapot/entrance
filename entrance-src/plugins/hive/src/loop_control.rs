@@ -27,6 +27,8 @@ const ISSUE_MIRROR_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror.v1";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
+pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
+pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
     "stage_completeness",
     "runtime_readiness",
@@ -52,6 +54,7 @@ enum GateCheck {
     ReceiptRequirementsSatisfied,
     BodyFieldPresent(&'static str),
     DecisionPresent,
+    ExternalReceiptCurrent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5451,6 +5454,7 @@ impl GateCheck {
             Self::ReceiptRequirementsSatisfied => "receipt_requirements_satisfied",
             Self::BodyFieldPresent(_) => "body_field_present",
             Self::DecisionPresent => "decision_present",
+            Self::ExternalReceiptCurrent => "external_receipt_current",
         }
     }
 }
@@ -5745,6 +5749,18 @@ fn gate_spec(gate: &str) -> Option<GateSpec> {
             required_receipts: &["decision"],
             check: GateCheck::DecisionPresent,
         }),
+        CONNECTOR_MIRROR_RECEIPT_GATE => Some(GateSpec {
+            name: CONNECTOR_MIRROR_RECEIPT_GATE,
+            description: "Connector mirror receipts must match the current Hive issue mirror before external issue/status/comment surfaces trust them.",
+            expected_object_kind: Some(CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND),
+            required_receipts: &[
+                "mirror_file_current",
+                "receipt_schema",
+                "receipt_binding",
+                "receipt_digest",
+            ],
+            check: GateCheck::ExternalReceiptCurrent,
+        }),
         _ => None,
     }
 }
@@ -5757,6 +5773,7 @@ fn all_gate_specs() -> Vec<GateSpec> {
         "candidate_present",
         "runtime_probe_present",
         "decision_present",
+        CONNECTOR_MIRROR_RECEIPT_GATE,
     ]
     .into_iter()
     .filter_map(gate_spec)
@@ -5863,6 +5880,7 @@ fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
             .get("decision")
             .and_then(|value| value.as_str())
             .is_some_and(|value| matches!(value, "keep" | "reject" | "needs-review" | "blocked")),
+        GateCheck::ExternalReceiptCurrent => receipt_requirements_satisfied(payload),
     }
 }
 
@@ -6533,8 +6551,26 @@ mod tests {
     fn policy_registry_and_loop_policies_expose_typed_gate_specs() {
         let registry = policy_registry();
         assert_eq!(registry.schema_version, POLICY_SCHEMA_VERSION);
-        assert!(registry.gates.len() >= 6);
+        assert!(registry.gates.len() >= 7);
         assert_eq!(registry.runtime.schema_version, POLICY_SCHEMA_VERSION);
+        let connector_gate = registry
+            .gates
+            .iter()
+            .find(|gate| gate.name == CONNECTOR_MIRROR_RECEIPT_GATE)
+            .expect("connector mirror receipt gate should be registered");
+        assert_eq!(
+            connector_gate.expected_object_kind.as_deref(),
+            Some(CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND)
+        );
+        assert_eq!(connector_gate.check, "external_receipt_current");
+        assert!(connector_gate
+            .required_receipts
+            .iter()
+            .any(|receipt| receipt == "mirror_file_current"));
+        assert!(connector_gate
+            .required_receipts
+            .iter()
+            .any(|receipt| receipt == "receipt_binding"));
         assert_eq!(
             registry.runtime.worker.default_timeout_secs,
             DEFAULT_WORKER_TIMEOUT_SECS

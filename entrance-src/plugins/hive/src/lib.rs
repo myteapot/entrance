@@ -18,8 +18,8 @@ pub use loop_control::{
     HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDoctorCounts,
     HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport, HiveLoopReport,
     HiveLoopRunRequest, HiveLoopTraceReport, IssueAction, IssueCard, IssueCommentRequest,
-    IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport, IssueRunRequest,
-    PolicyRegistryReport,
+    IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport, IssueRunRequest, PolicyGateSpec,
+    PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};
