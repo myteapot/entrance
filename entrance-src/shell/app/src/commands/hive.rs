@@ -713,15 +713,20 @@ pub(crate) fn sync_issue_mirror_to_file(
     out_path: Option<&str>,
 ) -> Result<serde_json::Value> {
     let mirror = services.hive.issue_mirror(issue_id)?;
-    let path = resolve_issue_mirror_path(services, &mirror, out_path);
+    let registry = services.hive.connector_registry();
+    let provider =
+        connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
+    let path =
+        resolve_issue_mirror_path_for_provider(&services.kernel.root, &mirror, provider, out_path);
     let receipt_path = mirror_receipt_path(&path);
     let digest = write_issue_mirror_file(&mirror, &path)?;
-    write_issue_mirror_receipt(&mirror, &path, &receipt_path, &digest)?;
+    write_issue_mirror_receipt(&mirror, &path, &receipt_path, &digest, provider)?;
     Ok(compact_issue_mirror_sync(
         &mirror,
         &path,
         &receipt_path,
         &digest,
+        provider,
     ))
 }
 
@@ -757,6 +762,12 @@ pub(crate) fn publish_issue_mirror_to_file(
         object.insert(
             "write_receipt".to_string(),
             connector_write_receipt(&mirror, &sync, provider),
+        );
+        object.insert(
+            "remote_write_receipt".to_string(),
+            sync.pointer("/remote_write_receipt")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(null)),
         );
     }
     Ok(publish)
@@ -888,7 +899,11 @@ pub(crate) fn verify_issue_mirror_file(
     path: Option<&str>,
 ) -> Result<serde_json::Value> {
     let mirror = services.hive.issue_mirror(issue_id)?;
-    let path = resolve_issue_mirror_path(services, &mirror, path);
+    let registry = services.hive.connector_registry();
+    let provider =
+        connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
+    let path =
+        resolve_issue_mirror_path_for_provider(&services.kernel.root, &mirror, provider, path);
     let receipt_path = mirror_receipt_path(&path);
     let expected_digest = digest_bytes(&mirror_payload(&mirror)?);
     let actual_digest = read_digest(&path)?;
@@ -910,7 +925,11 @@ pub(crate) fn readback_issue_mirror_file(
     record: bool,
 ) -> Result<serde_json::Value> {
     let mirror = services.hive.issue_mirror(issue_id)?;
-    let path = resolve_issue_mirror_path(services, &mirror, path);
+    let registry = services.hive.connector_registry();
+    let provider =
+        connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
+    let path =
+        resolve_issue_mirror_path_for_provider(&services.kernel.root, &mirror, provider, path);
     let receipt_path = mirror_receipt_path(&path);
     let expected_digest = digest_bytes(&mirror_payload(&mirror)?);
     let remote_payload = read_payload_with_digest(&path)?;
@@ -945,6 +964,7 @@ pub(crate) fn readback_issue_mirror_file(
         remote_mirror.as_ref(),
         parse_error.as_deref(),
         &verify,
+        provider,
     );
     if record {
         let recorded = record_issue_mirror_readback(services, &readback)?;
@@ -1469,17 +1489,6 @@ fn connector_record_publish_hint(issue_id: i64) -> serde_json::Value {
     })
 }
 
-fn resolve_issue_mirror_path(
-    services: &AppServices,
-    mirror: &IssueMirrorReport,
-    explicit_path: Option<&str>,
-) -> PathBuf {
-    let registry = services.hive.connector_registry();
-    let provider =
-        connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
-    resolve_issue_mirror_path_for_provider(&services.kernel.root, mirror, provider, explicit_path)
-}
-
 fn resolve_issue_mirror_path_for_provider(
     app_root: &Path,
     mirror: &IssueMirrorReport,
@@ -1586,6 +1595,7 @@ fn write_issue_mirror_receipt(
     path: &Path,
     receipt_path: &Path,
     digest: &MirrorFileDigest,
+    provider: Option<&ConnectorProviderSpec>,
 ) -> Result<MirrorFileDigest> {
     if let Some(parent) = receipt_path.parent() {
         fs::create_dir_all(parent).with_context(|| {
@@ -1595,7 +1605,8 @@ fn write_issue_mirror_receipt(
             )
         })?;
     }
-    let receipt = issue_mirror_sync_receipt(mirror, path, receipt_path, digest);
+    let receipt =
+        issue_mirror_sync_receipt_for_provider(mirror, path, receipt_path, digest, provider);
     let payload = serde_json::to_vec_pretty(&receipt)?;
     fs::write(receipt_path, &payload).with_context(|| {
         format!(
@@ -1652,11 +1663,22 @@ fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[cfg(test)]
 fn issue_mirror_sync_receipt(
     mirror: &IssueMirrorReport,
     path: &Path,
     receipt_path: &Path,
     digest: &MirrorFileDigest,
+) -> serde_json::Value {
+    issue_mirror_sync_receipt_for_provider(mirror, path, receipt_path, digest, None)
+}
+
+fn issue_mirror_sync_receipt_for_provider(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    receipt_path: &Path,
+    digest: &MirrorFileDigest,
+    provider: Option<&ConnectorProviderSpec>,
 ) -> serde_json::Value {
     serde_json::json!({
         "schema_version": ISSUE_MIRROR_SYNC_RECEIPT_SCHEMA_VERSION,
@@ -1675,6 +1697,8 @@ fn issue_mirror_sync_receipt(
         "receipt": {
             "path": receipt_path.display().to_string()
         },
+        "remote_contract": compact_connector_remote_contract(provider),
+        "remote_write_receipt": connector_remote_write_receipt(mirror, path, digest, provider),
         "commands": {
             "refresh": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
             "sync": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
@@ -1714,6 +1738,7 @@ fn compact_issue_mirror_sync(
     path: &Path,
     receipt_path: &Path,
     digest: &MirrorFileDigest,
+    provider: Option<&ConnectorProviderSpec>,
 ) -> serde_json::Value {
     serde_json::json!({
         "schema_version": ISSUE_MIRROR_SYNC_SCHEMA_VERSION,
@@ -1729,6 +1754,8 @@ fn compact_issue_mirror_sync(
         "receipt_path": receipt_path.display().to_string(),
         "bytes": digest.bytes,
         "sha256": digest.sha256.as_str(),
+        "remote_contract": compact_connector_remote_contract(provider),
+        "remote_write_receipt": connector_remote_write_receipt(mirror, path, digest, provider),
         "refresh_command": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
         "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
         "publish_command": format!("entrance hive issue mirror-publish {} --compact", mirror.issue.id),
@@ -1805,6 +1832,7 @@ fn connector_write_receipt(
         "loop": issue_mirror_loop_binding(mirror),
         "adapter": compact_connector_writer_adapter(&mirror.provider, provider),
         "remote_contract": compact_connector_remote_contract(provider),
+        "remote_write_receipt": sync.pointer("/remote_write_receipt").cloned().unwrap_or_else(|| serde_json::json!(null)),
         "status_surface": {
             "status": mirror.issue.status.as_str(),
             "updated_at": mirror.issue.updated_at.as_str()
@@ -1821,6 +1849,77 @@ fn connector_write_receipt(
             "command": sync.pointer("/readback_command")
         }
     })
+}
+
+fn connector_remote_write_receipt(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    digest: &MirrorFileDigest,
+    provider: Option<&ConnectorProviderSpec>,
+) -> serde_json::Value {
+    let Some(provider) =
+        provider.filter(|provider| connector_provider_uses_remote_contract(provider))
+    else {
+        return serde_json::Value::Null;
+    };
+    let remote_contract = compact_connector_remote_contract(Some(provider));
+    let idempotency_key = connector_remote_idempotency_key(mirror, digest, provider);
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION,
+        "provider": provider.name.as_str(),
+        "remote_object_kind": connector_remote_object_kind(&provider.name),
+        "remote_id": connector_remote_id(mirror, provider),
+        "remote_url": connector_remote_url(mirror, provider, path),
+        "external_key": mirror.external_key.as_str(),
+        "status": mirror.issue.status.as_str(),
+        "comment_count": mirror.comments.len(),
+        "idempotency_key": idempotency_key,
+        "source_mirror_sha256": digest.sha256.as_str(),
+        "source_mirror_bytes": digest.bytes,
+        "surface": {
+            "review_surface": mirror.review_surface.as_str(),
+            "issue": issue_mirror_issue_binding(mirror),
+            "comments": issue_mirror_comment_surface(mirror)
+        },
+        "contract": {
+            "schema_version": remote_contract.pointer("/schema_version").and_then(|value| value.as_str()),
+            "write_receipt_schema_version": remote_contract.pointer("/write/receipt_schema_version").and_then(|value| value.as_str()),
+            "readback_schema_version": remote_contract.pointer("/readback/schema_version").and_then(|value| value.as_str())
+        }
+    })
+}
+
+fn connector_remote_idempotency_key(
+    mirror: &IssueMirrorReport,
+    digest: &MirrorFileDigest,
+    provider: &ConnectorProviderSpec,
+) -> String {
+    let latest_comment_id = mirror.comments.last().map(|comment| comment.id);
+    let basis = serde_json::json!({
+        "provider": provider.name.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue_updated_at": mirror.issue.updated_at.as_str(),
+        "latest_comment_id": latest_comment_id,
+        "mirror_sha256": digest.sha256.as_str()
+    });
+    let payload = serde_json::to_vec(&basis).unwrap_or_default();
+    digest_bytes(&payload).sha256
+}
+
+fn connector_remote_id(mirror: &IssueMirrorReport, provider: &ConnectorProviderSpec) -> String {
+    format!("{}:{}", provider.name, mirror.external_key)
+}
+
+fn connector_remote_url(
+    mirror: &IssueMirrorReport,
+    provider: &ConnectorProviderSpec,
+    path: &Path,
+) -> String {
+    if connector_provider_is_remote_fixture(provider) {
+        format!("file://{}", path.display())
+    } else {
+        format!("{}://{}", provider.name, mirror.external_key)
+    }
 }
 
 fn compact_issue_mirror_status(readback: &serde_json::Value) -> serde_json::Value {
@@ -2110,6 +2209,7 @@ fn compact_issue_mirror_readback(
     remote_mirror: Option<&IssueMirrorReport>,
     remote_parse_error: Option<&str>,
     verify: &serde_json::Value,
+    provider: Option<&ConnectorProviderSpec>,
 ) -> serde_json::Value {
     let receipt_failures = verify_failures(verify)
         .into_iter()
@@ -2235,8 +2335,20 @@ fn compact_issue_mirror_readback(
             "sha256": receipt.and_then(|value| json_pointer_str(value, "/mirror/sha256")),
             "bytes": receipt.and_then(|value| json_pointer_u64(value, "/mirror/bytes")),
             "issue_status": receipt.and_then(|value| json_pointer_str(value, "/issue/status")),
-            "loop_round": receipt.and_then(|value| json_pointer_i64(value, "/loop/round"))
+            "loop_round": receipt.and_then(|value| json_pointer_i64(value, "/loop/round")),
+            "remote_write_receipt": receipt.and_then(|value| value.pointer("/remote_write_receipt"))
         },
+        "remote_contract": compact_connector_remote_contract(provider),
+        "remote_readback": connector_remote_readback_report(
+            mirror,
+            path,
+            expected_digest,
+            actual_digest,
+            receipt,
+            remote_mirror,
+            verify,
+            provider
+        ),
         "verify": verify,
         "checks": checks,
         "actions": [
@@ -2259,6 +2371,113 @@ fn compact_issue_mirror_readback(
     })
 }
 
+fn connector_remote_readback_report(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    expected_digest: &MirrorFileDigest,
+    actual_digest: Option<&MirrorFileDigest>,
+    receipt: Option<&serde_json::Value>,
+    remote_mirror: Option<&IssueMirrorReport>,
+    verify: &serde_json::Value,
+    provider: Option<&ConnectorProviderSpec>,
+) -> serde_json::Value {
+    let Some(provider) =
+        provider.filter(|provider| connector_provider_uses_remote_contract(provider))
+    else {
+        return serde_json::Value::Null;
+    };
+    let remote_identity_current = remote_mirror
+        .map(|remote| issue_mirror_identity_current(mirror, remote))
+        .unwrap_or(false);
+    let remote_status_current = remote_mirror
+        .map(|remote| remote.issue.status == mirror.issue.status)
+        .unwrap_or(false);
+    let remote_comment_surface_current = remote_mirror
+        .map(|remote| issue_mirror_comment_surface_current(mirror, remote))
+        .unwrap_or(false);
+    let remote_write_receipt = receipt.and_then(|value| value.pointer("/remote_write_receipt"));
+    let receipt_failures = verify_failures(verify)
+        .into_iter()
+        .filter(|failure| failure.starts_with("receipt_"))
+        .collect::<Vec<_>>();
+    let write_receipt_binding_current = remote_write_receipt
+        .and_then(|value| json_pointer_str(value, "/source_mirror_sha256"))
+        == Some(expected_digest.sha256.as_str())
+        && receipt_failures.is_empty();
+    let checks = vec![
+        readback_check(
+            "remote_identity",
+            "Remote issue object keeps the current provider, issue, loop, and external key binding.",
+            remote_identity_current,
+            serde_json::json!({
+                "current": issue_mirror_readback_surface(mirror),
+                "remote": remote_mirror.map(issue_mirror_readback_surface)
+            }),
+        ),
+        readback_check(
+            "remote_status",
+            "Remote issue status matches the current Hive issue status.",
+            remote_status_current,
+            serde_json::json!({
+                "current": mirror.issue.status.as_str(),
+                "remote": remote_mirror.map(|remote| remote.issue.status.as_str())
+            }),
+        ),
+        readback_check(
+            "remote_comment_surface",
+            "Remote issue comment surface matches the current Hive comment ledger.",
+            remote_comment_surface_current,
+            serde_json::json!({
+                "current": issue_mirror_comment_surface(mirror),
+                "remote": remote_mirror.map(issue_mirror_comment_surface)
+            }),
+        ),
+        readback_check(
+            "write_receipt_binding",
+            "Remote readback is bound to the current remote write receipt.",
+            write_receipt_binding_current,
+            serde_json::json!({
+                "receipt_schema_version": remote_write_receipt.and_then(|value| json_pointer_str(value, "/schema_version")),
+                "source_mirror_sha256": remote_write_receipt.and_then(|value| json_pointer_str(value, "/source_mirror_sha256")),
+                "expected_source_mirror_sha256": expected_digest.sha256.as_str(),
+                "receipt_failures": receipt_failures
+            }),
+        ),
+    ];
+    let failed_checks = checks
+        .iter()
+        .filter(|check| {
+            !check
+                .pointer("/passed")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .filter_map(|check| {
+            check
+                .pointer("/name")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION,
+        "passed": failed_checks.is_empty(),
+        "failed_count": failed_checks.len(),
+        "failed_checks": failed_checks,
+        "provider": provider.name.as_str(),
+        "remote_object_kind": connector_remote_object_kind(&provider.name),
+        "remote_id": connector_remote_id(mirror, provider),
+        "remote_url": connector_remote_url(mirror, provider, path),
+        "external_key": mirror.external_key.as_str(),
+        "source_mirror_sha256": expected_digest.sha256.as_str(),
+        "remote_mirror_sha256": actual_digest.map(|digest| digest.sha256.as_str()),
+        "status": mirror.issue.status.as_str(),
+        "comment_count": mirror.comments.len(),
+        "write_receipt": remote_write_receipt,
+        "checks": checks
+    })
+}
+
 fn compact_issue_mirror_readback_summary(report: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "schema_version": "entrance.hive.issue_mirror_readback.compact.v1",
@@ -2278,6 +2497,11 @@ fn compact_issue_mirror_readback_summary(report: &serde_json::Value) -> serde_js
         "remote_comment_count": report.pointer("/remote/surface/comments/count").and_then(|value| value.as_u64()),
         "remote_parsed": report.pointer("/remote/parsed").and_then(|value| value.as_bool()),
         "latest_remote_comment": report.pointer("/remote/surface/comments/latest").cloned(),
+        "remote_contract_schema_version": report.pointer("/remote_contract/schema_version").and_then(|value| value.as_str()),
+        "remote_readback_schema_version": report.pointer("/remote_readback/schema_version").and_then(|value| value.as_str()),
+        "remote_readback_passed": report.pointer("/remote_readback/passed").and_then(|value| value.as_bool()),
+        "remote_object_kind": report.pointer("/remote_readback/remote_object_kind").and_then(|value| value.as_str()),
+        "remote_write_receipt_schema_version": report.pointer("/remote_readback/write_receipt/schema_version").and_then(|value| value.as_str()),
         "recorded": report.pointer("/recorded").cloned(),
         "recorded_comment_id": report.pointer("/recorded/comment_id").and_then(|value| value.as_i64()),
         "recorded_evidence_id": report.pointer("/recorded/evidence_id").and_then(|value| value.as_i64()),
@@ -2444,6 +2668,17 @@ fn readback_check(
         },
         "details": details
     })
+}
+
+fn issue_mirror_identity_current(current: &IssueMirrorReport, remote: &IssueMirrorReport) -> bool {
+    current.schema_version == remote.schema_version
+        && current.provider == remote.provider
+        && current.review_surface == remote.review_surface
+        && current.external_key == remote.external_key
+        && current.issue.id == remote.issue.id
+        && current.issue.loop_id == remote.issue.loop_id
+        && current.loop_contract.as_ref().map(|contract| contract.id)
+            == remote.loop_contract.as_ref().map(|contract| contract.id)
 }
 
 fn issue_mirror_binding_current(current: &IssueMirrorReport, remote: &IssueMirrorReport) -> bool {
@@ -2998,14 +3233,16 @@ fn compact_connector_writer_adapter(
             "unavailable"
         } else if provider.name == "file" || provider.mode == "local-json-mirror" {
             "file-mirror"
-        } else if provider.mode == "remote-issue-api" {
+        } else if connector_provider_is_remote_fixture(provider) {
+            "remote-fixture"
+        } else if connector_provider_uses_remote_contract(provider) {
             "remote-issue-api"
         } else {
             "custom"
         }
     });
     let remote_write = provider
-        .map(|provider| blockers.is_empty() && provider.mode == "remote-issue-api")
+        .map(|provider| blockers.is_empty() && connector_provider_uses_remote_contract(provider))
         .unwrap_or(false);
     serde_json::json!({
         "schema_version": CONNECTOR_WRITER_ADAPTER_SCHEMA_VERSION,
@@ -3030,7 +3267,7 @@ fn compact_connector_remote_contract(
     let Some(provider) = provider else {
         return serde_json::Value::Null;
     };
-    if provider.mode != "remote-issue-api" {
+    if !connector_provider_uses_remote_contract(provider) {
         return serde_json::Value::Null;
     }
     serde_json::json!({
@@ -3101,8 +3338,20 @@ fn connector_remote_object_kind(provider_name: &str) -> &'static str {
     match provider_name {
         "linear" => "linear.issue",
         "github" => "github.issue",
+        "remote-fixture" => "fixture.issue",
         _ => "remote.issue",
     }
+}
+
+fn connector_provider_uses_remote_contract(provider: &ConnectorProviderSpec) -> bool {
+    matches!(
+        provider.mode.as_str(),
+        "remote-issue-api" | "remote-issue-api-fixture"
+    )
+}
+
+fn connector_provider_is_remote_fixture(provider: &ConnectorProviderSpec) -> bool {
+    provider.name == "remote-fixture" || provider.mode == "remote-issue-api-fixture"
 }
 
 fn connector_writer_target_label(provider: Option<&ConnectorProviderSpec>) -> &'static str {
@@ -3110,7 +3359,12 @@ fn connector_writer_target_label(provider: Option<&ConnectorProviderSpec>) -> &'
         return "blocked provider adapter";
     }
     if provider
-        .map(|provider| provider.mode == "remote-issue-api")
+        .map(connector_provider_is_remote_fixture)
+        .unwrap_or(false)
+    {
+        "file-backed remote issue/status/comment fixture"
+    } else if provider
+        .map(connector_provider_uses_remote_contract)
         .unwrap_or(false)
     {
         "remote issue/status/comment surface"
@@ -3416,7 +3670,7 @@ fn compact_connector_queue_provider(
             "supports_publish": provider.supports_publish,
             "adapter": compact_connector_writer_adapter(&provider.name, Some(provider)),
             "would_write": connector_writer_target_label(Some(provider)),
-            "remote_write": provider.mode == "remote-issue-api" && provider.supports_publish
+            "remote_write": connector_provider_uses_remote_contract(provider) && provider.supports_publish
         }
     })
 }
@@ -3501,7 +3755,7 @@ fn compact_connector_queue_issue(
             "adapter": compact_connector_writer_adapter(&provider_name, provider),
             "would_write": connector_writer_target_label(provider),
             "remote_write": provider
-                .map(|provider| provider.mode == "remote-issue-api" && provider.supports_publish)
+                .map(|provider| connector_provider_uses_remote_contract(provider) && provider.supports_publish)
                 .unwrap_or(false),
             "command": publish_command
         }
@@ -3747,9 +4001,10 @@ mod tests {
         compact_issue_mirror_publish, compact_issue_mirror_readback,
         compact_issue_mirror_readback_summary, compact_issue_mirror_status,
         compact_issue_mirror_sync, compact_issue_mirror_verify, compact_loop_audit,
-        connector_admission_preview_checks, connector_writer_blockers, default_issue_mirror_path,
-        default_issue_mirror_path_for_provider, flag_present, flag_value,
-        issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
+        connector_admission_preview_checks, connector_write_receipt, connector_writer_blockers,
+        default_issue_mirror_path, default_issue_mirror_path_for_provider, flag_present,
+        flag_value, issue_mirror_sync_receipt, issue_mirror_sync_receipt_for_provider,
+        mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -3886,10 +4141,10 @@ mod tests {
             name: name.to_string(),
             display_name: display_name.to_string(),
             status: status.to_string(),
-            mode: if name == "linear" || name == "github" {
-                "remote-issue-api"
-            } else {
-                "test"
+            mode: match name {
+                "linear" | "github" => "remote-issue-api",
+                "remote-fixture" => "remote-issue-api-fixture",
+                _ => "test",
             }
             .to_string(),
             review_surface_prefixes: prefixes.into_iter().map(ToOwned::to_owned).collect(),
@@ -4754,6 +5009,7 @@ mod tests {
                 bytes: 512,
                 sha256: "abc123".to_string(),
             },
+            None,
         );
 
         assert_eq!(
@@ -4833,6 +5089,155 @@ mod tests {
                 .pointer("/sync/schema_version")
                 .and_then(|value| value.as_str()),
             Some("entrance.hive.issue_mirror_sync.v1")
+        );
+    }
+
+    #[test]
+    fn remote_fixture_receipts_satisfy_remote_contract_readback() {
+        let provider = test_connector_provider(
+            "remote-fixture",
+            "Remote Fixture",
+            "active",
+            true,
+            true,
+            vec!["remote-fixture:"],
+        );
+        let mirror = IssueMirrorReport {
+            schema_version: "entrance.hive.issue_mirror.v1".to_string(),
+            provider: "remote-fixture".to_string(),
+            review_surface: "remote-fixture:local".to_string(),
+            external_key: "hive-loop-6-issue-10".to_string(),
+            issue: HiveIssue {
+                id: 10,
+                loop_id: Some(6),
+                title: "Loop #6: remote fixture".to_string(),
+                status: "Done".to_string(),
+                summary: Some("Remote fixture ready.".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:05:00Z".to_string(),
+            },
+            loop_contract: Some(HiveLoopContract {
+                id: 6,
+                title: "remote fixture".to_string(),
+                goal: "Validate remote contract fixture".to_string(),
+                boundary: "No third-party writes".to_string(),
+                approach_space: vec!["remote fixture".to_string()],
+                eval_space: vec!["readback passes".to_string()],
+                review_surface: "remote-fixture:local".to_string(),
+                autonomy_level: "run-approved-candidates".to_string(),
+                runtime: "codex".to_string(),
+                status: "kept".to_string(),
+                active_phase: "complete".to_string(),
+                current_round: 1,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:05:00Z".to_string(),
+            }),
+            comments: vec![HiveComment {
+                id: 44,
+                issue_id: 10,
+                author: "hive".to_string(),
+                body: "Remote fixture comment.".to_string(),
+                payload: serde_json::json!({
+                    "schema_version": "entrance.hive.system_comment.v1",
+                    "source": "hive"
+                }),
+                created_at: "2026-01-01T00:04:00Z".to_string(),
+            }],
+            actions: vec![],
+            trace: None,
+            doctor: None,
+        };
+        let path = Path::new("/tmp/root/connectors/remote-fixture/hive-loop-6-issue-10.json");
+        let receipt_path = mirror_receipt_path(path);
+        let digest = MirrorFileDigest {
+            bytes: 4096,
+            sha256: "remote-fixture-sha".to_string(),
+        };
+
+        let sync =
+            compact_issue_mirror_sync(&mirror, path, &receipt_path, &digest, Some(&provider));
+        assert_eq!(
+            sync.pointer("/remote_contract/remote_object_kind")
+                .and_then(|value| value.as_str()),
+            Some("fixture.issue")
+        );
+        assert_eq!(
+            sync.pointer("/remote_write_receipt/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_remote_write_receipt.v1")
+        );
+        assert_eq!(
+            sync.pointer("/remote_write_receipt/source_mirror_sha256")
+                .and_then(|value| value.as_str()),
+            Some("remote-fixture-sha")
+        );
+
+        let write_receipt = connector_write_receipt(&mirror, &sync, Some(&provider));
+        assert_eq!(
+            write_receipt
+                .pointer("/remote_write_receipt/remote_object_kind")
+                .and_then(|value| value.as_str()),
+            Some("fixture.issue")
+        );
+
+        let receipt = issue_mirror_sync_receipt_for_provider(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&provider),
+        );
+        let verify = compact_issue_mirror_verify(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&digest),
+            Some(&receipt),
+        );
+        let readback = compact_issue_mirror_readback(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&digest),
+            Some(&receipt),
+            Some(&mirror),
+            None,
+            &verify,
+            Some(&provider),
+        );
+
+        assert_eq!(
+            readback
+                .pointer("/remote_readback/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_remote_readback.v1")
+        );
+        assert_eq!(
+            readback
+                .pointer("/remote_readback/passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            readback
+                .pointer("/remote_readback/checks/3/name")
+                .and_then(|value| value.as_str()),
+            Some("write_receipt_binding")
+        );
+        let compact = compact_issue_mirror_readback_summary(&readback);
+        assert_eq!(
+            compact
+                .pointer("/remote_readback_passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            compact
+                .pointer("/remote_write_receipt_schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_remote_write_receipt.v1")
         );
     }
 
@@ -4917,6 +5322,7 @@ mod tests {
             Some(&mirror),
             None,
             &report,
+            None,
         );
         assert_eq!(
             readback
@@ -5058,6 +5464,7 @@ mod tests {
             Some(&stale_remote),
             None,
             &stale_verify,
+            None,
         );
         assert_eq!(
             stale_readback

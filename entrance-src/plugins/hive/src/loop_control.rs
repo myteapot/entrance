@@ -1024,6 +1024,22 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
         notes: "Local connector mirror used as the external issue surface dry-run.".to_string(),
     };
     apply_connector_provider_config(&mut file, &config.file);
+    let remote_fixture = ConnectorProviderSpec {
+        name: "remote-fixture".to_string(),
+        display_name: "Remote Fixture".to_string(),
+        status: "active".to_string(),
+        mode: "remote-issue-api-fixture".to_string(),
+        review_surface_prefixes: vec!["remote-fixture:".to_string(), "fixture:".to_string()],
+        auth_required: false,
+        auth_env: Vec::new(),
+        configured: true,
+        supports_status: true,
+        supports_publish: true,
+        supports_readback: true,
+        supports_admission: true,
+        storage: "connectors/remote-fixture/{external_key}.json".to_string(),
+        notes: "File-backed remote issue API fixture for validating remote write/readback contracts; not a third-party connector.".to_string(),
+    };
     let mut linear = ConnectorProviderSpec {
         name: "linear".to_string(),
         display_name: "Linear".to_string(),
@@ -1078,6 +1094,7 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
             notes: "Built-in local issue/status/comment surface.".to_string(),
         },
         file,
+        remote_fixture,
         linear,
         github,
     ];
@@ -7004,6 +7021,25 @@ mod tests {
             Some("external_issue_surface")
         );
         assert!(file_admission.blockers.is_empty());
+        let remote_fixture = registry
+            .providers
+            .iter()
+            .find(|provider| provider.name == "remote-fixture")
+            .expect("remote fixture connector should be registered");
+        assert_eq!(remote_fixture.status, "active");
+        assert_eq!(remote_fixture.mode, "remote-issue-api-fixture");
+        assert!(remote_fixture.supports_publish);
+        assert!(remote_fixture.supports_readback);
+        let remote_fixture_admission = registry
+            .provider_admissions
+            .iter()
+            .find(|admission| admission.provider == "remote-fixture")
+            .expect("remote fixture admission should be registered");
+        assert_eq!(remote_fixture_admission.status, "ready");
+        assert_eq!(
+            remote_fixture_admission.route_to.as_deref(),
+            Some("external_issue_surface")
+        );
         let linear = registry
             .providers
             .iter()

@@ -136,7 +136,11 @@ adapter. Planned or unsupported providers expose blockers such as
 connector publish execution comment/evidence on each issue and then writes local
 connector mirrors containing that receipt. Successful writes include a typed
 connector write receipt with adapter, status, comment surface, mirror digest,
-and readback command. Remote issue providers also expose
+and readback command. The built-in `remote-fixture:` review surface is an active
+file-backed remote issue API fixture: it emits
+`entrance.hive.connector_remote_write_receipt.v1` and verifies
+`entrance.hive.connector_remote_readback.v1` without touching a third-party
+service. Remote issue providers also expose
 `entrance.hive.connector_remote_contract.v1`, which defines the remote issue
 object kind, write receipt schema, readback schema, idempotency key parts, auth
 env, and required pre/post-write checks before a real writer is allowed to run.
