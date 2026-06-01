@@ -535,6 +535,19 @@ type IssueMirrorAdmissionReport = {
     } | null;
   } | null;
 };
+type IssueMirrorRoundtripReport = {
+  schema_version: string;
+  completed: boolean;
+  result: string;
+  stage_count: number;
+  passed_stage_count: number;
+  failed_stages: string[];
+  recorded_evidence_ids: number[];
+  remote?: {
+    final_readback_passed?: boolean | null;
+    object_kind?: string | null;
+  };
+};
 type CommentPill = {
   label: string;
   evidenceId?: number;
@@ -1072,6 +1085,34 @@ export default function App() {
     } finally {
       setPendingIssue(card.issue.id, null);
       refetchIssueCardsQuietly();
+    }
+  };
+  const roundtripIssueMirror = async (card: IssueCard) => {
+    if (issuePendingLabel(card.issue.id)) return;
+    setSelectedIssueId(card.issue.id);
+    setPendingIssue(card.issue.id, "Roundtrip");
+    setConnectorPublishPlan(null);
+    try {
+      const report = await bridge.invoke<IssueMirrorRoundtripReport>("hive_issue_mirror_roundtrip", {
+        issueId: card.issue.id,
+        record: true,
+      });
+      const evidenceLabel = report.recorded_evidence_ids?.length
+        ? `; E#${report.recorded_evidence_ids.join(", E#")}`
+        : "";
+      const stageLabel = `${report.passed_stage_count}/${report.stage_count} stages`;
+      if (report.completed) {
+        const remoteLabel = report.remote?.object_kind ? ` ${report.remote.object_kind}` : "";
+        setBanner(`Connector roundtrip complete${remoteLabel}: ${stageLabel}${evidenceLabel}`);
+      } else {
+        const failed = report.failed_stages?.length ? `: ${report.failed_stages.join(", ")}` : "";
+        setBanner(`Connector roundtrip blocked (${stageLabel})${failed}${evidenceLabel}`);
+      }
+    } catch (error) {
+      setBanner(`Issue #${card.issue.id} roundtrip failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(card.issue.id, null);
+      await Promise.all([refetchIssueCards(), refetchConnectorQueue()]);
     }
   };
   const workerLimitRunArgs = (): LoopRunArgs => {
@@ -1678,6 +1719,8 @@ export default function App() {
     `entrance hive issue mirror-readback ${card.issue.id} --record --compact`;
   const issueMirrorAdmitCommand = (card: IssueCard) =>
     `entrance hive issue mirror-admit ${card.issue.id} --record --compact`;
+  const issueMirrorRoundtripCommand = (card: IssueCard) =>
+    `entrance hive issue mirror-roundtrip ${card.issue.id} --compact`;
   const admissionCheckLabel = (checks?: AdmissionCheck[] | null) => {
     if (!checks?.length) return null;
     const passed = checks.filter((check) => check.passed).length;
@@ -1693,6 +1736,8 @@ export default function App() {
     issuePendingLabel(card.issue.id) === "Reading" ? "Reading" : "Readback";
   const issueMirrorAdmitLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Admitting" ? "Admitting" : "Admit";
+  const issueMirrorRoundtripLabel = (card: IssueCard) =>
+    issuePendingLabel(card.issue.id) === "Roundtrip" ? "Running" : "Roundtrip";
   const connectorPublishPlanLabel = () =>
     connectorPublishAction() === "Planning" ? "Planning" : "Plan";
   const connectorPublishExecuteLabel = () =>
@@ -2203,6 +2248,19 @@ export default function App() {
                             >
                               {issueMirrorAdmitLabel(card)}
                             </button>
+                            <button
+                              type="button"
+                              aria-label={`Roundtrip issue #${card.issue.id} connector mirror from detail`}
+                              data-testid={`issue-action-detail-roundtrip-${card.issue.id}`}
+                              disabled={
+                                Boolean(issuePendingLabel(card.issue.id)) ||
+                                !connectorQueueIssueCanPublish(card.issue.id)
+                              }
+                              title={issueMirrorRoundtripCommand(card)}
+                              onClick={() => void roundtripIssueMirror(card)}
+                            >
+                              {issueMirrorRoundtripLabel(card)}
+                            </button>
                           </div>
                         ) : null}
                         {card.actions.length ? issueActionContractChips(card, "detail") : null}
@@ -2476,19 +2534,34 @@ export default function App() {
                     </span>
                   ))}
                   {connectorPublishQueue().slice(0, 4).map((card) => (
-                    <button
-                      type="button"
-                      aria-label={`Publish issue #${card.issue.id} from connector queue`}
-                      data-testid={`connector-publish-queue-publish-${card.issue.id}`}
-                      disabled={
-                        Boolean(issuePendingLabel(card.issue.id)) ||
-                        !connectorQueueIssueCanPublish(card.issue.id)
-                      }
-                      title={connectorQueueIssuePublishTitle(card)}
-                      onClick={() => void publishIssueMirror(card)}
-                    >
-                      #{card.issue.id} Publish
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        aria-label={`Publish issue #${card.issue.id} from connector queue`}
+                        data-testid={`connector-publish-queue-publish-${card.issue.id}`}
+                        disabled={
+                          Boolean(issuePendingLabel(card.issue.id)) ||
+                          !connectorQueueIssueCanPublish(card.issue.id)
+                        }
+                        title={connectorQueueIssuePublishTitle(card)}
+                        onClick={() => void publishIssueMirror(card)}
+                      >
+                        #{card.issue.id} Publish
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Roundtrip issue #${card.issue.id} from connector queue`}
+                        data-testid={`connector-publish-queue-roundtrip-${card.issue.id}`}
+                        disabled={
+                          Boolean(issuePendingLabel(card.issue.id)) ||
+                          !connectorQueueIssueCanPublish(card.issue.id)
+                        }
+                        title={issueMirrorRoundtripCommand(card)}
+                        onClick={() => void roundtripIssueMirror(card)}
+                      >
+                        #{card.issue.id} Roundtrip
+                      </button>
+                    </>
                   ))}
                 </div>
                 <div class="connector-registry" data-testid="connector-registry">
@@ -2810,6 +2883,19 @@ export default function App() {
                                     onClick={() => void admitIssueMirror(card)}
                                   >
                                     {issueMirrorAdmitLabel(card)}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Roundtrip issue #${card.issue.id} connector mirror from board`}
+                                    data-testid={`issue-action-board-roundtrip-${card.issue.id}`}
+                                    disabled={
+                                      Boolean(issuePendingLabel(card.issue.id)) ||
+                                      !connectorQueueIssueCanPublish(card.issue.id)
+                                    }
+                                    title={issueMirrorRoundtripCommand(card)}
+                                    onClick={() => void roundtripIssueMirror(card)}
+                                  >
+                                    {issueMirrorRoundtripLabel(card)}
                                   </button>
                                   <button
                                     type="button"

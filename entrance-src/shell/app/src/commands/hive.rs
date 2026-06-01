@@ -25,6 +25,7 @@ const ISSUE_MIRROR_VERIFY_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_ver
 const ISSUE_MIRROR_AUDIT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_audit.v1";
 const ISSUE_MIRROR_READBACK_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_readback.v1";
 const ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_admission.v1";
+const ISSUE_MIRROR_ROUNDTRIP_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_roundtrip.v1";
 const CONNECTOR_PUBLISH_HINT_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_hint.v1";
 const CONNECTOR_PUBLISH_PLAN_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_plan.v1";
 const CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_execute.v1";
@@ -57,7 +58,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -327,6 +328,19 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             )?;
             if flag_present(rest, "--compact") {
                 print_json(&compact_issue_mirror_admission_summary(&report))
+            } else {
+                print_json(&report)
+            }
+        }
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-roundtrip" => {
+            let report = roundtrip_issue_mirror_file(
+                services,
+                id.parse::<i64>()?,
+                flag_value(rest, "--path"),
+                !flag_present(rest, "--no-record"),
+            )?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_mirror_roundtrip_summary(&report))
             } else {
                 print_json(&report)
             }
@@ -888,7 +902,8 @@ pub(crate) fn issue_connector_admission_preview(
             "status": format!("entrance hive issue mirror-status {issue_id} --compact"),
             "publish": format!("entrance hive issue mirror-publish {issue_id} --compact"),
             "readback": format!("entrance hive issue mirror-readback {issue_id} --record --compact"),
-            "admit": format!("entrance hive issue mirror-admit {issue_id} --record --compact")
+            "admit": format!("entrance hive issue mirror-admit {issue_id} --record --compact"),
+            "roundtrip": format!("entrance hive issue mirror-roundtrip {issue_id} --compact")
         }
     }))
 }
@@ -1001,6 +1016,91 @@ pub(crate) fn admit_issue_mirror_file(
         }
     }
     Ok(admission)
+}
+
+pub(crate) fn roundtrip_issue_mirror_file(
+    services: &AppServices,
+    issue_id: i64,
+    path: Option<&str>,
+    record: bool,
+) -> Result<serde_json::Value> {
+    let initial_publish = publish_issue_mirror_to_file(services, issue_id, path)?;
+    let mut stages = vec![issue_mirror_roundtrip_stage(
+        "publish_initial",
+        "Publish current Hive mirror to the connector surface.",
+        report_passed(&initial_publish, "/published"),
+        &initial_publish,
+    )];
+    let initial_published = report_passed(&initial_publish, "/published");
+    let mut readback = serde_json::Value::Null;
+    let mut publish_after_readback = serde_json::Value::Null;
+    let mut admission = serde_json::Value::Null;
+    let mut publish_after_admission = serde_json::Value::Null;
+    let mut final_readback = serde_json::Value::Null;
+
+    if initial_published {
+        readback = readback_issue_mirror_file(services, issue_id, path, record)?;
+        let readback_passed = report_passed(&readback, "/passed");
+        stages.push(issue_mirror_roundtrip_stage(
+            "readback",
+            "Read back the connector mirror and optionally record the observation as Hive evidence.",
+            readback_passed,
+            &readback,
+        ));
+
+        if record && issue_report_recorded_publish_required(&readback) {
+            publish_after_readback = publish_issue_mirror_to_file(services, issue_id, path)?;
+            stages.push(issue_mirror_roundtrip_stage(
+                "publish_after_readback",
+                "Publish the readback evidence comment back to the connector surface.",
+                report_passed(&publish_after_readback, "/published"),
+                &publish_after_readback,
+            ));
+        }
+
+        if readback_passed && publish_stage_allows_next(&publish_after_readback) {
+            admission = admit_issue_mirror_file(services, issue_id, path, record)?;
+            let admitted = report_passed(&admission, "/admitted");
+            stages.push(issue_mirror_roundtrip_stage(
+                "admit",
+                "Run connector admission gates against the current mirror and optionally record the verdict.",
+                admitted,
+                &admission,
+            ));
+
+            if record && issue_report_recorded_publish_required(&admission) {
+                publish_after_admission = publish_issue_mirror_to_file(services, issue_id, path)?;
+                stages.push(issue_mirror_roundtrip_stage(
+                    "publish_after_admission",
+                    "Publish the admission evidence comment back to the connector surface.",
+                    report_passed(&publish_after_admission, "/published"),
+                    &publish_after_admission,
+                ));
+            }
+
+            if admitted && publish_stage_allows_next(&publish_after_admission) {
+                final_readback = readback_issue_mirror_file(services, issue_id, path, false)?;
+                stages.push(issue_mirror_roundtrip_stage(
+                    "final_readback",
+                    "Verify the connector surface is current after all recorded observations were published.",
+                    report_passed(&final_readback, "/passed"),
+                    &final_readback,
+                ));
+            }
+        }
+    }
+
+    Ok(compact_issue_mirror_roundtrip(
+        issue_id,
+        record,
+        stages,
+        initial_publish,
+        readback,
+        publish_after_readback,
+        admission,
+        publish_after_admission,
+        final_readback,
+    ))
 }
 
 fn apply_connector_provider_admission_preview(
@@ -1760,7 +1860,8 @@ fn compact_issue_mirror_sync(
         "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
         "publish_command": format!("entrance hive issue mirror-publish {} --compact", mirror.issue.id),
         "verify_command": format!("entrance hive issue mirror-verify {}", mirror.issue.id),
-        "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", mirror.issue.id)
+        "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", mirror.issue.id),
+        "roundtrip_command": format!("entrance hive issue mirror-roundtrip {} --compact", mirror.issue.id)
     })
 }
 
@@ -1784,7 +1885,8 @@ fn compact_issue_mirror_publish(sync: &serde_json::Value) -> serde_json::Value {
         "sync": sync,
         "publish_command": format!("entrance hive issue mirror-publish {} --compact", issue_id.unwrap_or_default()),
         "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", issue_id.unwrap_or_default()),
-        "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", issue_id.unwrap_or_default())
+        "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", issue_id.unwrap_or_default()),
+        "roundtrip_command": format!("entrance hive issue mirror-roundtrip {} --compact", issue_id.unwrap_or_default())
     })
 }
 
@@ -1962,7 +2064,8 @@ fn compact_issue_mirror_status(readback: &serde_json::Value) -> serde_json::Valu
         "receipt_found": readback.pointer("/receipt/found"),
         "publish_command": format!("entrance hive issue mirror-publish {} --compact", issue_id.unwrap_or_default()),
         "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", issue_id.unwrap_or_default()),
-        "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", issue_id.unwrap_or_default())
+        "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", issue_id.unwrap_or_default()),
+        "roundtrip_command": format!("entrance hive issue mirror-roundtrip {} --compact", issue_id.unwrap_or_default())
     })
 }
 
@@ -2366,6 +2469,11 @@ fn compact_issue_mirror_readback(
                 "audit",
                 "Audit",
                 format!("entrance hive issue mirror-audit {} --compact", issue_id)
+            ),
+            compact_loop_action(
+                "roundtrip",
+                "Roundtrip",
+                format!("entrance hive issue mirror-roundtrip {} --compact", issue_id)
             )
         ]
     })
@@ -2592,6 +2700,11 @@ fn compact_issue_mirror_admission(audit: &serde_json::Value) -> serde_json::Valu
                 "admit",
                 "Admit",
                 format!("entrance hive issue mirror-admit {} --compact", issue_id.unwrap_or_default())
+            ),
+            compact_loop_action(
+                "roundtrip",
+                "Roundtrip",
+                format!("entrance hive issue mirror-roundtrip {} --compact", issue_id.unwrap_or_default())
             )
         ]
     })
@@ -2638,6 +2751,195 @@ fn compact_issue_mirror_admission_summary(report: &serde_json::Value) -> serde_j
         "publish_command": report.pointer("/recorded/publish/command").and_then(|value| value.as_str()),
         "publish_reason": report.pointer("/recorded/publish/reason").and_then(|value| value.as_str()),
         "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
+    })
+}
+
+fn compact_issue_mirror_roundtrip(
+    issue_id: i64,
+    record: bool,
+    stages: Vec<serde_json::Value>,
+    initial_publish: serde_json::Value,
+    readback: serde_json::Value,
+    publish_after_readback: serde_json::Value,
+    admission: serde_json::Value,
+    publish_after_admission: serde_json::Value,
+    final_readback: serde_json::Value,
+) -> serde_json::Value {
+    let failed_stages = failed_roundtrip_stages(&stages);
+    let completed = failed_stages.is_empty() && report_passed(&final_readback, "/passed");
+    let provider = first_report_str(
+        &[
+            &final_readback,
+            &admission,
+            &readback,
+            &initial_publish,
+            &publish_after_readback,
+            &publish_after_admission,
+        ],
+        "/provider",
+    );
+    let review_surface = first_report_str(
+        &[
+            &final_readback,
+            &admission,
+            &readback,
+            &initial_publish,
+            &publish_after_readback,
+            &publish_after_admission,
+        ],
+        "/review_surface",
+    );
+    let external_key = first_report_str(
+        &[
+            &final_readback,
+            &admission,
+            &readback,
+            &initial_publish,
+            &publish_after_readback,
+            &publish_after_admission,
+        ],
+        "/external_key",
+    );
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_ROUNDTRIP_SCHEMA_VERSION,
+        "object_kind": "ISSUE_CONNECTOR_ROUNDTRIP",
+        "issue_id": issue_id,
+        "provider": provider,
+        "review_surface": review_surface,
+        "external_key": external_key,
+        "record_observations": record,
+        "completed": completed,
+        "result": if completed { "completed" } else { "blocked" },
+        "stage_count": stages.len(),
+        "passed_stage_count": stages.iter().filter(|stage| report_passed(stage, "/passed")).count(),
+        "failed_stages": failed_stages,
+        "recorded_evidence_ids": roundtrip_recorded_evidence_ids(&stages),
+        "remote": {
+            "object_kind": final_readback.pointer("/remote_readback/remote_object_kind")
+                .or_else(|| readback.pointer("/remote_readback/remote_object_kind")),
+            "write_receipt_schema_version": final_readback.pointer("/remote_readback/write_receipt/schema_version")
+                .or_else(|| readback.pointer("/remote_readback/write_receipt/schema_version")),
+            "readback_schema_version": final_readback.pointer("/remote_readback/schema_version")
+                .or_else(|| readback.pointer("/remote_readback/schema_version")),
+            "final_readback_passed": final_readback.pointer("/passed").and_then(|value| value.as_bool())
+        },
+        "steps": {
+            "publish_initial": initial_publish,
+            "readback": readback,
+            "publish_after_readback": publish_after_readback,
+            "admission": admission,
+            "publish_after_admission": publish_after_admission,
+            "final_readback": final_readback
+        },
+        "stages": stages,
+        "commands": {
+            "roundtrip": format!("entrance hive issue mirror-roundtrip {issue_id} --compact"),
+            "publish": format!("entrance hive issue mirror-publish {issue_id} --compact"),
+            "readback": format!("entrance hive issue mirror-readback {issue_id} --record --compact"),
+            "admit": format!("entrance hive issue mirror-admit {issue_id} --record --compact")
+        }
+    })
+}
+
+fn compact_issue_mirror_roundtrip_summary(report: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue_mirror_roundtrip.compact.v1",
+        "source_schema_version": report.pointer("/schema_version").and_then(|value| value.as_str()),
+        "object_kind": report.pointer("/object_kind").and_then(|value| value.as_str()),
+        "issue_id": report.pointer("/issue_id").and_then(|value| value.as_i64()),
+        "provider": report.pointer("/provider").and_then(|value| value.as_str()),
+        "review_surface": report.pointer("/review_surface").and_then(|value| value.as_str()),
+        "external_key": report.pointer("/external_key").and_then(|value| value.as_str()),
+        "record_observations": report.pointer("/record_observations").and_then(|value| value.as_bool()),
+        "completed": report.pointer("/completed").and_then(|value| value.as_bool()),
+        "result": report.pointer("/result").and_then(|value| value.as_str()),
+        "stage_count": report.pointer("/stage_count").and_then(|value| value.as_u64()),
+        "passed_stage_count": report.pointer("/passed_stage_count").and_then(|value| value.as_u64()),
+        "failed_stages": report.pointer("/failed_stages").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "recorded_evidence_ids": report.pointer("/recorded_evidence_ids").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "remote_object_kind": report.pointer("/remote/object_kind").and_then(|value| value.as_str()),
+        "remote_write_receipt_schema_version": report.pointer("/remote/write_receipt_schema_version").and_then(|value| value.as_str()),
+        "remote_readback_schema_version": report.pointer("/remote/readback_schema_version").and_then(|value| value.as_str()),
+        "final_readback_passed": report.pointer("/remote/final_readback_passed").and_then(|value| value.as_bool()),
+        "commands": report.pointer("/commands").cloned().unwrap_or_else(|| serde_json::json!({}))
+    })
+}
+
+fn issue_mirror_roundtrip_stage(
+    name: &str,
+    summary: &str,
+    passed: bool,
+    report: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue_mirror_roundtrip_stage.v1",
+        "name": name,
+        "summary": summary,
+        "passed": passed,
+        "source_schema_version": report.pointer("/schema_version").and_then(|value| value.as_str()),
+        "issue_id": report.pointer("/issue_id").and_then(|value| value.as_i64()),
+        "provider": report.pointer("/provider").and_then(|value| value.as_str()),
+        "review_surface": report.pointer("/review_surface").and_then(|value| value.as_str()),
+        "external_key": report.pointer("/external_key").and_then(|value| value.as_str()),
+        "failed_checks": report.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "recorded_comment_id": report.pointer("/recorded/comment_id").and_then(|value| value.as_i64()),
+        "recorded_evidence_id": report.pointer("/recorded/evidence_id").and_then(|value| value.as_i64()),
+        "publish_required": report.pointer("/recorded/publish/required").and_then(|value| value.as_bool()),
+        "path": report.pointer("/path")
+            .or_else(|| report.pointer("/receipt/path"))
+            .and_then(|value| value.as_str()),
+        "sha256": report.pointer("/sha256")
+            .or_else(|| report.pointer("/receipt/sha256"))
+            .or_else(|| report.pointer("/current/digest/sha256"))
+            .and_then(|value| value.as_str())
+    })
+}
+
+fn failed_roundtrip_stages(stages: &[serde_json::Value]) -> Vec<String> {
+    stages
+        .iter()
+        .filter(|stage| !report_passed(stage, "/passed"))
+        .filter_map(|stage| {
+            stage
+                .pointer("/name")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .collect()
+}
+
+fn roundtrip_recorded_evidence_ids(stages: &[serde_json::Value]) -> Vec<i64> {
+    stages
+        .iter()
+        .filter_map(|stage| {
+            stage
+                .pointer("/recorded_evidence_id")
+                .and_then(|value| value.as_i64())
+        })
+        .collect()
+}
+
+fn report_passed(report: &serde_json::Value, pointer: &str) -> bool {
+    report
+        .pointer(pointer)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn issue_report_recorded_publish_required(report: &serde_json::Value) -> bool {
+    report_passed(report, "/recorded/publish/required")
+}
+
+fn publish_stage_allows_next(report: &serde_json::Value) -> bool {
+    report.is_null() || report_passed(report, "/published")
+}
+
+fn first_report_str(reports: &[&serde_json::Value], pointer: &str) -> Option<String> {
+    reports.iter().find_map(|report| {
+        report
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
     })
 }
 
@@ -3999,12 +4301,13 @@ mod tests {
         compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
         compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
         compact_issue_mirror_publish, compact_issue_mirror_readback,
-        compact_issue_mirror_readback_summary, compact_issue_mirror_status,
+        compact_issue_mirror_readback_summary, compact_issue_mirror_roundtrip,
+        compact_issue_mirror_roundtrip_summary, compact_issue_mirror_status,
         compact_issue_mirror_sync, compact_issue_mirror_verify, compact_loop_audit,
         connector_admission_preview_checks, connector_write_receipt, connector_writer_blockers,
         default_issue_mirror_path, default_issue_mirror_path_for_provider, flag_present,
-        flag_value, issue_mirror_sync_receipt, issue_mirror_sync_receipt_for_provider,
-        mirror_receipt_path, MirrorFileDigest,
+        flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
+        issue_mirror_sync_receipt_for_provider, mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -5238,6 +5541,169 @@ mod tests {
                 .pointer("/remote_write_receipt_schema_version")
                 .and_then(|value| value.as_str()),
             Some("entrance.hive.connector_remote_write_receipt.v1")
+        );
+    }
+
+    #[test]
+    fn compact_roundtrip_summary_tracks_publish_readback_admit_sequence() {
+        let publish = serde_json::json!({
+            "schema_version": "entrance.hive.issue_mirror_publish.v1",
+            "published": true,
+            "issue_id": 8,
+            "provider": "remote-fixture",
+            "review_surface": "remote-fixture:ENT-36",
+            "external_key": "hive-loop-8-issue-8",
+            "path": "/tmp/root/connectors/remote-fixture/hive-loop-8-issue-8.json",
+            "sha256": "sha-initial"
+        });
+        let readback = serde_json::json!({
+            "schema_version": "entrance.hive.issue_mirror_readback.v1",
+            "passed": true,
+            "issue_id": 8,
+            "provider": "remote-fixture",
+            "review_surface": "remote-fixture:ENT-36",
+            "external_key": "hive-loop-8-issue-8",
+            "current": {
+                "digest": {
+                    "sha256": "sha-initial"
+                }
+            },
+            "remote_readback": {
+                "schema_version": "entrance.hive.connector_remote_readback.v1",
+                "remote_object_kind": "fixture.issue",
+                "write_receipt": {
+                    "schema_version": "entrance.hive.connector_remote_write_receipt.v1"
+                }
+            },
+            "recorded": {
+                "comment_id": 12,
+                "evidence_id": 31,
+                "publish": {
+                    "required": true
+                }
+            }
+        });
+        let publish_after_readback = serde_json::json!({
+            "schema_version": "entrance.hive.issue_mirror_publish.v1",
+            "published": true,
+            "issue_id": 8,
+            "provider": "remote-fixture",
+            "review_surface": "remote-fixture:ENT-36",
+            "external_key": "hive-loop-8-issue-8",
+            "path": "/tmp/root/connectors/remote-fixture/hive-loop-8-issue-8.json",
+            "sha256": "sha-after-readback"
+        });
+        let admission = serde_json::json!({
+            "schema_version": "entrance.hive.issue_mirror_admission.v1",
+            "admitted": true,
+            "issue_id": 8,
+            "provider": "remote-fixture",
+            "review_surface": "remote-fixture:ENT-36",
+            "external_key": "hive-loop-8-issue-8",
+            "receipt": {
+                "sha256": "sha-after-readback",
+                "path": "/tmp/root/connectors/remote-fixture/hive-loop-8-issue-8.json"
+            },
+            "recorded": {
+                "comment_id": 13,
+                "evidence_id": 32,
+                "publish": {
+                    "required": true
+                }
+            }
+        });
+        let publish_after_admission = serde_json::json!({
+            "schema_version": "entrance.hive.issue_mirror_publish.v1",
+            "published": true,
+            "issue_id": 8,
+            "provider": "remote-fixture",
+            "review_surface": "remote-fixture:ENT-36",
+            "external_key": "hive-loop-8-issue-8",
+            "path": "/tmp/root/connectors/remote-fixture/hive-loop-8-issue-8.json",
+            "sha256": "sha-after-admission"
+        });
+        let final_readback = serde_json::json!({
+            "schema_version": "entrance.hive.issue_mirror_readback.v1",
+            "passed": true,
+            "issue_id": 8,
+            "provider": "remote-fixture",
+            "review_surface": "remote-fixture:ENT-36",
+            "external_key": "hive-loop-8-issue-8",
+            "current": {
+                "digest": {
+                    "sha256": "sha-after-admission"
+                }
+            },
+            "remote_readback": {
+                "schema_version": "entrance.hive.connector_remote_readback.v1",
+                "remote_object_kind": "fixture.issue",
+                "write_receipt": {
+                    "schema_version": "entrance.hive.connector_remote_write_receipt.v1"
+                }
+            }
+        });
+        let stages = vec![
+            issue_mirror_roundtrip_stage("publish_initial", "publish", true, &publish),
+            issue_mirror_roundtrip_stage("readback", "readback", true, &readback),
+            issue_mirror_roundtrip_stage(
+                "publish_after_readback",
+                "publish evidence",
+                true,
+                &publish_after_readback,
+            ),
+            issue_mirror_roundtrip_stage("admit", "admit", true, &admission),
+            issue_mirror_roundtrip_stage(
+                "publish_after_admission",
+                "publish admission",
+                true,
+                &publish_after_admission,
+            ),
+            issue_mirror_roundtrip_stage("final_readback", "final readback", true, &final_readback),
+        ];
+
+        let report = compact_issue_mirror_roundtrip(
+            8,
+            true,
+            stages,
+            publish,
+            readback,
+            publish_after_readback,
+            admission,
+            publish_after_admission,
+            final_readback,
+        );
+        let compact = compact_issue_mirror_roundtrip_summary(&report);
+
+        assert_eq!(
+            compact
+                .pointer("/completed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            compact
+                .pointer("/stage_count")
+                .and_then(|value| value.as_u64()),
+            Some(6)
+        );
+        assert_eq!(
+            compact
+                .pointer("/recorded_evidence_ids")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            compact
+                .pointer("/remote_object_kind")
+                .and_then(|value| value.as_str()),
+            Some("fixture.issue")
+        );
+        assert_eq!(
+            compact
+                .pointer("/commands/roundtrip")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-roundtrip 8 --compact")
         );
     }
 

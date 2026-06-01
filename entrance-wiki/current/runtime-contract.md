@@ -128,7 +128,10 @@ writer adapter contract; `hive connector publish-execute --plan-id <sha256>
 mirror digest, or provider writer capability changed. Successful execution
 records a typed connector publish comment/evidence on each issue before writing
 the mirror, and each publish returns a typed connector write receipt with
-adapter, status, comment surface, digest, and readback command. The active
+adapter, status, comment surface, digest, and readback command. `hive issue
+mirror-roundtrip <id> --compact` wraps the issue-scoped publish -> readback ->
+admission workflow into one typed report; recorded readback/admission
+observations are republished before the final readback check. The active
 `remote-fixture:` provider is a file-backed remote issue API fixture that writes
 `entrance.hive.connector_remote_write_receipt.v1` and verifies
 `entrance.hive.connector_remote_readback.v1` without contacting a third-party

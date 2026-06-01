@@ -22,7 +22,7 @@ use crate::{
         admit_issue_mirror_file, audit_issue_mirror_file, connector_publish_plan_report,
         connector_queue_report, execute_connector_publish_plan, issue_connector_admission_preview,
         issue_mirror_status, publish_issue_mirror_to_file, readback_issue_mirror_file,
-        sync_issue_mirror_to_file, verify_issue_mirror_file,
+        roundtrip_issue_mirror_file, sync_issue_mirror_to_file, verify_issue_mirror_file,
     },
 };
 
@@ -700,6 +700,26 @@ async fn handle_invoke(
                     .or_else(|| args.get("recorded"))
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false),
+            )?)
+        }
+        "hive_issue_mirror_roundtrip" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_roundtrip requires `issueId`")?;
+            Ok(roundtrip_issue_mirror_file(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+                args.get("record")
+                    .or_else(|| args.get("recorded"))
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(true),
             )?)
         }
         "hive_issue_comment" => {
