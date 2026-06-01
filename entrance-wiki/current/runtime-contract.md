@@ -39,6 +39,8 @@ actions instead of the full empty loop report. Use `--compact` on
 `hive loop run`, `hive issue run`, or `hive issue retry-run` when running
 `codex`; the loop still records full worker transcripts in SQLite, but the CLI
 prints the Doctor summary or compact issue card instead of the full report.
+Compact issue cards include round recovery fields so a retry-run can show which
+recent rounds failed and whether the current round recovered from them.
 Pending Doctor next actions prefer the issue-first compact command
 `hive issue run <id> --runtime <runtime> --compact` when a loop has a linked
 issue, so operators stay on the issue/status/comment surface.

@@ -570,12 +570,19 @@ fn compact_issue_board_with_connector_status(
 
 #[cfg(test)]
 fn compact_issue_detail(card: &IssueCard) -> serde_json::Value {
+    let issue = compact_issue_card(card);
+    let recent_evidence = compact_recent_evidence(card, 5);
+    let recent_evidence_json = serde_json::Value::Array(recent_evidence.clone());
+    let rounds = compact_issue_round_summary(&issue, &recent_evidence_json);
+    let recovery = compact_issue_recovery_summary(&issue, &recent_evidence_json);
     serde_json::json!({
         "schema_version": "entrance.hive.issue.compact.v1",
-        "issue": compact_issue_card(card),
+        "issue": issue,
         "recent_comments": compact_recent_comments(card, 5),
-        "recent_evidence": compact_recent_evidence(card, 5),
-        "stages": compact_stage_rows(card)
+        "recent_evidence": recent_evidence,
+        "stages": compact_stage_rows(card),
+        "rounds": rounds,
+        "recovery": recovery
     })
 }
 
@@ -588,13 +595,19 @@ fn compact_issue_detail_with_connector_status(
         .pointer("/connector")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
+    let recent_evidence = compact_recent_evidence(card, 5);
+    let recent_evidence_json = serde_json::Value::Array(recent_evidence.clone());
+    let rounds = compact_issue_round_summary(&issue, &recent_evidence_json);
+    let recovery = compact_issue_recovery_summary(&issue, &recent_evidence_json);
     serde_json::json!({
         "schema_version": "entrance.hive.issue.compact.v1",
         "issue": issue,
         "connector": connector,
         "recent_comments": compact_recent_comments(card, 5),
-        "recent_evidence": compact_recent_evidence(card, 5),
-        "stages": compact_stage_rows(card)
+        "recent_evidence": recent_evidence,
+        "stages": compact_stage_rows(card),
+        "rounds": rounds,
+        "recovery": recovery
     })
 }
 
@@ -641,6 +654,7 @@ fn compact_loop_start_summary(issue_detail: &serde_json::Value) -> serde_json::V
         &doctor,
         &recent_evidence,
     );
+    let rounds = compact_issue_round_summary(&raw_issue, &recent_evidence);
     let retry_command = recovery
         .pointer("/retry_command")
         .and_then(|value| value.as_str())
@@ -667,6 +681,7 @@ fn compact_loop_start_summary(issue_detail: &serde_json::Value) -> serde_json::V
         "recent_comments": recent_comments,
         "recent_evidence": recent_evidence,
         "stages": stages,
+        "rounds": rounds,
         "connector": connector,
         "recovery": recovery,
         "next_actions": doctor.pointer("/next_actions").cloned().unwrap_or_else(|| serde_json::json!([])),
@@ -774,6 +789,150 @@ fn compact_loop_start_failed_workers(recent_evidence: &serde_json::Value) -> ser
             })
             .collect(),
     )
+}
+
+fn compact_issue_recovery_summary(
+    issue: &serde_json::Value,
+    recent_evidence: &serde_json::Value,
+) -> serde_json::Value {
+    let status = issue
+        .pointer("/status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Unknown");
+    let health = issue
+        .pointer("/doctor/health")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let complete = health == "ok" && status == "Done";
+    compact_loop_start_recovery_summary(
+        complete,
+        issue.pointer("/id").and_then(|value| value.as_i64()),
+        issue.pointer("/loop_id").and_then(|value| value.as_i64()),
+        issue
+            .pointer("/doctor/runtime")
+            .and_then(|value| value.as_str()),
+        issue.pointer("/doctor").unwrap_or(&serde_json::Value::Null),
+        recent_evidence,
+    )
+}
+
+fn compact_issue_round_summary(
+    issue: &serde_json::Value,
+    recent_evidence: &serde_json::Value,
+) -> serde_json::Value {
+    let current_round = issue
+        .pointer("/trace/round")
+        .and_then(|value| value.as_i64());
+    if let Some(rounds) = issue
+        .pointer("/trace/rounds")
+        .and_then(|value| value.as_array())
+    {
+        let failed_rounds = rounds
+            .iter()
+            .filter(|round| {
+                round.pointer("/status").and_then(|value| value.as_str()) != Some("kept")
+                    && (round
+                        .pointer("/rejected_count")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or_default()
+                        > 0
+                        || round
+                            .pointer("/receipt_missing")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or_default()
+                            > 0
+                        || round
+                            .pointer("/timeouts")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or_default()
+                            > 0
+                        || round
+                            .pointer("/retry_exhausted")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or_default()
+                            > 0)
+            })
+            .filter_map(|round| round.pointer("/round").and_then(|value| value.as_i64()))
+            .collect::<Vec<_>>();
+        let recovered_from_rounds = match (
+            issue.pointer("/status").and_then(|value| value.as_str()),
+            current_round,
+        ) {
+            (Some("Done"), Some(current_round)) => failed_rounds
+                .iter()
+                .filter(|round| **round < current_round)
+                .copied()
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        return serde_json::json!({
+            "current": current_round,
+            "rounds": rounds,
+            "evidence_rounds": rounds
+                .iter()
+                .filter_map(|round| round.pointer("/round").and_then(|value| value.as_i64()))
+                .collect::<Vec<_>>(),
+            "failed_rounds": failed_rounds,
+            "recovered_from_rounds": recovered_from_rounds
+        });
+    }
+    let evidence_rounds = compact_evidence_rounds(recent_evidence, |_| true);
+    let failed_rounds = compact_evidence_rounds(recent_evidence, compact_evidence_row_failed);
+    let recovered_from_rounds = match (
+        issue.pointer("/status").and_then(|value| value.as_str()),
+        current_round,
+    ) {
+        (Some("Done"), Some(current_round)) => failed_rounds
+            .iter()
+            .filter(|round| **round < current_round)
+            .copied()
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    serde_json::json!({
+        "current": current_round,
+        "evidence_rounds": evidence_rounds,
+        "failed_rounds": failed_rounds,
+        "recovered_from_rounds": recovered_from_rounds
+    })
+}
+
+fn compact_evidence_rounds<F>(recent_evidence: &serde_json::Value, predicate: F) -> Vec<i64>
+where
+    F: Fn(&serde_json::Value) -> bool,
+{
+    let mut rounds = recent_evidence
+        .as_array()
+        .into_iter()
+        .flat_map(|rows| rows.iter())
+        .filter(|row| predicate(row))
+        .filter_map(|row| row.pointer("/round").and_then(|value| value.as_i64()))
+        .collect::<Vec<_>>();
+    rounds.sort_unstable();
+    rounds.dedup();
+    rounds
+}
+
+fn compact_evidence_row_failed(row: &serde_json::Value) -> bool {
+    row.pointer("/admission").and_then(|value| value.as_str()) == Some("rejected")
+        || row.pointer("/worker/ok").and_then(|value| value.as_bool()) == Some(false)
+        || row
+            .pointer("/worker/receipt_ok")
+            .and_then(|value| value.as_bool())
+            == Some(false)
+        || row
+            .pointer("/worker/timed_out")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        || row
+            .pointer("/worker/retry_exhausted")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        || row
+            .pointer("/worker/receipt_errors")
+            .and_then(|value| value.as_array())
+            .map(|values| !values.is_empty())
+            .unwrap_or(false)
 }
 
 fn compact_loop_start_issue_summary(issue: &serde_json::Value) -> serde_json::Value {
@@ -9802,6 +9961,19 @@ fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
         })),
         "trace": card.trace.as_ref().map(|trace| serde_json::json!({
             "round": trace.current_round,
+            "rounds": trace.rounds.iter().map(|round| serde_json::json!({
+                "round": round.round,
+                "status": round.status,
+                "decision": round.decision,
+                "evidence_count": round.evidence_count,
+                "rejected_count": round.rejected_count,
+                "receipt_required": round.receipt_required_count,
+                "receipt_missing": round.receipt_missing_count,
+                "worker_ok": round.worker_ok_count,
+                "workers": round.worker_count,
+                "timeouts": round.worker_timeout_count,
+                "retry_exhausted": round.worker_retry_exhausted_count
+            })).collect::<Vec<_>>(),
             "decision": trace.last_decision,
             "reason_code": trace.reason_code,
             "human_options": trace.human_options,
@@ -10965,10 +11137,25 @@ mod tests {
                 },
                 "trace": {
                     "decision": "blocked",
-                    "reason_code": "worker_receipt_failed"
+                    "reason_code": "worker_receipt_failed",
+                    "round": 1,
+                    "rounds": [{
+                        "round": 1,
+                        "status": "blocked",
+                        "decision": "blocked",
+                        "evidence_count": 1,
+                        "rejected_count": 1,
+                        "receipt_required": 3,
+                        "receipt_missing": 1,
+                        "workers": 1,
+                        "worker_ok": 0,
+                        "timeouts": 1,
+                        "retry_exhausted": 1
+                    }]
                 }
             },
             "recent_evidence": [{
+                "round": 1,
                 "role": "explorer",
                 "kind": "exploration_packet",
                 "worker": {
@@ -11032,6 +11219,116 @@ mod tests {
                 .pointer("/recovery/failed_workers/0/attempt_count")
                 .and_then(|value| value.as_u64()),
             Some(1)
+        );
+        assert_eq!(
+            summary
+                .pointer("/rounds/current")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .pointer("/rounds/failed_rounds/0")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn compact_loop_start_summary_exposes_recovered_rounds() {
+        let summary = compact_loop_start_summary(&serde_json::json!({
+            "schema_version": "entrance.hive.issue.compact.v1",
+            "issue": {
+                "id": 7,
+                "loop_id": 3,
+                "title": "Loop #3: recovered",
+                "status": "Done",
+                "doctor": {
+                    "health": "ok",
+                    "runtime": "codex",
+                    "counts": {
+                        "workers": 3,
+                        "worker_ok": 3,
+                        "worker_duration_ms": 32000,
+                        "receipt_required": 11,
+                        "receipt_missing": 0,
+                        "audit_failed": 0
+                    },
+                    "failed_checks": [],
+                    "missing_receipts": [],
+                    "worker_failures": [],
+                    "next_actions": []
+                },
+                "trace": {
+                    "decision": "keep",
+                    "reason_code": "all_gates_passed",
+                    "round": 2,
+                    "rounds": [
+                        {
+                            "round": 1,
+                            "status": "blocked",
+                            "decision": "blocked",
+                            "evidence_count": 1,
+                            "rejected_count": 1,
+                            "receipt_required": 3,
+                            "receipt_missing": 1,
+                            "workers": 1,
+                            "worker_ok": 0,
+                            "timeouts": 1,
+                            "retry_exhausted": 1
+                        },
+                        {
+                            "round": 2,
+                            "status": "kept",
+                            "decision": "keep",
+                            "evidence_count": 4,
+                            "rejected_count": 0,
+                            "receipt_required": 11,
+                            "receipt_missing": 0,
+                            "workers": 3,
+                            "worker_ok": 3,
+                            "timeouts": 0,
+                            "retry_exhausted": 0
+                        }
+                    ]
+                }
+            },
+            "recent_evidence": [{
+                "round": 2,
+                "role": "evaluator",
+                "kind": "verdict_packet"
+            }]
+        }));
+
+        assert_eq!(
+            summary
+                .pointer("/complete")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            summary
+                .pointer("/rounds/current")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            summary
+                .pointer("/rounds/failed_rounds/0")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .pointer("/rounds/recovered_from_rounds/0")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/required")
+                .and_then(|value| value.as_bool()),
+            Some(false)
         );
     }
 

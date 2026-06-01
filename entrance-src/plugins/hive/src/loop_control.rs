@@ -492,6 +492,7 @@ pub struct IssueAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueTraceSummary {
     pub current_round: i64,
+    pub rounds: Vec<IssueRoundSummary>,
     pub packet_count: usize,
     pub admission_count: usize,
     pub evidence_count: usize,
@@ -537,6 +538,21 @@ pub struct IssueTraceSummary {
     pub audit_failure_details: Vec<String>,
     pub evidence: Vec<IssueEvidenceSummary>,
     pub stages: Vec<IssueStageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueRoundSummary {
+    pub round: i64,
+    pub status: String,
+    pub decision: Option<String>,
+    pub evidence_count: usize,
+    pub rejected_count: usize,
+    pub receipt_required_count: usize,
+    pub receipt_missing_count: usize,
+    pub worker_count: usize,
+    pub worker_ok_count: usize,
+    pub worker_timeout_count: usize,
+    pub worker_retry_exhausted_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5062,9 +5078,17 @@ fn issue_trace_summary_inner(
         .cloned()
         .collect::<Vec<_>>();
     let last_operator_event = operator_events.last().cloned();
+    let rounds = issue_round_summaries(
+        current_round,
+        &evidence,
+        &admissions,
+        &packet_rounds,
+        &verdicts,
+    );
 
     Ok(IssueTraceSummary {
         current_round,
+        rounds,
         packet_count: packets.len(),
         admission_count: admissions.len(),
         evidence_count: evidence.len(),
@@ -5185,6 +5209,141 @@ fn stage_role_map(stages: &[HiveLoopStage]) -> HashMap<i64, String> {
         .iter()
         .map(|stage| (stage.id, stage.role.clone()))
         .collect()
+}
+
+fn issue_round_summaries(
+    current_round: i64,
+    evidence: &[HiveLoopEvidence],
+    admissions: &[HiveLoopAdmission],
+    packet_rounds: &HashMap<i64, i64>,
+    verdicts: &[HiveLoopVerdict],
+) -> Vec<IssueRoundSummary> {
+    let mut rounds = Vec::new();
+    rounds.push(current_round);
+    rounds.extend(evidence.iter().map(|row| row.round));
+    rounds.extend(verdicts.iter().map(|verdict| verdict.round));
+    rounds.extend(
+        admissions
+            .iter()
+            .filter_map(|admission| packet_rounds.get(&admission.packet_id).copied()),
+    );
+    rounds.sort_unstable();
+    rounds.dedup();
+    rounds
+        .into_iter()
+        .map(|round| {
+            let round_evidence = evidence.iter().filter(|row| row.round == round);
+            let evidence_count = evidence.iter().filter(|row| row.round == round).count();
+            let rejected_count = evidence
+                .iter()
+                .filter(|row| row.round == round)
+                .filter(|row| evidence_row_rejected(row))
+                .count();
+            let worker_count = evidence
+                .iter()
+                .filter(|row| row.round == round)
+                .filter(|row| row.payload.get("worker").is_some())
+                .count();
+            let worker_ok_count = evidence
+                .iter()
+                .filter(|row| row.round == round)
+                .filter_map(|row| row.payload.get("worker"))
+                .filter(|worker| worker_ok(worker))
+                .count();
+            let worker_timeout_count = round_evidence
+                .clone()
+                .filter_map(|row| row.payload.get("worker"))
+                .filter(|worker| {
+                    worker.get("timed_out").and_then(|value| value.as_bool()) == Some(true)
+                })
+                .count();
+            let worker_retry_exhausted_count = evidence
+                .iter()
+                .filter(|row| row.round == round)
+                .filter_map(|row| row.payload.get("worker"))
+                .filter(|worker| {
+                    worker
+                        .get("retry_exhausted")
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
+                })
+                .count();
+            let round_admissions = admissions.iter().filter(|admission| {
+                packet_rounds
+                    .get(&admission.packet_id)
+                    .is_some_and(|packet_round| *packet_round == round)
+            });
+            let receipt_required_count = round_admissions
+                .clone()
+                .map(|admission| receipt_array_len(&admission.policy, "/receipt/required"))
+                .sum();
+            let receipt_missing_count = admissions
+                .iter()
+                .filter(|admission| {
+                    packet_rounds
+                        .get(&admission.packet_id)
+                        .is_some_and(|packet_round| *packet_round == round)
+                })
+                .map(|admission| receipt_array_len(&admission.policy, "/receipt/missing"))
+                .sum();
+            let decision = verdicts
+                .iter()
+                .rev()
+                .find(|verdict| verdict.round == round)
+                .map(|verdict| verdict.decision.clone());
+            let status = issue_round_status(
+                decision.as_deref(),
+                rejected_count,
+                receipt_missing_count,
+                worker_count,
+                worker_ok_count,
+            )
+            .to_string();
+            IssueRoundSummary {
+                round,
+                status,
+                decision,
+                evidence_count,
+                rejected_count,
+                receipt_required_count,
+                receipt_missing_count,
+                worker_count,
+                worker_ok_count,
+                worker_timeout_count,
+                worker_retry_exhausted_count,
+            }
+        })
+        .collect()
+}
+
+fn evidence_row_rejected(row: &HiveLoopEvidence) -> bool {
+    row.kind == "admission_rejection"
+        || row
+            .payload
+            .get("admission")
+            .or_else(|| row.payload.get("result"))
+            .and_then(|value| value.as_str())
+            == Some("rejected")
+}
+
+fn issue_round_status(
+    decision: Option<&str>,
+    rejected_count: usize,
+    receipt_missing_count: usize,
+    worker_count: usize,
+    worker_ok_count: usize,
+) -> &'static str {
+    match decision {
+        Some("keep") => "kept",
+        Some("reject") => "rejected",
+        Some("needs-review") => "needs_review",
+        Some("blocked") => "blocked",
+        _ if rejected_count > 0 || receipt_missing_count > 0 || worker_ok_count < worker_count => {
+            "blocked"
+        }
+        _ if worker_count > 0 => "ran",
+        _ => "pending",
+    }
 }
 
 fn issue_evidence_summary(

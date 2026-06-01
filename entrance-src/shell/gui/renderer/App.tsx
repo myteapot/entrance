@@ -85,6 +85,19 @@ type IssueCard = {
   actions: IssueAction[];
   trace: {
     current_round: number;
+    rounds: Array<{
+      round: number;
+      status: string;
+      decision: string | null;
+      evidence_count: number;
+      rejected_count: number;
+      receipt_required_count: number;
+      receipt_missing_count: number;
+      worker_count: number;
+      worker_ok_count: number;
+      worker_timeout_count: number;
+      worker_retry_exhausted_count: number;
+    }>;
     packet_count: number;
     admission_count: number;
     evidence_count: number;
@@ -2049,6 +2062,38 @@ export default function App() {
     return `runtime ${runtimeDurationLabel(doctor.counts.round_worker_duration_ms)}`;
   };
 
+  const roundHistoryLabel = (card: IssueCard) =>
+    card.trace?.rounds.length
+      ? card.trace.rounds
+          .map((round) => {
+            const workers = round.worker_count ? ` ${round.worker_ok_count}/${round.worker_count}` : "";
+            const receipts = round.receipt_required_count
+              ? ` r${round.receipt_required_count - round.receipt_missing_count}/${round.receipt_required_count}`
+              : "";
+            const warn = round.worker_timeout_count || round.worker_retry_exhausted_count ? " timeout" : "";
+            return `r${round.round} ${round.status}${workers}${receipts}${warn}`;
+          })
+          .join(" | ")
+      : null;
+
+  const roundRecoveryLabel = (card: IssueCard) => {
+    const rounds = card.trace?.rounds ?? [];
+    if (card.issue.status !== "Done" || !rounds.length) return null;
+    const current = card.trace?.current_round ?? 0;
+    const failed = rounds
+      .filter((round) => round.round < current)
+      .filter(
+        (round) =>
+          round.status !== "kept" &&
+          (round.rejected_count ||
+            round.receipt_missing_count ||
+            round.worker_timeout_count ||
+            round.worker_retry_exhausted_count),
+      )
+      .map((round) => round.round);
+    return failed.length ? `recovered r${failed.join(",r")} -> r${current}` : null;
+  };
+
   const cardDoctor = (card: IssueCard) => card.doctor;
 
   const cardAuditFailureDetails = (card: IssueCard) =>
@@ -2609,6 +2654,16 @@ export default function App() {
                               <div class="trace-strip">
                                 <span class="trace-pill">{schemaLabel(doctor.schema_version)}</span>
                                 <span class="trace-pill">round {doctor.current_round}</span>
+                                <Show when={roundHistoryLabel(card)}>
+                                  {(label) => (
+                                    <span class="trace-pill" title={label()}>
+                                      rounds {card.trace?.rounds.length ?? 0}
+                                    </span>
+                                  )}
+                                </Show>
+                                <Show when={roundRecoveryLabel(card)}>
+                                  {(label) => <span class="trace-pill trace-pill--ok">{label()}</span>}
+                                </Show>
                                 <span class="trace-pill">{doctorWorkerLabel(doctor)}</span>
                                 <span class="trace-pill">{doctorRuntimeLabel(doctor)}</span>
                                 {doctor.counts.round_worker_timeout_count ||

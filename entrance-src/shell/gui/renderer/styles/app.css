@@ -906,6 +906,12 @@
   background: rgba(255, 193, 7, 0.1);
 }
 
+.trace-pill--ok {
+  border-color: rgba(121, 215, 167, 0.34);
+  background: rgba(121, 215, 167, 0.14);
+  color: var(--text);
+}
+
 .comment-stack {
   display: grid;
   gap: 8px;
