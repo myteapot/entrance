@@ -35,7 +35,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -237,6 +237,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 services,
                 id.parse::<i64>()?,
                 flag_value(rest, "--path"),
+                flag_present(rest, "--record"),
             )?;
             if flag_present(rest, "--compact") {
                 print_json(&compact_issue_mirror_readback_summary(&report))
@@ -525,6 +526,7 @@ pub(crate) fn readback_issue_mirror_file(
     services: &AppServices,
     issue_id: i64,
     path: Option<&str>,
+    record: bool,
 ) -> Result<serde_json::Value> {
     let mirror = services.hive.issue_mirror(issue_id)?;
     let path = path
@@ -554,7 +556,7 @@ pub(crate) fn readback_issue_mirror_file(
         None => None,
     };
 
-    Ok(compact_issue_mirror_readback(
+    let mut readback = compact_issue_mirror_readback(
         &mirror,
         &path,
         &receipt_path,
@@ -564,7 +566,14 @@ pub(crate) fn readback_issue_mirror_file(
         remote_mirror.as_ref(),
         parse_error.as_deref(),
         &verify,
-    ))
+    );
+    if record {
+        let recorded = record_issue_mirror_readback(services, &readback)?;
+        if let Some(object) = readback.as_object_mut() {
+            object.insert("recorded".to_string(), recorded);
+        }
+    }
+    Ok(readback)
 }
 
 pub(crate) fn audit_issue_mirror_file(
@@ -591,6 +600,134 @@ pub(crate) fn admit_issue_mirror_file(
         }
     }
     Ok(admission)
+}
+
+fn record_issue_mirror_readback(
+    services: &AppServices,
+    readback: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let issue_id = readback
+        .pointer("/issue_id")
+        .and_then(|value| value.as_i64())
+        .context("connector readback missing issue_id")?;
+    let issue = services
+        .kernel
+        .store
+        .get_hive_issue(issue_id)?
+        .with_context(|| format!("unknown hive issue `{issue_id}`"))?;
+    let contract = issue
+        .loop_id
+        .map(|loop_id| services.kernel.store.get_hive_loop_contract(loop_id))
+        .transpose()?
+        .flatten();
+    let passed = readback
+        .pointer("/passed")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let result = if passed { "current" } else { "stale" };
+    let failed_checks = readback
+        .pointer("/failed_checks")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let failed_label = failed_checks
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = if passed {
+        "Connector readback current: external issue surface matches Hive.".to_string()
+    } else if failed_label.is_empty() {
+        "Connector readback stale.".to_string()
+    } else {
+        format!("Connector readback stale: {failed_label}.")
+    };
+    let loop_id = issue.loop_id;
+    let round = contract
+        .as_ref()
+        .map(|contract| contract.current_round)
+        .unwrap_or(1);
+    let phase = contract
+        .as_ref()
+        .map(|contract| contract.active_phase.as_str());
+    let comment_id = services
+        .kernel
+        .store
+        .insert_hive_comment(HiveCommentCreate {
+            issue_id,
+            author: "hive".to_string(),
+            body: body.clone(),
+            payload: serde_json::json!({
+                "schema_version": SYSTEM_COMMENT_SCHEMA_VERSION,
+                "source": "hive",
+                "loop_id": loop_id,
+                "round": round,
+                "status": issue.status.as_str(),
+                "phase": phase,
+                "connector_readback": {
+                    "schema_version": readback.pointer("/schema_version"),
+                    "result": result,
+                    "passed": passed,
+                    "failed_checks": failed_checks,
+                    "current_comment_count": readback.pointer("/current/comments/count"),
+                    "remote_comment_count": readback.pointer("/remote/surface/comments/count"),
+                    "path": readback.pointer("/path")
+                }
+            }),
+        })?;
+
+    let evidence_id = if let Some(loop_id) = issue.loop_id {
+        Some(services.kernel.store.insert_hive_loop_evidence(
+            HiveLoopEvidenceCreate {
+                loop_id,
+                stage_id: None,
+                round,
+                kind: "connector_readback".to_string(),
+                summary: body.clone(),
+                path: readback
+                    .pointer("/path")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                payload: serde_json::json!({
+                    "schema_version": ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
+                    "source": "issue/status/comment",
+                    "result": result,
+                    "passed": passed,
+                    "issue": {
+                        "id": issue.id,
+                        "status": issue.status.as_str(),
+                        "comment_id": comment_id
+                    },
+                    "loop": {
+                        "id": loop_id,
+                        "status": contract.as_ref().map(|contract| contract.status.as_str()),
+                        "phase": phase,
+                        "round": round
+                    },
+                    "connector": {
+                        "provider": readback.pointer("/provider"),
+                        "review_surface": readback.pointer("/review_surface"),
+                        "external_key": readback.pointer("/external_key")
+                    },
+                    "current": readback.pointer("/current").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "remote": readback.pointer("/remote").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "receipt": readback.pointer("/receipt").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "failed_checks": readback.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+                    "checks": readback.pointer("/checks").cloned().unwrap_or_else(|| serde_json::json!([]))
+                }),
+            },
+        )?)
+    } else {
+        None
+    };
+
+    Ok(serde_json::json!({
+        "schema_version": "entrance.hive.issue_mirror_readback_record.v1",
+        "comment_id": comment_id,
+        "evidence_id": evidence_id,
+        "comment_body": body
+    }))
 }
 
 fn record_issue_mirror_admission(
@@ -885,7 +1022,7 @@ fn issue_mirror_sync_receipt(
             "refresh": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
             "sync": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
             "verify": format!("entrance hive issue mirror-verify {}", mirror.issue.id),
-            "readback": format!("entrance hive issue mirror-readback {} --compact", mirror.issue.id)
+            "readback": format!("entrance hive issue mirror-readback {} --record --compact", mirror.issue.id)
         }
     })
 }
@@ -937,7 +1074,7 @@ fn compact_issue_mirror_sync(
         "refresh_command": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
         "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
         "verify_command": format!("entrance hive issue mirror-verify {}", mirror.issue.id),
-        "readback_command": format!("entrance hive issue mirror-readback {} --compact", mirror.issue.id)
+        "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", mirror.issue.id)
     })
 }
 
@@ -1307,7 +1444,7 @@ fn compact_issue_mirror_readback(
             compact_loop_action(
                 "readback",
                 "Readback",
-                format!("entrance hive issue mirror-readback {} --compact", issue_id)
+                format!("entrance hive issue mirror-readback {} --record --compact", issue_id)
             ),
             compact_loop_action(
                 "audit",
@@ -1337,6 +1474,9 @@ fn compact_issue_mirror_readback_summary(report: &serde_json::Value) -> serde_js
         "remote_comment_count": report.pointer("/remote/surface/comments/count").and_then(|value| value.as_u64()),
         "remote_parsed": report.pointer("/remote/parsed").and_then(|value| value.as_bool()),
         "latest_remote_comment": report.pointer("/remote/surface/comments/latest").cloned(),
+        "recorded": report.pointer("/recorded").cloned(),
+        "recorded_comment_id": report.pointer("/recorded/comment_id").and_then(|value| value.as_i64()),
+        "recorded_evidence_id": report.pointer("/recorded/evidence_id").and_then(|value| value.as_i64()),
         "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
     })
 }
@@ -2458,9 +2598,22 @@ mod tests {
             readback
                 .pointer("/actions/1/command")
                 .and_then(|value| value.as_str()),
-            Some("entrance hive issue mirror-readback 8 --compact")
+            Some("entrance hive issue mirror-readback 8 --record --compact")
         );
-        let compact_readback = compact_issue_mirror_readback_summary(&readback);
+        let mut recorded_readback = readback.clone();
+        recorded_readback
+            .as_object_mut()
+            .expect("readback should be an object")
+            .insert(
+                "recorded".to_string(),
+                serde_json::json!({
+                    "schema_version": "entrance.hive.issue_mirror_readback_record.v1",
+                    "comment_id": 17,
+                    "evidence_id": 23,
+                    "comment_body": "Connector readback current: external issue surface matches Hive."
+                }),
+            );
+        let compact_readback = compact_issue_mirror_readback_summary(&recorded_readback);
         assert_eq!(
             compact_readback
                 .pointer("/schema_version")
@@ -2472,6 +2625,18 @@ mod tests {
                 .pointer("/remote_comment_count")
                 .and_then(|value| value.as_u64()),
             Some(0)
+        );
+        assert_eq!(
+            compact_readback
+                .pointer("/recorded_comment_id")
+                .and_then(|value| value.as_i64()),
+            Some(17)
+        );
+        assert_eq!(
+            compact_readback
+                .pointer("/recorded_evidence_id")
+                .and_then(|value| value.as_i64()),
+            Some(23)
         );
 
         let mut stale_remote = mirror.clone();

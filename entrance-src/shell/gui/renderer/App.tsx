@@ -295,6 +295,10 @@ type IssueMirrorReadbackReport = {
       };
     } | null;
   };
+  recorded?: {
+    comment_id: number;
+    evidence_id: number | null;
+  } | null;
 };
 type IssueMirrorAdmissionReport = {
   schema_version: string;
@@ -674,13 +678,17 @@ export default function App() {
     try {
       const report = await bridge.invoke<IssueMirrorReadbackReport>("hive_issue_mirror_readback", {
         issueId: card.issue.id,
+        record: true,
       });
+      const evidenceLabel = report.recorded?.evidence_id ? ` (E#${report.recorded.evidence_id})` : "";
       if (report.passed) {
         setBanner(
-          `Read back issue mirror ${compactText(report.current.digest.sha256, 12)}: ${report.remote.surface?.comments.count ?? 0} comments`,
+          `Read back issue mirror ${compactText(report.current.digest.sha256, 12)}: ${report.remote.surface?.comments.count ?? 0} comments${evidenceLabel}`,
         );
       } else {
-        setBanner(`Issue #${card.issue.id} readback failed: ${compactText(report.failed_checks.join(", "), 96)}`);
+        setBanner(
+          `Issue #${card.issue.id} readback failed: ${compactText(report.failed_checks.join(", "), 96)}${evidenceLabel}`,
+        );
       }
     } catch (error) {
       setBanner(`Issue #${card.issue.id} readback failed: ${actionErrorMessage(error)}`);
@@ -1237,7 +1245,7 @@ export default function App() {
   const issueMirrorVerifyCommand = (card: IssueCard) =>
     `entrance hive issue mirror-audit ${card.issue.id} --compact`;
   const issueMirrorReadbackCommand = (card: IssueCard) =>
-    `entrance hive issue mirror-readback ${card.issue.id} --compact`;
+    `entrance hive issue mirror-readback ${card.issue.id} --record --compact`;
   const issueMirrorAdmitCommand = (card: IssueCard) =>
     `entrance hive issue mirror-admit ${card.issue.id} --record --compact`;
   const issueMirrorSyncLabel = (card: IssueCard) =>
