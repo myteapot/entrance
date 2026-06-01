@@ -624,11 +624,27 @@ fn compact_loop_start_summary(issue_detail: &serde_json::Value) -> serde_json::V
         .pointer("/health")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
+    let runtime = doctor.pointer("/runtime").and_then(|value| value.as_str());
     let status = raw_issue
         .pointer("/status")
         .and_then(|value| value.as_str())
         .unwrap_or("Unknown");
     let complete = health == "ok" && status == "Done";
+    let recent_comments = compact_json_array_tail(issue_detail.pointer("/recent_comments"), 3);
+    let recent_evidence = compact_json_array_tail(issue_detail.pointer("/recent_evidence"), 3);
+    let stages = compact_json_array_tail(issue_detail.pointer("/stages"), 3);
+    let recovery = compact_loop_start_recovery_summary(
+        complete,
+        issue_id,
+        loop_id,
+        runtime,
+        &doctor,
+        &recent_evidence,
+    );
+    let retry_command = recovery
+        .pointer("/retry_command")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
     serde_json::json!({
         "schema_version": "entrance.hive.loop_start.compact.v1",
         "complete": complete,
@@ -638,7 +654,7 @@ fn compact_loop_start_summary(issue_detail: &serde_json::Value) -> serde_json::V
         "health": health,
         "decision": trace.pointer("/decision").and_then(|value| value.as_str()),
         "reason_code": trace.pointer("/reason_code").and_then(|value| value.as_str()),
-        "runtime": doctor.pointer("/runtime").and_then(|value| value.as_str()),
+        "runtime": runtime,
         "counts": {
             "workers": doctor.pointer("/counts/workers").and_then(|value| value.as_u64()),
             "worker_ok": doctor.pointer("/counts/worker_ok").and_then(|value| value.as_u64()),
@@ -648,18 +664,116 @@ fn compact_loop_start_summary(issue_detail: &serde_json::Value) -> serde_json::V
             "audit_failed": doctor.pointer("/counts/audit_failed").and_then(|value| value.as_u64())
         },
         "issue": compact_loop_start_issue_summary(&raw_issue),
-        "recent_comments": compact_json_array_tail(issue_detail.pointer("/recent_comments"), 3),
-        "recent_evidence": compact_json_array_tail(issue_detail.pointer("/recent_evidence"), 3),
-        "stages": compact_json_array_tail(issue_detail.pointer("/stages"), 3),
+        "recent_comments": recent_comments,
+        "recent_evidence": recent_evidence,
+        "stages": stages,
         "connector": connector,
+        "recovery": recovery,
         "next_actions": doctor.pointer("/next_actions").cloned().unwrap_or_else(|| serde_json::json!([])),
         "commands": {
             "show": issue_id.map(|id| format!("entrance hive issue show {id} --compact")),
             "doctor": loop_id.map(|id| format!("entrance hive loop doctor {id}")),
             "board": "entrance hive issue list --compact",
-            "retry": issue_id.map(|id| format!("entrance hive issue retry-run {id} --body <note> --compact"))
+            "retry": retry_command
         }
     })
+}
+
+fn compact_loop_start_recovery_summary(
+    complete: bool,
+    issue_id: Option<i64>,
+    loop_id: Option<i64>,
+    runtime: Option<&str>,
+    doctor: &serde_json::Value,
+    recent_evidence: &serde_json::Value,
+) -> serde_json::Value {
+    let next_actions = doctor
+        .pointer("/next_actions")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let retry_command = first_json_string_containing(&next_actions, "issue retry-run").or_else(|| {
+        issue_id.map(|id| {
+            if runtime == Some("codex") {
+                format!(
+                    "entrance hive issue retry-run {id} --body <note> --runtime codex --worker-attempts 2 --compact"
+                )
+            } else {
+                format!("entrance hive issue retry-run {id} --body <note> --compact")
+            }
+        })
+    });
+    let primary_action = next_actions
+        .as_array()
+        .and_then(|actions| actions.first())
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    serde_json::json!({
+        "required": !complete,
+        "primary_action": primary_action,
+        "retry_command": retry_command,
+        "doctor_command": loop_id.map(|id| format!("entrance hive loop doctor {id}")),
+        "evidence_command": loop_id.map(|id| format!("entrance hive loop evidence {id}")),
+        "audit_command": loop_id.map(|id| format!("entrance hive loop audit {id} --compact")),
+        "failed_checks": doctor.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "missing_receipts": doctor.pointer("/missing_receipts").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "worker_failures": doctor.pointer("/worker_failures").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "failed_workers": compact_loop_start_failed_workers(recent_evidence)
+    })
+}
+
+fn first_json_string_containing(value: &serde_json::Value, needle: &str) -> Option<String> {
+    value.as_array().and_then(|values| {
+        values
+            .iter()
+            .filter_map(|value| value.as_str())
+            .find(|value| value.contains(needle))
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn compact_loop_start_failed_workers(recent_evidence: &serde_json::Value) -> serde_json::Value {
+    let Some(rows) = recent_evidence.as_array() else {
+        return serde_json::json!([]);
+    };
+    serde_json::Value::Array(
+        rows.iter()
+            .filter(|row| {
+                row.pointer("/worker/ok").and_then(|value| value.as_bool()) == Some(false)
+                    || row
+                        .pointer("/worker/receipt_ok")
+                        .and_then(|value| value.as_bool())
+                        == Some(false)
+                    || row
+                        .pointer("/worker/timed_out")
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
+                    || row
+                        .pointer("/worker/retry_exhausted")
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
+                    || row
+                        .pointer("/worker/receipt_errors")
+                        .and_then(|value| value.as_array())
+                        .map(|values| !values.is_empty())
+                        .unwrap_or(false)
+            })
+            .map(|row| {
+                serde_json::json!({
+                    "role": row.pointer("/role").and_then(|value| value.as_str()),
+                    "kind": row.pointer("/kind").and_then(|value| value.as_str()),
+                    "worker_kind": row.pointer("/worker/kind").and_then(|value| value.as_str()),
+                    "ok": row.pointer("/worker/ok").and_then(|value| value.as_bool()),
+                    "receipt_ok": row.pointer("/worker/receipt_ok").and_then(|value| value.as_bool()),
+                    "timed_out": row.pointer("/worker/timed_out").and_then(|value| value.as_bool()),
+                    "retry_exhausted": row.pointer("/worker/retry_exhausted").and_then(|value| value.as_bool()),
+                    "attempt_count": row.pointer("/worker/attempt_count").and_then(|value| value.as_u64()),
+                    "max_attempts": row.pointer("/worker/max_attempts").and_then(|value| value.as_u64()),
+                    "duration_ms": row.pointer("/worker/duration_ms").and_then(|value| value.as_u64()),
+                    "receipt_errors": row.pointer("/worker/receipt_errors").cloned().unwrap_or_else(|| serde_json::json!([]))
+                })
+            })
+            .collect(),
+    )
 }
 
 fn compact_loop_start_issue_summary(issue: &serde_json::Value) -> serde_json::Value {
@@ -9773,6 +9887,12 @@ fn compact_recent_evidence(card: &IssueCard, limit: usize) -> Vec<serde_json::Va
                     "ok": row.worker_ok,
                     "receipt_ok": row.worker_receipt_ok,
                     "duration_ms": row.worker_duration_ms,
+                    "timeout_secs": row.worker_timeout_secs,
+                    "attempt_count": row.worker_attempt_count,
+                    "max_attempts": row.worker_max_attempts,
+                    "timed_out": row.worker_timed_out,
+                    "retry_exhausted": row.worker_retry_exhausted,
+                    "receipt_errors": row.worker_receipt_errors,
                     "action": row.worker_action.as_ref().map(|action| compact_text(action, 180))
                 }))
             })
@@ -10775,6 +10895,12 @@ mod tests {
         );
         assert_eq!(
             summary
+                .pointer("/commands/retry")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue retry-run 9 --body <note> --runtime codex --worker-attempts 2 --compact")
+        );
+        assert_eq!(
+            summary
                 .pointer("/recent_comments/0/body")
                 .and_then(|value| value.as_str()),
             Some("Evaluator kept the loop.")
@@ -10790,6 +10916,122 @@ mod tests {
                 .pointer("/issue/title")
                 .and_then(|value| value.as_str()),
             Some("Loop #4: start")
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/required")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/retry_command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue retry-run 9 --body <note> --runtime codex --worker-attempts 2 --compact")
+        );
+    }
+
+    #[test]
+    fn compact_loop_start_summary_exposes_recovery_for_worker_failure() {
+        let summary = compact_loop_start_summary(&serde_json::json!({
+            "schema_version": "entrance.hive.issue.compact.v1",
+            "issue": {
+                "id": 7,
+                "loop_id": 3,
+                "title": "Loop #3: timeout",
+                "status": "Blocked",
+                "summary": "Explorer worker timed out.",
+                "doctor": {
+                    "health": "worker_failed",
+                    "runtime": "codex",
+                    "counts": {
+                        "workers": 1,
+                        "worker_ok": 0,
+                        "worker_duration_ms": 1000,
+                        "receipt_required": 3,
+                        "receipt_missing": 1,
+                        "audit_failed": 1
+                    },
+                    "failed_checks": ["worker_receipts"],
+                    "missing_receipts": ["role_worker"],
+                    "worker_failures": [
+                        "explorer:exploration_packet worker=codex ok=false receipt=false timeout"
+                    ],
+                    "next_actions": [
+                        "entrance hive loop evidence 3",
+                        "entrance hive loop doctor 3",
+                        "entrance hive issue retry-run 7 --body <note> --runtime codex --worker-attempts 2 --compact"
+                    ]
+                },
+                "trace": {
+                    "decision": "blocked",
+                    "reason_code": "worker_receipt_failed"
+                }
+            },
+            "recent_evidence": [{
+                "role": "explorer",
+                "kind": "exploration_packet",
+                "worker": {
+                    "kind": "codex",
+                    "ok": false,
+                    "receipt_ok": false,
+                    "timed_out": true,
+                    "retry_exhausted": true,
+                    "attempt_count": 1,
+                    "max_attempts": 1,
+                    "duration_ms": 1000,
+                    "receipt_errors": ["role_worker"]
+                }
+            }]
+        }));
+
+        assert_eq!(
+            summary
+                .pointer("/complete")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/required")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/retry_command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue retry-run 7 --body <note> --runtime codex --worker-attempts 2 --compact")
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/failed_checks/0")
+                .and_then(|value| value.as_str()),
+            Some("worker_receipts")
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/missing_receipts/0")
+                .and_then(|value| value.as_str()),
+            Some("role_worker")
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/failed_workers/0/role")
+                .and_then(|value| value.as_str()),
+            Some("explorer")
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/failed_workers/0/timed_out")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            summary
+                .pointer("/recovery/failed_workers/0/attempt_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
         );
     }
 

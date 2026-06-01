@@ -73,10 +73,12 @@ Local agent-loop MVP:
 
 `hive loop start` is the one-command MVP path: it creates a linked issue loop,
 runs `Explorer -> Doer -> Evaluator`, then prints a compact outcome with issue,
-Doctor, evidence, stage, connector, and next-action summaries. `hive loop run`
-records the same minimal compiler path in SQLite: active policies, versioned
-typed packets, receipt-aware admission gates, versioned admission receipts,
-stage evidence, and the versioned final verdict.
+Doctor, evidence, stage, connector, recovery, and next-action summaries. When a
+worker times out, exhausts attempts, or misses receipts, the compact recovery
+section surfaces failed checks, missing receipts, failed worker rows, and a retry
+command directly. `hive loop run` records the same minimal compiler path in
+SQLite: active policies, versioned typed packets, receipt-aware admission gates,
+versioned admission receipts, stage evidence, and the versioned final verdict.
 Add `--compact` to `hive loop create` to print the linked issue card and next
 actions instead of the full empty loop report. Add `--compact` to `hive loop run`
 to print the Doctor summary after execution instead of the full packet/evidence

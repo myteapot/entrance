@@ -28,9 +28,12 @@ cargo run -p entrance-app --bin entrance -- launcher list
 
 `hive loop start` is the one-command MVP path: it creates the linked issue,
 runs the issue-first loop once, and returns a compact issue/Doctor/evidence
-outcome when `--compact` is present. `hive loop run` returns the local compiler
-trace for the round: policy rows, versioned typed packet envelopes, versioned
-admission receipts, evidence, and versioned verdict receipts.
+outcome when `--compact` is present. Its compact recovery section exposes retry
+commands, failed checks, missing receipts, failed worker rows, attempt counts,
+timeouts, and retry exhaustion when the run does not complete. `hive loop run`
+returns the local compiler trace for the round: policy rows, versioned typed
+packet envelopes, versioned admission receipts, evidence, and versioned verdict
+receipts.
 Use `--compact` on `hive loop create` to print the linked issue card and next
 actions instead of the full empty loop report. Use `--compact` on
 `hive loop run`, `hive issue run`, or `hive issue retry-run` when running
