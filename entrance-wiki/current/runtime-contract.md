@@ -152,7 +152,9 @@ surfaces such as `github:owner/repo#123`,
 `github:https://github.com/owner/repo/issues/123`, `linear:TEAM-123`, or a
 Linear issue URL. Invalid targets surface typed blockers such as
 `remote_target_invalid`, `github_owner_missing`, or `github_repo_missing` before
-any remote writer can be admitted. `hive issue
+any remote writer can be admitted. The Panel displays those parsed targets as
+connector target chips in the issue detail, board card, and connector queue
+surfaces, using warning styling for invalid targets. `hive issue
 connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`; it now emits a typed provider check vector, writer

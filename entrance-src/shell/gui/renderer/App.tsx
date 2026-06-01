@@ -266,6 +266,25 @@ type ConnectorRemoteContract = {
   };
 };
 
+type ConnectorRemoteTarget = {
+  schema_version?: string;
+  provider?: string | null;
+  review_surface?: string | null;
+  target_kind?: string | null;
+  target?: string | null;
+  valid?: boolean | null;
+  blockers?: string[];
+  owner?: string | null;
+  repo?: string | null;
+  issue_number?: number | null;
+  issue_key?: string | null;
+  fixture_key?: string | null;
+  remote_id?: string | null;
+  remote_url?: string | null;
+  api_url?: string | null;
+  write_mode?: string | null;
+};
+
 type ConnectorWriterAdapter = {
   schema_version: string;
   provider: string;
@@ -327,6 +346,7 @@ type ConnectorQueueIssue = {
   can_publish?: boolean | null;
   publish_blockers?: string[];
   adapter?: ConnectorWriterAdapter | null;
+  remote_target?: ConnectorRemoteTarget | null;
   admission_status: string | null;
   admission_blockers: string[];
   review_surface: string | null;
@@ -745,6 +765,56 @@ export default function App() {
     connectorQueueIssues().find((issue) => issue.id === issueId) ?? null;
   const connectorQueueIssueCanPublish = (issueId: number) =>
     connectorQueueIssueById(issueId)?.can_publish !== false;
+  const connectorQueueIssueTarget = (issueId: number) =>
+    connectorQueueIssueById(issueId)?.remote_target ?? null;
+  const connectorRemoteTargetIdentity = (target?: ConnectorRemoteTarget | null) => {
+    if (!target) return null;
+    if (target.issue_key) return target.issue_key;
+    if (target.owner && target.repo) {
+      return `${target.owner}/${target.repo}${target.issue_number ? `#${target.issue_number}` : ""}`;
+    }
+    if (target.fixture_key) return target.fixture_key;
+    return target.target ?? target.remote_id ?? target.review_surface ?? null;
+  };
+  const connectorRemoteTargetLabel = (target?: ConnectorRemoteTarget | null) => {
+    if (!target) return null;
+    const identity = connectorRemoteTargetIdentity(target);
+    if (target.valid === false) {
+      return identity ? `target invalid ${identity}` : "target invalid";
+    }
+    return identity ? `target ${identity}` : null;
+  };
+  const connectorRemoteTargetTitle = (target?: ConnectorRemoteTarget | null) => {
+    if (!target) return undefined;
+    const parts = [
+      target.target_kind ? `kind: ${target.target_kind}` : null,
+      target.write_mode ? `mode: ${target.write_mode}` : null,
+      target.review_surface ? `surface: ${target.review_surface}` : null,
+      target.remote_url ? `url: ${target.remote_url}` : null,
+      target.api_url ? `api: ${target.api_url}` : null,
+    ].filter((part): part is string => Boolean(part));
+    if (target.valid === false && target.blockers?.length) {
+      parts.push(`blockers: ${target.blockers.join(", ")}`);
+    }
+    return parts.length ? parts.join(" | ") : undefined;
+  };
+  const connectorRemoteTargetTone = (target?: ConnectorRemoteTarget | null) =>
+    target?.valid === false ? "warn" : "ok";
+  const connectorRemoteTargetChip = (
+    target: ConnectorRemoteTarget | null | undefined,
+    testId: string,
+  ) => {
+    const label = connectorRemoteTargetLabel(target);
+    return label ? (
+      <span
+        class={`connector-target connector-target--${connectorRemoteTargetTone(target)}`}
+        data-testid={testId}
+        title={connectorRemoteTargetTitle(target)}
+      >
+        {label}
+      </span>
+    ) : null;
+  };
   const connectorQueueIssuePublishTitle = (card: IssueCard) => {
     const queueIssue = connectorQueueIssueById(card.issue.id);
     if (queueIssue?.can_publish === false && queueIssue.publish_blockers?.length) {
@@ -1775,6 +1845,10 @@ export default function App() {
         <span>{connectorStatusLabel(card.connector)}</span>
         {connectorCommentLabel(card.connector) ? <span>{connectorCommentLabel(card.connector)}</span> : null}
         {connectorReasonLabel(card.connector) ? <span>{connectorReasonLabel(card.connector)}</span> : null}
+        {connectorRemoteTargetChip(
+          connectorQueueIssueTarget(card.issue.id),
+          `connector-target-${surface}-${card.issue.id}`,
+        )}
       </div>
     ) : null;
   const loopAuditCommand = (card: IssueCard) =>
@@ -2640,7 +2714,11 @@ export default function App() {
                     </span>
                   ))}
                   {connectorPublishQueue().slice(0, 4).map((card) => (
-                    <>
+                    <div class="connector-queue-issue">
+                      {connectorRemoteTargetChip(
+                        connectorQueueIssueTarget(card.issue.id),
+                        `connector-queue-target-${card.issue.id}`,
+                      )}
                       <button
                         type="button"
                         aria-label={`Publish issue #${card.issue.id} from connector queue`}
@@ -2667,7 +2745,7 @@ export default function App() {
                       >
                         #{card.issue.id} Roundtrip
                       </button>
-                    </>
+                    </div>
                   ))}
                 </div>
                 <div class="connector-registry" data-testid="connector-registry">

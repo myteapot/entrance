@@ -160,7 +160,9 @@ publish admission. GitHub targets accept forms such as `github:owner/repo#123`
 or `github:https://github.com/owner/repo/issues/123`; Linear targets accept
 forms such as `linear:TEAM-123` or a Linear issue URL. Invalid targets add
 typed blockers such as `remote_target_invalid`, `github_owner_missing`, or
-`github_repo_missing` before any remote write can be admitted.
+`github_repo_missing` before any remote write can be admitted. The Panel renders
+these parsed targets as connector target chips on issue cards and the connector
+queue, so invalid targets are visible without opening raw JSON.
 `hive connector registry --compact` exposes
 active/planned issue-surface providers, provider-specific admission status, and
 the connector admission gate, while `hive issue

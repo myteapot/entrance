@@ -536,6 +536,23 @@
   background: rgba(255, 255, 255, 0.025);
 }
 
+.connector-target {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.connector-target--ok {
+  border: 1px solid rgba(121, 215, 167, 0.26);
+  color: #a7ecc6;
+  background: rgba(121, 215, 167, 0.09);
+}
+
+.connector-target--warn {
+  border: 1px solid rgba(255, 193, 7, 0.34);
+  color: #ffd86b;
+  background: rgba(255, 193, 7, 0.11);
+}
+
 .connector-queue {
   display: flex;
   flex-wrap: wrap;
@@ -569,6 +586,21 @@
   background: rgba(255, 193, 7, 0.09);
   color: var(--text);
   font-size: 0.78rem;
+}
+
+.connector-queue .connector-queue-issue {
+  display: inline-flex;
+  flex: 1 1 220px;
+  gap: 6px;
+  align-items: center;
+  min-width: min(260px, 100%);
+}
+
+.connector-queue .connector-queue-issue .connector-target {
+  padding: 4px 7px;
+  border-radius: 8px;
+  font-size: 0.74rem;
+  line-height: 1.15;
 }
 
 .connector-registry {
