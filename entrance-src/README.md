@@ -179,27 +179,30 @@ connector-admission <id> --compact` dry-runs whether the current mirror can be
 routed to `external_issue_surface`. Admission previews include a typed check
 vector, writer adapter blockers, and any remote contract so the CLI/Panel can
 explain which provider, readback, or remote-write gate stopped the route.
-Connector provider config is read from `entrance.toml`; for example
-`[connectors.linear] enabled = true` with `auth_env = ["LINEAR_API_KEY"]`
-marks Linear as configured while it remains a planned provider until a real
-remote writer is implemented. GitHub has a guarded publish/readback slice:
-`[connectors.github] enabled = true` plus a configured token env such as
-`GITHUB_TOKEN` or `GH_TOKEN` activates the GitHub REST adapter. Publish records
-`entrance.hive.connector_remote_write_execute.v1` and redacted
-`entrance.hive.connector_remote_write_receipt.v1` evidence. The comment write
-path uses an Entrance idempotency marker: it lists existing issue comments,
+Connector provider config is read from `entrance.toml`. GitHub and Linear both
+have guarded remote publish/readback slices when enabled with a configured token
+env. `[connectors.github] enabled = true` plus `GITHUB_TOKEN` or `GH_TOKEN`
+activates the GitHub REST adapter; `[connectors.linear] enabled = true` plus an
+env such as `LINEAR_API_KEY` activates the Linear GraphQL adapter. Publish
+records `entrance.hive.connector_remote_write_execute.v1` and redacted
+`entrance.hive.connector_remote_write_receipt.v1` evidence. GitHub comment
+publish uses an Entrance idempotency marker: it lists existing issue comments,
 patches the matching comment when present, and only creates a new comment when
-the marker is absent. Readback calls GitHub REST `GET` issue and `GET` issue
+the marker is absent. GitHub readback uses REST `GET` issue plus `GET` issue
 comments, follows `Link` pagination for the comment list, emits
 `entrance.hive.connector_remote_readback.v1`, and connector admission can pass
 only when target, auth, issue state/body, latest comment, and write-receipt
-binding checks pass. `storage` can override the file-backed mirror path used by
-active local adapters; for GitHub, an `http(s)://` storage value overrides the
-API base URL for fixture or GitHub Enterprise style testing. GitHub REST
+binding checks pass. Linear publish reads the issue UUID by identifier, updates
+title/description through GraphQL, appends idempotency-marked comments, emits the
+same remote write/readback schemas, and gates admission on typed target, auth,
+issue body, comment surface, and write-receipt checks. `storage` can override
+the file-backed mirror path used by active local adapters; for GitHub it can
+override the REST API base URL, and for Linear an `http(s)://` value overrides
+the GraphQL endpoint for fixtures or self-hosted-compatible testing. GitHub REST
 operations expose attempt metadata, retry transient `5xx` responses with bounded
 backoff, and classify `403/429` rate limits as typed `remote_rate_limited`
-blockers without immediate retry. Linear readback, production drift handling,
-and broader retry policy are still pending.
+blockers without immediate retry. Production drift handling, richer Linear state
+mapping, real-token coverage, and broader retry policy are still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

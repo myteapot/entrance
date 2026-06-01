@@ -117,9 +117,9 @@ Compact issue surfaces also expose connector mirror drift: `hive issue show
 <id> --compact` includes a `connector` block, while `hive issue list --compact`
 adds a `connector_queue` with publish-required issue ids and commands.
 The connector registry is available through `hive connector registry --compact`;
-it distinguishes active local/file providers from planned Linear/GitHub
-providers, names the admission gate, and exposes provider-specific admission
-status/blockers. `hive connector queue --compact` returns a provider-scoped
+it distinguishes active local/file providers from configured remote GitHub/Linear
+issue providers, names the admission gate, and exposes provider-specific
+admission status/blockers. `hive connector queue --compact` returns a provider-scoped
 publish queue, and `--provider <name>` narrows the dry-run plan to one
 issue-surface provider. `hive connector publish-plan --compact` creates a
 digest-bound local mirror publish plan from the current queue and the provider
@@ -142,11 +142,11 @@ active
 `remote-fixture:` provider is a file-backed remote issue API fixture that writes
 `entrance.hive.connector_remote_write_receipt.v1` and verifies
 `entrance.hive.connector_remote_readback.v1` without contacting a third-party
-service. Planned Linear/GitHub providers remain visible with adapter blockers
-and an `entrance.hive.connector_remote_contract.v1` that specifies remote object
-kind, write receipt schema, readback schema, idempotency key parts, auth env,
-and required pre/post-write checks, but they cannot be executed until a real
-writer is active. Their admission previews also include
+service. Remote GitHub/Linear providers remain visible with adapter blockers
+until configured, and active providers expose an
+`entrance.hive.connector_remote_contract.v1` that specifies remote object kind,
+write receipt schema, readback schema, idempotency key parts, auth env, and
+required pre/post-write checks. Their admission previews also include
 `entrance.hive.connector_remote_target.v1`, parsed from provider-specific review
 surfaces such as `github:owner/repo#123`,
 `github:https://github.com/owner/repo/issues/123`, `linear:TEAM-123`, or a
@@ -169,24 +169,28 @@ connector-admission <id>
 adapter blockers, and any remote contract so rejected admissions can be traced
 to provider readiness, mirror readback, or remote-write requirements.
 Provider overrides are read from `entrance.toml` under `[connectors.<provider>]`.
-Enabling a planned provider can mark auth/storage config as present, but
-admission still blocks until that provider has an active implementation. GitHub
-is the first guarded remote publish/readback slice: `[connectors.github]
-enabled = true` with a configured token env such as `GITHUB_TOKEN` or `GH_TOKEN`
-activates REST issue/comment publish operations and records
+GitHub and Linear both have guarded remote publish/readback slices when enabled
+with a configured token env. `[connectors.github] enabled = true` with
+`GITHUB_TOKEN` or `GH_TOKEN` activates REST issue/comment publish operations;
+`[connectors.linear] enabled = true` with an env such as `LINEAR_API_KEY`
+activates GraphQL issue/comment publish operations. Both record
 `entrance.hive.connector_remote_write_execute.v1` plus redacted
 `entrance.hive.connector_remote_write_receipt.v1` evidence. GitHub comment
-publish now uses an Entrance idempotency marker: it lists issue comments,
-patches the matching comment when present, and creates one only when the marker
-is absent. GitHub readback now uses REST `GET` issue plus `GET` issue comments,
-follows `Link` pagination for the comment list, emits
+publish uses an Entrance idempotency marker: it lists issue comments, patches
+the matching comment when present, and creates one only when the marker is
+absent. GitHub readback uses REST `GET` issue plus `GET` issue comments, follows
+`Link` pagination for the comment list, emits
 `entrance.hive.connector_remote_readback.v1`, and connector admission is ready
 only when the typed target, auth, issue state/body, latest comment, and
-write-receipt binding checks pass. GitHub REST operations now expose attempt
-metadata, retry transient `5xx` responses with bounded backoff, and classify
-`403/429` rate limits as typed `remote_rate_limited` blockers without immediate
-retry. Linear readback, production drift handling, and broader retry policy are
-still pending.
+write-receipt binding checks pass. Linear publish reads the issue UUID by
+identifier, updates title/description through GraphQL, appends
+idempotency-marked comments, emits the same remote write/readback schemas, and
+gates admission on typed target, auth, issue body, comment surface, and
+write-receipt checks. GitHub REST operations now expose attempt metadata, retry
+transient `5xx` responses with bounded backoff, and classify `403/429` rate
+limits as typed `remote_rate_limited` blockers without immediate retry.
+Production drift handling, richer Linear state mapping, real-token coverage, and
+broader retry policy are still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 
