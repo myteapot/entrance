@@ -1212,6 +1212,7 @@ pub(crate) fn issue_connector_admission_preview(
         remote_contract_required,
         &remote_target,
         &remote_contract,
+        &registry.admission.check_registry,
     );
     if connector_admission_check_failed(&checks, "retry_policy_bound") {
         blockers.push("retry_policy_bound".to_string());
@@ -1624,6 +1625,7 @@ fn connector_admission_preview_checks(
     remote_contract_required: bool,
     remote_target: &serde_json::Value,
     remote_contract: &serde_json::Value,
+    check_registry: &[ConnectorAdmissionCheckSpec],
 ) -> Vec<serde_json::Value> {
     let provider_admission_blockers = provider_admission
         .map(|admission| {
@@ -1659,7 +1661,7 @@ fn connector_admission_preview_checks(
             .and_then(|value| value.as_bool())
             == Some(true);
 
-    vec![
+    let checks = vec![
         readback_check(
             "provider_supported",
             "Connector provider is registered for this issue surface.",
@@ -1720,7 +1722,48 @@ fn connector_admission_preview_checks(
             remote_contract_required,
             remote_contract,
         ),
-    ]
+    ];
+    checks
+        .into_iter()
+        .map(|check| connector_admission_check_with_policy(check, check_registry))
+        .collect()
+}
+
+fn connector_admission_check_with_policy(
+    mut check: serde_json::Value,
+    check_registry: &[ConnectorAdmissionCheckSpec],
+) -> serde_json::Value {
+    let Some(name) = check
+        .pointer("/name")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+    else {
+        return check;
+    };
+    let Some(spec) = check_registry.iter().find(|spec| spec.name == name) else {
+        return check;
+    };
+    let Some(object) = check.as_object_mut() else {
+        return check;
+    };
+    object.insert(
+        "severity".to_string(),
+        serde_json::json!(spec.severity.as_str()),
+    );
+    object.insert("owner".to_string(), serde_json::json!(spec.owner.as_str()));
+    object.insert(
+        "required_evidence".to_string(),
+        serde_json::json!(spec
+            .required_evidence
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()),
+    );
+    object.insert(
+        "policy_summary".to_string(),
+        serde_json::json!(spec.summary.as_str()),
+    );
+    check
 }
 
 fn connector_admission_check_failed(checks: &[serde_json::Value], name: &str) -> bool {
@@ -9347,6 +9390,7 @@ fn compact_connector_queue_issue(
         !remote_contract.is_null(),
         &remote_target,
         &remote_contract,
+        &registry.admission.check_registry,
     );
     let admission_blockers = admission
         .map(|admission| {
@@ -10851,6 +10895,18 @@ mod tests {
         );
         assert_eq!(
             queue
+                .pointer("/issues/0/admission_checks/2/owner")
+                .and_then(|value| value.as_str()),
+            Some("test-owner")
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/admission_checks/2/severity")
+                .and_then(|value| value.as_str()),
+            Some("blocker")
+        );
+        assert_eq!(
+            queue
                 .pointer("/providers/0/publish_required_count")
                 .and_then(|value| value.as_u64()),
             Some(1)
@@ -11283,6 +11339,7 @@ mod tests {
             true,
             &remote_target,
             &remote_contract,
+            &admission.check_registry,
         );
 
         assert_eq!(checks.len(), 7);
@@ -11344,6 +11401,30 @@ mod tests {
                 .and_then(|value| value.as_u64()),
             Some(2)
         );
+        assert_eq!(
+            retry_policy_check
+                .pointer("/owner")
+                .and_then(|value| value.as_str()),
+            Some("retry-policy")
+        );
+        assert_eq!(
+            retry_policy_check
+                .pointer("/severity")
+                .and_then(|value| value.as_str()),
+            Some("blocker")
+        );
+        assert_eq!(
+            retry_policy_check
+                .pointer("/required_evidence/0")
+                .and_then(|value| value.as_str()),
+            Some("connector_remote_contract.retry")
+        );
+        assert_eq!(
+            retry_policy_check
+                .pointer("/policy_summary")
+                .and_then(|value| value.as_str()),
+            Some("retry_policy_bound summary")
+        );
 
         let over_budget_status = serde_json::json!({
             "current": true,
@@ -11373,6 +11454,7 @@ mod tests {
             true,
             &remote_target,
             &remote_contract,
+            &admission.check_registry,
         );
         let over_budget_retry_check = over_budget_checks
             .iter()
@@ -12516,7 +12598,11 @@ mod tests {
             "writer_blockers": ["provider_not_active", "connector_not_configured", "publish_not_supported"],
             "checks": [{
                 "name": "remote_write_contract_ready",
-                "passed": false
+                "passed": false,
+                "owner": "remote-contract",
+                "severity": "blocker",
+                "required_evidence": ["connector_writer_adapter", "connector_remote_contract"],
+                "policy_summary": "Remote writer/readback contract must be ready."
             }],
             "decision": {
                 "admissible": false,
@@ -12550,6 +12636,12 @@ mod tests {
                 .pointer("/checks/0/name")
                 .and_then(|value| value.as_str()),
             Some("remote_write_contract_ready")
+        );
+        assert_eq!(
+            compact
+                .pointer("/checks/0/owner")
+                .and_then(|value| value.as_str()),
+            Some("remote-contract")
         );
         assert_eq!(
             compact

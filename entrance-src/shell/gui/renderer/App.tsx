@@ -651,6 +651,10 @@ type AdmissionCheck = {
   name: string;
   passed: boolean;
   summary?: string | null;
+  severity?: string | null;
+  owner?: string | null;
+  required_evidence?: string[] | null;
+  policy_summary?: string | null;
 };
 type IssueMirrorAdmissionReport = {
   schema_version: string;
@@ -2082,7 +2086,15 @@ export default function App() {
     checks
       ?.map((check) => {
         const status = check.passed ? "ok" : "blocked";
-        return `${status} ${check.name}${check.summary ? `: ${check.summary}` : ""}`;
+        const owner = check.owner ? ` (${check.owner})` : "";
+        const severity = check.severity ? ` ${check.severity}` : "";
+        const evidence = check.required_evidence?.length
+          ? ` evidence ${check.required_evidence.join(", ")}`
+          : "";
+        const policy = check.policy_summary ? ` policy ${check.policy_summary}` : "";
+        return `${status}${severity} ${check.name}${owner}${evidence}${policy}${
+          check.summary ? `: ${check.summary}` : ""
+        }`;
       })
       .join(" | ") ?? "";
   const connectorCheckTone = (checks?: AdmissionCheck[] | null) =>

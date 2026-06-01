@@ -89,8 +89,10 @@ required worker receipt fields, role binding, connector retry budgets, and the
 connector admission required-check contract. The compact policy and connector
 registry surfaces include both the `required_checks` compatibility list and a
 structured `check_registry` with each check's severity, owner, required evidence,
-and summary. `hive loop policies <id>` shows the active policy rows loaded into
-a specific loop contract.
+and summary. Actual connector admission check rows inherit the same metadata so
+CLI and Panel surfaces can tie failed checks back to their policy owner and
+evidence contract. `hive loop policies <id>` shows the active policy rows loaded
+into a specific loop contract.
 `hive loop trace <id>` returns the compact round-aware health view, including
 the evaluator score vector and current-round worker duration/timeout totals,
 without packet transcripts.
@@ -218,9 +220,10 @@ contracts. Connector admission previews include a `retry_policy_bound` check tha
 compares observed write/readback attempt counts with that active budget before a
 remote issue surface can be admitted, and `hive policy registry --compact`
 exposes the same check name inside the connector admission `required_checks`
-compatibility list plus the structured `check_registry` contract. Production
-drift handling, richer Linear state mapping, real-token coverage, and
-configurable/adaptive retry policy are still pending.
+compatibility list plus the structured `check_registry` contract; actual
+admission check rows include the matched owner, severity, required evidence, and
+policy summary. Production drift handling, richer Linear state mapping,
+real-token coverage, and configurable/adaptive retry policy are still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

@@ -49,7 +49,8 @@ receipt metadata, the connector admission required-check contract, and the
 GitHub/Linear remote connector retry budget. Connector admission keeps
 `required_checks` as the compatibility list and exposes a structured
 `check_registry` with each check's severity, owner, required evidence, and
-summary.
+summary. Runtime admission check rows inherit that registry metadata so a failed
+check carries both observed details and the policy owner/evidence contract.
 Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
@@ -206,9 +207,10 @@ observed write/readback attempt counts with that active budget before a remote
 issue surface can be admitted. `hive policy registry --compact` and
 `hive connector registry --compact` expose the same connector admission
 `required_checks` list and structured `check_registry` so Panel chips and CLI
-previews can be checked against the policy surface. Production drift handling,
-richer Linear state mapping, real-token coverage, and configurable/adaptive retry
-policy are still pending.
+previews can be checked against the policy surface. Actual admission check rows
+include the matched owner, severity, required evidence, and policy summary.
+Production drift handling, richer Linear state mapping, real-token coverage, and
+configurable/adaptive retry policy are still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 
