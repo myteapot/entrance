@@ -52,6 +52,66 @@ const CONNECTOR_ADMISSION_REQUIRED_CHECKS: &[&str] = &[
     "retry_policy_bound",
 ];
 
+struct ConnectorAdmissionCheckSpecDef {
+    name: &'static str,
+    severity: &'static str,
+    owner: &'static str,
+    required_evidence: &'static [&'static str],
+    summary: &'static str,
+}
+
+const CONNECTOR_ADMISSION_CHECK_REGISTRY: &[ConnectorAdmissionCheckSpecDef] = &[
+    ConnectorAdmissionCheckSpecDef {
+        name: "provider_supported",
+        severity: "blocker",
+        owner: "connector-registry",
+        required_evidence: &["connector_registry.provider"],
+        summary: "Connector provider must be registered for the issue surface.",
+    },
+    ConnectorAdmissionCheckSpecDef {
+        name: "provider_admission_ready",
+        severity: "blocker",
+        owner: "provider-admission",
+        required_evidence: &["connector_registry.provider_admission"],
+        summary: "Provider admission policy must be ready and blocker-free.",
+    },
+    ConnectorAdmissionCheckSpecDef {
+        name: "mirror_current",
+        severity: "blocker",
+        owner: "mirror-ledger",
+        required_evidence: &["issue_mirror_status.current", "issue_mirror_sync_receipt"],
+        summary: "Local issue/status/comment mirror must be current before admission.",
+    },
+    ConnectorAdmissionCheckSpecDef {
+        name: "readback_checks_passed",
+        severity: "blocker",
+        owner: "readback-ledger",
+        required_evidence: &["issue_mirror_status.checks"],
+        summary: "Readback checks must pass for the connector mirror.",
+    },
+    ConnectorAdmissionCheckSpecDef {
+        name: "remote_write_contract_ready",
+        severity: "blocker",
+        owner: "remote-contract",
+        required_evidence: &["connector_writer_adapter", "connector_remote_contract"],
+        summary: "Remote writer/readback contract must be ready when the provider needs a remote issue API.",
+    },
+    ConnectorAdmissionCheckSpecDef {
+        name: "remote_target_valid",
+        severity: "blocker",
+        owner: "remote-target",
+        required_evidence: &["connector_remote_target"],
+        summary: "Review surface must parse as a provider-specific remote issue target when required.",
+    },
+    ConnectorAdmissionCheckSpecDef {
+        name: "retry_policy_bound",
+        severity: "blocker",
+        owner: "retry-policy",
+        required_evidence: &["connector_remote_contract.retry", "connector_remote_diagnostics"],
+        summary: "Observed remote attempts must stay within the active retry policy budget.",
+    },
+];
+
 #[derive(Debug, Clone, Copy)]
 struct GateSpec {
     name: &'static str,
@@ -171,7 +231,17 @@ pub struct ConnectorAdmissionPolicySpec {
     pub check: String,
     pub required_receipts: Vec<String>,
     pub required_checks: Vec<String>,
+    pub check_registry: Vec<ConnectorAdmissionCheckSpec>,
     pub dry_run_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorAdmissionCheckSpec {
+    pub name: String,
+    pub severity: String,
+    pub owner: String,
+    pub required_evidence: Vec<String>,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +255,7 @@ pub struct ConnectorProviderAdmissionSpec {
     pub check: String,
     pub required_receipts: Vec<String>,
     pub required_checks: Vec<String>,
+    pub check_registry: Vec<ConnectorAdmissionCheckSpec>,
     pub blockers: Vec<String>,
     pub dry_run_command: String,
 }
@@ -1175,8 +1246,26 @@ fn connector_admission_policy_spec() -> ConnectorAdmissionPolicySpec {
             .iter()
             .map(|check| (*check).to_string())
             .collect(),
+        check_registry: connector_admission_check_registry(),
         dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
     }
+}
+
+fn connector_admission_check_registry() -> Vec<ConnectorAdmissionCheckSpec> {
+    CONNECTOR_ADMISSION_CHECK_REGISTRY
+        .iter()
+        .map(|check| ConnectorAdmissionCheckSpec {
+            name: check.name.to_string(),
+            severity: check.severity.to_string(),
+            owner: check.owner.to_string(),
+            required_evidence: check
+                .required_evidence
+                .iter()
+                .map(|evidence| (*evidence).to_string())
+                .collect(),
+            summary: check.summary.to_string(),
+        })
+        .collect()
 }
 
 pub fn connector_retry_policy_for_provider(provider: &str) -> Option<ConnectorRetryPolicySpec> {
@@ -1363,6 +1452,7 @@ fn connector_provider_admission_spec(
         check: admission.check.clone(),
         required_receipts: admission.required_receipts.clone(),
         required_checks: admission.required_checks.clone(),
+        check_registry: admission.check_registry.clone(),
         blockers,
         dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
     }
@@ -7015,6 +7105,30 @@ mod tests {
             .required_checks
             .iter()
             .any(|check| check == "retry_policy_bound"));
+        assert_eq!(
+            registry
+                .connector
+                .admission
+                .check_registry
+                .iter()
+                .map(|check| check.name.as_str())
+                .collect::<Vec<_>>()
+                .as_slice(),
+            CONNECTOR_ADMISSION_REQUIRED_CHECKS
+        );
+        let retry_check = registry
+            .connector
+            .admission
+            .check_registry
+            .iter()
+            .find(|check| check.name == "retry_policy_bound")
+            .expect("retry policy check should be structured");
+        assert_eq!(retry_check.severity, "blocker");
+        assert_eq!(retry_check.owner, "retry-policy");
+        assert!(retry_check
+            .required_evidence
+            .iter()
+            .any(|evidence| evidence == "connector_remote_contract.retry"));
         let github_retry = registry
             .connector
             .retry
@@ -7042,6 +7156,16 @@ mod tests {
             .iter()
             .all(|admission| admission.required_checks
                 == registry.connector.admission.required_checks));
+        assert!(connector_registry
+            .provider_admissions
+            .iter()
+            .all(|admission| admission
+                .check_registry
+                .iter()
+                .map(|check| check.name.as_str())
+                .collect::<Vec<_>>()
+                .as_slice()
+                == CONNECTOR_ADMISSION_REQUIRED_CHECKS));
         assert_eq!(
             registry.runtime.worker.default_timeout_secs,
             DEFAULT_WORKER_TIMEOUT_SECS

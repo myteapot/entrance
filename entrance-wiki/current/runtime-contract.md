@@ -46,7 +46,10 @@ still matches the packet writer role.
 runtime worker policy, and connector retry policy: supported runtimes, sandbox
 mode, timeout and attempt bounds, env overrides, role binding, required worker
 receipt metadata, the connector admission required-check contract, and the
-GitHub/Linear remote connector retry budget.
+GitHub/Linear remote connector retry budget. Connector admission keeps
+`required_checks` as the compatibility list and exposes a structured
+`check_registry` with each check's severity, owner, required evidence, and
+summary.
 Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
@@ -202,9 +205,10 @@ Connector admission previews include a `retry_policy_bound` check that compares
 observed write/readback attempt counts with that active budget before a remote
 issue surface can be admitted. `hive policy registry --compact` and
 `hive connector registry --compact` expose the same connector admission
-`required_checks` list so Panel chips and CLI previews can be checked against the
-policy surface. Production drift handling, richer Linear state mapping,
-real-token coverage, and configurable/adaptive retry policy are still pending.
+`required_checks` list and structured `check_registry` so Panel chips and CLI
+previews can be checked against the policy surface. Production drift handling,
+richer Linear state mapping, real-token coverage, and configurable/adaptive retry
+policy are still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 

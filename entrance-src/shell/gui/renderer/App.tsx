@@ -223,6 +223,7 @@ type ConnectorRegistry = {
     check: string;
     required_receipts: string[];
     required_checks: string[];
+    check_registry?: ConnectorAdmissionCheckSpec[];
     dry_run_command: string;
   };
   provider_admissions: ConnectorProviderAdmission[];
@@ -255,8 +256,16 @@ type ConnectorProviderAdmission = {
   check: string;
   required_receipts: string[];
   required_checks: string[];
+  check_registry?: ConnectorAdmissionCheckSpec[];
   blockers: string[];
   dry_run_command: string;
+};
+type ConnectorAdmissionCheckSpec = {
+  name: string;
+  severity: string;
+  owner: string;
+  required_evidence: string[];
+  summary: string;
 };
 
 type ConnectorRemoteContract = {
@@ -2118,11 +2127,22 @@ export default function App() {
     return `${provider.notes} Admission blockers: ${admission.blockers.join(", ")}`;
   };
   const connectorAdmissionCheckContract = () => connectorRegistry()?.admission.required_checks ?? [];
+  const connectorAdmissionCheckRegistry = () => connectorRegistry()?.admission.check_registry ?? [];
   const connectorAdmissionCheckContractLabel = () => {
-    const checks = connectorAdmissionCheckContract();
-    return checks.length ? `${checks.length} checks` : "checks pending";
+    const checks = connectorAdmissionCheckRegistry();
+    if (checks.length) return `${checks.length} checks`;
+    const fallback = connectorAdmissionCheckContract();
+    return fallback.length ? `${fallback.length} checks` : "checks pending";
+  };
+  const connectorAdmissionCheckSpecTitle = (check: ConnectorAdmissionCheckSpec) => {
+    const evidence = check.required_evidence.length
+      ? ` evidence ${check.required_evidence.join(", ")}`
+      : "";
+    return `${check.severity} ${check.name} (${check.owner})${evidence}: ${check.summary}`;
   };
   const connectorAdmissionCheckContractTitle = () => {
+    const specs = connectorAdmissionCheckRegistry();
+    if (specs.length) return specs.map(connectorAdmissionCheckSpecTitle).join(" | ");
     const checks = connectorAdmissionCheckContract();
     return checks.length ? checks.join(" | ") : "Connector admission check contract pending";
   };

@@ -8,12 +8,13 @@ use std::{
 use anyhow::{bail, Context, Result};
 use entrance_core::{HiveCommentCreate, HiveLoopEvidenceCreate};
 use entrance_hive::{
-    connector_retry_policy_for_provider, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
-    ConnectorRegistryReport, ConnectorRetryPolicySpec, HiveCallbackRequest, HiveDispatchRequest,
-    HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopRunRequest,
-    IssueAction, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport,
-    IssueRunRequest, PolicyGateSpec, PolicyRegistryReport, ReviewDecision,
-    CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+    connector_retry_policy_for_provider, ConnectorAdmissionCheckSpec,
+    ConnectorProviderAdmissionSpec, ConnectorProviderSpec, ConnectorRegistryReport,
+    ConnectorRetryPolicySpec, HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck,
+    HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard,
+    IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport, IssueRunRequest, PolicyGateSpec,
+    PolicyRegistryReport, ReviewDecision, CONNECTOR_MIRROR_RECEIPT_GATE,
+    CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
 };
 use reqwest::Method;
 use sha2::{Digest, Sha256};
@@ -571,6 +572,7 @@ fn compact_policy_registry(report: &PolicyRegistryReport) -> serde_json::Value {
                 "check": report.connector.admission.check.as_str(),
                 "required_receipts": report.connector.admission.required_receipts.iter().map(String::as_str).collect::<Vec<_>>(),
                 "required_checks": report.connector.admission.required_checks.iter().map(String::as_str).collect::<Vec<_>>(),
+                "check_registry": report.connector.admission.check_registry.iter().map(compact_connector_admission_check_spec).collect::<Vec<_>>(),
                 "dry_run_command": report.connector.admission.dry_run_command.as_str()
             },
             "retry": report.connector.retry.iter().map(compact_connector_retry_policy).collect::<Vec<_>>()
@@ -605,6 +607,16 @@ fn compact_connector_retry_policy(policy: &ConnectorRetryPolicySpec) -> serde_js
         "rate_limit_http_statuses": policy.rate_limit_http_statuses.clone(),
         "rate_limit_headers": policy.rate_limit_headers.iter().map(String::as_str).collect::<Vec<_>>(),
         "no_immediate_retry_checks": policy.no_immediate_retry_checks.iter().map(String::as_str).collect::<Vec<_>>()
+    })
+}
+
+fn compact_connector_admission_check_spec(spec: &ConnectorAdmissionCheckSpec) -> serde_json::Value {
+    serde_json::json!({
+        "name": spec.name.as_str(),
+        "severity": spec.severity.as_str(),
+        "owner": spec.owner.as_str(),
+        "required_evidence": spec.required_evidence.iter().map(String::as_str).collect::<Vec<_>>(),
+        "summary": spec.summary.as_str()
     })
 }
 
@@ -664,6 +676,7 @@ fn compact_connector_registry(report: &ConnectorRegistryReport) -> serde_json::V
             "check": report.admission.check.as_str(),
             "required_receipts": report.admission.required_receipts.iter().map(String::as_str).collect::<Vec<_>>(),
             "required_checks": report.admission.required_checks.iter().map(String::as_str).collect::<Vec<_>>(),
+            "check_registry": report.admission.check_registry.iter().map(compact_connector_admission_check_spec).collect::<Vec<_>>(),
             "dry_run_command": report.admission.dry_run_command.as_str()
         }
     })
@@ -713,6 +726,7 @@ fn compact_connector_provider_admission(
         "check": admission.check.as_str(),
         "required_receipts": admission.required_receipts.iter().map(String::as_str).collect::<Vec<_>>(),
         "required_checks": admission.required_checks.iter().map(String::as_str).collect::<Vec<_>>(),
+        "check_registry": admission.check_registry.iter().map(compact_connector_admission_check_spec).collect::<Vec<_>>(),
         "blockers": admission.blockers.iter().map(String::as_str).collect::<Vec<_>>(),
         "dry_run_command": admission.dry_run_command.as_str()
     })
@@ -745,6 +759,7 @@ fn compact_issue_connector_admission_preview(report: &serde_json::Value) -> serd
         "gate": report.pointer("/policy/gate").and_then(|value| value.as_str()),
         "expected_object_kind": report.pointer("/policy/expected_object_kind").and_then(|value| value.as_str()),
         "required_checks": report.pointer("/policy/required_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "check_registry": report.pointer("/policy/check_registry").cloned().unwrap_or_else(|| serde_json::json!([])),
         "commands": report.pointer("/commands")
     })
 }
@@ -1237,7 +1252,8 @@ pub(crate) fn issue_connector_admission_preview(
             "expected_object_kind": registry.admission.expected_object_kind,
             "check": registry.admission.check,
             "required_receipts": registry.admission.required_receipts,
-            "required_checks": registry.admission.required_checks
+            "required_checks": registry.admission.required_checks,
+            "check_registry": registry.admission.check_registry
         },
         "decision": {
             "admissible": admissible,
@@ -9674,9 +9690,9 @@ mod tests {
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
-        ConnectorAdmissionPolicySpec, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
-        ConnectorRegistryReport, HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopDoctorCounts,
-        IssueAction, IssueCard, IssueDoctorSummary, IssueMirrorReport,
+        ConnectorAdmissionCheckSpec, ConnectorAdmissionPolicySpec, ConnectorProviderAdmissionSpec,
+        ConnectorProviderSpec, ConnectorRegistryReport, HiveLoopAuditCheck, HiveLoopAuditReport,
+        HiveLoopDoctorCounts, IssueAction, IssueCard, IssueDoctorSummary, IssueMirrorReport,
     };
 
     fn test_issue_action(action: &str, label: &str, command: &str) -> IssueAction {
@@ -9761,6 +9777,7 @@ mod tests {
                 check: "external_receipt_current".to_string(),
                 required_receipts: vec!["mirror_file_current".to_string()],
                 required_checks: test_connector_admission_required_checks(),
+                check_registry: test_connector_admission_check_registry(),
                 dry_run_command: "entrance hive issue connector-admission <id> --compact"
                     .to_string(),
             },
@@ -9782,6 +9799,31 @@ mod tests {
         .collect()
     }
 
+    fn test_connector_admission_check_registry() -> Vec<ConnectorAdmissionCheckSpec> {
+        test_connector_admission_required_checks()
+            .into_iter()
+            .map(|name| ConnectorAdmissionCheckSpec {
+                owner: if name == "retry_policy_bound" {
+                    "retry-policy"
+                } else {
+                    "test-owner"
+                }
+                .to_string(),
+                severity: "blocker".to_string(),
+                required_evidence: if name == "retry_policy_bound" {
+                    vec![
+                        "connector_remote_contract.retry".to_string(),
+                        "connector_remote_diagnostics".to_string(),
+                    ]
+                } else {
+                    vec![format!("{name}.evidence")]
+                },
+                summary: format!("{name} summary"),
+                name,
+            })
+            .collect()
+    }
+
     #[test]
     fn compact_connector_registry_exposes_admission_check_contract() {
         let registry = test_connector_registry();
@@ -9798,6 +9840,18 @@ mod tests {
                 .pointer("/provider_admissions/0/required_checks/6")
                 .and_then(|value| value.as_str()),
             Some("retry_policy_bound")
+        );
+        assert_eq!(
+            compact
+                .pointer("/admission/check_registry/6/owner")
+                .and_then(|value| value.as_str()),
+            Some("retry-policy")
+        );
+        assert_eq!(
+            compact
+                .pointer("/provider_admissions/0/check_registry/6/required_evidence/0")
+                .and_then(|value| value.as_str()),
+            Some("connector_remote_contract.retry")
         );
     }
 
@@ -9826,6 +9880,7 @@ mod tests {
             check: "external_receipt_current".to_string(),
             required_receipts: vec!["mirror_file_current".to_string()],
             required_checks: test_connector_admission_required_checks(),
+            check_registry: test_connector_admission_check_registry(),
             blockers,
             dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
         }
@@ -12470,7 +12525,8 @@ mod tests {
             "policy": {
                 "gate": "connector_mirror_receipt",
                 "expected_object_kind": "ISSUE_CONNECTOR_MIRROR_RECEIPT",
-                "required_checks": test_connector_admission_required_checks()
+                "required_checks": test_connector_admission_required_checks(),
+                "check_registry": test_connector_admission_check_registry()
             },
             "commands": {}
         });
@@ -12506,6 +12562,12 @@ mod tests {
                 .pointer("/required_checks/6")
                 .and_then(|value| value.as_str()),
             Some("retry_policy_bound")
+        );
+        assert_eq!(
+            compact
+                .pointer("/check_registry/6/owner")
+                .and_then(|value| value.as_str()),
+            Some("retry-policy")
         );
     }
 
