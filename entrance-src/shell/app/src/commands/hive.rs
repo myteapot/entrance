@@ -11,9 +11,9 @@ use entrance_hive::{
     connector_retry_policy_for_provider, ConnectorAdmissionCheckSpec,
     ConnectorProviderAdmissionSpec, ConnectorProviderSpec, ConnectorRegistryReport,
     ConnectorRetryPolicySpec, HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck,
-    HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard,
-    IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport, IssueRunRequest, PolicyGateSpec,
-    PolicyRegistryReport, ReviewDecision, CONNECTOR_MIRROR_RECEIPT_GATE,
+    HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopReport, HiveLoopRunRequest, IssueAction,
+    IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport, IssueRunRequest,
+    PolicyGateSpec, PolicyRegistryReport, ReviewDecision, CONNECTOR_MIRROR_RECEIPT_GATE,
     CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
 };
 use reqwest::Method;
@@ -51,6 +51,7 @@ const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
 const POLICY_SCHEMA_VERSION: &str = "entrance.hive.policy.v1";
+const LOOP_DEMO_COMPACT_SCHEMA_VERSION: &str = "entrance.hive.loop_demo.compact.v1";
 const GITHUB_COMMENTS_MAX_PAGES: usize = 20;
 const GITHUB_COMMENT_IDEMPOTENCY_PREFIX: &str = "<!-- entrance-idempotency-key:";
 const GITHUB_COMMENT_IDEMPOTENCY_SUFFIX: &str = "-->";
@@ -76,7 +77,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop demo [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -249,45 +250,40 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             }
         }
         [scope, action, rest @ ..] if scope == "loop" && action == "start" => {
-            let created = services
-                .hive
-                .loop_create(loop_create_request_from_flags(rest));
-            let created = created?;
-            let loop_id = created.contract.id;
-            let issue_id = created
-                .issues
-                .first()
-                .map(|card| card.issue.id)
-                .with_context(|| {
-                    format!("hive loop start created loop `{loop_id}` without a linked issue")
-                })?;
-            let run_report = services.hive.issue_run(IssueRunRequest {
-                issue_id,
-                runtime: flag_value(rest, "--runtime").map(ToOwned::to_owned),
-                decision: flag_value(rest, "--decision").map(ToOwned::to_owned),
-                worker_timeout_secs: flag_value(rest, "--worker-timeout-secs")
-                    .map(str::parse)
-                    .transpose()?,
-                worker_attempts: flag_value(rest, "--worker-attempts")
-                    .map(str::parse)
-                    .transpose()?,
-                retry: false,
-                author: flag_value(rest, "--author").unwrap_or("human").to_string(),
-                body: flag_value(rest, "--body").map(ToOwned::to_owned),
-            })?;
-            let card = services.hive.issue_report(issue_id)?;
-            let detail = compact_issue_detail_with_connector_status(services, &card);
+            let outcome =
+                run_issue_bound_loop(services, loop_create_request_from_flags(rest), rest)?;
             if flag_present(rest, "--compact") {
-                print_json(&compact_loop_start_summary(&detail))
+                print_json(&compact_loop_start_summary(&outcome.detail))
             } else {
                 print_json(&serde_json::json!({
                     "schema_version": "entrance.hive.loop_start.v1",
-                    "loop_id": loop_id,
-                    "issue_id": issue_id,
-                    "created": created,
-                    "run": run_report,
-                    "doctor": services.hive.loop_doctor(loop_id)?,
-                    "issue": card
+                    "loop_id": outcome.loop_id,
+                    "issue_id": outcome.issue_id,
+                    "created": outcome.created,
+                    "run": outcome.run,
+                    "doctor": services.hive.loop_doctor(outcome.loop_id)?,
+                    "issue": outcome.card
+                }))
+            }
+        }
+        [scope, action, rest @ ..] if scope == "loop" && action == "demo" => {
+            let outcome = run_issue_bound_loop(services, loop_demo_request_from_flags(rest), rest)?;
+            let loop_summary = compact_loop_start_summary(&outcome.detail);
+            if flag_present(rest, "--compact") {
+                print_json(&compact_loop_demo_summary(services, &loop_summary))
+            } else {
+                print_json(&serde_json::json!({
+                    "schema_version": "entrance.hive.loop_demo.v1",
+                    "demo": compact_loop_demo_context(services),
+                    "loop_start": {
+                        "loop_id": outcome.loop_id,
+                        "issue_id": outcome.issue_id,
+                        "created": outcome.created,
+                        "run": outcome.run,
+                        "doctor": services.hive.loop_doctor(outcome.loop_id)?,
+                        "issue": outcome.card
+                    },
+                    "compact": compact_loop_demo_summary(services, &loop_summary)
                 }))
             }
         }
@@ -476,6 +472,55 @@ fn flag_present(args: &[String], flag: &str) -> bool {
     args.iter().any(|value| value == flag)
 }
 
+struct LoopStartOutcome {
+    loop_id: i64,
+    issue_id: i64,
+    created: HiveLoopReport,
+    run: HiveLoopReport,
+    card: IssueCard,
+    detail: serde_json::Value,
+}
+
+fn run_issue_bound_loop(
+    services: &AppServices,
+    request: HiveLoopCreateRequest,
+    rest: &[String],
+) -> Result<LoopStartOutcome> {
+    let created = services.hive.loop_create(request)?;
+    let loop_id = created.contract.id;
+    let issue_id = created
+        .issues
+        .first()
+        .map(|card| card.issue.id)
+        .with_context(|| {
+            format!("hive loop start created loop `{loop_id}` without a linked issue")
+        })?;
+    let run = services.hive.issue_run(IssueRunRequest {
+        issue_id,
+        runtime: flag_value(rest, "--runtime").map(ToOwned::to_owned),
+        decision: flag_value(rest, "--decision").map(ToOwned::to_owned),
+        worker_timeout_secs: flag_value(rest, "--worker-timeout-secs")
+            .map(str::parse)
+            .transpose()?,
+        worker_attempts: flag_value(rest, "--worker-attempts")
+            .map(str::parse)
+            .transpose()?,
+        retry: false,
+        author: flag_value(rest, "--author").unwrap_or("human").to_string(),
+        body: flag_value(rest, "--body").map(ToOwned::to_owned),
+    })?;
+    let card = services.hive.issue_report(issue_id)?;
+    let detail = compact_issue_detail_with_connector_status(services, &card);
+    Ok(LoopStartOutcome {
+        loop_id,
+        issue_id,
+        created,
+        run,
+        card,
+        detail,
+    })
+}
+
 fn loop_create_request_from_flags(rest: &[String]) -> HiveLoopCreateRequest {
     let title = flag_value(rest, "--title").unwrap_or("Untitled loop");
     let goal = flag_value(rest, "--goal").unwrap_or(title);
@@ -497,6 +542,47 @@ fn loop_create_request_from_flags(rest: &[String]) -> HiveLoopCreateRequest {
     }
 }
 
+fn loop_demo_request_from_flags(rest: &[String]) -> HiveLoopCreateRequest {
+    HiveLoopCreateRequest {
+        title: flag_value(rest, "--title")
+            .unwrap_or("Entrance MVP demo")
+            .to_string(),
+        goal: flag_value(rest, "--goal")
+            .unwrap_or(
+                "Run the Entrance Explorer -> Doer -> Evaluator loop and expose it on the issue/status/comment panel.",
+            )
+            .to_string(),
+        boundary: flag_value(rest, "--boundary")
+            .unwrap_or(
+                "Use the local Hive SQLite ledger, typed receipts, compact CLI output, and the local Panel surface.",
+            )
+            .to_string(),
+        approach_space: csv_values_or_default(
+            flag_value(rest, "--approach"),
+            &[
+                "Compile the natural-language goal into a typed candidate",
+                "Execute only the admitted candidate",
+                "Evaluate the evidence with keep/reject/block gates",
+            ],
+        ),
+        eval_space: csv_values_or_default(
+            flag_value(rest, "--eval"),
+            &[
+                "Explorer, Doer, and Evaluator each produce role receipts",
+                "Admissions bind packets to policy gates",
+                "Panel shows issue status, comments, evidence, verdict, and recovery actions",
+            ],
+        ),
+        review_surface: flag_value(rest, "--review-surface")
+            .unwrap_or("local-hive-panel")
+            .to_string(),
+        autonomy_level: flag_value(rest, "--autonomy")
+            .unwrap_or("run-approved-candidates")
+            .to_string(),
+        runtime: flag_value(rest, "--runtime").unwrap_or("codex").to_string(),
+    }
+}
+
 fn csv_values(value: Option<&str>) -> Vec<String> {
     value
         .unwrap_or_default()
@@ -505,6 +591,15 @@ fn csv_values(value: Option<&str>) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn csv_values_or_default(value: Option<&str>, default: &[&str]) -> Vec<String> {
+    let values = csv_values(value);
+    if values.is_empty() {
+        default.iter().map(|value| (*value).to_string()).collect()
+    } else {
+        values
+    }
 }
 
 #[cfg(test)]
@@ -691,6 +786,68 @@ fn compact_loop_start_summary(issue_detail: &serde_json::Value) -> serde_json::V
             "board": "entrance hive issue list --compact",
             "retry": retry_command
         }
+    })
+}
+
+fn compact_loop_demo_summary(
+    services: &AppServices,
+    loop_summary: &serde_json::Value,
+) -> serde_json::Value {
+    let complete = loop_summary
+        .pointer("/complete")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let health = loop_summary
+        .pointer("/health")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    serde_json::json!({
+        "schema_version": LOOP_DEMO_COMPACT_SCHEMA_VERSION,
+        "ready": complete && health == "ok",
+        "demo": compact_loop_demo_context(services),
+        "loop": loop_summary,
+        "commands": {
+            "board": "entrance hive issue list --compact",
+            "show": loop_summary.pointer("/commands/show").cloned().unwrap_or(serde_json::Value::Null),
+            "doctor": loop_summary.pointer("/commands/doctor").cloned().unwrap_or(serde_json::Value::Null),
+            "retry": loop_summary.pointer("/commands/retry").cloned().unwrap_or(serde_json::Value::Null)
+        },
+        "panel": {
+            "api_url": format!("http://127.0.0.1:{}", services.kernel.config.hive.http_port),
+            "daemon": {
+                "command": "entrance daemon http",
+                "env": {
+                    "ENTRANCE_APP_ROOT": services.kernel.root.display().to_string()
+                }
+            },
+            "dev_server": {
+                "command": format!("VITE_ENTRANCE_HTTP_URL=http://127.0.0.1:{} pnpm exec vite --config shell/gui/vite.config.ts --host 127.0.0.1 --port 1420", services.kernel.config.hive.http_port),
+                "cwd": "entrance-src",
+                "url": "http://127.0.0.1:1420/"
+            }
+        },
+        "next_actions": if complete && health == "ok" {
+            serde_json::json!([
+                "entrance daemon http",
+                "open the Panel Issue board",
+                "entrance hive issue list --compact"
+            ])
+        } else {
+            loop_summary
+                .pointer("/next_actions")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]))
+        }
+    })
+}
+
+fn compact_loop_demo_context(services: &AppServices) -> serde_json::Value {
+    serde_json::json!({
+        "name": "Entrance local agent-loop MVP",
+        "app_root": services.kernel.root.display().to_string(),
+        "review_surface": "local-hive-panel",
+        "loop": "Explorer -> Doer -> Evaluator",
+        "surface": "issue/status/comment"
     })
 }
 
@@ -10171,8 +10328,8 @@ mod tests {
         default_issue_mirror_path_for_provider, digest_bytes, execute_github_remote_readback,
         execute_github_remote_write_plan, execute_linear_remote_write_plan, flag_present,
         flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
-        issue_mirror_sync_receipt_for_provider, mirror_payload, mirror_receipt_path,
-        MirrorFileDigest, CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION,
+        issue_mirror_sync_receipt_for_provider, loop_demo_request_from_flags, mirror_payload,
+        mirror_receipt_path, MirrorFileDigest, CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION,
         CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION, ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
@@ -10980,6 +11137,32 @@ mod tests {
         assert_eq!(flag_value(&args, "--compact"), None);
         assert!(flag_present(&args, "--compact"));
         assert!(!flag_present(&args, "--missing"));
+    }
+
+    #[test]
+    fn loop_demo_request_defaults_to_codex_panel_contract() {
+        let request = loop_demo_request_from_flags(&[]);
+
+        assert_eq!(request.title, "Entrance MVP demo");
+        assert_eq!(request.runtime, "codex");
+        assert_eq!(request.review_surface, "local-hive-panel");
+        assert!(request.goal.contains("Explorer -> Doer -> Evaluator"));
+        assert_eq!(request.approach_space.len(), 3);
+        assert_eq!(request.eval_space.len(), 3);
+    }
+
+    #[test]
+    fn loop_demo_request_accepts_runtime_and_eval_overrides() {
+        let args = vec![
+            "--runtime".to_string(),
+            "local".to_string(),
+            "--eval".to_string(),
+            "cli ok,panel ok".to_string(),
+        ];
+        let request = loop_demo_request_from_flags(&args);
+
+        assert_eq!(request.runtime, "local");
+        assert_eq!(request.eval_space, vec!["cli ok", "panel ok"]);
     }
 
     #[test]

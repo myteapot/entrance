@@ -8,6 +8,7 @@ Run all commands from `entrance-src/`.
 cargo run -p entrance-app --bin entrance -- status
 cargo run -p entrance-app --bin entrance -- drawer summary
 cargo run -p entrance-app --bin entrance -- hive summary
+cargo run -p entrance-app --bin entrance -- hive loop demo --runtime codex --worker-timeout-secs 90 --worker-attempts 1 --compact
 cargo run -p entrance-app --bin entrance -- hive loop start --title "Local loop" --goal "Run the Hive loop MVP" --runtime codex --worker-timeout-secs 90 --worker-attempts 1 --compact
 cargo run -p entrance-app --bin entrance -- hive loop create --title "Local loop" --goal "Run the Hive loop MVP" --runtime codex --compact
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex
@@ -26,11 +27,15 @@ cargo run -p entrance-app --bin entrance -- hive issue decide 1 request-review -
 cargo run -p entrance-app --bin entrance -- launcher list
 ```
 
-`hive loop start` is the one-command MVP path: it creates the linked issue,
-runs the issue-first loop once, and returns a compact issue/Doctor/evidence
-outcome when `--compact` is present. Its compact recovery section exposes retry
-commands, failed checks, missing receipts, failed worker rows, attempt counts,
-timeouts, and retry exhaustion when the run does not complete. `hive loop run`
+`hive loop demo` is the default MVP bootstrap path: it fills in a demo contract,
+runs the issue-first `Explorer -> Doer -> Evaluator` loop with `codex` by
+default, and returns a compact outcome plus Panel startup hints when `--compact`
+is present. `hive loop start` is the custom one-command MVP path: it creates the
+linked issue, runs the issue-first loop once, and returns a compact
+issue/Doctor/evidence outcome when `--compact` is present. Its compact recovery
+section exposes retry commands, failed checks, missing receipts, failed worker
+rows, attempt counts, timeouts, and retry exhaustion when the run does not
+complete. `hive loop run`
 returns the local compiler trace for the round: policy rows, versioned typed
 packet envelopes, versioned admission receipts, evidence, and versioned verdict
 receipts.

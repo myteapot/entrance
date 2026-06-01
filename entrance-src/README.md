@@ -48,6 +48,7 @@ Task ledger for dispatch records, engine reports, callbacks, and review state.
 Local agent-loop MVP:
 
 ```powershell
+.\entrance.exe hive loop demo --runtime codex --worker-timeout-secs 90 --worker-attempts 1 --compact
 .\entrance.exe hive loop start --title "README loop" --goal "Run a constrained agent loop" --runtime codex --worker-timeout-secs 90 --worker-attempts 1 --compact
 .\entrance.exe hive loop create --title "README loop" --goal "Run a constrained agent loop" --runtime codex --compact
 .\entrance.exe hive loop run 1 --runtime codex
@@ -71,12 +72,15 @@ Local agent-loop MVP:
 .\entrance.exe hive issue comment 1 --body "Reviewed from the local panel"
 ```
 
-`hive loop start` is the one-command MVP path: it creates a linked issue loop,
-runs `Explorer -> Doer -> Evaluator`, then prints a compact outcome with issue,
-Doctor, evidence, stage, connector, recovery, and next-action summaries. When a
-worker times out, exhausts attempts, or misses receipts, the compact recovery
-section surfaces failed checks, missing receipts, failed worker rows, and a retry
-command directly. `hive loop run` records the same minimal compiler path in
+`hive loop demo` is the default MVP bootstrap path: it fills in a demo contract,
+runs `Explorer -> Doer -> Evaluator` with `codex` by default, then prints the
+compact loop outcome plus the daemon and dev-server commands needed to inspect
+the run in the local Panel. `hive loop start` is the custom one-command MVP path:
+it creates a linked issue loop, runs the same serial roles, then prints a compact
+outcome with issue, Doctor, evidence, stage, connector, recovery, and
+next-action summaries. When a worker times out, exhausts attempts, or misses
+receipts, the compact recovery section surfaces failed checks, missing receipts,
+failed worker rows, and a retry command directly. `hive loop run` records the same minimal compiler path in
 SQLite: active policies, versioned typed packets, receipt-aware admission gates,
 versioned admission receipts, stage evidence, and the versioned final verdict.
 Add `--compact` to `hive loop create` to print the linked issue card and next

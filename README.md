@@ -71,7 +71,7 @@ For current product usage, commands, and architecture, start with [`entrance-src
 
 ## Minimum Usable Unit
 
-当前仓库已经具备一个可运行的本地闭环原型：可以用 `hive loop start --runtime codex --compact` 一条命令创建并运行 issue 绑定的 loop，也可以拆成 `loop create` 和 `issue run` 两步；运行时会串行跑 `Explorer -> Doer -> Evaluator`，把 packet、admission、worker receipt、evidence、verdict 和 issue comment 写入 SQLite，并在本地 Panel/CLI 中查看状态。`loop start --compact` 同时给出失败恢复摘要，包括 retry command、failed checks、missing receipts 和 failed worker rows。
+当前仓库已经具备一个可运行的本地闭环原型：可以用 `hive loop demo --runtime codex --compact` 启动默认 MVP 演示，也可以用 `hive loop start --runtime codex --compact` 自定义创建并运行 issue 绑定的 loop，或拆成 `loop create` 和 `issue run` 两步；运行时会串行跑 `Explorer -> Doer -> Evaluator`，把 packet、admission、worker receipt、evidence、verdict 和 issue comment 写入 SQLite，并在本地 Panel/CLI 中查看状态。`loop demo --compact` 会给出 Panel 启动信息，`loop start --compact` 同时给出失败恢复摘要，包括 retry command、failed checks、missing receipts 和 failed worker rows。
 
 但如果把“最小可用单元”定义为 Entrance 这个项目真正想交付的东西，也就是一个通过外部 `issue(status) + comment` 面板约束 multi-agent loop 的 compiler/runtime 控制平面，那么当前还没有完成。还差这些最小闭环能力：
 
