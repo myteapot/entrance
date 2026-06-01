@@ -205,9 +205,11 @@ and Linear GraphQL operations expose attempt metadata, retry transient HTTP
 typed `remote_rate_limited` blockers without immediate retry; Linear also
 classifies GraphQL rate-limit errors as the same typed blocker. Connector status
 and queue reports include compact remote diagnostics so the Panel can show write
-or readback retry/rate-limit signals without opening raw CLI JSON. Production
-drift handling, richer Linear state mapping, real-token coverage, and broader
-retry policy are still pending.
+or readback retry/rate-limit signals without opening raw CLI JSON. The same
+GitHub/Linear retry budget is exposed through `hive policy registry --compact`
+and embedded in active remote contracts. Production drift handling, richer Linear
+state mapping, real-token coverage, and configurable/adaptive retry policy are
+still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

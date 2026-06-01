@@ -40,6 +40,8 @@ const DEFAULT_WORKER_TIMEOUT_SECS: u64 = 60;
 const MAX_WORKER_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_WORKER_ATTEMPTS: u64 = 1;
 const MAX_WORKER_ATTEMPTS: u64 = 3;
+const CONNECTOR_RETRY_MAX_ATTEMPTS: u64 = 2;
+const CONNECTOR_RETRY_BASE_BACKOFF_MS: u64 = 100;
 
 #[derive(Debug, Clone, Copy)]
 struct GateSpec {
@@ -101,6 +103,28 @@ pub struct WorkerPolicySpec {
     pub max_attempts: u64,
     pub attempts_env: String,
     pub required_receipt_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorPolicyRegistry {
+    pub schema_version: String,
+    pub admission: ConnectorAdmissionPolicySpec,
+    pub retry: Vec<ConnectorRetryPolicySpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorRetryPolicySpec {
+    pub schema_version: String,
+    pub provider: String,
+    pub transport: String,
+    pub applies_to: Vec<String>,
+    pub max_attempts: u64,
+    pub base_backoff_ms: u64,
+    pub backoff_strategy: String,
+    pub retryable_http_statuses: Vec<u16>,
+    pub rate_limit_http_statuses: Vec<u16>,
+    pub rate_limit_headers: Vec<String>,
+    pub no_immediate_retry_checks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,6 +271,7 @@ pub struct PolicyRegistryReport {
     pub schema_version: String,
     pub gates: Vec<PolicyGateSpec>,
     pub runtime: RuntimePolicyRegistry,
+    pub connector: ConnectorPolicyRegistry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -995,6 +1020,7 @@ pub fn policy_registry() -> PolicyRegistryReport {
             .map(PolicyGateSpec::from)
             .collect(),
         runtime: runtime_policy_registry(),
+        connector: connector_policy_registry(),
     }
 }
 
@@ -1004,9 +1030,6 @@ pub fn connector_registry() -> ConnectorRegistryReport {
 }
 
 pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorRegistryReport {
-    let connector_gate = gate_spec(CONNECTOR_MIRROR_RECEIPT_GATE)
-        .map(PolicyGateSpec::from)
-        .expect("connector mirror receipt gate should be registered");
     let mut file = ConnectorProviderSpec {
         name: "file".to_string(),
         display_name: "File Mirror".to_string(),
@@ -1098,17 +1121,7 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
         linear,
         github,
     ];
-    let admission = ConnectorAdmissionPolicySpec {
-        schema_version: POLICY_SCHEMA_VERSION.to_string(),
-        gate: connector_gate.name,
-        route_to: "external_issue_surface".to_string(),
-        expected_object_kind: connector_gate
-            .expected_object_kind
-            .unwrap_or_else(|| CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND.to_string()),
-        check: connector_gate.check,
-        required_receipts: connector_gate.required_receipts,
-        dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
-    };
+    let admission = connector_admission_policy_spec();
     let provider_admissions = providers
         .iter()
         .map(|provider| connector_provider_admission_spec(provider, &admission))
@@ -1119,6 +1132,108 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
         providers,
         admission,
         provider_admissions,
+    }
+}
+
+fn connector_policy_registry() -> ConnectorPolicyRegistry {
+    ConnectorPolicyRegistry {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        admission: connector_admission_policy_spec(),
+        retry: connector_retry_policies(),
+    }
+}
+
+fn connector_admission_policy_spec() -> ConnectorAdmissionPolicySpec {
+    let connector_gate = gate_spec(CONNECTOR_MIRROR_RECEIPT_GATE)
+        .expect("connector mirror receipt gate should be registered");
+    ConnectorAdmissionPolicySpec {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        gate: connector_gate.name.to_string(),
+        route_to: "external_issue_surface".to_string(),
+        expected_object_kind: connector_gate
+            .expected_object_kind
+            .unwrap_or(CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND)
+            .to_string(),
+        check: connector_gate.check.as_str().to_string(),
+        required_receipts: connector_gate
+            .required_receipts
+            .iter()
+            .map(|receipt| (*receipt).to_string())
+            .collect(),
+        dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
+    }
+}
+
+pub fn connector_retry_policy_for_provider(provider: &str) -> Option<ConnectorRetryPolicySpec> {
+    connector_retry_policies()
+        .into_iter()
+        .find(|policy| policy.provider == provider)
+}
+
+fn connector_retry_policies() -> Vec<ConnectorRetryPolicySpec> {
+    vec![
+        connector_retry_policy_spec(
+            "github",
+            "rest",
+            &[
+                "remote_issue_read",
+                "remote_issue_write",
+                "remote_comment_read",
+                "remote_comment_write",
+            ],
+            &[
+                "retry-after",
+                "x-ratelimit-remaining",
+                "x-ratelimit-reset",
+                "x-ratelimit-resource",
+            ],
+        ),
+        connector_retry_policy_spec(
+            "linear",
+            "graphql",
+            &[
+                "remote_issue_read",
+                "remote_issue_write",
+                "remote_comment_read",
+                "remote_comment_write",
+            ],
+            &[
+                "retry-after",
+                "x-ratelimit-remaining",
+                "x-ratelimit-reset",
+                "x-ratelimit-limit",
+                "x-rate-limit-remaining",
+                "x-rate-limit-reset",
+                "x-rate-limit-limit",
+            ],
+        ),
+    ]
+}
+
+fn connector_retry_policy_spec(
+    provider: &str,
+    transport: &str,
+    applies_to: &[&str],
+    rate_limit_headers: &[&str],
+) -> ConnectorRetryPolicySpec {
+    ConnectorRetryPolicySpec {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        provider: provider.to_string(),
+        transport: transport.to_string(),
+        applies_to: applies_to
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        max_attempts: CONNECTOR_RETRY_MAX_ATTEMPTS,
+        base_backoff_ms: CONNECTOR_RETRY_BASE_BACKOFF_MS,
+        backoff_strategy: "linear".to_string(),
+        retryable_http_statuses: vec![500, 502, 503, 504],
+        rate_limit_http_statuses: vec![403, 429],
+        rate_limit_headers: rate_limit_headers
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        no_immediate_retry_checks: vec!["remote_rate_limited".to_string()],
     }
 }
 
@@ -6862,6 +6977,36 @@ mod tests {
             .required_receipts
             .iter()
             .any(|receipt| receipt == "receipt_binding"));
+        assert_eq!(registry.connector.schema_version, POLICY_SCHEMA_VERSION);
+        assert_eq!(
+            registry.connector.admission.gate,
+            CONNECTOR_MIRROR_RECEIPT_GATE
+        );
+        assert_eq!(
+            registry.connector.admission.expected_object_kind,
+            CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND
+        );
+        let github_retry = registry
+            .connector
+            .retry
+            .iter()
+            .find(|policy| policy.provider == "github")
+            .expect("GitHub retry policy should be registered");
+        assert_eq!(github_retry.transport, "rest");
+        assert_eq!(github_retry.max_attempts, CONNECTOR_RETRY_MAX_ATTEMPTS);
+        assert_eq!(
+            github_retry.base_backoff_ms,
+            CONNECTOR_RETRY_BASE_BACKOFF_MS
+        );
+        assert!(github_retry.retryable_http_statuses.contains(&503));
+        let linear_retry = registry
+            .connector
+            .retry
+            .iter()
+            .find(|policy| policy.provider == "linear")
+            .expect("Linear retry policy should be registered");
+        assert_eq!(linear_retry.transport, "graphql");
+        assert!(linear_retry.rate_limit_http_statuses.contains(&429));
         assert_eq!(
             registry.runtime.worker.default_timeout_secs,
             DEFAULT_WORKER_TIMEOUT_SECS

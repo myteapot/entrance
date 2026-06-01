@@ -16,8 +16,9 @@ pub use dispatch::DispatchSummary;
 pub use engine::{EngineEvent, EngineReport};
 pub use http::{HiveCallback, HiveCallbackRequest};
 pub use loop_control::{
-    ConnectorAdmissionPolicySpec, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
-    ConnectorRegistryReport, HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest,
+    connector_retry_policy_for_provider, ConnectorAdmissionPolicySpec, ConnectorPolicyRegistry,
+    ConnectorProviderAdmissionSpec, ConnectorProviderSpec, ConnectorRegistryReport,
+    ConnectorRetryPolicySpec, HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest,
     HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport,
     HiveLoopReport, HiveLoopRunRequest, HiveLoopTraceReport, IssueAction, IssueCard,
     IssueCommentRequest, IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport,

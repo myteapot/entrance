@@ -267,6 +267,11 @@ type ConnectorRemoteContract = {
   readback: {
     schema_version: string;
   };
+  retry?: {
+    max_attempts?: number | null;
+    base_backoff_ms?: number | null;
+    backoff_strategy?: string | null;
+  } | null;
 };
 
 type ConnectorRemoteTarget = {
@@ -2009,8 +2014,13 @@ export default function App() {
       parts.push(`writer blockers: ${adapter.blockers.join(", ")}`);
     }
     if (contract) {
+      const retry = contract.retry
+        ? `, retry ${contract.retry.max_attempts ?? 1} attempts / ${
+            contract.retry.base_backoff_ms ?? 0
+          }ms ${contract.retry.backoff_strategy ?? "none"}`
+        : "";
       parts.push(
-        `remote contract: ${contract.remote_object_kind}, write ${contract.write.receipt_schema_version}, readback ${contract.readback.schema_version}`,
+        `remote contract: ${contract.remote_object_kind}, write ${contract.write.receipt_schema_version}, readback ${contract.readback.schema_version}${retry}`,
       );
     }
     return parts.join(" | ");

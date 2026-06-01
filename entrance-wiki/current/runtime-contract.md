@@ -42,10 +42,10 @@ their typed receipt requirements are present. Worker receipts are stricter than
 plain presence checks: `role_worker` and `runtime_worker` must have `ok=true`
 before the packet can pass admission, and loop audit verifies the worker `role`
 still matches the packet writer role.
-`hive policy registry` is the current source for both typed admission gate
-specs and runtime worker policy: supported runtimes, sandbox mode, timeout and
-attempt bounds, env overrides, role binding, and required worker receipt
-metadata.
+`hive policy registry` is the current source for typed admission gate specs,
+runtime worker policy, and connector retry policy: supported runtimes, sandbox
+mode, timeout and attempt bounds, env overrides, role binding, required worker
+receipt metadata, and the GitHub/Linear remote connector retry budget.
 Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
@@ -192,9 +192,10 @@ with bounded backoff, and classify `403/429` rate limits as typed
 `remote_rate_limited` blockers without immediate retry; Linear also classifies
 GraphQL rate-limit errors as the same typed blocker. Connector status and queue
 reports include compact remote diagnostics, letting the Panel surface write or
-readback retry/rate-limit signals as first-class chips. Production drift
-handling, richer Linear state mapping, real-token coverage, and broader retry
-policy are still pending.
+readback retry/rate-limit signals as first-class chips. The same GitHub/Linear
+retry budget is exposed through `hive policy registry --compact` and embedded in
+active remote contracts. Production drift handling, richer Linear state mapping,
+real-token coverage, and configurable/adaptive retry policy are still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 

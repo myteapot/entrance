@@ -8,11 +8,12 @@ use std::{
 use anyhow::{bail, Context, Result};
 use entrance_core::{HiveCommentCreate, HiveLoopEvidenceCreate};
 use entrance_hive::{
-    ConnectorProviderAdmissionSpec, ConnectorProviderSpec, ConnectorRegistryReport,
-    HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck, HiveLoopAuditReport,
-    HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard, IssueCommentRequest,
-    IssueDecisionRequest, IssueMirrorReport, IssueRunRequest, PolicyGateSpec, PolicyRegistryReport,
-    ReviewDecision, CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+    connector_retry_policy_for_provider, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
+    ConnectorRegistryReport, ConnectorRetryPolicySpec, HiveCallbackRequest, HiveDispatchRequest,
+    HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopRunRequest,
+    IssueAction, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport,
+    IssueRunRequest, PolicyGateSpec, PolicyRegistryReport, ReviewDecision,
+    CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
 };
 use reqwest::Method;
 use sha2::{Digest, Sha256};
@@ -49,10 +50,6 @@ const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
 const GITHUB_COMMENTS_MAX_PAGES: usize = 20;
-const GITHUB_HTTP_MAX_ATTEMPTS: usize = 2;
-const GITHUB_RETRY_BACKOFF_MS: u64 = 100;
-const LINEAR_HTTP_MAX_ATTEMPTS: usize = 2;
-const LINEAR_RETRY_BACKOFF_MS: u64 = 100;
 const GITHUB_COMMENT_IDEMPOTENCY_PREFIX: &str = "<!-- entrance-idempotency-key:";
 const GITHUB_COMMENT_IDEMPOTENCY_SUFFIX: &str = "-->";
 const LINEAR_COMMENT_IDEMPOTENCY_PREFIX: &str = "<!-- entrance-idempotency-key:";
@@ -564,6 +561,18 @@ fn compact_policy_registry(report: &PolicyRegistryReport) -> serde_json::Value {
         "gate_count": report.gates.len(),
         "gates": report.gates.iter().map(compact_policy_gate).collect::<Vec<_>>(),
         "connector_mirror_gate": connector_gate,
+        "connector": {
+            "admission": {
+                "schema_version": report.connector.admission.schema_version.as_str(),
+                "gate": report.connector.admission.gate.as_str(),
+                "route_to": report.connector.admission.route_to.as_str(),
+                "expected_object_kind": report.connector.admission.expected_object_kind.as_str(),
+                "check": report.connector.admission.check.as_str(),
+                "required_receipts": report.connector.admission.required_receipts.iter().map(String::as_str).collect::<Vec<_>>(),
+                "dry_run_command": report.connector.admission.dry_run_command.as_str()
+            },
+            "retry": report.connector.retry.iter().map(compact_connector_retry_policy).collect::<Vec<_>>()
+        },
         "runtime": {
             "supported": report.runtime.supported.iter().map(|runtime| serde_json::json!({
                 "name": runtime.name.as_str(),
@@ -579,6 +588,54 @@ fn compact_policy_registry(report: &PolicyRegistryReport) -> serde_json::Value {
             }
         }
     })
+}
+
+fn compact_connector_retry_policy(policy: &ConnectorRetryPolicySpec) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": policy.schema_version.as_str(),
+        "provider": policy.provider.as_str(),
+        "transport": policy.transport.as_str(),
+        "applies_to": policy.applies_to.iter().map(String::as_str).collect::<Vec<_>>(),
+        "max_attempts": policy.max_attempts,
+        "base_backoff_ms": policy.base_backoff_ms,
+        "backoff_strategy": policy.backoff_strategy.as_str(),
+        "retryable_http_statuses": policy.retryable_http_statuses.clone(),
+        "rate_limit_http_statuses": policy.rate_limit_http_statuses.clone(),
+        "rate_limit_headers": policy.rate_limit_headers.iter().map(String::as_str).collect::<Vec<_>>(),
+        "no_immediate_retry_checks": policy.no_immediate_retry_checks.iter().map(String::as_str).collect::<Vec<_>>()
+    })
+}
+
+fn connector_remote_retry_policy(provider_name: &str) -> ConnectorRetryPolicySpec {
+    connector_retry_policy_for_provider(provider_name).unwrap_or_else(|| ConnectorRetryPolicySpec {
+        schema_version: "entrance.hive.policy.v1".to_string(),
+        provider: provider_name.to_string(),
+        transport: "local".to_string(),
+        applies_to: vec!["remote_issue_surface".to_string()],
+        max_attempts: 1,
+        base_backoff_ms: 0,
+        backoff_strategy: "none".to_string(),
+        retryable_http_statuses: Vec::new(),
+        rate_limit_http_statuses: vec![429],
+        rate_limit_headers: vec!["retry-after".to_string()],
+        no_immediate_retry_checks: vec!["remote_rate_limited".to_string()],
+    })
+}
+
+fn github_retry_policy() -> ConnectorRetryPolicySpec {
+    connector_remote_retry_policy("github")
+}
+
+fn linear_retry_policy() -> ConnectorRetryPolicySpec {
+    connector_remote_retry_policy("linear")
+}
+
+fn connector_retry_max_attempts(policy: &ConnectorRetryPolicySpec) -> usize {
+    policy.max_attempts.max(1) as usize
+}
+
+fn connector_retry_backoff_ms(policy: &ConnectorRetryPolicySpec, attempt_number: usize) -> u64 {
+    policy.base_backoff_ms.saturating_mul(attempt_number as u64)
 }
 
 fn compact_connector_registry(report: &ConnectorRegistryReport) -> serde_json::Value {
@@ -4490,18 +4547,25 @@ fn execute_github_remote_get_single_operation(
         });
     }
     let mut attempts = Vec::new();
-    for attempt_number in 1..=GITHUB_HTTP_MAX_ATTEMPTS {
+    let retry_policy = github_retry_policy();
+    let max_attempts = connector_retry_max_attempts(&retry_policy);
+    for attempt_number in 1..=max_attempts {
         let mut result = execute_github_remote_get_single_attempt(client, token, kind, url);
-        let should_retry = github_operation_result_should_retry_now(&result, attempt_number);
+        let should_retry =
+            github_operation_result_should_retry_now(&result, attempt_number, &retry_policy);
         if should_retry {
-            github_mark_retry_scheduled(&mut result, github_retry_backoff_ms(attempt_number));
+            github_mark_retry_scheduled(
+                &mut result,
+                github_retry_backoff_ms(attempt_number, &retry_policy),
+            );
         }
         attempts.push(github_operation_attempt_summary(&result, attempt_number));
         if !should_retry {
-            return github_operation_with_attempts(result, attempts);
+            return github_operation_with_attempts(result, attempts, &retry_policy);
         }
         std::thread::sleep(Duration::from_millis(github_retry_backoff_ms(
             attempt_number,
+            &retry_policy,
         )));
     }
 
@@ -4512,7 +4576,7 @@ fn execute_github_remote_get_single_operation(
         "success": false,
         "failed_check": "remote_retry_exhausted",
         "attempt_count": attempts.len(),
-        "max_attempts": GITHUB_HTTP_MAX_ATTEMPTS,
+        "max_attempts": max_attempts,
         "attempts": attempts
     })
 }
@@ -4607,8 +4671,9 @@ fn execute_github_remote_get_single_attempt(
 fn github_operation_result_should_retry_now(
     result: &serde_json::Value,
     attempt_number: usize,
+    retry_policy: &ConnectorRetryPolicySpec,
 ) -> bool {
-    if attempt_number >= GITHUB_HTTP_MAX_ATTEMPTS {
+    if attempt_number >= connector_retry_max_attempts(retry_policy) {
         return false;
     }
     if result.pointer("/success").and_then(|value| value.as_bool()) == Some(true) {
@@ -4630,7 +4695,9 @@ fn github_operation_result_should_retry_now(
 fn github_operation_with_attempts(
     mut result: serde_json::Value,
     attempts: Vec<serde_json::Value>,
+    retry_policy: &ConnectorRetryPolicySpec,
 ) -> serde_json::Value {
+    let max_attempts = connector_retry_max_attempts(retry_policy);
     let success = result.pointer("/success").and_then(|value| value.as_bool()) == Some(true);
     let rate_limited = result
         .pointer("/retry/rate_limited")
@@ -4641,8 +4708,7 @@ fn github_operation_with_attempts(
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     let attempted = attempts.len() > 1;
-    let exhausted =
-        !success && retryable && !rate_limited && attempts.len() >= GITHUB_HTTP_MAX_ATTEMPTS;
+    let exhausted = !success && retryable && !rate_limited && attempts.len() >= max_attempts;
     let mut retry = result
         .pointer("/retry")
         .cloned()
@@ -4656,10 +4722,7 @@ fn github_operation_with_attempts(
             "attempt_count".to_string(),
             serde_json::json!(attempts.len()),
         );
-        object.insert(
-            "max_attempts".to_string(),
-            serde_json::json!(GITHUB_HTTP_MAX_ATTEMPTS),
-        );
+        object.insert("max_attempts".to_string(), serde_json::json!(max_attempts));
         object.insert("retry".to_string(), retry);
         object.insert("attempts".to_string(), serde_json::Value::Array(attempts));
     }
@@ -4696,8 +4759,8 @@ fn github_mark_retry_scheduled(result: &mut serde_json::Value, backoff_ms: u64) 
     }
 }
 
-fn github_retry_backoff_ms(attempt_number: usize) -> u64 {
-    GITHUB_RETRY_BACKOFF_MS.saturating_mul(attempt_number as u64)
+fn github_retry_backoff_ms(attempt_number: usize, retry_policy: &ConnectorRetryPolicySpec) -> u64 {
+    connector_retry_backoff_ms(retry_policy, attempt_number)
 }
 
 fn github_http_failed_check(status: u16, headers: &reqwest::header::HeaderMap) -> &'static str {
@@ -4776,14 +4839,18 @@ fn github_terminal_retry_metadata(reason: &str) -> serde_json::Value {
 }
 
 fn github_http_rate_limited(status: u16, headers: &reqwest::header::HeaderMap) -> bool {
-    status == 429
-        || (status == 403
-            && (github_header_value(headers, "x-ratelimit-remaining").as_deref() == Some("0")
-                || github_header_value(headers, "retry-after").is_some()))
+    let retry_policy = github_retry_policy();
+    retry_policy.rate_limit_http_statuses.contains(&status)
+        && (status == 429
+            || (status == 403
+                && (github_header_value(headers, "x-ratelimit-remaining").as_deref() == Some("0")
+                    || github_header_value(headers, "retry-after").is_some())))
 }
 
 fn github_http_retryable_status(status: u16) -> bool {
-    matches!(status, 500 | 502 | 503 | 504)
+    github_retry_policy()
+        .retryable_http_statuses
+        .contains(&status)
 }
 
 fn github_response_headers_summary(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
@@ -6248,6 +6315,7 @@ fn compact_connector_remote_contract(
             "required": provider.auth_required,
             "env": provider.auth_env.iter().map(String::as_str).collect::<Vec<_>>()
         },
+        "retry": compact_connector_retry_policy(&connector_remote_retry_policy(&provider.name)),
         "admission": {
             "required_before_write": [
                 "connector_writer_adapter.blockers_empty",
@@ -7213,7 +7281,9 @@ fn execute_linear_graphql_operation(
         "variables": operation.pointer("/graphql/variables").cloned().unwrap_or_else(|| serde_json::json!({}))
     });
     let mut attempts = Vec::new();
-    for attempt_number in 1..=LINEAR_HTTP_MAX_ATTEMPTS {
+    let retry_policy = linear_retry_policy();
+    let max_attempts = connector_retry_max_attempts(&retry_policy);
+    for attempt_number in 1..=max_attempts {
         let mut result = execute_linear_graphql_operation_attempt(
             client,
             token,
@@ -7222,16 +7292,21 @@ fn execute_linear_graphql_operation(
             url,
             &body,
         );
-        let should_retry = linear_operation_result_should_retry_now(&result, attempt_number);
+        let should_retry =
+            linear_operation_result_should_retry_now(&result, attempt_number, &retry_policy);
         if should_retry {
-            linear_mark_retry_scheduled(&mut result, linear_retry_backoff_ms(attempt_number));
+            linear_mark_retry_scheduled(
+                &mut result,
+                linear_retry_backoff_ms(attempt_number, &retry_policy),
+            );
         }
         attempts.push(linear_operation_attempt_summary(&result, attempt_number));
         if !should_retry {
-            return linear_operation_with_attempts(result, attempts);
+            return linear_operation_with_attempts(result, attempts, &retry_policy);
         }
         std::thread::sleep(Duration::from_millis(linear_retry_backoff_ms(
             attempt_number,
+            &retry_policy,
         )));
     }
 
@@ -7242,7 +7317,7 @@ fn execute_linear_graphql_operation(
         "success": false,
         "failed_check": "remote_retry_exhausted",
         "attempt_count": attempts.len(),
-        "max_attempts": LINEAR_HTTP_MAX_ATTEMPTS,
+        "max_attempts": max_attempts,
         "attempts": attempts
     })
 }
@@ -7362,8 +7437,9 @@ fn execute_linear_graphql_operation_attempt(
 fn linear_operation_result_should_retry_now(
     result: &serde_json::Value,
     attempt_number: usize,
+    retry_policy: &ConnectorRetryPolicySpec,
 ) -> bool {
-    if attempt_number >= LINEAR_HTTP_MAX_ATTEMPTS {
+    if attempt_number >= connector_retry_max_attempts(retry_policy) {
         return false;
     }
     if result.pointer("/success").and_then(|value| value.as_bool()) == Some(true) {
@@ -7385,7 +7461,9 @@ fn linear_operation_result_should_retry_now(
 fn linear_operation_with_attempts(
     mut result: serde_json::Value,
     attempts: Vec<serde_json::Value>,
+    retry_policy: &ConnectorRetryPolicySpec,
 ) -> serde_json::Value {
+    let max_attempts = connector_retry_max_attempts(retry_policy);
     let success = result.pointer("/success").and_then(|value| value.as_bool()) == Some(true);
     let rate_limited = result
         .pointer("/retry/rate_limited")
@@ -7396,8 +7474,7 @@ fn linear_operation_with_attempts(
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     let attempted = attempts.len() > 1;
-    let exhausted =
-        !success && retryable && !rate_limited && attempts.len() >= LINEAR_HTTP_MAX_ATTEMPTS;
+    let exhausted = !success && retryable && !rate_limited && attempts.len() >= max_attempts;
     let mut retry = result
         .pointer("/retry")
         .cloned()
@@ -7411,10 +7488,7 @@ fn linear_operation_with_attempts(
             "attempt_count".to_string(),
             serde_json::json!(attempts.len()),
         );
-        object.insert(
-            "max_attempts".to_string(),
-            serde_json::json!(LINEAR_HTTP_MAX_ATTEMPTS),
-        );
+        object.insert("max_attempts".to_string(), serde_json::json!(max_attempts));
         object.insert("retry".to_string(), retry);
         object.insert("attempts".to_string(), serde_json::Value::Array(attempts));
     }
@@ -7451,8 +7525,8 @@ fn linear_mark_retry_scheduled(result: &mut serde_json::Value, backoff_ms: u64) 
     }
 }
 
-fn linear_retry_backoff_ms(attempt_number: usize) -> u64 {
-    LINEAR_RETRY_BACKOFF_MS.saturating_mul(attempt_number as u64)
+fn linear_retry_backoff_ms(attempt_number: usize, retry_policy: &ConnectorRetryPolicySpec) -> u64 {
+    connector_retry_backoff_ms(retry_policy, attempt_number)
 }
 
 fn linear_http_failed_check(status: u16, headers: &reqwest::header::HeaderMap) -> &'static str {
@@ -7543,15 +7617,20 @@ fn linear_terminal_retry_metadata(reason: &str) -> serde_json::Value {
 }
 
 fn linear_http_rate_limited(status: u16, headers: &reqwest::header::HeaderMap) -> bool {
-    status == 429
-        || (status == 403
-            && (linear_header_value(headers, "x-ratelimit-remaining").as_deref() == Some("0")
-                || linear_header_value(headers, "x-rate-limit-remaining").as_deref() == Some("0")
-                || linear_header_value(headers, "retry-after").is_some()))
+    let retry_policy = linear_retry_policy();
+    retry_policy.rate_limit_http_statuses.contains(&status)
+        && (status == 429
+            || (status == 403
+                && (linear_header_value(headers, "x-ratelimit-remaining").as_deref() == Some("0")
+                    || linear_header_value(headers, "x-rate-limit-remaining").as_deref()
+                        == Some("0")
+                    || linear_header_value(headers, "retry-after").is_some())))
 }
 
 fn linear_http_retryable_status(status: u16) -> bool {
-    matches!(status, 500 | 502 | 503 | 504)
+    linear_retry_policy()
+        .retryable_http_statuses
+        .contains(&status)
 }
 
 fn linear_response_headers_summary(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
@@ -7899,7 +7978,9 @@ fn execute_github_remote_write_operation(
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
     let mut attempts = Vec::new();
-    for attempt_number in 1..=GITHUB_HTTP_MAX_ATTEMPTS {
+    let retry_policy = github_retry_policy();
+    let max_attempts = connector_retry_max_attempts(&retry_policy);
+    for attempt_number in 1..=max_attempts {
         let mut result = execute_github_remote_write_attempt(
             client,
             token,
@@ -7909,16 +7990,21 @@ fn execute_github_remote_write_operation(
             url,
             &body,
         );
-        let should_retry = github_operation_result_should_retry_now(&result, attempt_number);
+        let should_retry =
+            github_operation_result_should_retry_now(&result, attempt_number, &retry_policy);
         if should_retry {
-            github_mark_retry_scheduled(&mut result, github_retry_backoff_ms(attempt_number));
+            github_mark_retry_scheduled(
+                &mut result,
+                github_retry_backoff_ms(attempt_number, &retry_policy),
+            );
         }
         attempts.push(github_operation_attempt_summary(&result, attempt_number));
         if !should_retry {
-            return github_operation_with_attempts(result, attempts);
+            return github_operation_with_attempts(result, attempts, &retry_policy);
         }
         std::thread::sleep(Duration::from_millis(github_retry_backoff_ms(
             attempt_number,
+            &retry_policy,
         )));
     }
 
@@ -7929,7 +8015,7 @@ fn execute_github_remote_write_operation(
         "success": false,
         "failed_check": "remote_retry_exhausted",
         "attempt_count": attempts.len(),
-        "max_attempts": GITHUB_HTTP_MAX_ATTEMPTS,
+        "max_attempts": max_attempts,
         "attempts": attempts
     })
 }
@@ -10549,6 +10635,24 @@ mod tests {
         );
         assert_eq!(
             linear_queue
+                .pointer("/issues/0/adapter/remote_contract/retry/max_attempts")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/adapter/remote_contract/retry/base_backoff_ms")
+                .and_then(|value| value.as_u64()),
+            Some(100)
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/adapter/remote_contract/retry/retryable_http_statuses/2")
+                .and_then(|value| value.as_u64()),
+            Some(503)
+        );
+        assert_eq!(
+            linear_queue
                 .pointer("/commands/publish_plan")
                 .and_then(|value| value.as_str()),
             Some("entrance hive connector publish-plan --provider linear --compact")
@@ -11317,6 +11421,12 @@ mod tests {
         );
         assert_eq!(
             execution
+                .pointer("/operations/0/max_attempts")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            execution
                 .pointer("/operations/0/attempts/0/failed_check")
                 .and_then(|value| value.as_str()),
             Some("remote_retryable_http_status")
@@ -11326,6 +11436,12 @@ mod tests {
                 .pointer("/operations/0/attempts/0/retry/scheduled")
                 .and_then(|value| value.as_bool()),
             Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempts/0/retry/backoff_ms")
+                .and_then(|value| value.as_u64()),
+            Some(100)
         );
         assert_eq!(
             execution
@@ -11520,6 +11636,12 @@ mod tests {
         );
         assert_eq!(
             execution
+                .pointer("/operations/0/max_attempts")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            execution
                 .pointer("/operations/0/attempts/0/failed_check")
                 .and_then(|value| value.as_str()),
             Some("remote_retryable_http_status")
@@ -11529,6 +11651,12 @@ mod tests {
                 .pointer("/operations/0/attempts/0/retry/scheduled")
                 .and_then(|value| value.as_bool()),
             Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempts/0/retry/backoff_ms")
+                .and_then(|value| value.as_u64()),
+            Some(100)
         );
         assert_eq!(
             execution
