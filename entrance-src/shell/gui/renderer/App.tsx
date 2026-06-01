@@ -243,6 +243,11 @@ type LoopRunArgs = {
   workerTimeoutSecs?: number;
   workerAttempts?: number;
 };
+type IssueMirrorSyncReport = {
+  schema_version: string;
+  path: string;
+  bytes: number;
+};
 type CommentPill = {
   label: string;
   evidenceId?: number;
@@ -562,6 +567,21 @@ export default function App() {
     }
   };
   const copyDoctorAction = (action: string) => copyCommandAction("next action", action);
+  const syncIssueMirror = async (card: IssueCard) => {
+    if (issuePendingLabel(card.issue.id)) return;
+    setSelectedIssueId(card.issue.id);
+    setPendingIssue(card.issue.id, "Syncing");
+    try {
+      const report = await bridge.invoke<IssueMirrorSyncReport>("hive_issue_mirror_sync", {
+        issueId: card.issue.id,
+      });
+      setBanner(`Synced issue mirror: ${compactText(report.path, 96)}`);
+    } catch (error) {
+      setBanner(`Issue #${card.issue.id} sync failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(card.issue.id, null);
+    }
+  };
   const workerLimitRunArgs = (): LoopRunArgs => {
     const timeoutText = loopWorkerTimeoutSecs().trim();
     const workerTimeoutSecs = timeoutText ? Number.parseInt(timeoutText, 10) : undefined;
@@ -1082,6 +1102,10 @@ export default function App() {
     card.issue.loop_id ? `entrance hive loop evidence ${card.issue.loop_id}` : null;
   const issueMirrorCommand = (card: IssueCard) =>
     `entrance hive issue mirror ${card.issue.id} --compact`;
+  const issueMirrorSyncCommand = (card: IssueCard) =>
+    `entrance hive issue mirror-sync ${card.issue.id}`;
+  const issueMirrorSyncLabel = (card: IssueCard) =>
+    issuePendingLabel(card.issue.id) === "Syncing" ? "Syncing" : "Sync";
 
   const compactAuditFailureDetail = (detail: string) => {
     const parts = detail.split(":").filter(Boolean);
@@ -1533,6 +1557,16 @@ export default function App() {
                               onClick={() => void copyCommandAction("issue mirror", issueMirrorCommand(card))}
                             >
                               Mirror
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Sync issue #${card.issue.id} mirror to file from detail`}
+                              data-testid={`issue-action-detail-sync-${card.issue.id}`}
+                              disabled={Boolean(issuePendingLabel(card.issue.id))}
+                              title={issueMirrorSyncCommand(card)}
+                              onClick={() => void syncIssueMirror(card)}
+                            >
+                              {issueMirrorSyncLabel(card)}
                             </button>
                           </div>
                         ) : null}
@@ -2004,6 +2038,16 @@ export default function App() {
                                     onClick={() => void copyCommandAction("issue mirror", issueMirrorCommand(card))}
                                   >
                                     Mirror
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Sync issue #${card.issue.id} mirror to file from board`}
+                                    data-testid={`issue-action-board-sync-${card.issue.id}`}
+                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                    title={issueMirrorSyncCommand(card)}
+                                    onClick={() => void syncIssueMirror(card)}
+                                  >
+                                    {issueMirrorSyncLabel(card)}
                                   </button>
                                   <button
                                     type="button"

@@ -1,4 +1,9 @@
-use anyhow::{bail, Result};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use anyhow::{bail, Context, Result};
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck, HiveLoopAuditReport,
     HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard, IssueCommentRequest,
@@ -7,11 +12,13 @@ use entrance_hive::{
 
 use crate::{app::AppServices, cli, print_json};
 
+const ISSUE_MIRROR_SYNC_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync.v1";
+
 pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -183,6 +190,11 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             } else {
                 print_json(&mirror)
             }
+        }
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-sync" => {
+            let report =
+                sync_issue_mirror_to_file(services, id.parse::<i64>()?, flag_value(rest, "--out"))?;
+            print_json(&report)
         }
         [scope, action, id, rest @ ..] if scope == "issue" && action == "comment" => {
             let body = flag_value(rest, "--body").unwrap_or_default();
@@ -363,6 +375,83 @@ fn compact_issue_mirror(mirror: &IssueMirrorReport) -> serde_json::Value {
         })),
         "comments": compact_mirror_comments(mirror, 8),
         "actions": mirror.actions.iter().map(compact_issue_action).collect::<Vec<_>>()
+    })
+}
+
+pub(crate) fn sync_issue_mirror_to_file(
+    services: &AppServices,
+    issue_id: i64,
+    out_path: Option<&str>,
+) -> Result<serde_json::Value> {
+    let mirror = services.hive.issue_mirror(issue_id)?;
+    let path = out_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_issue_mirror_path(&services.kernel.root, &mirror.external_key));
+    let bytes = write_issue_mirror_file(&mirror, &path)?;
+    Ok(compact_issue_mirror_sync(&mirror, &path, bytes))
+}
+
+fn default_issue_mirror_path(app_root: &Path, external_key: &str) -> PathBuf {
+    app_root
+        .join("connectors")
+        .join("issue-mirrors")
+        .join(format!("{}.json", sanitize_mirror_key(external_key)))
+}
+
+fn sanitize_mirror_key(value: &str) -> String {
+    let mut output = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while output.contains("--") {
+        output = output.replace("--", "-");
+    }
+    let trimmed = output.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "issue-mirror".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn write_issue_mirror_file(mirror: &IssueMirrorReport, path: &Path) -> Result<u64> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create mirror sink directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let payload = serde_json::to_vec_pretty(mirror)?;
+    fs::write(path, &payload)
+        .with_context(|| format!("failed to write issue mirror {}", path.display()))?;
+    Ok(payload.len() as u64)
+}
+
+fn compact_issue_mirror_sync(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    bytes: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_SYNC_SCHEMA_VERSION,
+        "mirror_schema_version": mirror.schema_version.as_str(),
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue_id": mirror.issue.id,
+        "issue_status": mirror.issue.status.as_str(),
+        "path": path.display().to_string(),
+        "bytes": bytes,
+        "refresh_command": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
+        "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id)
     })
 }
 
@@ -640,9 +729,11 @@ fn compact_text(value: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{
-        compact_issue_board, compact_issue_detail, compact_issue_mirror, compact_loop_audit,
-        flag_present, flag_value,
+        compact_issue_board, compact_issue_detail, compact_issue_mirror, compact_issue_mirror_sync,
+        compact_loop_audit, default_issue_mirror_path, flag_present, flag_value,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -1016,6 +1107,77 @@ mod tests {
                 .pointer("/actions/0/command")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue comment 7 --body <text> --compact")
+        );
+    }
+
+    #[test]
+    fn mirror_sink_path_sanitizes_external_key() {
+        let path = default_issue_mirror_path(Path::new("/tmp/root"), "linear:ENT/42?x");
+
+        assert_eq!(
+            path,
+            Path::new("/tmp/root/connectors/issue-mirrors/linear-ENT-42-x.json")
+        );
+    }
+
+    #[test]
+    fn compact_issue_mirror_sync_reports_written_file() {
+        let mirror = IssueMirrorReport {
+            schema_version: "entrance.hive.issue_mirror.v1".to_string(),
+            provider: "file".to_string(),
+            review_surface: "file:local-board".to_string(),
+            external_key: "hive-loop-1-issue-2".to_string(),
+            issue: HiveIssue {
+                id: 2,
+                loop_id: Some(1),
+                title: "Loop #1: mirror sync".to_string(),
+                status: "Done".to_string(),
+                summary: Some("Mirror written.".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:01:00Z".to_string(),
+            },
+            loop_contract: None,
+            comments: vec![],
+            actions: vec![],
+            trace: None,
+            doctor: None,
+        };
+
+        let report = compact_issue_mirror_sync(
+            &mirror,
+            Path::new("/tmp/root/connectors/issue-mirrors/hive-loop-1-issue-2.json"),
+            512,
+        );
+
+        assert_eq!(
+            report
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror_sync.v1")
+        );
+        assert_eq!(
+            report.pointer("/provider").and_then(|value| value.as_str()),
+            Some("file")
+        );
+        assert_eq!(
+            report
+                .pointer("/review_surface")
+                .and_then(|value| value.as_str()),
+            Some("file:local-board")
+        );
+        assert_eq!(
+            report.pointer("/issue_id").and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            report.pointer("/bytes").and_then(|value| value.as_u64()),
+            Some(512)
+        );
+        assert_eq!(
+            report
+                .pointer("/sync_command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-sync 2")
         );
     }
 
