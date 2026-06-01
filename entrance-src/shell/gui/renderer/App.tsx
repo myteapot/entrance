@@ -221,6 +221,7 @@ type ConnectorRegistry = {
     required_receipts: string[];
     dry_run_command: string;
   };
+  provider_admissions: ConnectorProviderAdmission[];
 };
 
 type ConnectorProvider = {
@@ -238,6 +239,19 @@ type ConnectorProvider = {
   supports_admission: boolean;
   storage: string;
   notes: string;
+};
+
+type ConnectorProviderAdmission = {
+  schema_version: string;
+  provider: string;
+  status: string;
+  gate: string;
+  route_to: string | null;
+  expected_object_kind: string;
+  check: string;
+  required_receipts: string[];
+  blockers: string[];
+  dry_run_command: string;
 };
 
 type ConnectorQueueReport = {
@@ -258,6 +272,8 @@ type ConnectorQueueProvider = {
   configured: boolean;
   supports_publish: boolean;
   supports_admission: boolean;
+  admission_status: string | null;
+  admission_blockers: string[];
   storage: string;
   issue_count: number;
   current_count: number;
@@ -274,6 +290,8 @@ type ConnectorQueueIssue = {
   provider_status: string | null;
   configured: boolean | null;
   supports_publish: boolean | null;
+  admission_status: string | null;
+  admission_blockers: string[];
   review_surface: string | null;
   publish_required: boolean;
   current: boolean | null;
@@ -590,9 +608,12 @@ export default function App() {
     () => connectorQueue()?.publish_required_count ?? connectorPublishQueue().length,
   );
   const connectorProviders = createMemo(() => connectorRegistry()?.providers ?? []);
+  const connectorProviderAdmissions = createMemo(() => connectorRegistry()?.provider_admissions ?? []);
   const activeConnectorCount = createMemo(
     () => connectorProviders().filter((provider) => provider.status === "active").length,
   );
+  const connectorProviderAdmission = (provider: ConnectorProvider) =>
+    connectorProviderAdmissions().find((admission) => admission.provider === provider.name) ?? null;
   const connectorQueueIssueById = (issueId: number) =>
     connectorQueueIssues().find((issue) => issue.id === issueId) ?? null;
   const revealIssueDetail = () => {
@@ -1435,6 +1456,16 @@ export default function App() {
     if (provider.auth_required) return "auth missing";
     return "not active";
   };
+  const connectorProviderAdmissionLabel = (provider: ConnectorProvider) => {
+    const admission = connectorProviderAdmission(provider);
+    if (!admission) return "admission pending";
+    return admission.status === "ready" ? "admit ready" : "admit blocked";
+  };
+  const connectorProviderTitle = (provider: ConnectorProvider) => {
+    const admission = connectorProviderAdmission(provider);
+    if (!admission || !admission.blockers.length) return provider.notes;
+    return `${provider.notes} Admission blockers: ${admission.blockers.join(", ")}`;
+  };
   const connectorProviderTone = (provider: ConnectorProvider) =>
     provider.status === "active" && provider.configured ? "active" : "planned";
   const connectorQueueProviderTone = (provider: ConnectorQueueProvider) =>
@@ -2221,6 +2252,7 @@ export default function App() {
                     >
                       <strong>{provider.name}</strong>
                       <span>{provider.publish_required_count} queued</span>
+                      <span>{provider.admission_status === "ready" ? "admit ready" : "admit blocked"}</span>
                     </span>
                   ))}
                   {connectorPublishQueue().slice(0, 4).map((card) => (
@@ -2251,11 +2283,12 @@ export default function App() {
                   {connectorProviders().map((provider) => (
                     <span
                       class={`connector-provider connector-provider--${connectorProviderTone(provider)}`}
-                      title={provider.notes}
+                      title={connectorProviderTitle(provider)}
                     >
                       <strong>{provider.name}</strong>
                       <span>{provider.status}</span>
                       <span>{connectorProviderCapabilityLabel(provider)}</span>
+                      <span>{connectorProviderAdmissionLabel(provider)}</span>
                     </span>
                   ))}
                 </div>

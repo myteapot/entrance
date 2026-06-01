@@ -16,12 +16,13 @@ pub use dispatch::DispatchSummary;
 pub use engine::{EngineEvent, EngineReport};
 pub use http::{HiveCallback, HiveCallbackRequest};
 pub use loop_control::{
-    ConnectorAdmissionPolicySpec, ConnectorProviderSpec, ConnectorRegistryReport,
-    HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDoctorCounts,
-    HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport, HiveLoopReport,
-    HiveLoopRunRequest, HiveLoopTraceReport, IssueAction, IssueCard, IssueCommentRequest,
-    IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport, IssueRunRequest, PolicyGateSpec,
-    PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+    ConnectorAdmissionPolicySpec, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
+    ConnectorRegistryReport, HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest,
+    HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport,
+    HiveLoopReport, HiveLoopRunRequest, HiveLoopTraceReport, IssueAction, IssueCard,
+    IssueCommentRequest, IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport,
+    IssueRunRequest, PolicyGateSpec, PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE,
+    CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};

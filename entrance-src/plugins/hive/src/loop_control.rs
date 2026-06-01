@@ -108,6 +108,7 @@ pub struct ConnectorRegistryReport {
     pub schema_version: String,
     pub providers: Vec<ConnectorProviderSpec>,
     pub admission: ConnectorAdmissionPolicySpec,
+    pub provider_admissions: Vec<ConnectorProviderAdmissionSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +137,20 @@ pub struct ConnectorAdmissionPolicySpec {
     pub expected_object_kind: String,
     pub check: String,
     pub required_receipts: Vec<String>,
+    pub dry_run_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorProviderAdmissionSpec {
+    pub schema_version: String,
+    pub provider: String,
+    pub status: String,
+    pub gate: String,
+    pub route_to: Option<String>,
+    pub expected_object_kind: String,
+    pub check: String,
+    pub required_receipts: Vec<String>,
+    pub blockers: Vec<String>,
     pub dry_run_command: String,
 }
 
@@ -1045,40 +1060,48 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
     };
     apply_connector_provider_config(&mut github, &config.github);
 
+    let providers = vec![
+        ConnectorProviderSpec {
+            name: "local-hive-panel".to_string(),
+            display_name: "Local Hive Panel".to_string(),
+            status: "active".to_string(),
+            mode: "in-process-issue-board".to_string(),
+            review_surface_prefixes: vec!["local-hive-panel".to_string()],
+            auth_required: false,
+            auth_env: Vec::new(),
+            configured: true,
+            supports_status: true,
+            supports_publish: false,
+            supports_readback: true,
+            supports_admission: true,
+            storage: "sqlite".to_string(),
+            notes: "Built-in local issue/status/comment surface.".to_string(),
+        },
+        file,
+        linear,
+        github,
+    ];
+    let admission = ConnectorAdmissionPolicySpec {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        gate: connector_gate.name,
+        route_to: "external_issue_surface".to_string(),
+        expected_object_kind: connector_gate
+            .expected_object_kind
+            .unwrap_or_else(|| CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND.to_string()),
+        check: connector_gate.check,
+        required_receipts: connector_gate.required_receipts,
+        dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
+    };
+    let provider_admissions = providers
+        .iter()
+        .map(|provider| connector_provider_admission_spec(provider, &admission))
+        .collect();
+
     ConnectorRegistryReport {
         schema_version: CONNECTOR_REGISTRY_SCHEMA_VERSION.to_string(),
-        providers: vec![
-            ConnectorProviderSpec {
-                name: "local-hive-panel".to_string(),
-                display_name: "Local Hive Panel".to_string(),
-                status: "active".to_string(),
-                mode: "in-process-issue-board".to_string(),
-                review_surface_prefixes: vec!["local-hive-panel".to_string()],
-                auth_required: false,
-                auth_env: Vec::new(),
-                configured: true,
-                supports_status: true,
-                supports_publish: false,
-                supports_readback: true,
-                supports_admission: true,
-                storage: "sqlite".to_string(),
-                notes: "Built-in local issue/status/comment surface.".to_string(),
-            },
-            file,
-            linear,
-            github,
-        ],
-        admission: ConnectorAdmissionPolicySpec {
-            schema_version: POLICY_SCHEMA_VERSION.to_string(),
-            gate: connector_gate.name,
-            route_to: "external_issue_surface".to_string(),
-            expected_object_kind: connector_gate
-                .expected_object_kind
-                .unwrap_or_else(|| CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND.to_string()),
-            check: connector_gate.check,
-            required_receipts: connector_gate.required_receipts,
-            dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
-        },
+        providers,
+        admission,
+        provider_admissions,
     }
 }
 
@@ -1132,6 +1155,45 @@ fn connector_provider_auth_configured(provider: &ConnectorProviderSpec) -> bool 
         .auth_env
         .iter()
         .any(|name| std::env::var_os(name).is_some())
+}
+
+fn connector_provider_admission_spec(
+    provider: &ConnectorProviderSpec,
+    admission: &ConnectorAdmissionPolicySpec,
+) -> ConnectorProviderAdmissionSpec {
+    let mut blockers = Vec::new();
+    if provider.status != "active" {
+        blockers.push("provider_not_active".to_string());
+    }
+    if !provider.configured {
+        blockers.push("connector_not_configured".to_string());
+    }
+    if !provider.supports_admission {
+        blockers.push("admission_not_supported".to_string());
+    }
+    let status = if blockers.is_empty() {
+        "ready"
+    } else {
+        "blocked"
+    };
+    ConnectorProviderAdmissionSpec {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        provider: provider.name.clone(),
+        status: status.to_string(),
+        gate: admission.gate.clone(),
+        route_to: blockers.is_empty().then(|| {
+            if provider.name == "local-hive-panel" {
+                "local_issue_surface".to_string()
+            } else {
+                admission.route_to.clone()
+            }
+        }),
+        expected_object_kind: admission.expected_object_kind.clone(),
+        check: admission.check.clone(),
+        required_receipts: admission.required_receipts.clone(),
+        blockers,
+        dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
+    }
 }
 
 fn runtime_policy_registry() -> RuntimePolicyRegistry {
@@ -6920,6 +6982,7 @@ mod tests {
             .required_receipts
             .iter()
             .any(|receipt| receipt == "mirror_file_current"));
+        assert_eq!(registry.provider_admissions.len(), registry.providers.len());
         let file = registry
             .providers
             .iter()
@@ -6930,6 +6993,17 @@ mod tests {
         assert!(file.supports_publish);
         assert!(file.supports_readback);
         assert!(file.supports_admission);
+        let file_admission = registry
+            .provider_admissions
+            .iter()
+            .find(|admission| admission.provider == "file")
+            .expect("file admission should be registered");
+        assert_eq!(file_admission.status, "ready");
+        assert_eq!(
+            file_admission.route_to.as_deref(),
+            Some("external_issue_surface")
+        );
+        assert!(file_admission.blockers.is_empty());
         let linear = registry
             .providers
             .iter()
@@ -6938,6 +7012,24 @@ mod tests {
         assert_eq!(linear.status, "planned");
         assert!(linear.auth_required);
         assert!(!linear.configured);
+        let linear_admission = registry
+            .provider_admissions
+            .iter()
+            .find(|admission| admission.provider == "linear")
+            .expect("linear admission should be registered");
+        assert_eq!(linear_admission.status, "blocked");
+        assert!(linear_admission
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "provider_not_active"));
+        assert!(linear_admission
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "connector_not_configured"));
+        assert!(linear_admission
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "admission_not_supported"));
     }
 
     #[test]
@@ -6977,6 +7069,20 @@ mod tests {
         assert_eq!(linear.auth_env, vec!["ENTRANCE_TEST_LINEAR_TOKEN"]);
         assert!(!linear.configured);
         assert!(linear.notes.contains("Configured from entrance.toml."));
+        let linear_admission = registry
+            .provider_admissions
+            .iter()
+            .find(|admission| admission.provider == "linear")
+            .expect("linear admission should be registered");
+        assert_eq!(linear_admission.status, "blocked");
+        assert!(linear_admission
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "provider_not_active"));
+        assert!(linear_admission
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "connector_not_configured"));
     }
 
     #[test]

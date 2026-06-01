@@ -116,14 +116,17 @@ Compact issue surfaces also expose connector mirror drift: `hive issue show
 adds a `connector_queue` with publish-required issue ids and commands.
 The connector registry is available through `hive connector registry --compact`;
 it distinguishes active local/file providers from planned Linear/GitHub
-providers and names the admission gate. `hive connector queue --compact` returns
-a provider-scoped publish queue, and `--provider <name>` narrows the dry-run
-plan to one issue-surface provider. `hive issue connector-admission <id>
+providers, names the admission gate, and exposes provider-specific admission
+status/blockers. `hive connector queue --compact` returns a provider-scoped
+publish queue, and `--provider <name>` narrows the dry-run plan to one
+issue-surface provider. `hive issue connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`.
 Provider overrides are read from `entrance.toml` under `[connectors.<provider>]`.
 Enabling a planned provider can mark auth/storage config as present, but
 admission still blocks until that provider has an active implementation.
+`hive issue mirror-admit <id> --compact` uses the same provider admission
+status as `hive issue connector-admission <id> --compact`.
 
 ## Daemon
 

@@ -7,11 +7,11 @@ use std::{
 use anyhow::{bail, Context, Result};
 use entrance_core::{HiveCommentCreate, HiveLoopEvidenceCreate};
 use entrance_hive::{
-    ConnectorProviderSpec, ConnectorRegistryReport, HiveCallbackRequest, HiveDispatchRequest,
-    HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopRunRequest,
-    IssueAction, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport,
-    IssueRunRequest, PolicyGateSpec, PolicyRegistryReport, ReviewDecision,
-    CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+    ConnectorProviderAdmissionSpec, ConnectorProviderSpec, ConnectorRegistryReport,
+    HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck, HiveLoopAuditReport,
+    HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard, IssueCommentRequest,
+    IssueDecisionRequest, IssueMirrorReport, IssueRunRequest, PolicyGateSpec, PolicyRegistryReport,
+    ReviewDecision, CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
 };
 use sha2::{Digest, Sha256};
 
@@ -515,6 +515,11 @@ fn compact_connector_registry(report: &ConnectorRegistryReport) -> serde_json::V
         "active_count": active_count,
         "provider_count": report.providers.len(),
         "providers": report.providers.iter().map(compact_connector_provider).collect::<Vec<_>>(),
+        "provider_admissions": report
+            .provider_admissions
+            .iter()
+            .map(compact_connector_provider_admission)
+            .collect::<Vec<_>>(),
         "admission": {
             "gate": report.admission.gate.as_str(),
             "route_to": report.admission.route_to.as_str(),
@@ -555,6 +560,23 @@ fn compact_connector_provider(provider: &ConnectorProviderSpec) -> serde_json::V
     })
 }
 
+fn compact_connector_provider_admission(
+    admission: &ConnectorProviderAdmissionSpec,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": admission.schema_version.as_str(),
+        "provider": admission.provider.as_str(),
+        "status": admission.status.as_str(),
+        "gate": admission.gate.as_str(),
+        "route_to": admission.route_to.as_deref(),
+        "expected_object_kind": admission.expected_object_kind.as_str(),
+        "check": admission.check.as_str(),
+        "required_receipts": admission.required_receipts.iter().map(String::as_str).collect::<Vec<_>>(),
+        "blockers": admission.blockers.iter().map(String::as_str).collect::<Vec<_>>(),
+        "dry_run_command": admission.dry_run_command.as_str()
+    })
+}
+
 fn compact_issue_connector_admission_preview(report: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "schema_version": "entrance.hive.issue_connector_admission_preview.compact.v1",
@@ -565,6 +587,8 @@ fn compact_issue_connector_admission_preview(report: &serde_json::Value) -> serd
             .or_else(|| report.pointer("/provider_name").and_then(|value| value.as_str())),
         "provider_status": report.pointer("/provider/status").and_then(|value| value.as_str()),
         "configured": report.pointer("/provider/configured").and_then(|value| value.as_bool()),
+        "provider_admission_status": report.pointer("/provider_admission/status").and_then(|value| value.as_str()),
+        "provider_admission_blockers": report.pointer("/provider_admission/blockers").and_then(|value| value.as_array()).cloned().unwrap_or_default(),
         "review_surface": report.pointer("/review_surface").and_then(|value| value.as_str()),
         "mirror_current": report.pointer("/connector/current").and_then(|value| value.as_bool()),
         "publish_required": report.pointer("/connector/publish_required").and_then(|value| value.as_bool()),
@@ -701,27 +725,22 @@ pub(crate) fn issue_connector_admission_preview(
     let registry = services.hive.connector_registry();
     let provider =
         connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
+    let provider_admission = connector_provider_admission_for_surface(
+        &registry,
+        &mirror.provider,
+        &mirror.review_surface,
+    );
     let status = issue_mirror_status(services, issue_id, path)?;
     let mirror_current = status
         .pointer("/current")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let provider_active = provider.is_some_and(|provider| provider.status == "active");
-    let provider_configured = provider.is_some_and(|provider| provider.configured);
-    let admission_supported = provider.is_some_and(|provider| provider.supports_admission);
     let mut blockers = Vec::new();
     if provider.is_none() {
         blockers.push("unsupported_provider".to_string());
-    } else {
-        if !provider_active {
-            blockers.push("provider_not_active".to_string());
-        }
-        if !provider_configured {
-            blockers.push("connector_not_configured".to_string());
-        }
-        if !admission_supported {
-            blockers.push("admission_not_supported".to_string());
-        }
+    }
+    if let Some(provider_admission) = provider_admission {
+        blockers.extend(provider_admission.blockers.iter().cloned());
     }
     if !mirror_current {
         blockers.push("mirror_not_current".to_string());
@@ -741,6 +760,13 @@ pub(crate) fn issue_connector_admission_preview(
     blockers.sort();
     blockers.dedup();
     let admissible = blockers.is_empty();
+    let route_to = if admissible {
+        provider_admission
+            .and_then(|admission| admission.route_to.as_deref())
+            .unwrap_or("external_issue_surface")
+    } else {
+        ""
+    };
     Ok(serde_json::json!({
         "schema_version": ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION,
         "issue": {
@@ -750,6 +776,7 @@ pub(crate) fn issue_connector_admission_preview(
             "title": mirror.issue.title
         },
         "provider": provider.map(compact_connector_provider),
+        "provider_admission": provider_admission.map(compact_connector_provider_admission),
         "provider_name": mirror.provider,
         "review_surface": mirror.review_surface,
         "external_key": mirror.external_key,
@@ -764,7 +791,7 @@ pub(crate) fn issue_connector_admission_preview(
         },
         "decision": {
             "admissible": admissible,
-            "route_to": if admissible { Some("external_issue_surface") } else { None },
+            "route_to": if admissible { Some(route_to) } else { None },
             "blockers": blockers
         },
         "commands": {
@@ -871,6 +898,8 @@ pub(crate) fn admit_issue_mirror_file(
 ) -> Result<serde_json::Value> {
     let audit = audit_issue_mirror_file(services, issue_id, path)?;
     let mut admission = compact_issue_mirror_admission(&audit);
+    let provider_preview = issue_connector_admission_preview(services, issue_id, path)?;
+    apply_connector_provider_admission_preview(&mut admission, &provider_preview);
     if record {
         let recorded = record_issue_mirror_admission(services, &admission)?;
         if let Some(object) = admission.as_object_mut() {
@@ -878,6 +907,79 @@ pub(crate) fn admit_issue_mirror_file(
         }
     }
     Ok(admission)
+}
+
+fn apply_connector_provider_admission_preview(
+    admission: &mut serde_json::Value,
+    provider_preview: &serde_json::Value,
+) {
+    let Some(object) = admission.as_object_mut() else {
+        return;
+    };
+    let admissible = provider_preview
+        .pointer("/decision/admissible")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let blockers = provider_preview
+        .pointer("/decision/blockers")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let failed_count = blockers.as_array().map(Vec::len).unwrap_or_default();
+    let route_to = provider_preview
+        .pointer("/decision/route_to")
+        .and_then(|value| value.as_str());
+
+    object.insert(
+        "provider_admission".to_string(),
+        provider_preview
+            .pointer("/provider_admission")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(null)),
+    );
+    object.insert(
+        "provider_decision".to_string(),
+        provider_preview
+            .pointer("/decision")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+    );
+    object.insert(
+        "provider_policy".to_string(),
+        provider_preview
+            .pointer("/policy")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+    );
+
+    if admissible {
+        if let Some(decision) = object
+            .get_mut("decision")
+            .and_then(|value| value.as_object_mut())
+        {
+            decision.insert("route_to".to_string(), serde_json::json!(route_to));
+        }
+        return;
+    }
+
+    object.insert("admitted".to_string(), serde_json::json!(false));
+    object.insert("result".to_string(), serde_json::json!("rejected"));
+    object.insert(
+        "reason".to_string(),
+        serde_json::json!("connector provider admission blocked"),
+    );
+    object.insert("failed_count".to_string(), serde_json::json!(failed_count));
+    object.insert("failed_checks".to_string(), blockers.clone());
+    if let Some(decision) = object
+        .get_mut("decision")
+        .and_then(|value| value.as_object_mut())
+    {
+        decision.insert("route_to".to_string(), serde_json::json!(null));
+        decision.insert(
+            "human_options".to_string(),
+            serde_json::json!(["inspect-provider", "publish", "retry-admission"]),
+        );
+        decision.insert("blockers".to_string(), blockers);
+    }
 }
 
 fn record_issue_mirror_readback(
@@ -1126,6 +1228,8 @@ fn record_issue_mirror_admission(
                         "external_key": admission.pointer("/external_key")
                     },
                     "decision": admission.pointer("/decision").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "provider_admission": admission.pointer("/provider_admission").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "provider_decision": admission.pointer("/provider_decision").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "policy": admission.pointer("/policy").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "receipt": admission.pointer("/receipt").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "failed_checks": admission.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
@@ -1956,6 +2060,8 @@ fn compact_issue_mirror_admission_summary(report: &serde_json::Value) -> serde_j
         "reason": report.pointer("/reason").and_then(|value| value.as_str()),
         "issue_id": report.pointer("/issue_id").and_then(|value| value.as_i64()),
         "provider": report.pointer("/provider").and_then(|value| value.as_str()),
+        "provider_admission_status": report.pointer("/provider_admission/status").and_then(|value| value.as_str()),
+        "provider_admission_blockers": report.pointer("/provider_admission/blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
         "review_surface": report.pointer("/review_surface").and_then(|value| value.as_str()),
         "external_key": report.pointer("/external_key").and_then(|value| value.as_str()),
         "gate": report.pointer("/policy/gate").and_then(|value| value.as_str()),
@@ -2267,6 +2373,18 @@ fn connector_provider_for_surface<'a>(
         })
 }
 
+fn connector_provider_admission_for_surface<'a>(
+    registry: &'a ConnectorRegistryReport,
+    provider_name: &str,
+    review_surface: &str,
+) -> Option<&'a ConnectorProviderAdmissionSpec> {
+    let provider = connector_provider_for_surface(registry, provider_name, review_surface)?;
+    registry
+        .provider_admissions
+        .iter()
+        .find(|admission| admission.provider == provider.name)
+}
+
 fn connector_provider_matches_surface(
     provider: &ConnectorProviderSpec,
     review_surface: &str,
@@ -2351,6 +2469,10 @@ fn compact_connector_queue_provider(
     provider: &ConnectorProviderSpec,
     issues: &[serde_json::Value],
 ) -> serde_json::Value {
+    let admission = registry
+        .provider_admissions
+        .iter()
+        .find(|admission| admission.provider == provider.name);
     let provider_issues = issues
         .iter()
         .filter(|issue| connector_provider_name_for_issue(registry, issue) == provider.name)
@@ -2380,6 +2502,10 @@ fn compact_connector_queue_provider(
         "configured": provider.configured,
         "supports_publish": provider.supports_publish,
         "supports_admission": provider.supports_admission,
+        "admission_status": admission.map(|admission| admission.status.as_str()),
+        "admission_blockers": admission
+            .map(|admission| admission.blockers.iter().map(String::as_str).collect::<Vec<_>>())
+            .unwrap_or_default(),
         "storage": provider.storage.as_str(),
         "issue_count": provider_issues.len(),
         "current_count": current_count,
@@ -2407,6 +2533,10 @@ fn compact_connector_queue_issue(
         .providers
         .iter()
         .find(|provider| provider.name == provider_name);
+    let admission = registry
+        .provider_admissions
+        .iter()
+        .find(|admission| admission.provider == provider_name);
     let issue_id = issue.pointer("/id").and_then(|value| value.as_i64());
     let failed_checks = issue
         .pointer("/connector/failed_checks")
@@ -2432,6 +2562,10 @@ fn compact_connector_queue_issue(
         "provider_status": provider.map(|provider| provider.status.as_str()),
         "configured": provider.map(|provider| provider.configured),
         "supports_publish": provider.map(|provider| provider.supports_publish),
+        "admission_status": admission.map(|admission| admission.status.as_str()),
+        "admission_blockers": admission
+            .map(|admission| admission.blockers.iter().map(String::as_str).collect::<Vec<_>>())
+            .unwrap_or_default(),
         "review_surface": issue.pointer("/connector/review_surface").and_then(|value| value.as_str()),
         "publish_required": true,
         "current": issue.pointer("/connector/current").and_then(|value| value.as_bool()),
@@ -2702,9 +2836,9 @@ mod tests {
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
-        ConnectorAdmissionPolicySpec, ConnectorProviderSpec, ConnectorRegistryReport,
-        HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopDoctorCounts, IssueAction, IssueCard,
-        IssueDoctorSummary, IssueMirrorReport,
+        ConnectorAdmissionPolicySpec, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
+        ConnectorRegistryReport, HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopDoctorCounts,
+        IssueAction, IssueCard, IssueDoctorSummary, IssueMirrorReport,
     };
 
     fn test_issue_action(action: &str, label: &str, command: &str) -> IssueAction {
@@ -2770,19 +2904,17 @@ mod tests {
     }
 
     fn test_connector_registry() -> ConnectorRegistryReport {
+        let providers = vec![
+            test_connector_provider("file", "File Mirror", "active", true, true, vec!["file:"]),
+            test_connector_provider("linear", "Linear", "planned", true, false, vec!["linear:"]),
+        ];
         ConnectorRegistryReport {
             schema_version: "entrance.hive.connector_registry.v1".to_string(),
-            providers: vec![
-                test_connector_provider("file", "File Mirror", "active", true, true, vec!["file:"]),
-                test_connector_provider(
-                    "linear",
-                    "Linear",
-                    "planned",
-                    true,
-                    false,
-                    vec!["linear:"],
-                ),
-            ],
+            provider_admissions: providers
+                .iter()
+                .map(|provider| test_provider_admission(provider))
+                .collect(),
+            providers,
             admission: ConnectorAdmissionPolicySpec {
                 schema_version: "entrance.hive.policy_registry.v1".to_string(),
                 gate: "connector_mirror_receipt_current".to_string(),
@@ -2793,6 +2925,35 @@ mod tests {
                 dry_run_command: "entrance hive issue connector-admission <id> --compact"
                     .to_string(),
             },
+        }
+    }
+
+    fn test_provider_admission(provider: &ConnectorProviderSpec) -> ConnectorProviderAdmissionSpec {
+        let mut blockers = Vec::new();
+        if provider.status != "active" {
+            blockers.push("provider_not_active".to_string());
+        }
+        if !provider.supports_admission {
+            blockers.push("admission_not_supported".to_string());
+        }
+        ConnectorProviderAdmissionSpec {
+            schema_version: "entrance.hive.policy_registry.v1".to_string(),
+            provider: provider.name.clone(),
+            status: if blockers.is_empty() {
+                "ready"
+            } else {
+                "blocked"
+            }
+            .to_string(),
+            gate: "connector_mirror_receipt_current".to_string(),
+            route_to: blockers
+                .is_empty()
+                .then(|| "external_issue_surface".to_string()),
+            expected_object_kind: "ISSUE_CONNECTOR_MIRROR".to_string(),
+            check: "external_receipt_current".to_string(),
+            required_receipts: vec!["mirror_file_current".to_string()],
+            blockers,
+            dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
         }
     }
 
@@ -3131,6 +3292,12 @@ mod tests {
                 .and_then(|value| value.as_u64()),
             Some(1)
         );
+        assert_eq!(
+            queue
+                .pointer("/providers/0/admission_status")
+                .and_then(|value| value.as_str()),
+            Some("ready")
+        );
 
         let linear_queue = compact_connector_queue(&registry, &issues, Some("linear"));
         assert_eq!(
@@ -3156,6 +3323,18 @@ mod tests {
                 .pointer("/issues/0/provider_status")
                 .and_then(|value| value.as_str()),
             Some("planned")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/admission_status")
+                .and_then(|value| value.as_str()),
+            Some("blocked")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/admission_blockers/0")
+                .and_then(|value| value.as_str()),
+            Some("provider_not_active")
         );
     }
 
