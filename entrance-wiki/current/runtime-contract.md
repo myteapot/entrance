@@ -124,7 +124,10 @@ publish queue, and `--provider <name>` narrows the dry-run plan to one
 issue-surface provider. `hive connector publish-plan --compact` creates a
 digest-bound local mirror publish plan from the current queue; `hive connector
 publish-execute --plan-id <sha256> --compact` recomputes that plan and refuses
-to execute if the queue or issue mirror digest changed. `hive issue
+to execute if the queue or issue mirror digest changed. Successful execution
+records a typed connector publish comment/evidence on each issue before writing
+the mirror, so the external issue/status/comment surface receives the execution
+receipt in the same publish. `hive issue
 connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`.

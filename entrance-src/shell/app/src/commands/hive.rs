@@ -2106,6 +2106,10 @@ fn compact_digest(digest: &MirrorFileDigest) -> serde_json::Value {
     })
 }
 
+fn compact_digest_label(value: &str) -> String {
+    value.chars().take(12).collect()
+}
+
 fn readback_check(
     name: &str,
     summary: &str,
@@ -2418,14 +2422,18 @@ pub(crate) fn execute_connector_publish_plan(
         }));
     }
 
-    let issue_ids = plan
+    let plan_issues = plan
         .pointer("/issues")
         .and_then(|value| value.as_array())
         .cloned()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let issue_ids = plan_issues
+        .iter()
         .into_iter()
         .filter_map(|issue| issue.pointer("/id").and_then(|value| value.as_i64()))
         .collect::<Vec<_>>();
+    let recorded =
+        record_connector_publish_execute_issues(services, &plan, &plan_issues, &current_plan_id)?;
     let mut published = Vec::new();
     for issue_id in &issue_ids {
         published.push(publish_issue_mirror_to_file(services, *issue_id, None)?);
@@ -2439,6 +2447,7 @@ pub(crate) fn execute_connector_publish_plan(
         "provider_filter": plan.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
         "issue_count": issue_ids.len(),
         "issue_ids": issue_ids,
+        "recorded": recorded,
         "published": published,
         "after": {
             "publish_required_count": after_queue.pointer("/publish_required_count").and_then(|value| value.as_u64()),
@@ -2450,6 +2459,155 @@ pub(crate) fn execute_connector_publish_plan(
             "plan": connector_publish_plan_command(provider_filter),
             "execute": format!("{} --plan-id {} --compact", connector_publish_execute_command_prefix(provider_filter), current_plan_id)
         }
+    }))
+}
+
+fn record_connector_publish_execute_issues(
+    services: &AppServices,
+    plan: &serde_json::Value,
+    plan_issues: &[serde_json::Value],
+    plan_id: &str,
+) -> Result<Vec<serde_json::Value>> {
+    plan_issues
+        .iter()
+        .map(|issue_plan| {
+            record_connector_publish_execute_issue(services, plan, issue_plan, plan_id)
+        })
+        .collect()
+}
+
+fn record_connector_publish_execute_issue(
+    services: &AppServices,
+    plan: &serde_json::Value,
+    issue_plan: &serde_json::Value,
+    plan_id: &str,
+) -> Result<serde_json::Value> {
+    let issue_id = issue_plan
+        .pointer("/id")
+        .and_then(|value| value.as_i64())
+        .context("connector publish plan issue missing id")?;
+    let issue = services
+        .kernel
+        .store
+        .get_hive_issue(issue_id)?
+        .with_context(|| format!("unknown hive issue `{issue_id}`"))?;
+    let contract = issue
+        .loop_id
+        .map(|loop_id| services.kernel.store.get_hive_loop_contract(loop_id))
+        .transpose()?
+        .flatten();
+    let loop_id = issue.loop_id;
+    let round = contract
+        .as_ref()
+        .map(|contract| contract.current_round)
+        .unwrap_or(1);
+    let phase = contract
+        .as_ref()
+        .map(|contract| contract.active_phase.as_str());
+    let short_plan = compact_digest_label(plan_id);
+    let issue_count = plan
+        .pointer("/issue_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let body = format!("Connector publish plan {short_plan} executed for {issue_count} issue(s).");
+    let issue_ids = plan
+        .pointer("/issues")
+        .and_then(|value| value.as_array())
+        .map(|issues| {
+            issues
+                .iter()
+                .filter_map(|issue| issue.pointer("/id").and_then(|value| value.as_i64()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let comment_id = services
+        .kernel
+        .store
+        .insert_hive_comment(HiveCommentCreate {
+            issue_id,
+            author: "hive".to_string(),
+            body: body.clone(),
+            payload: serde_json::json!({
+                "schema_version": SYSTEM_COMMENT_SCHEMA_VERSION,
+                "source": "hive",
+                "action": "connector_publish_execute",
+                "loop_id": loop_id,
+                "round": round,
+                "status": issue.status.as_str(),
+                "phase": phase,
+                "connector_publish": {
+                    "schema_version": CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION,
+                    "result": "executed",
+                    "plan_id": plan_id,
+                    "provider_filter": plan.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+                    "issue_count": issue_count,
+                    "issue_ids": issue_ids,
+                    "issue_plan": issue_plan,
+                    "commands": plan.pointer("/commands").cloned().unwrap_or_else(|| serde_json::json!({}))
+                }
+            }),
+        })?;
+
+    let evidence_id = if let Some(loop_id) = issue.loop_id {
+        Some(services.kernel.store.insert_hive_loop_evidence(
+            HiveLoopEvidenceCreate {
+                loop_id,
+                stage_id: None,
+                round,
+                kind: "connector_publish_execute".to_string(),
+                summary: body.clone(),
+                path: issue_plan
+                    .pointer("/path")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                payload: serde_json::json!({
+                    "schema_version": CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION,
+                    "source": "issue/status/comment",
+                    "result": "executed",
+                    "issue": {
+                        "id": issue.id,
+                        "status": issue.status.as_str(),
+                        "comment_id": comment_id
+                    },
+                    "loop": {
+                        "id": loop_id,
+                        "status": contract.as_ref().map(|contract| contract.status.as_str()),
+                        "phase": phase,
+                        "round": round
+                    },
+                    "operator": {
+                        "author": "hive",
+                        "action": "connector_publish_execute",
+                        "comment_body": body
+                    },
+                    "connector": {
+                        "provider": issue_plan.pointer("/provider").cloned().unwrap_or(serde_json::Value::Null),
+                        "provider_status": issue_plan.pointer("/provider_status").cloned().unwrap_or(serde_json::Value::Null),
+                        "review_surface": issue_plan.pointer("/review_surface").cloned().unwrap_or(serde_json::Value::Null),
+                        "path": issue_plan.pointer("/path").cloned().unwrap_or(serde_json::Value::Null)
+                    },
+                    "plan": {
+                        "schema_version": plan.pointer("/schema_version").cloned().unwrap_or(serde_json::Value::Null),
+                        "plan_id": plan_id,
+                        "provider_filter": plan.pointer("/provider_filter").cloned().unwrap_or(serde_json::Value::Null),
+                        "issue_count": issue_count,
+                        "issue_ids": issue_ids,
+                        "issue": issue_plan
+                    }
+                }),
+            },
+        )?)
+    } else {
+        None
+    };
+
+    Ok(serde_json::json!({
+        "schema_version": "entrance.hive.connector_publish_execute_record.v1",
+        "issue_id": issue_id,
+        "comment_id": comment_id,
+        "evidence_id": evidence_id,
+        "comment_body": body,
+        "plan_id": plan_id
     }))
 }
 
@@ -2991,7 +3149,10 @@ fn compact_recent_evidence(card: &IssueCard, limit: usize) -> Vec<serde_json::Va
                 "role": row.stage_role,
                 "kind": row.kind,
                 "summary": compact_text(&row.summary, 220),
+                "schema_version": row.schema_version,
                 "admission": row.admission_result,
+                "operator_author": row.operator_author,
+                "operator_action": row.operator_action,
                 "worker": row.worker_kind.as_ref().map(|kind| serde_json::json!({
                     "kind": kind,
                     "command": row.worker_command.as_ref().map(|command| compact_text(command, 220)),

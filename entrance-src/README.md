@@ -130,8 +130,9 @@ Compact issue surfaces include connector mirror status: `hive issue show
 `hive connector queue --provider <name> --compact` narrows the queue to a
 single issue-surface provider, and `hive connector publish-plan --compact`
 produces a digest-bound two-step plan before
-`hive connector publish-execute --plan-id <sha256> --compact` writes local
-connector mirrors. `hive connector registry --compact` exposes
+`hive connector publish-execute --plan-id <sha256> --compact` records a typed
+connector publish execution comment/evidence on each issue and then writes local
+connector mirrors containing that receipt. `hive connector registry --compact` exposes
 active/planned issue-surface providers, provider-specific admission status, and
 the connector admission gate, while `hive issue
 connector-admission <id> --compact` dry-runs whether the current mirror can be
