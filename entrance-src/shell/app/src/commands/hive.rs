@@ -49,7 +49,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -162,6 +162,9 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 print_json(&report)
             }
         }
+        [scope, action, rest @ ..] if scope == "connector" && action == "queue" => print_json(
+            &connector_queue_report(services, flag_value(rest, "--provider"))?,
+        ),
         [scope, action, id, rest @ ..] if scope == "loop" && action == "run" => {
             let loop_id = id.parse::<i64>()?;
             let report = services.hive.loop_run(HiveLoopRunRequest {
@@ -433,7 +436,11 @@ fn compact_issue_board_with_connector_status(
         "schema_version": "entrance.hive.issue_board.compact.v1",
         "total": cards.len(),
         "columns": columns,
-        "connector_queue": compact_connector_queue(&issues)
+        "connector_queue": compact_connector_queue(
+            &services.hive.connector_registry(),
+            &issues,
+            None
+        )
     })
 }
 
@@ -2227,6 +2234,22 @@ fn compact_connector_status_for_issue(services: &AppServices, issue_id: i64) -> 
     })
 }
 
+pub(crate) fn connector_queue_report(
+    services: &AppServices,
+    provider_filter: Option<&str>,
+) -> Result<serde_json::Value> {
+    let cards = services.hive.panel()?;
+    let issues = cards
+        .iter()
+        .map(|card| compact_issue_card_with_connector_status(services, card))
+        .collect::<Vec<_>>();
+    Ok(compact_connector_queue(
+        &services.hive.connector_registry(),
+        &issues,
+        provider_filter,
+    ))
+}
+
 fn connector_provider_for_surface<'a>(
     registry: &'a ConnectorRegistryReport,
     provider_name: &str,
@@ -2257,8 +2280,37 @@ fn connector_provider_matches_surface(
     })
 }
 
-fn compact_connector_queue(issues: &[serde_json::Value]) -> serde_json::Value {
-    let publish_required = issues
+fn compact_connector_queue(
+    registry: &ConnectorRegistryReport,
+    issues: &[serde_json::Value],
+    provider_filter: Option<&str>,
+) -> serde_json::Value {
+    let provider_filter = normalized_provider_filter(provider_filter);
+    let provider_known = provider_filter.as_ref().map_or(true, |filter| {
+        registry
+            .providers
+            .iter()
+            .any(|provider| provider.name == *filter)
+    });
+    let filtered_issues = issues
+        .iter()
+        .filter(|issue| {
+            let provider = connector_provider_name_for_issue(registry, issue);
+            provider_filter
+                .as_ref()
+                .map_or(true, |filter| provider == *filter)
+        })
+        .collect::<Vec<_>>();
+    let current_count = filtered_issues
+        .iter()
+        .filter(|issue| {
+            issue
+                .pointer("/connector/current")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        })
+        .count();
+    let publish_required = filtered_issues
         .iter()
         .filter(|issue| {
             issue
@@ -2266,33 +2318,181 @@ fn compact_connector_queue(issues: &[serde_json::Value]) -> serde_json::Value {
                 .and_then(|value| value.as_bool())
                 == Some(true)
         })
-        .map(|issue| {
-            serde_json::json!({
-                "id": issue.pointer("/id").and_then(|value| value.as_i64()),
-                "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
-                "title": issue.pointer("/title").and_then(|value| value.as_str()),
-                "status": issue.pointer("/status").and_then(|value| value.as_str()),
-                "reason": issue.pointer("/connector/reason").and_then(|value| value.as_str()),
-                "path": issue.pointer("/connector/path").and_then(|value| value.as_str()),
-                "failed_check_count": issue
-                    .pointer("/connector/failed_checks")
-                    .and_then(|value| value.as_array())
-                    .map(Vec::len)
-                    .unwrap_or_default(),
-                "publish_command": issue
-                    .pointer("/connector/publish_command")
-                    .and_then(|value| value.as_str()),
-                "readback_command": issue
-                    .pointer("/connector/readback_command")
-                    .and_then(|value| value.as_str())
-            })
+        .map(|issue| compact_connector_queue_issue(registry, issue))
+        .collect::<Vec<_>>();
+    let providers = registry
+        .providers
+        .iter()
+        .filter(|provider| {
+            provider_filter
+                .as_ref()
+                .map_or(true, |filter| provider.name == *filter)
         })
+        .map(|provider| compact_connector_queue_provider(registry, provider, issues))
         .collect::<Vec<_>>();
     serde_json::json!({
-        "schema_version": "entrance.hive.connector_queue.compact.v1",
+        "schema_version": "entrance.hive.connector_queue.v1",
+        "provider_filter": provider_filter,
+        "provider_known": provider_known,
+        "total": filtered_issues.len(),
+        "current_count": current_count,
         "publish_required_count": publish_required.len(),
-        "issues": publish_required
+        "providers": providers,
+        "issues": publish_required,
+        "commands": {
+            "refresh": "entrance hive connector queue --compact",
+            "provider": "entrance hive connector queue --provider <name> --compact"
+        }
     })
+}
+
+fn compact_connector_queue_provider(
+    registry: &ConnectorRegistryReport,
+    provider: &ConnectorProviderSpec,
+    issues: &[serde_json::Value],
+) -> serde_json::Value {
+    let provider_issues = issues
+        .iter()
+        .filter(|issue| connector_provider_name_for_issue(registry, issue) == provider.name)
+        .collect::<Vec<_>>();
+    let publish_required_count = provider_issues
+        .iter()
+        .filter(|issue| {
+            issue
+                .pointer("/connector/publish_required")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        })
+        .count();
+    let current_count = provider_issues
+        .iter()
+        .filter(|issue| {
+            issue
+                .pointer("/connector/current")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        })
+        .count();
+    serde_json::json!({
+        "name": provider.name.as_str(),
+        "display_name": provider.display_name.as_str(),
+        "status": provider.status.as_str(),
+        "configured": provider.configured,
+        "supports_publish": provider.supports_publish,
+        "supports_admission": provider.supports_admission,
+        "storage": provider.storage.as_str(),
+        "issue_count": provider_issues.len(),
+        "current_count": current_count,
+        "publish_required_count": publish_required_count,
+        "queue_command": format!("entrance hive connector queue --provider {} --compact", provider.name),
+        "dry_run_action": {
+            "schema_version": "entrance.hive.connector_publish_dry_run.v1",
+            "action": "publish",
+            "provider": provider.name.as_str(),
+            "provider_status": provider.status.as_str(),
+            "provider_configured": provider.configured,
+            "supports_publish": provider.supports_publish,
+            "would_write": "local connector mirror file",
+            "remote_write": false
+        }
+    })
+}
+
+fn compact_connector_queue_issue(
+    registry: &ConnectorRegistryReport,
+    issue: &serde_json::Value,
+) -> serde_json::Value {
+    let provider_name = connector_provider_name_for_issue(registry, issue);
+    let provider = registry
+        .providers
+        .iter()
+        .find(|provider| provider.name == provider_name);
+    let issue_id = issue.pointer("/id").and_then(|value| value.as_i64());
+    let failed_checks = issue
+        .pointer("/connector/failed_checks")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let failed_check_count = failed_checks.as_array().map(Vec::len).unwrap_or_default();
+    let publish_command = issue
+        .pointer("/connector/publish_command")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            format!(
+                "entrance hive issue mirror-publish {} --compact",
+                issue_id.unwrap_or_default()
+            )
+        });
+    serde_json::json!({
+        "id": issue_id,
+        "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
+        "title": issue.pointer("/title").and_then(|value| value.as_str()),
+        "status": issue.pointer("/status").and_then(|value| value.as_str()),
+        "provider": provider_name.as_str(),
+        "provider_status": provider.map(|provider| provider.status.as_str()),
+        "configured": provider.map(|provider| provider.configured),
+        "supports_publish": provider.map(|provider| provider.supports_publish),
+        "review_surface": issue.pointer("/connector/review_surface").and_then(|value| value.as_str()),
+        "publish_required": true,
+        "current": issue.pointer("/connector/current").and_then(|value| value.as_bool()),
+        "reason": issue.pointer("/connector/reason").and_then(|value| value.as_str()),
+        "path": issue.pointer("/connector/path").and_then(|value| value.as_str()),
+        "failed_checks": failed_checks,
+        "failed_check_count": failed_check_count,
+        "commands": {
+            "publish": publish_command.as_str(),
+            "readback": issue
+                .pointer("/connector/readback_command")
+                .and_then(|value| value.as_str()),
+            "admit": issue
+                .pointer("/connector/admit_command")
+                .and_then(|value| value.as_str())
+        },
+        "dry_run_action": {
+            "schema_version": "entrance.hive.connector_publish_dry_run.v1",
+            "action": "publish",
+            "provider": provider_name.as_str(),
+            "provider_status": provider.map(|provider| provider.status.as_str()),
+            "provider_configured": provider.map(|provider| provider.configured),
+            "supports_publish": provider.map(|provider| provider.supports_publish),
+            "would_write": "local connector mirror file",
+            "remote_write": false,
+            "command": publish_command
+        }
+    })
+}
+
+fn connector_provider_name_for_issue(
+    registry: &ConnectorRegistryReport,
+    issue: &serde_json::Value,
+) -> String {
+    if let Some(provider) = issue
+        .pointer("/connector/provider")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+    {
+        return provider.trim().to_string();
+    }
+    if let Some(review_surface) = issue
+        .pointer("/connector/review_surface")
+        .and_then(|value| value.as_str())
+    {
+        if let Some(provider) = registry
+            .providers
+            .iter()
+            .find(|provider| connector_provider_matches_surface(provider, review_surface))
+        {
+            return provider.name.clone();
+        }
+    }
+    "unknown".to_string()
+}
+
+fn normalized_provider_filter(provider_filter: Option<&str>) -> Option<String> {
+    provider_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all")
+        .map(ToOwned::to_owned)
 }
 
 fn compact_issue_card(card: &IssueCard) -> serde_json::Value {
@@ -2502,6 +2702,7 @@ mod tests {
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
+        ConnectorAdmissionPolicySpec, ConnectorProviderSpec, ConnectorRegistryReport,
         HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopDoctorCounts, IssueAction, IssueCard,
         IssueDoctorSummary, IssueMirrorReport,
     };
@@ -2565,6 +2766,59 @@ mod tests {
                 "explorer:exploration_packet worker=codex ok=false receipt=false retry_exhausted"
                     .to_string(),
             ],
+        }
+    }
+
+    fn test_connector_registry() -> ConnectorRegistryReport {
+        ConnectorRegistryReport {
+            schema_version: "entrance.hive.connector_registry.v1".to_string(),
+            providers: vec![
+                test_connector_provider("file", "File Mirror", "active", true, true, vec!["file:"]),
+                test_connector_provider(
+                    "linear",
+                    "Linear",
+                    "planned",
+                    true,
+                    false,
+                    vec!["linear:"],
+                ),
+            ],
+            admission: ConnectorAdmissionPolicySpec {
+                schema_version: "entrance.hive.policy_registry.v1".to_string(),
+                gate: "connector_mirror_receipt_current".to_string(),
+                route_to: "external_issue_surface".to_string(),
+                expected_object_kind: "ISSUE_CONNECTOR_MIRROR".to_string(),
+                check: "external_receipt_current".to_string(),
+                required_receipts: vec!["mirror_file_current".to_string()],
+                dry_run_command: "entrance hive issue connector-admission <id> --compact"
+                    .to_string(),
+            },
+        }
+    }
+
+    fn test_connector_provider(
+        name: &str,
+        display_name: &str,
+        status: &str,
+        configured: bool,
+        supports_publish: bool,
+        prefixes: Vec<&str>,
+    ) -> ConnectorProviderSpec {
+        ConnectorProviderSpec {
+            name: name.to_string(),
+            display_name: display_name.to_string(),
+            status: status.to_string(),
+            mode: "test".to_string(),
+            review_surface_prefixes: prefixes.into_iter().map(ToOwned::to_owned).collect(),
+            auth_required: false,
+            auth_env: Vec::new(),
+            configured,
+            supports_status: supports_publish,
+            supports_publish,
+            supports_readback: supports_publish,
+            supports_admission: supports_publish,
+            storage: "test".to_string(),
+            notes: "test provider".to_string(),
         }
     }
 
@@ -2770,6 +3024,7 @@ mod tests {
 
     #[test]
     fn compact_connector_queue_collects_publish_required_issues() {
+        let registry = test_connector_registry();
         let issues = vec![
             serde_json::json!({
                 "id": 7,
@@ -2778,6 +3033,9 @@ mod tests {
                 "status": "Done",
                 "connector": {
                     "publish_required": true,
+                    "current": false,
+                    "provider": "file",
+                    "review_surface": "file:local-board",
                     "reason": "mirror_stale",
                     "path": "/tmp/issue.json",
                     "failed_checks": ["remote_digest_current"],
@@ -2791,25 +3049,45 @@ mod tests {
                 "title": "Loop #4: connector current",
                 "status": "Done",
                 "connector": {
+                    "provider": "file",
+                    "review_surface": "file:local-board",
+                    "current": true,
                     "publish_required": false,
                     "reason": "connector_mirror_current"
                 }
             }),
+            serde_json::json!({
+                "id": 9,
+                "loop_id": 5,
+                "title": "Loop #5: connector linear planned",
+                "status": "Blocked",
+                "connector": {
+                    "publish_required": true,
+                    "current": false,
+                    "provider": "linear",
+                    "review_surface": "linear:ENT-9",
+                    "reason": "mirror_file_missing",
+                    "failed_checks": ["remote_file_present"],
+                    "publish_command": "entrance hive issue mirror-publish 9 --compact",
+                    "readback_command": "entrance hive issue mirror-readback 9 --record --compact",
+                    "admit_command": "entrance hive issue mirror-admit 9 --record --compact"
+                }
+            }),
         ];
 
-        let queue = compact_connector_queue(&issues);
+        let queue = compact_connector_queue(&registry, &issues, None);
 
         assert_eq!(
             queue
                 .pointer("/schema_version")
                 .and_then(|value| value.as_str()),
-            Some("entrance.hive.connector_queue.compact.v1")
+            Some("entrance.hive.connector_queue.v1")
         );
         assert_eq!(
             queue
                 .pointer("/publish_required_count")
                 .and_then(|value| value.as_u64()),
-            Some(1)
+            Some(2)
         );
         assert_eq!(
             queue
@@ -2831,9 +3109,53 @@ mod tests {
         );
         assert_eq!(
             queue
-                .pointer("/issues/0/publish_command")
+                .pointer("/issues/0/provider")
+                .and_then(|value| value.as_str()),
+            Some("file")
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/commands/publish")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue mirror-publish 7 --compact")
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/dry_run_action/would_write")
+                .and_then(|value| value.as_str()),
+            Some("local connector mirror file")
+        );
+        assert_eq!(
+            queue
+                .pointer("/providers/0/publish_required_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+
+        let linear_queue = compact_connector_queue(&registry, &issues, Some("linear"));
+        assert_eq!(
+            linear_queue
+                .pointer("/provider_filter")
+                .and_then(|value| value.as_str()),
+            Some("linear")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/publish_required_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/providers/0/name")
+                .and_then(|value| value.as_str()),
+            Some("linear")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/provider_status")
+                .and_then(|value| value.as_str()),
+            Some("planned")
         );
     }
 

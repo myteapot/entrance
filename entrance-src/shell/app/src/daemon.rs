@@ -19,9 +19,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::{
     app::AppServices,
     commands::hive::{
-        admit_issue_mirror_file, audit_issue_mirror_file, issue_connector_admission_preview,
-        issue_mirror_status, publish_issue_mirror_to_file, readback_issue_mirror_file,
-        sync_issue_mirror_to_file, verify_issue_mirror_file,
+        admit_issue_mirror_file, audit_issue_mirror_file, connector_queue_report,
+        issue_connector_admission_preview, issue_mirror_status, publish_issue_mirror_to_file,
+        readback_issue_mirror_file, sync_issue_mirror_to_file, verify_issue_mirror_file,
     },
 };
 
@@ -524,6 +524,13 @@ async fn handle_invoke(
         }
         "hive_connector_registry" => Ok(serde_json::to_value(
             state.services.hive.connector_registry(),
+        )?),
+        "hive_connector_queue" => Ok(connector_queue_report(
+            &state.services,
+            args.get("provider")
+                .or_else(|| args.get("providerName"))
+                .or_else(|| args.get("provider_name"))
+                .and_then(|value| value.as_str()),
         )?),
         "hive_issue_show" => {
             let issue_id = args

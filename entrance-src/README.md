@@ -60,6 +60,8 @@ Local agent-loop MVP:
 .\entrance.exe hive loop policies 1
 .\entrance.exe hive policy registry
 .\entrance.exe hive connector registry --compact
+.\entrance.exe hive connector queue --compact
+.\entrance.exe hive connector queue --provider linear --compact
 .\entrance.exe hive issue list
 .\entrance.exe hive issue show 1
 .\entrance.exe hive issue connector-admission 1 --compact
@@ -122,8 +124,11 @@ the issue is bound to a loop, mirrors it into the loop ledger as
 Compact issue surfaces include connector mirror status: `hive issue show
 <id> --compact` exposes the issue's `connector` block, and `hive issue list
 --compact` also returns a `connector_queue` for publish-required mirrors.
-`hive connector registry --compact` exposes active/planned issue-surface
-providers and the connector admission gate, while `hive issue
+`hive connector queue --compact` exposes the provider-scoped publish queue and
+`hive connector queue --provider <name> --compact` narrows the dry-run plan to a
+single issue-surface provider. `hive connector registry --compact` exposes
+active/planned issue-surface providers and the connector admission gate, while
+`hive issue
 connector-admission <id> --compact` dry-runs whether the current mirror can be
 routed to `external_issue_surface`.
 Connector provider config is read from `entrance.toml`; for example

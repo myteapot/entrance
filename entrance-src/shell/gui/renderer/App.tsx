@@ -240,6 +240,54 @@ type ConnectorProvider = {
   notes: string;
 };
 
+type ConnectorQueueReport = {
+  schema_version: string;
+  provider_filter: string | null;
+  provider_known: boolean;
+  total: number;
+  current_count: number;
+  publish_required_count: number;
+  providers: ConnectorQueueProvider[];
+  issues: ConnectorQueueIssue[];
+};
+
+type ConnectorQueueProvider = {
+  name: string;
+  display_name: string;
+  status: string;
+  configured: boolean;
+  supports_publish: boolean;
+  supports_admission: boolean;
+  storage: string;
+  issue_count: number;
+  current_count: number;
+  publish_required_count: number;
+  queue_command: string;
+};
+
+type ConnectorQueueIssue = {
+  id: number | null;
+  loop_id: number | null;
+  title: string | null;
+  status: string | null;
+  provider: string;
+  provider_status: string | null;
+  configured: boolean | null;
+  supports_publish: boolean | null;
+  review_surface: string | null;
+  publish_required: boolean;
+  current: boolean | null;
+  reason: string | null;
+  path: string | null;
+  failed_checks: string[];
+  failed_check_count: number;
+  commands: {
+    publish: string | null;
+    readback: string | null;
+    admit: string | null;
+  };
+};
+
 type OperatorEvent = {
   id: number;
   round: number;
@@ -508,6 +556,9 @@ export default function App() {
   const [connectorRegistry, { refetch: refetchConnectorRegistry }] = createResource(async () =>
     bridge.invoke<ConnectorRegistry>("hive_connector_registry"),
   );
+  const [connectorQueue, { refetch: refetchConnectorQueue }] = createResource(async () =>
+    bridge.invoke<ConnectorQueueReport>("hive_connector_queue", {}),
+  );
   const [launcherItems, { refetch: refetchLauncher }] = createResource(launcherQuery, async (query) =>
     bridge.invoke<LauncherResult[]>("launcher_search", { query, limit: 12 }),
   );
@@ -521,13 +572,29 @@ export default function App() {
   const selectedIssueDoctor = createMemo(() => selectedIssueCard()?.doctor ?? null);
   const issueCardsForStatus = (statusName: string) =>
     (issueCards() ?? []).filter((card) => card.issue.status === statusName);
-  const connectorPublishQueue = createMemo(() =>
-    (issueCards() ?? []).filter((card) => card.connector?.publish_required === true),
+  const connectorQueueIssues = createMemo(() => connectorQueue()?.issues ?? []);
+  const connectorQueueProviders = createMemo(() => connectorQueue()?.providers ?? []);
+  const connectorPublishQueue = createMemo(() => {
+    const cards = issueCards() ?? [];
+    const queuedIds = new Set(
+      connectorQueueIssues()
+        .map((issue) => issue.id)
+        .filter((id): id is number => typeof id === "number"),
+    );
+    if (connectorQueue()) {
+      return cards.filter((card) => queuedIds.has(card.issue.id));
+    }
+    return cards.filter((card) => card.connector?.publish_required === true);
+  });
+  const connectorPublishRequiredCount = createMemo(
+    () => connectorQueue()?.publish_required_count ?? connectorPublishQueue().length,
   );
   const connectorProviders = createMemo(() => connectorRegistry()?.providers ?? []);
   const activeConnectorCount = createMemo(
     () => connectorProviders().filter((provider) => provider.status === "active").length,
   );
+  const connectorQueueIssueById = (issueId: number) =>
+    connectorQueueIssues().find((issue) => issue.id === issueId) ?? null;
   const revealIssueDetail = () => {
     window.setTimeout(() => {
       issueDetailPanel?.scrollIntoView({ block: "start", behavior: "auto" });
@@ -568,14 +635,15 @@ export default function App() {
       refetchHiveLoops(),
       refetchIssueCards(),
       refetchConnectorRegistry(),
+      refetchConnectorQueue(),
       refetchLauncher(),
     ]);
   };
   const refetchLoopSurfaces = async () => {
-    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+    await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchConnectorQueue(), refetchStatus()]);
   };
   const refetchIssueCardsQuietly = () => {
-    void Promise.resolve(refetchIssueCards()).catch(() => undefined);
+    void Promise.all([refetchIssueCards(), refetchConnectorQueue()]).catch(() => undefined);
   };
   const pollLoopSurfaces = () => {
     void refetchLoopSurfaces().catch(() => undefined);
@@ -1369,6 +1437,8 @@ export default function App() {
   };
   const connectorProviderTone = (provider: ConnectorProvider) =>
     provider.status === "active" && provider.configured ? "active" : "planned";
+  const connectorQueueProviderTone = (provider: ConnectorQueueProvider) =>
+    provider.status === "active" && provider.configured ? "active" : "planned";
   const connectorStatusStrip = (card: IssueCard, surface: string) =>
     card.connector ? (
       <div
@@ -2139,18 +2209,31 @@ export default function App() {
                   <div>
                     <strong>Connector queue</strong>
                     <span>
-                      {connectorPublishQueue().length
-                        ? `${connectorPublishQueue().length} publish required`
+                      {connectorPublishRequiredCount()
+                        ? `${connectorPublishRequiredCount()} publish required`
                         : "all current"}
                     </span>
                   </div>
+                  {connectorQueueProviders().map((provider) => (
+                    <span
+                      class={`connector-provider connector-provider--${connectorQueueProviderTone(provider)}`}
+                      title={provider.queue_command}
+                    >
+                      <strong>{provider.name}</strong>
+                      <span>{provider.publish_required_count} queued</span>
+                    </span>
+                  ))}
                   {connectorPublishQueue().slice(0, 4).map((card) => (
                     <button
                       type="button"
                       aria-label={`Publish issue #${card.issue.id} from connector queue`}
                       data-testid={`connector-publish-queue-publish-${card.issue.id}`}
                       disabled={Boolean(issuePendingLabel(card.issue.id))}
-                      title={card.connector?.publish_command ?? issueMirrorPublishCommand(card)}
+                      title={
+                        connectorQueueIssueById(card.issue.id)?.commands.publish ??
+                        card.connector?.publish_command ??
+                        issueMirrorPublishCommand(card)
+                      }
                       onClick={() => void publishIssueMirror(card)}
                     >
                       #{card.issue.id} Publish
