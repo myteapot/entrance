@@ -268,6 +268,34 @@ type IssueMirrorAuditReport = {
   failed_checks: string[];
   verify: IssueMirrorVerifyReport;
 };
+type IssueMirrorReadbackReport = {
+  schema_version: string;
+  passed: boolean;
+  failed_count: number;
+  failed_checks: string[];
+  path: string;
+  current: {
+    digest: {
+      sha256: string;
+      bytes: number;
+    };
+    comments: {
+      count: number;
+    };
+  };
+  remote: {
+    parsed: boolean;
+    digest: {
+      sha256: string;
+      bytes: number;
+    } | null;
+    surface: {
+      comments: {
+        count: number;
+      };
+    } | null;
+  };
+};
 type IssueMirrorAdmissionReport = {
   schema_version: string;
   admitted: boolean;
@@ -635,6 +663,27 @@ export default function App() {
       }
     } catch (error) {
       setBanner(`Issue #${card.issue.id} verify failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(card.issue.id, null);
+    }
+  };
+  const readbackIssueMirror = async (card: IssueCard) => {
+    if (issuePendingLabel(card.issue.id)) return;
+    setSelectedIssueId(card.issue.id);
+    setPendingIssue(card.issue.id, "Reading");
+    try {
+      const report = await bridge.invoke<IssueMirrorReadbackReport>("hive_issue_mirror_readback", {
+        issueId: card.issue.id,
+      });
+      if (report.passed) {
+        setBanner(
+          `Read back issue mirror ${compactText(report.current.digest.sha256, 12)}: ${report.remote.surface?.comments.count ?? 0} comments`,
+        );
+      } else {
+        setBanner(`Issue #${card.issue.id} readback failed: ${compactText(report.failed_checks.join(", "), 96)}`);
+      }
+    } catch (error) {
+      setBanner(`Issue #${card.issue.id} readback failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
     }
@@ -1187,12 +1236,16 @@ export default function App() {
     `entrance hive issue mirror-sync ${card.issue.id}`;
   const issueMirrorVerifyCommand = (card: IssueCard) =>
     `entrance hive issue mirror-audit ${card.issue.id} --compact`;
+  const issueMirrorReadbackCommand = (card: IssueCard) =>
+    `entrance hive issue mirror-readback ${card.issue.id} --compact`;
   const issueMirrorAdmitCommand = (card: IssueCard) =>
     `entrance hive issue mirror-admit ${card.issue.id} --record --compact`;
   const issueMirrorSyncLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Syncing" ? "Syncing" : "Sync";
   const issueMirrorVerifyLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Verifying" ? "Verifying" : "Verify";
+  const issueMirrorReadbackLabel = (card: IssueCard) =>
+    issuePendingLabel(card.issue.id) === "Reading" ? "Reading" : "Readback";
   const issueMirrorAdmitLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Admitting" ? "Admitting" : "Admit";
 
@@ -1666,6 +1719,16 @@ export default function App() {
                               onClick={() => void verifyIssueMirror(card)}
                             >
                               {issueMirrorVerifyLabel(card)}
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Read back issue #${card.issue.id} mirror file from detail`}
+                              data-testid={`issue-action-detail-readback-${card.issue.id}`}
+                              disabled={Boolean(issuePendingLabel(card.issue.id))}
+                              title={issueMirrorReadbackCommand(card)}
+                              onClick={() => void readbackIssueMirror(card)}
+                            >
+                              {issueMirrorReadbackLabel(card)}
                             </button>
                             <button
                               type="button"
@@ -2167,6 +2230,16 @@ export default function App() {
                                     onClick={() => void verifyIssueMirror(card)}
                                   >
                                     {issueMirrorVerifyLabel(card)}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Read back issue #${card.issue.id} mirror file from board`}
+                                    data-testid={`issue-action-board-readback-${card.issue.id}`}
+                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                    title={issueMirrorReadbackCommand(card)}
+                                    onClick={() => void readbackIssueMirror(card)}
+                                  >
+                                    {issueMirrorReadbackLabel(card)}
                                   </button>
                                   <button
                                     type="button"

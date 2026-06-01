@@ -20,6 +20,7 @@ const ISSUE_MIRROR_SYNC_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync.
 const ISSUE_MIRROR_SYNC_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync_receipt.v1";
 const ISSUE_MIRROR_VERIFY_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_verify.v1";
 const ISSUE_MIRROR_AUDIT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_audit.v1";
+const ISSUE_MIRROR_READBACK_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_readback.v1";
 const ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_admission.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
@@ -34,7 +35,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -227,6 +228,18 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 audit_issue_mirror_file(services, id.parse::<i64>()?, flag_value(rest, "--path"))?;
             if flag_present(rest, "--compact") {
                 print_json(&compact_issue_mirror_audit_summary(&report))
+            } else {
+                print_json(&report)
+            }
+        }
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-readback" => {
+            let report = readback_issue_mirror_file(
+                services,
+                id.parse::<i64>()?,
+                flag_value(rest, "--path"),
+            )?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_mirror_readback_summary(&report))
             } else {
                 print_json(&report)
             }
@@ -508,6 +521,52 @@ pub(crate) fn verify_issue_mirror_file(
     ))
 }
 
+pub(crate) fn readback_issue_mirror_file(
+    services: &AppServices,
+    issue_id: i64,
+    path: Option<&str>,
+) -> Result<serde_json::Value> {
+    let mirror = services.hive.issue_mirror(issue_id)?;
+    let path = path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_issue_mirror_path(&services.kernel.root, &mirror.external_key));
+    let receipt_path = mirror_receipt_path(&path);
+    let expected_digest = digest_bytes(&mirror_payload(&mirror)?);
+    let remote_payload = read_payload_with_digest(&path)?;
+    let receipt = read_receipt(&receipt_path)?;
+    let verify = compact_issue_mirror_verify(
+        &mirror,
+        &path,
+        &receipt_path,
+        &expected_digest,
+        remote_payload.as_ref().map(|(_, digest)| digest),
+        receipt.as_ref(),
+    );
+    let mut parse_error = None;
+    let remote_mirror = match remote_payload.as_ref() {
+        Some((bytes, _)) => match serde_json::from_slice::<IssueMirrorReport>(bytes) {
+            Ok(report) => Some(report),
+            Err(error) => {
+                parse_error = Some(error.to_string());
+                None
+            }
+        },
+        None => None,
+    };
+
+    Ok(compact_issue_mirror_readback(
+        &mirror,
+        &path,
+        &receipt_path,
+        &expected_digest,
+        remote_payload.as_ref().map(|(_, digest)| digest),
+        receipt.as_ref(),
+        remote_mirror.as_ref(),
+        parse_error.as_deref(),
+        &verify,
+    ))
+}
+
 pub(crate) fn audit_issue_mirror_file(
     services: &AppServices,
     issue_id: i64,
@@ -765,6 +824,17 @@ fn read_digest(path: &Path) -> Result<Option<MirrorFileDigest>> {
     }
 }
 
+fn read_payload_with_digest(path: &Path) -> Result<Option<(Vec<u8>, MirrorFileDigest)>> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let digest = digest_bytes(&bytes);
+            Ok(Some((bytes, digest)))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
 fn read_receipt(path: &Path) -> Result<Option<serde_json::Value>> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
@@ -814,7 +884,8 @@ fn issue_mirror_sync_receipt(
         "commands": {
             "refresh": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
             "sync": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
-            "verify": format!("entrance hive issue mirror-verify {}", mirror.issue.id)
+            "verify": format!("entrance hive issue mirror-verify {}", mirror.issue.id),
+            "readback": format!("entrance hive issue mirror-readback {} --compact", mirror.issue.id)
         }
     })
 }
@@ -865,7 +936,8 @@ fn compact_issue_mirror_sync(
         "sha256": digest.sha256.as_str(),
         "refresh_command": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
         "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
-        "verify_command": format!("entrance hive issue mirror-verify {}", mirror.issue.id)
+        "verify_command": format!("entrance hive issue mirror-verify {}", mirror.issue.id),
+        "readback_command": format!("entrance hive issue mirror-readback {} --compact", mirror.issue.id)
     })
 }
 
@@ -1087,6 +1159,188 @@ fn compact_issue_mirror_audit_summary(report: &serde_json::Value) -> serde_json:
     })
 }
 
+fn compact_issue_mirror_readback(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    receipt_path: &Path,
+    expected_digest: &MirrorFileDigest,
+    actual_digest: Option<&MirrorFileDigest>,
+    receipt: Option<&serde_json::Value>,
+    remote_mirror: Option<&IssueMirrorReport>,
+    remote_parse_error: Option<&str>,
+    verify: &serde_json::Value,
+) -> serde_json::Value {
+    let receipt_failures = verify_failures(verify)
+        .into_iter()
+        .filter(|failure| failure.starts_with("receipt_"))
+        .collect::<Vec<_>>();
+    let remote_digest_current = actual_digest
+        .map(|actual| {
+            actual.sha256 == expected_digest.sha256 && actual.bytes == expected_digest.bytes
+        })
+        .unwrap_or(false);
+    let remote_parse_current =
+        actual_digest.is_none() || (remote_parse_error.is_none() && remote_mirror.is_some());
+    let remote_binding_current = remote_mirror
+        .map(|remote| issue_mirror_binding_current(mirror, remote))
+        .unwrap_or(actual_digest.is_none() || remote_parse_error.is_some());
+    let remote_comment_surface_current = remote_mirror
+        .map(|remote| issue_mirror_comment_surface_current(mirror, remote))
+        .unwrap_or(actual_digest.is_none() || remote_parse_error.is_some());
+
+    let checks = vec![
+        readback_check(
+            "remote_file_present",
+            "Connector mirror file exists and can be read back.",
+            actual_digest.is_some(),
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "file": actual_digest.map(compact_digest)
+            }),
+        ),
+        readback_check(
+            "remote_parse",
+            "Connector mirror file parses as a typed issue mirror.",
+            remote_parse_current,
+            serde_json::json!({
+                "schema_version": remote_mirror.map(|remote| remote.schema_version.as_str()),
+                "error": remote_parse_error
+            }),
+        ),
+        readback_check(
+            "remote_digest_current",
+            "Read-back mirror bytes match the current Hive issue mirror digest.",
+            remote_digest_current,
+            serde_json::json!({
+                "current": compact_digest(expected_digest),
+                "remote": actual_digest.map(compact_digest)
+            }),
+        ),
+        readback_check(
+            "remote_binding",
+            "Read-back mirror keeps the current provider, issue, loop, and external key binding.",
+            remote_binding_current,
+            serde_json::json!({
+                "current": issue_mirror_readback_surface(mirror),
+                "remote": remote_mirror.map(issue_mirror_readback_surface)
+            }),
+        ),
+        readback_check(
+            "remote_comment_surface",
+            "Read-back mirror exposes the current issue comment surface.",
+            remote_comment_surface_current,
+            serde_json::json!({
+                "current": issue_mirror_comment_surface(mirror),
+                "remote": remote_mirror.map(issue_mirror_comment_surface)
+            }),
+        ),
+        readback_check(
+            "receipt_current",
+            "Read-back receipt is current for the remote mirror file.",
+            receipt_failures.is_empty(),
+            serde_json::json!({
+                "receipt_path": receipt_path.display().to_string(),
+                "receipt": receipt,
+                "failures": receipt_failures
+            }),
+        ),
+    ];
+    let failed_checks = checks
+        .iter()
+        .filter(|check| {
+            !check
+                .pointer("/passed")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .filter_map(|check| {
+            check
+                .pointer("/name")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .collect::<Vec<_>>();
+    let issue_id = mirror.issue.id;
+
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
+        "passed": failed_checks.is_empty(),
+        "failed_count": failed_checks.len(),
+        "failed_checks": failed_checks,
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue_id": issue_id,
+        "issue_status": mirror.issue.status.as_str(),
+        "loop_id": mirror.issue.loop_id,
+        "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round),
+        "path": path.display().to_string(),
+        "receipt_path": receipt_path.display().to_string(),
+        "current": {
+            "digest": compact_digest(expected_digest),
+            "surface": issue_mirror_readback_surface(mirror),
+            "comments": issue_mirror_comment_surface(mirror)
+        },
+        "remote": {
+            "found": actual_digest.is_some(),
+            "parsed": remote_mirror.is_some(),
+            "parse_error": remote_parse_error,
+            "digest": actual_digest.map(compact_digest),
+            "surface": remote_mirror.map(issue_mirror_readback_surface)
+        },
+        "receipt": {
+            "found": receipt.is_some(),
+            "schema_version": receipt.and_then(|value| json_pointer_str(value, "/schema_version")),
+            "sha256": receipt.and_then(|value| json_pointer_str(value, "/mirror/sha256")),
+            "bytes": receipt.and_then(|value| json_pointer_u64(value, "/mirror/bytes")),
+            "issue_status": receipt.and_then(|value| json_pointer_str(value, "/issue/status")),
+            "loop_round": receipt.and_then(|value| json_pointer_i64(value, "/loop/round"))
+        },
+        "verify": verify,
+        "checks": checks,
+        "actions": [
+            compact_loop_action(
+                "sync",
+                "Sync",
+                format!("entrance hive issue mirror-sync {}", issue_id)
+            ),
+            compact_loop_action(
+                "readback",
+                "Readback",
+                format!("entrance hive issue mirror-readback {} --compact", issue_id)
+            ),
+            compact_loop_action(
+                "audit",
+                "Audit",
+                format!("entrance hive issue mirror-audit {} --compact", issue_id)
+            )
+        ]
+    })
+}
+
+fn compact_issue_mirror_readback_summary(report: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue_mirror_readback.compact.v1",
+        "source_schema_version": report.pointer("/schema_version").and_then(|value| value.as_str()),
+        "passed": report.pointer("/passed").and_then(|value| value.as_bool()),
+        "failed_count": report.pointer("/failed_count").and_then(|value| value.as_u64()),
+        "failed_checks": report.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "issue_id": report.pointer("/issue_id").and_then(|value| value.as_i64()),
+        "provider": report.pointer("/provider").and_then(|value| value.as_str()),
+        "review_surface": report.pointer("/review_surface").and_then(|value| value.as_str()),
+        "external_key": report.pointer("/external_key").and_then(|value| value.as_str()),
+        "path": report.pointer("/path").and_then(|value| value.as_str()),
+        "receipt_path": report.pointer("/receipt_path").and_then(|value| value.as_str()),
+        "current_sha256": report.pointer("/current/digest/sha256").and_then(|value| value.as_str()),
+        "remote_sha256": report.pointer("/remote/digest/sha256").and_then(|value| value.as_str()),
+        "current_comment_count": report.pointer("/current/comments/count").and_then(|value| value.as_u64()),
+        "remote_comment_count": report.pointer("/remote/surface/comments/count").and_then(|value| value.as_u64()),
+        "remote_parsed": report.pointer("/remote/parsed").and_then(|value| value.as_bool()),
+        "latest_remote_comment": report.pointer("/remote/surface/comments/latest").cloned(),
+        "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
+    })
+}
+
 fn compact_issue_mirror_admission(audit: &serde_json::Value) -> serde_json::Value {
     let admitted = audit
         .pointer("/passed")
@@ -1197,6 +1451,108 @@ fn compact_issue_mirror_admission_summary(report: &serde_json::Value) -> serde_j
         "recorded_comment_id": report.pointer("/recorded/comment_id").and_then(|value| value.as_i64()),
         "recorded_evidence_id": report.pointer("/recorded/evidence_id").and_then(|value| value.as_i64()),
         "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
+    })
+}
+
+fn compact_digest(digest: &MirrorFileDigest) -> serde_json::Value {
+    serde_json::json!({
+        "bytes": digest.bytes,
+        "sha256": digest.sha256.as_str()
+    })
+}
+
+fn readback_check(
+    name: &str,
+    summary: &str,
+    passed: bool,
+    details: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "passed": passed,
+        "summary": if passed {
+            summary.to_string()
+        } else {
+            format!("{summary} Failed.")
+        },
+        "details": details
+    })
+}
+
+fn issue_mirror_binding_current(current: &IssueMirrorReport, remote: &IssueMirrorReport) -> bool {
+    current.schema_version == remote.schema_version
+        && current.provider == remote.provider
+        && current.review_surface == remote.review_surface
+        && current.external_key == remote.external_key
+        && current.issue.id == remote.issue.id
+        && current.issue.loop_id == remote.issue.loop_id
+        && current.issue.status == remote.issue.status
+        && current.issue.updated_at == remote.issue.updated_at
+        && current.loop_contract.as_ref().map(|contract| contract.id)
+            == remote.loop_contract.as_ref().map(|contract| contract.id)
+        && current
+            .loop_contract
+            .as_ref()
+            .map(|contract| contract.current_round)
+            == remote
+                .loop_contract
+                .as_ref()
+                .map(|contract| contract.current_round)
+}
+
+fn issue_mirror_comment_surface_current(
+    current: &IssueMirrorReport,
+    remote: &IssueMirrorReport,
+) -> bool {
+    current.comments.len() == remote.comments.len()
+        && match (current.comments.last(), remote.comments.last()) {
+            (Some(current), Some(remote)) => {
+                current.id == remote.id
+                    && current.author == remote.author
+                    && current.body == remote.body
+                    && current.created_at == remote.created_at
+                    && current.payload == remote.payload
+            }
+            (None, None) => true,
+            _ => false,
+        }
+}
+
+fn issue_mirror_readback_surface(mirror: &IssueMirrorReport) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": mirror.schema_version.as_str(),
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue": {
+            "id": mirror.issue.id,
+            "loop_id": mirror.issue.loop_id,
+            "status": mirror.issue.status.as_str(),
+            "updated_at": mirror.issue.updated_at.as_str()
+        },
+        "loop": mirror.loop_contract.as_ref().map(|contract| serde_json::json!({
+            "id": contract.id,
+            "status": contract.status.as_str(),
+            "phase": contract.active_phase.as_str(),
+            "round": contract.current_round,
+            "updated_at": contract.updated_at.as_str()
+        })),
+        "comments": issue_mirror_comment_surface(mirror)
+    })
+}
+
+fn issue_mirror_comment_surface(mirror: &IssueMirrorReport) -> serde_json::Value {
+    serde_json::json!({
+        "count": mirror.comments.len(),
+        "latest": mirror.comments.last().map(|comment| serde_json::json!({
+            "id": comment.id,
+            "author": comment.author.as_str(),
+            "body": compact_text(&comment.body, 220),
+            "created_at": comment.created_at.as_str(),
+            "schema_version": comment.payload.get("schema_version").and_then(|value| value.as_str()),
+            "source": comment.payload.get("source").and_then(|value| value.as_str()),
+            "action": comment.payload.get("action").and_then(|value| value.as_str())
+        }))
     })
 }
 
@@ -1526,9 +1882,11 @@ mod tests {
     use super::{
         compact_issue_board, compact_issue_detail, compact_issue_mirror,
         compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
-        compact_issue_mirror_audit, compact_issue_mirror_audit_summary, compact_issue_mirror_sync,
-        compact_issue_mirror_verify, compact_loop_audit, default_issue_mirror_path, flag_present,
-        flag_value, issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
+        compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
+        compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
+        compact_issue_mirror_sync, compact_issue_mirror_verify, compact_loop_audit,
+        default_issue_mirror_path, flag_present, flag_value, issue_mirror_sync_receipt,
+        mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -2066,6 +2424,107 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("entrance.hive.issue_mirror_sync_receipt.v1")
         );
+
+        let readback = compact_issue_mirror_readback(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&digest),
+            Some(&receipt),
+            Some(&mirror),
+            None,
+            &report,
+        );
+        assert_eq!(
+            readback
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror_readback.v1")
+        );
+        assert_eq!(
+            readback
+                .pointer("/passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            readback
+                .pointer("/current/comments/count")
+                .and_then(|value| value.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            readback
+                .pointer("/actions/1/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-readback 8 --compact")
+        );
+        let compact_readback = compact_issue_mirror_readback_summary(&readback);
+        assert_eq!(
+            compact_readback
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror_readback.compact.v1")
+        );
+        assert_eq!(
+            compact_readback
+                .pointer("/remote_comment_count")
+                .and_then(|value| value.as_u64()),
+            Some(0)
+        );
+
+        let mut stale_remote = mirror.clone();
+        stale_remote.comments.push(HiveComment {
+            id: 91,
+            issue_id: 8,
+            author: "human".to_string(),
+            body: "Remote surface drifted.".to_string(),
+            payload: serde_json::json!({
+                "schema_version": "entrance.hive.operator_comment.v1",
+                "source": "operator"
+            }),
+            created_at: "2026-01-01T00:05:00Z".to_string(),
+        });
+        let stale_digest = MirrorFileDigest {
+            bytes: 4096,
+            sha256: "stale-sha".to_string(),
+        };
+        let stale_verify = compact_issue_mirror_verify(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&stale_digest),
+            Some(&receipt),
+        );
+        let stale_readback = compact_issue_mirror_readback(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&stale_digest),
+            Some(&receipt),
+            Some(&stale_remote),
+            None,
+            &stale_verify,
+        );
+        assert_eq!(
+            stale_readback
+                .pointer("/passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        let readback_failures = stale_readback
+            .pointer("/failed_checks")
+            .and_then(|value| value.as_array())
+            .expect("readback failed_checks should be an array");
+        assert!(readback_failures
+            .iter()
+            .any(|value| value.as_str() == Some("remote_digest_current")));
+        assert!(readback_failures
+            .iter()
+            .any(|value| value.as_str() == Some("remote_comment_surface")));
 
         let mut drifted = receipt;
         *drifted
