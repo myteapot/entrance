@@ -48,6 +48,7 @@ const CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION: &str =
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
+const GITHUB_COMMENTS_MAX_PAGES: usize = 20;
 const GITHUB_COMMENT_IDEMPOTENCY_PREFIX: &str = "<!-- entrance-idempotency-key:";
 const GITHUB_COMMENT_IDEMPOTENCY_SUFFIX: &str = "-->";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
@@ -3405,6 +3406,181 @@ fn execute_github_remote_get_operation(
     kind: &str,
     url: &str,
 ) -> serde_json::Value {
+    if kind == "list_issue_comments" || kind == "lookup_issue_comments_for_idempotency" {
+        return execute_github_remote_get_paginated_comments_operation(client, token, kind, url);
+    }
+    execute_github_remote_get_single_operation(client, token, kind, url)
+}
+
+fn execute_github_remote_get_paginated_comments_operation(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    kind: &str,
+    url: &str,
+) -> serde_json::Value {
+    let mut next_url = url.to_string();
+    let mut pages = Vec::new();
+    let mut comments = Vec::new();
+    let mut page_sha256 = Vec::new();
+    let mut response_bytes = 0_u64;
+    let mut truncated = false;
+
+    for page_index in 0..GITHUB_COMMENTS_MAX_PAGES {
+        let page = execute_github_remote_get_single_operation(client, token, kind, &next_url);
+        response_bytes += page
+            .pointer("/response/bytes")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default();
+        if let Some(sha256) = page
+            .pointer("/response/sha256")
+            .and_then(|value| value.as_str())
+        {
+            page_sha256.push(sha256.to_string());
+        }
+        pages.push(serde_json::json!({
+            "index": page_index + 1,
+            "url": next_url,
+            "success": page.pointer("/success").and_then(|value| value.as_bool()),
+            "http_status": page.pointer("/http_status").and_then(|value| value.as_u64()),
+            "item_count": page.pointer("/response/summary/count").and_then(|value| value.as_u64()),
+            "next_url": page.pointer("/response/headers/link").and_then(|value| value.as_str()).and_then(github_link_header_next_url)
+        }));
+        if page.pointer("/success").and_then(|value| value.as_bool()) != Some(true) {
+            let summary = compact_github_comments_readback_summary(&serde_json::Value::Array(
+                comments.clone(),
+            ));
+            let digest = digest_bytes(
+                serde_json::to_vec(&serde_json::json!({
+                    "pages": page_sha256,
+                    "comments": summary
+                }))
+                .unwrap_or_default()
+                .as_slice(),
+            );
+            return serde_json::json!({
+                "kind": kind,
+                "method": "GET",
+                "url": url,
+                "success": false,
+                "failed_check": page.pointer("/failed_check").and_then(|value| value.as_str()).unwrap_or("remote_comments_read"),
+                "http_status": page.pointer("/http_status").and_then(|value| value.as_u64()),
+                "request": {
+                    "auth": "Authorization: Bearer <redacted>"
+                },
+                "pagination": {
+                    "page_count": pages.len(),
+                    "max_pages": GITHUB_COMMENTS_MAX_PAGES,
+                    "truncated": truncated,
+                    "pages": pages
+                },
+                "response": {
+                    "bytes": response_bytes,
+                    "sha256": digest.sha256,
+                    "parsed": true,
+                    "summary": summary
+                }
+            });
+        }
+
+        comments.extend(
+            page.pointer("/response/summary/items")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        let next = page
+            .pointer("/response/headers/link")
+            .and_then(|value| value.as_str())
+            .and_then(github_link_header_next_url);
+        let Some(next) = next else {
+            let mut summary = compact_github_comments_readback_summary(&serde_json::Value::Array(
+                comments.clone(),
+            ));
+            if let Some(object) = summary.as_object_mut() {
+                object.insert("page_count".to_string(), serde_json::json!(pages.len()));
+                object.insert("truncated".to_string(), serde_json::json!(false));
+            }
+            let digest = digest_bytes(
+                serde_json::to_vec(&serde_json::json!({
+                    "pages": page_sha256,
+                    "comments": summary
+                }))
+                .unwrap_or_default()
+                .as_slice(),
+            );
+            return serde_json::json!({
+                "kind": kind,
+                "method": "GET",
+                "url": url,
+                "success": true,
+                "failed_check": None::<&str>,
+                "http_status": page.pointer("/http_status").and_then(|value| value.as_u64()),
+                "request": {
+                    "auth": "Authorization: Bearer <redacted>"
+                },
+                "pagination": {
+                    "page_count": pages.len(),
+                    "max_pages": GITHUB_COMMENTS_MAX_PAGES,
+                    "truncated": false,
+                    "pages": pages
+                },
+                "response": {
+                    "bytes": response_bytes,
+                    "sha256": digest.sha256,
+                    "parsed": true,
+                    "summary": summary
+                }
+            });
+        };
+        next_url = next;
+    }
+
+    truncated = true;
+    let mut summary =
+        compact_github_comments_readback_summary(&serde_json::Value::Array(comments.clone()));
+    if let Some(object) = summary.as_object_mut() {
+        object.insert("page_count".to_string(), serde_json::json!(pages.len()));
+        object.insert("truncated".to_string(), serde_json::json!(truncated));
+    }
+    let digest = digest_bytes(
+        serde_json::to_vec(&serde_json::json!({
+            "pages": page_sha256,
+            "comments": summary
+        }))
+        .unwrap_or_default()
+        .as_slice(),
+    );
+    serde_json::json!({
+        "kind": kind,
+        "method": "GET",
+        "url": url,
+        "success": false,
+        "failed_check": "remote_comments_pagination_limit",
+        "request": {
+            "auth": "Authorization: Bearer <redacted>"
+        },
+        "pagination": {
+            "page_count": pages.len(),
+            "max_pages": GITHUB_COMMENTS_MAX_PAGES,
+            "truncated": truncated,
+            "pages": pages
+        },
+        "response": {
+            "bytes": response_bytes,
+            "sha256": digest.sha256,
+            "parsed": true,
+            "summary": summary
+        }
+    })
+}
+
+fn execute_github_remote_get_single_operation(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    kind: &str,
+    url: &str,
+) -> serde_json::Value {
     if url.trim().is_empty() {
         return serde_json::json!({
             "kind": kind,
@@ -3434,6 +3610,11 @@ fn execute_github_remote_get_operation(
         }
     };
     let status = response.status().as_u16();
+    let link_header = response
+        .headers()
+        .get("link")
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
     let text = match response.text() {
         Ok(text) => text,
         Err(error) => {
@@ -3470,6 +3651,9 @@ fn execute_github_remote_get_operation(
             "auth": "Authorization: Bearer <redacted>"
         },
         "response": {
+            "headers": {
+                "link": link_header
+            },
             "bytes": digest.bytes,
             "sha256": digest.sha256,
             "parsed": parsed_ok,
@@ -3483,6 +3667,18 @@ fn execute_github_remote_get_operation(
             })
         }
     })
+}
+
+fn github_link_header_next_url(link_header: &str) -> Option<String> {
+    link_header
+        .split(',')
+        .find(|part| part.contains("rel=\"next\""))
+        .and_then(|part| {
+            let start = part.find('<')?;
+            let end = part[start + 1..].find('>')?;
+            Some(part[start + 1..start + 1 + end].trim().to_string())
+        })
+        .filter(|url| !url.is_empty())
 }
 
 fn connector_github_readback_urls(
@@ -7234,14 +7430,15 @@ mod tests {
     ) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
         let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server_base_url = base_url.clone();
         let handle = thread::spawn(move || {
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = listener.accept().expect("test request should connect");
                 let mut buffer = [0_u8; 8192];
                 let read = stream.read(&mut buffer).unwrap_or_default();
                 let request = String::from_utf8_lossy(&buffer[..read]);
                 let body = if request
-                    .starts_with("GET /repos/owner/repo/issues/77/comments?per_page=100 ")
+                    .starts_with("GET /repos/owner/repo/issues/77/comments?per_page=100&page=2 ")
                 {
                     serde_json::json!([
                         {
@@ -7255,6 +7452,10 @@ mod tests {
                         }
                     ])
                     .to_string()
+                } else if request
+                    .starts_with("GET /repos/owner/repo/issues/77/comments?per_page=100 ")
+                {
+                    serde_json::json!([]).to_string()
                 } else if request.starts_with("GET /repos/owner/repo/issues/77 ") {
                     serde_json::json!({
                         "id": 77,
@@ -7279,8 +7480,17 @@ mod tests {
                 } else {
                     "200 OK"
                 };
+                let link = if request
+                    .starts_with("GET /repos/owner/repo/issues/77/comments?per_page=100 ")
+                {
+                    format!(
+                        "Link: <{server_base_url}/repos/owner/repo/issues/77/comments?per_page=100&page=2>; rel=\"next\"\r\n"
+                    )
+                } else {
+                    String::new()
+                };
                 let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{link}Connection: close\r\nContent-Length: {}\r\n\r\n{}",
                     body.len(),
                     body
                 );
@@ -7301,7 +7511,7 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let request_log = Arc::clone(&requests);
         let handle = thread::spawn(move || {
-            for _ in 0..3 {
+            for _ in 0..4 {
                 let (mut stream, _) = listener.accept().expect("test request should connect");
                 let mut buffer = [0_u8; 8192];
                 let read = stream.read(&mut buffer).unwrap_or_default();
@@ -7326,7 +7536,7 @@ mod tests {
                     })
                     .to_string()
                 } else if request
-                    .starts_with("GET /repos/owner/repo/issues/88/comments?per_page=100 ")
+                    .starts_with("GET /repos/owner/repo/issues/88/comments?per_page=100&page=2 ")
                 {
                     serde_json::json!([
                         {
@@ -7340,6 +7550,10 @@ mod tests {
                         }
                     ])
                     .to_string()
+                } else if request
+                    .starts_with("GET /repos/owner/repo/issues/88/comments?per_page=100 ")
+                {
+                    serde_json::json!([]).to_string()
                 } else if request.starts_with("PATCH /repos/owner/repo/issues/comments/9001 ") {
                     serde_json::json!({
                         "id": 9001,
@@ -7359,8 +7573,17 @@ mod tests {
                 } else {
                     "200 OK"
                 };
+                let link = if request
+                    .starts_with("GET /repos/owner/repo/issues/88/comments?per_page=100 ")
+                {
+                    format!(
+                        "Link: <{server_base_url}/repos/owner/repo/issues/88/comments?per_page=100&page=2>; rel=\"next\"\r\n"
+                    )
+                } else {
+                    String::new()
+                };
                 let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{link}Connection: close\r\nContent-Length: {}\r\n\r\n{}",
                     body.len(),
                     body
                 );
@@ -8309,6 +8532,9 @@ mod tests {
             .join("\n---\n");
         assert!(request_log.contains("PATCH /repos/owner/repo/issues/88 "));
         assert!(request_log.contains("GET /repos/owner/repo/issues/88/comments?per_page=100 "));
+        assert!(
+            request_log.contains("GET /repos/owner/repo/issues/88/comments?per_page=100&page=2 ")
+        );
         assert!(request_log.contains("PATCH /repos/owner/repo/issues/comments/9001 "));
         assert!(!request_log.contains("POST /repos/owner/repo/issues/88/comments "));
     }
@@ -8457,6 +8683,18 @@ mod tests {
                 .pointer("/remote/surface/comments/count")
                 .and_then(|value| value.as_u64()),
             Some(1)
+        );
+        assert_eq!(
+            readback
+                .pointer("/remote_readback/execution/comments/pagination/page_count")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            readback
+                .pointer("/remote_readback/execution/comments/response/summary/page_count")
+                .and_then(|value| value.as_u64()),
+            Some(2)
         );
         assert_eq!(
             readback

@@ -179,10 +179,11 @@ activates REST issue/comment publish operations and records
 publish now uses an Entrance idempotency marker: it lists issue comments,
 patches the matching comment when present, and creates one only when the marker
 is absent. GitHub readback now uses REST `GET` issue plus `GET` issue comments,
-emits `entrance.hive.connector_remote_readback.v1`, and connector admission is
-ready only when the typed target, auth, issue state/body, latest comment, and
-write-receipt binding checks pass. Linear readback, GitHub pagination hardening,
-and production retry behavior are still pending.
+follows `Link` pagination for the comment list, emits
+`entrance.hive.connector_remote_readback.v1`, and connector admission is ready
+only when the typed target, auth, issue state/body, latest comment, and
+write-receipt binding checks pass. Linear readback, GitHub rate-limit/backoff
+hardening, and production retry behavior are still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 
