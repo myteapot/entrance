@@ -48,6 +48,7 @@ Task ledger for dispatch records, engine reports, callbacks, and review state.
 Local agent-loop MVP:
 
 ```powershell
+.\entrance.exe hive loop start --title "README loop" --goal "Run a constrained agent loop" --runtime codex --worker-timeout-secs 90 --worker-attempts 1 --compact
 .\entrance.exe hive loop create --title "README loop" --goal "Run a constrained agent loop" --runtime codex --compact
 .\entrance.exe hive loop run 1 --runtime codex
 .\entrance.exe hive loop run 1 --runtime codex --compact
@@ -70,9 +71,12 @@ Local agent-loop MVP:
 .\entrance.exe hive issue comment 1 --body "Reviewed from the local panel"
 ```
 
-`hive loop run` records a minimal compiler path in SQLite: active policies,
-versioned typed packets, receipt-aware admission gates, versioned admission
-receipts, stage evidence, and the versioned final verdict.
+`hive loop start` is the one-command MVP path: it creates a linked issue loop,
+runs `Explorer -> Doer -> Evaluator`, then prints a compact outcome with issue,
+Doctor, evidence, stage, connector, and next-action summaries. `hive loop run`
+records the same minimal compiler path in SQLite: active policies, versioned
+typed packets, receipt-aware admission gates, versioned admission receipts,
+stage evidence, and the versioned final verdict.
 Add `--compact` to `hive loop create` to print the linked issue card and next
 actions instead of the full empty loop report. Add `--compact` to `hive loop run`
 to print the Doctor summary after execution instead of the full packet/evidence
