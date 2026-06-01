@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
@@ -9,16 +10,25 @@ use entrance_hive::{
     HiveLoopCreateRequest, HiveLoopRunRequest, IssueAction, IssueCard, IssueCommentRequest,
     IssueDecisionRequest, IssueMirrorReport, IssueRunRequest, ReviewDecision,
 };
+use sha2::{Digest, Sha256};
 
 use crate::{app::AppServices, cli, print_json};
 
 const ISSUE_MIRROR_SYNC_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync.v1";
+const ISSUE_MIRROR_SYNC_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync_receipt.v1";
+const ISSUE_MIRROR_VERIFY_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_verify.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MirrorFileDigest {
+    bytes: u64,
+    sha256: String,
+}
 
 pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -194,6 +204,11 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-sync" => {
             let report =
                 sync_issue_mirror_to_file(services, id.parse::<i64>()?, flag_value(rest, "--out"))?;
+            print_json(&report)
+        }
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-verify" => {
+            let report =
+                verify_issue_mirror_file(services, id.parse::<i64>()?, flag_value(rest, "--path"))?;
             print_json(&report)
         }
         [scope, action, id, rest @ ..] if scope == "issue" && action == "comment" => {
@@ -387,8 +402,38 @@ pub(crate) fn sync_issue_mirror_to_file(
     let path = out_path
         .map(PathBuf::from)
         .unwrap_or_else(|| default_issue_mirror_path(&services.kernel.root, &mirror.external_key));
-    let bytes = write_issue_mirror_file(&mirror, &path)?;
-    Ok(compact_issue_mirror_sync(&mirror, &path, bytes))
+    let receipt_path = mirror_receipt_path(&path);
+    let digest = write_issue_mirror_file(&mirror, &path)?;
+    write_issue_mirror_receipt(&mirror, &path, &receipt_path, &digest)?;
+    Ok(compact_issue_mirror_sync(
+        &mirror,
+        &path,
+        &receipt_path,
+        &digest,
+    ))
+}
+
+pub(crate) fn verify_issue_mirror_file(
+    services: &AppServices,
+    issue_id: i64,
+    path: Option<&str>,
+) -> Result<serde_json::Value> {
+    let mirror = services.hive.issue_mirror(issue_id)?;
+    let path = path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_issue_mirror_path(&services.kernel.root, &mirror.external_key));
+    let receipt_path = mirror_receipt_path(&path);
+    let expected_digest = digest_bytes(&mirror_payload(&mirror)?);
+    let actual_digest = read_digest(&path)?;
+    let receipt = read_receipt(&receipt_path)?;
+    Ok(compact_issue_mirror_verify(
+        &mirror,
+        &path,
+        &receipt_path,
+        &expected_digest,
+        actual_digest.as_ref(),
+        receipt.as_ref(),
+    ))
 }
 
 fn default_issue_mirror_path(app_root: &Path, external_key: &str) -> PathBuf {
@@ -396,6 +441,15 @@ fn default_issue_mirror_path(app_root: &Path, external_key: &str) -> PathBuf {
         .join("connectors")
         .join("issue-mirrors")
         .join(format!("{}.json", sanitize_mirror_key(external_key)))
+}
+
+fn mirror_receipt_path(path: &Path) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("issue-mirror");
+    path.with_file_name(format!("{stem}.receipt.json"))
 }
 
 fn sanitize_mirror_key(value: &str) -> String {
@@ -420,7 +474,7 @@ fn sanitize_mirror_key(value: &str) -> String {
     }
 }
 
-fn write_issue_mirror_file(mirror: &IssueMirrorReport, path: &Path) -> Result<u64> {
+fn write_issue_mirror_file(mirror: &IssueMirrorReport, path: &Path) -> Result<MirrorFileDigest> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -429,16 +483,132 @@ fn write_issue_mirror_file(mirror: &IssueMirrorReport, path: &Path) -> Result<u6
             )
         })?;
     }
-    let payload = serde_json::to_vec_pretty(mirror)?;
+    let payload = mirror_payload(mirror)?;
     fs::write(path, &payload)
         .with_context(|| format!("failed to write issue mirror {}", path.display()))?;
-    Ok(payload.len() as u64)
+    Ok(digest_bytes(&payload))
+}
+
+fn write_issue_mirror_receipt(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    receipt_path: &Path,
+    digest: &MirrorFileDigest,
+) -> Result<MirrorFileDigest> {
+    if let Some(parent) = receipt_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create mirror receipt directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let receipt = issue_mirror_sync_receipt(mirror, path, receipt_path, digest);
+    let payload = serde_json::to_vec_pretty(&receipt)?;
+    fs::write(receipt_path, &payload).with_context(|| {
+        format!(
+            "failed to write issue mirror receipt {}",
+            receipt_path.display()
+        )
+    })?;
+    Ok(digest_bytes(&payload))
+}
+
+fn mirror_payload(mirror: &IssueMirrorReport) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec_pretty(mirror)?)
+}
+
+fn read_digest(path: &Path) -> Result<Option<MirrorFileDigest>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(digest_bytes(&bytes))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn read_receipt(path: &Path) -> Result<Option<serde_json::Value>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+            format!("failed to parse issue mirror receipt {}", path.display())
+        })?)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn digest_bytes(bytes: &[u8]) -> MirrorFileDigest {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    MirrorFileDigest {
+        bytes: bytes.len() as u64,
+        sha256: encode_hex(&hasher.finalize()),
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn issue_mirror_sync_receipt(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    receipt_path: &Path,
+    digest: &MirrorFileDigest,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_SYNC_RECEIPT_SCHEMA_VERSION,
+        "generated_at": chrono::Utc::now().to_rfc3339(),
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "mirror_schema_version": mirror.schema_version.as_str(),
+        "issue": issue_mirror_issue_binding(mirror),
+        "loop": issue_mirror_loop_binding(mirror),
+        "mirror": {
+            "path": path.display().to_string(),
+            "bytes": digest.bytes,
+            "sha256": digest.sha256.as_str()
+        },
+        "receipt": {
+            "path": receipt_path.display().to_string()
+        },
+        "commands": {
+            "refresh": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
+            "sync": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
+            "verify": format!("entrance hive issue mirror-verify {}", mirror.issue.id)
+        }
+    })
+}
+
+fn issue_mirror_issue_binding(mirror: &IssueMirrorReport) -> serde_json::Value {
+    serde_json::json!({
+        "id": mirror.issue.id,
+        "loop_id": mirror.issue.loop_id,
+        "status": mirror.issue.status.as_str(),
+        "updated_at": mirror.issue.updated_at.as_str()
+    })
+}
+
+fn issue_mirror_loop_binding(mirror: &IssueMirrorReport) -> serde_json::Value {
+    mirror
+        .loop_contract
+        .as_ref()
+        .map_or(serde_json::Value::Null, |contract| {
+            serde_json::json!({
+                "id": contract.id,
+                "status": contract.status.as_str(),
+                "phase": contract.active_phase.as_str(),
+                "round": contract.current_round,
+                "updated_at": contract.updated_at.as_str()
+            })
+        })
 }
 
 fn compact_issue_mirror_sync(
     mirror: &IssueMirrorReport,
     path: &Path,
-    bytes: u64,
+    receipt_path: &Path,
+    digest: &MirrorFileDigest,
 ) -> serde_json::Value {
     serde_json::json!({
         "schema_version": ISSUE_MIRROR_SYNC_SCHEMA_VERSION,
@@ -448,11 +618,120 @@ fn compact_issue_mirror_sync(
         "external_key": mirror.external_key.as_str(),
         "issue_id": mirror.issue.id,
         "issue_status": mirror.issue.status.as_str(),
+        "loop_id": mirror.issue.loop_id,
+        "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round),
         "path": path.display().to_string(),
-        "bytes": bytes,
+        "receipt_path": receipt_path.display().to_string(),
+        "bytes": digest.bytes,
+        "sha256": digest.sha256.as_str(),
         "refresh_command": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
-        "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id)
+        "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
+        "verify_command": format!("entrance hive issue mirror-verify {}", mirror.issue.id)
     })
+}
+
+fn compact_issue_mirror_verify(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    receipt_path: &Path,
+    expected_digest: &MirrorFileDigest,
+    actual_digest: Option<&MirrorFileDigest>,
+    receipt: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut failures = Vec::new();
+    if actual_digest.is_none() {
+        failures.push("mirror_file_missing".to_string());
+    }
+    if let Some(actual) = actual_digest {
+        if actual.sha256 != expected_digest.sha256 || actual.bytes != expected_digest.bytes {
+            failures.push("mirror_current_mismatch".to_string());
+        }
+    }
+    let receipt_summary = if let Some(receipt) = receipt {
+        let receipt_sha = json_pointer_str(receipt, "/mirror/sha256");
+        let receipt_bytes = json_pointer_u64(receipt, "/mirror/bytes");
+        let receipt_issue_status = json_pointer_str(receipt, "/issue/status");
+        let receipt_issue_updated_at = json_pointer_str(receipt, "/issue/updated_at");
+        let receipt_loop_round = json_pointer_i64(receipt, "/loop/round");
+        if json_pointer_str(receipt, "/schema_version")
+            != Some(ISSUE_MIRROR_SYNC_RECEIPT_SCHEMA_VERSION)
+        {
+            failures.push("receipt_schema_mismatch".to_string());
+        }
+        if Some(mirror.issue.id) != json_pointer_i64(receipt, "/issue/id") {
+            failures.push("receipt_issue_id_mismatch".to_string());
+        }
+        if Some(mirror.issue.status.as_str()) != receipt_issue_status {
+            failures.push("receipt_issue_status_mismatch".to_string());
+        }
+        if Some(mirror.issue.updated_at.as_str()) != receipt_issue_updated_at {
+            failures.push("receipt_issue_updated_at_mismatch".to_string());
+        }
+        if mirror
+            .loop_contract
+            .as_ref()
+            .map(|contract| contract.current_round)
+            != receipt_loop_round
+        {
+            failures.push("receipt_loop_round_mismatch".to_string());
+        }
+        if let Some(actual) = actual_digest {
+            if Some(actual.sha256.as_str()) != receipt_sha || Some(actual.bytes) != receipt_bytes {
+                failures.push("receipt_file_digest_mismatch".to_string());
+            }
+        }
+        serde_json::json!({
+            "found": true,
+            "schema_version": json_pointer_str(receipt, "/schema_version"),
+            "sha256": receipt_sha,
+            "bytes": receipt_bytes,
+            "issue_status": receipt_issue_status,
+            "issue_updated_at": receipt_issue_updated_at,
+            "loop_round": receipt_loop_round
+        })
+    } else {
+        failures.push("receipt_file_missing".to_string());
+        serde_json::json!({
+            "found": false
+        })
+    };
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_VERIFY_SCHEMA_VERSION,
+        "passed": failures.is_empty(),
+        "failures": failures,
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue_id": mirror.issue.id,
+        "issue_status": mirror.issue.status.as_str(),
+        "loop_id": mirror.issue.loop_id,
+        "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round),
+        "path": path.display().to_string(),
+        "receipt_path": receipt_path.display().to_string(),
+        "current": {
+            "bytes": expected_digest.bytes,
+            "sha256": expected_digest.sha256.as_str()
+        },
+        "file": actual_digest.map(|digest| serde_json::json!({
+            "bytes": digest.bytes,
+            "sha256": digest.sha256.as_str()
+        })),
+        "receipt": receipt_summary,
+        "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
+        "verify_command": format!("entrance hive issue mirror-verify {}", mirror.issue.id)
+    })
+}
+
+fn json_pointer_str<'a>(value: &'a serde_json::Value, pointer: &str) -> Option<&'a str> {
+    value.pointer(pointer).and_then(|value| value.as_str())
+}
+
+fn json_pointer_i64(value: &serde_json::Value, pointer: &str) -> Option<i64> {
+    value.pointer(pointer).and_then(|value| value.as_i64())
+}
+
+fn json_pointer_u64(value: &serde_json::Value, pointer: &str) -> Option<u64> {
+    value.pointer(pointer).and_then(|value| value.as_u64())
 }
 
 fn compact_loop_audit(report: &HiveLoopAuditReport) -> serde_json::Value {
@@ -733,7 +1012,8 @@ mod tests {
 
     use super::{
         compact_issue_board, compact_issue_detail, compact_issue_mirror, compact_issue_mirror_sync,
-        compact_loop_audit, default_issue_mirror_path, flag_present, flag_value,
+        compact_issue_mirror_verify, compact_loop_audit, default_issue_mirror_path, flag_present,
+        flag_value, issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -1146,7 +1426,11 @@ mod tests {
         let report = compact_issue_mirror_sync(
             &mirror,
             Path::new("/tmp/root/connectors/issue-mirrors/hive-loop-1-issue-2.json"),
-            512,
+            Path::new("/tmp/root/connectors/issue-mirrors/hive-loop-1-issue-2.receipt.json"),
+            &MirrorFileDigest {
+                bytes: 512,
+                sha256: "abc123".to_string(),
+            },
         );
 
         assert_eq!(
@@ -1174,11 +1458,126 @@ mod tests {
             Some(512)
         );
         assert_eq!(
+            report.pointer("/sha256").and_then(|value| value.as_str()),
+            Some("abc123")
+        );
+        assert_eq!(
+            report
+                .pointer("/receipt_path")
+                .and_then(|value| value.as_str()),
+            Some("/tmp/root/connectors/issue-mirrors/hive-loop-1-issue-2.receipt.json")
+        );
+        assert_eq!(
             report
                 .pointer("/sync_command")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue mirror-sync 2")
         );
+        assert_eq!(
+            report
+                .pointer("/verify_command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-verify 2")
+        );
+    }
+
+    #[test]
+    fn issue_mirror_verify_detects_receipt_drift() {
+        let mirror = IssueMirrorReport {
+            schema_version: "entrance.hive.issue_mirror.v1".to_string(),
+            provider: "file".to_string(),
+            review_surface: "file:local-board".to_string(),
+            external_key: "hive-loop-5-issue-8".to_string(),
+            issue: HiveIssue {
+                id: 8,
+                loop_id: Some(5),
+                title: "Loop #5: mirror verify".to_string(),
+                status: "Done".to_string(),
+                summary: Some("Mirror verified.".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:03:00Z".to_string(),
+            },
+            loop_contract: Some(HiveLoopContract {
+                id: 5,
+                title: "mirror verify".to_string(),
+                goal: "Verify mirror receipt binding".to_string(),
+                boundary: "No remote writes".to_string(),
+                approach_space: vec!["file sink".to_string()],
+                eval_space: vec!["verify passes".to_string()],
+                review_surface: "file:local-board".to_string(),
+                autonomy_level: "run-approved-candidates".to_string(),
+                runtime: "codex".to_string(),
+                status: "kept".to_string(),
+                active_phase: "complete".to_string(),
+                current_round: 3,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:03:00Z".to_string(),
+            }),
+            comments: vec![],
+            actions: vec![],
+            trace: None,
+            doctor: None,
+        };
+        let path = Path::new("/tmp/root/connectors/issue-mirrors/hive-loop-5-issue-8.json");
+        let receipt_path = mirror_receipt_path(path);
+        let digest = MirrorFileDigest {
+            bytes: 2048,
+            sha256: "receipt-sha".to_string(),
+        };
+        let receipt = issue_mirror_sync_receipt(&mirror, path, &receipt_path, &digest);
+
+        let report = compact_issue_mirror_verify(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&digest),
+            Some(&receipt),
+        );
+
+        assert_eq!(
+            report.pointer("/passed").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            report
+                .pointer("/loop_round")
+                .and_then(|value| value.as_i64()),
+            Some(3)
+        );
+        assert_eq!(
+            report
+                .pointer("/receipt/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror_sync_receipt.v1")
+        );
+
+        let mut drifted = receipt;
+        *drifted
+            .pointer_mut("/issue/status")
+            .expect("receipt issue status should be mutable") = serde_json::json!("Blocked");
+        let drift_report = compact_issue_mirror_verify(
+            &mirror,
+            path,
+            &receipt_path,
+            &digest,
+            Some(&digest),
+            Some(&drifted),
+        );
+
+        assert_eq!(
+            drift_report
+                .pointer("/passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        let failures = drift_report
+            .pointer("/failures")
+            .and_then(|value| value.as_array())
+            .expect("failures should be an array");
+        assert!(failures
+            .iter()
+            .any(|value| value.as_str() == Some("receipt_issue_status_mismatch")));
     }
 
     #[test]

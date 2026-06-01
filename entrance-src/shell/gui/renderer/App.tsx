@@ -246,7 +246,20 @@ type LoopRunArgs = {
 type IssueMirrorSyncReport = {
   schema_version: string;
   path: string;
+  receipt_path: string;
   bytes: number;
+  sha256: string;
+};
+type IssueMirrorVerifyReport = {
+  schema_version: string;
+  passed: boolean;
+  path: string;
+  receipt_path: string;
+  failures: string[];
+  current: {
+    sha256: string;
+    bytes: number;
+  };
 };
 type CommentPill = {
   label: string;
@@ -575,9 +588,28 @@ export default function App() {
       const report = await bridge.invoke<IssueMirrorSyncReport>("hive_issue_mirror_sync", {
         issueId: card.issue.id,
       });
-      setBanner(`Synced issue mirror: ${compactText(report.path, 96)}`);
+      setBanner(`Synced issue mirror ${compactText(report.sha256, 12)}: ${compactText(report.path, 86)}`);
     } catch (error) {
       setBanner(`Issue #${card.issue.id} sync failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(card.issue.id, null);
+    }
+  };
+  const verifyIssueMirror = async (card: IssueCard) => {
+    if (issuePendingLabel(card.issue.id)) return;
+    setSelectedIssueId(card.issue.id);
+    setPendingIssue(card.issue.id, "Verifying");
+    try {
+      const report = await bridge.invoke<IssueMirrorVerifyReport>("hive_issue_mirror_verify", {
+        issueId: card.issue.id,
+      });
+      if (report.passed) {
+        setBanner(`Verified issue mirror ${compactText(report.current.sha256, 12)}.`);
+      } else {
+        setBanner(`Issue #${card.issue.id} mirror drift: ${compactText(report.failures.join(", "), 96)}`);
+      }
+    } catch (error) {
+      setBanner(`Issue #${card.issue.id} verify failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
     }
@@ -1104,8 +1136,12 @@ export default function App() {
     `entrance hive issue mirror ${card.issue.id} --compact`;
   const issueMirrorSyncCommand = (card: IssueCard) =>
     `entrance hive issue mirror-sync ${card.issue.id}`;
+  const issueMirrorVerifyCommand = (card: IssueCard) =>
+    `entrance hive issue mirror-verify ${card.issue.id}`;
   const issueMirrorSyncLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Syncing" ? "Syncing" : "Sync";
+  const issueMirrorVerifyLabel = (card: IssueCard) =>
+    issuePendingLabel(card.issue.id) === "Verifying" ? "Verifying" : "Verify";
 
   const compactAuditFailureDetail = (detail: string) => {
     const parts = detail.split(":").filter(Boolean);
@@ -1567,6 +1603,16 @@ export default function App() {
                               onClick={() => void syncIssueMirror(card)}
                             >
                               {issueMirrorSyncLabel(card)}
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Verify issue #${card.issue.id} mirror file from detail`}
+                              data-testid={`issue-action-detail-verify-${card.issue.id}`}
+                              disabled={Boolean(issuePendingLabel(card.issue.id))}
+                              title={issueMirrorVerifyCommand(card)}
+                              onClick={() => void verifyIssueMirror(card)}
+                            >
+                              {issueMirrorVerifyLabel(card)}
                             </button>
                           </div>
                         ) : null}
@@ -2048,6 +2094,16 @@ export default function App() {
                                     onClick={() => void syncIssueMirror(card)}
                                   >
                                     {issueMirrorSyncLabel(card)}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Verify issue #${card.issue.id} mirror file from board`}
+                                    data-testid={`issue-action-board-verify-${card.issue.id}`}
+                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                    title={issueMirrorVerifyCommand(card)}
+                                    onClick={() => void verifyIssueMirror(card)}
+                                  >
+                                    {issueMirrorVerifyLabel(card)}
                                   </button>
                                   <button
                                     type="button"
