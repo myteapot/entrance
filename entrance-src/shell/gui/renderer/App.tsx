@@ -210,6 +210,36 @@ type IssueConnectorStatus = {
   error?: string | null;
 };
 
+type ConnectorRegistry = {
+  schema_version: string;
+  providers: ConnectorProvider[];
+  admission: {
+    gate: string;
+    route_to: string;
+    expected_object_kind: string;
+    check: string;
+    required_receipts: string[];
+    dry_run_command: string;
+  };
+};
+
+type ConnectorProvider = {
+  name: string;
+  display_name: string;
+  status: string;
+  mode: string;
+  review_surface_prefixes: string[];
+  auth_required: boolean;
+  auth_env: string[];
+  configured: boolean;
+  supports_status: boolean;
+  supports_publish: boolean;
+  supports_readback: boolean;
+  supports_admission: boolean;
+  storage: string;
+  notes: string;
+};
+
 type OperatorEvent = {
   id: number;
   round: number;
@@ -475,6 +505,9 @@ export default function App() {
   const [issueCards, { refetch: refetchIssueCards }] = createResource(async () =>
     bridge.invoke<IssueCard[]>("hive_panel"),
   );
+  const [connectorRegistry, { refetch: refetchConnectorRegistry }] = createResource(async () =>
+    bridge.invoke<ConnectorRegistry>("hive_connector_registry"),
+  );
   const [launcherItems, { refetch: refetchLauncher }] = createResource(launcherQuery, async (query) =>
     bridge.invoke<LauncherResult[]>("launcher_search", { query, limit: 12 }),
   );
@@ -490,6 +523,10 @@ export default function App() {
     (issueCards() ?? []).filter((card) => card.issue.status === statusName);
   const connectorPublishQueue = createMemo(() =>
     (issueCards() ?? []).filter((card) => card.connector?.publish_required === true),
+  );
+  const connectorProviders = createMemo(() => connectorRegistry()?.providers ?? []);
+  const activeConnectorCount = createMemo(
+    () => connectorProviders().filter((provider) => provider.status === "active").length,
   );
   const revealIssueDetail = () => {
     window.setTimeout(() => {
@@ -530,6 +567,7 @@ export default function App() {
       refetchHiveSummary(),
       refetchHiveLoops(),
       refetchIssueCards(),
+      refetchConnectorRegistry(),
       refetchLauncher(),
     ]);
   };
@@ -1317,6 +1355,17 @@ export default function App() {
     if (!connector || connector.current) return null;
     return connector.reason;
   };
+  const connectorProviderCapabilityLabel = (provider: ConnectorProvider) => {
+    const capabilities = [
+      provider.supports_status ? "status" : null,
+      provider.supports_publish ? "publish" : null,
+      provider.supports_readback ? "readback" : null,
+      provider.supports_admission ? "admit" : null,
+    ].filter(Boolean);
+    return capabilities.length ? capabilities.join("/") : "not active";
+  };
+  const connectorProviderTone = (provider: ConnectorProvider) =>
+    provider.status === "active" && provider.configured ? "active" : "planned";
   const connectorStatusStrip = (card: IssueCard, surface: string) =>
     card.connector ? (
       <div
@@ -2103,6 +2152,25 @@ export default function App() {
                     >
                       #{card.issue.id} Publish
                     </button>
+                  ))}
+                </div>
+                <div class="connector-registry" data-testid="connector-registry">
+                  <div>
+                    <strong>Connector registry</strong>
+                    <span>
+                      {activeConnectorCount()}/{connectorProviders().length} active
+                    </span>
+                    <span>{connectorRegistry()?.admission.gate ?? "gate pending"}</span>
+                  </div>
+                  {connectorProviders().map((provider) => (
+                    <span
+                      class={`connector-provider connector-provider--${connectorProviderTone(provider)}`}
+                      title={provider.notes}
+                    >
+                      <strong>{provider.name}</strong>
+                      <span>{provider.status}</span>
+                      <span>{connectorProviderCapabilityLabel(provider)}</span>
+                    </span>
                   ))}
                 </div>
                 <div class="board-columns">

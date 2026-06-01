@@ -15,6 +15,7 @@ pub use dispatch::DispatchSummary;
 pub use engine::{EngineEvent, EngineReport};
 pub use http::{HiveCallback, HiveCallbackRequest};
 pub use loop_control::{
+    ConnectorAdmissionPolicySpec, ConnectorProviderSpec, ConnectorRegistryReport,
     HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDoctorCounts,
     HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport, HiveLoopReport,
     HiveLoopRunRequest, HiveLoopTraceReport, IssueAction, IssueCard, IssueCommentRequest,
@@ -109,6 +110,10 @@ impl HivePlugin {
 
     pub fn policy_registry(&self) -> PolicyRegistryReport {
         loop_control::policy_registry()
+    }
+
+    pub fn connector_registry(&self) -> ConnectorRegistryReport {
+        loop_control::connector_registry()
     }
 
     pub fn loop_policies(&self, id: i64) -> Result<HiveLoopPolicyReport> {

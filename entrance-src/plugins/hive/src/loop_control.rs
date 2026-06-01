@@ -24,6 +24,7 @@ const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.
 const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
 const ISSUE_ACTION_SCHEMA_VERSION: &str = "entrance.hive.issue_action.v1";
 const ISSUE_MIRROR_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror.v1";
+const CONNECTOR_REGISTRY_SCHEMA_VERSION: &str = "entrance.hive.connector_registry.v1";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
@@ -100,6 +101,42 @@ pub struct WorkerPolicySpec {
     pub max_attempts: u64,
     pub attempts_env: String,
     pub required_receipt_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorRegistryReport {
+    pub schema_version: String,
+    pub providers: Vec<ConnectorProviderSpec>,
+    pub admission: ConnectorAdmissionPolicySpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorProviderSpec {
+    pub name: String,
+    pub display_name: String,
+    pub status: String,
+    pub mode: String,
+    pub review_surface_prefixes: Vec<String>,
+    pub auth_required: bool,
+    pub auth_env: Vec<String>,
+    pub configured: bool,
+    pub supports_status: bool,
+    pub supports_publish: bool,
+    pub supports_readback: bool,
+    pub supports_admission: bool,
+    pub storage: String,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorAdmissionPolicySpec {
+    pub schema_version: String,
+    pub gate: String,
+    pub route_to: String,
+    pub expected_object_kind: String,
+    pub check: String,
+    pub required_receipts: Vec<String>,
+    pub dry_run_command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -943,6 +980,92 @@ pub fn policy_registry() -> PolicyRegistryReport {
             .map(PolicyGateSpec::from)
             .collect(),
         runtime: runtime_policy_registry(),
+    }
+}
+
+pub fn connector_registry() -> ConnectorRegistryReport {
+    let connector_gate = gate_spec(CONNECTOR_MIRROR_RECEIPT_GATE)
+        .map(PolicyGateSpec::from)
+        .expect("connector mirror receipt gate should be registered");
+    ConnectorRegistryReport {
+        schema_version: CONNECTOR_REGISTRY_SCHEMA_VERSION.to_string(),
+        providers: vec![
+            ConnectorProviderSpec {
+                name: "local-hive-panel".to_string(),
+                display_name: "Local Hive Panel".to_string(),
+                status: "active".to_string(),
+                mode: "in-process-issue-board".to_string(),
+                review_surface_prefixes: vec!["local-hive-panel".to_string()],
+                auth_required: false,
+                auth_env: Vec::new(),
+                configured: true,
+                supports_status: true,
+                supports_publish: false,
+                supports_readback: true,
+                supports_admission: true,
+                storage: "sqlite".to_string(),
+                notes: "Built-in local issue/status/comment surface.".to_string(),
+            },
+            ConnectorProviderSpec {
+                name: "file".to_string(),
+                display_name: "File Mirror".to_string(),
+                status: "active".to_string(),
+                mode: "local-json-mirror".to_string(),
+                review_surface_prefixes: vec!["file:".to_string()],
+                auth_required: false,
+                auth_env: Vec::new(),
+                configured: true,
+                supports_status: true,
+                supports_publish: true,
+                supports_readback: true,
+                supports_admission: true,
+                storage: "connectors/issue-mirrors/*.json".to_string(),
+                notes: "Local connector mirror used as the external issue surface dry-run.".to_string(),
+            },
+            ConnectorProviderSpec {
+                name: "linear".to_string(),
+                display_name: "Linear".to_string(),
+                status: "planned".to_string(),
+                mode: "remote-issue-api".to_string(),
+                review_surface_prefixes: vec!["linear:".to_string()],
+                auth_required: true,
+                auth_env: vec!["LINEAR_API_KEY".to_string()],
+                configured: false,
+                supports_status: false,
+                supports_publish: false,
+                supports_readback: false,
+                supports_admission: false,
+                storage: "not-configured".to_string(),
+                notes: "Target provider for real issue/status/comment sync; connector is not active yet.".to_string(),
+            },
+            ConnectorProviderSpec {
+                name: "github".to_string(),
+                display_name: "GitHub Issues".to_string(),
+                status: "planned".to_string(),
+                mode: "remote-issue-api".to_string(),
+                review_surface_prefixes: vec!["github:".to_string(), "gh:".to_string()],
+                auth_required: true,
+                auth_env: vec!["GITHUB_TOKEN".to_string(), "GH_TOKEN".to_string()],
+                configured: false,
+                supports_status: false,
+                supports_publish: false,
+                supports_readback: false,
+                supports_admission: false,
+                storage: "not-configured".to_string(),
+                notes: "Target provider for GitHub issue mirrors; connector is not active yet.".to_string(),
+            },
+        ],
+        admission: ConnectorAdmissionPolicySpec {
+            schema_version: POLICY_SCHEMA_VERSION.to_string(),
+            gate: connector_gate.name,
+            route_to: "external_issue_surface".to_string(),
+            expected_object_kind: connector_gate
+                .expected_object_kind
+                .unwrap_or_else(|| CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND.to_string()),
+            check: connector_gate.check,
+            required_receipts: connector_gate.required_receipts,
+            dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
+        },
     }
 }
 
@@ -6716,6 +6839,40 @@ mod tests {
                     .any(|field| field.as_str() == Some("gate.expected_object_kind"))))));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn connector_registry_exposes_active_and_planned_providers() {
+        let registry = connector_registry();
+        assert_eq!(registry.schema_version, CONNECTOR_REGISTRY_SCHEMA_VERSION);
+        assert_eq!(registry.admission.gate, CONNECTOR_MIRROR_RECEIPT_GATE);
+        assert_eq!(
+            registry.admission.expected_object_kind,
+            CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND
+        );
+        assert!(registry
+            .admission
+            .required_receipts
+            .iter()
+            .any(|receipt| receipt == "mirror_file_current"));
+        let file = registry
+            .providers
+            .iter()
+            .find(|provider| provider.name == "file")
+            .expect("file connector should be registered");
+        assert_eq!(file.status, "active");
+        assert!(file.configured);
+        assert!(file.supports_publish);
+        assert!(file.supports_readback);
+        assert!(file.supports_admission);
+        let linear = registry
+            .providers
+            .iter()
+            .find(|provider| provider.name == "linear")
+            .expect("linear connector should be registered");
+        assert_eq!(linear.status, "planned");
+        assert!(linear.auth_required);
+        assert!(!linear.configured);
     }
 
     #[test]

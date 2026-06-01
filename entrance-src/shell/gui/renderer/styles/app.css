@@ -571,6 +571,56 @@
   font-size: 0.78rem;
 }
 
+.connector-registry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.connector-registry > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 230px;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+.connector-registry strong {
+  color: var(--text);
+}
+
+.connector-provider {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+}
+
+.connector-provider span {
+  white-space: nowrap;
+}
+
+.connector-provider--active {
+  border-color: rgba(121, 215, 167, 0.22);
+  background: rgba(121, 215, 167, 0.055);
+}
+
+.connector-provider--planned {
+  background: rgba(255, 255, 255, 0.025);
+}
+
 .audit-preview {
   display: grid;
   gap: 6px;

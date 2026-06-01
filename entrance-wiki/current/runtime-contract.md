@@ -15,6 +15,8 @@ cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime codex --co
 cargo run -p entrance-app --bin entrance -- hive loop run 1 --runtime local --decision reject
 cargo run -p entrance-app --bin entrance -- hive issue list
 cargo run -p entrance-app --bin entrance -- hive issue show 1
+cargo run -p entrance-app --bin entrance -- hive connector registry --compact
+cargo run -p entrance-app --bin entrance -- hive issue connector-admission 1 --compact
 cargo run -p entrance-app --bin entrance -- hive issue decide 1 request-review --body "Need human call"
 cargo run -p entrance-app --bin entrance -- launcher list
 ```
@@ -110,6 +112,11 @@ be canceled before running; terminal human-canceled issues only allow comments.
 Compact issue surfaces also expose connector mirror drift: `hive issue show
 <id> --compact` includes a `connector` block, while `hive issue list --compact`
 adds a `connector_queue` with publish-required issue ids and commands.
+The connector registry is available through `hive connector registry --compact`;
+it distinguishes active local/file providers from planned Linear/GitHub
+providers and names the admission gate. `hive issue connector-admission <id>
+--compact` is the issue-scoped dry-run for routing a current mirror to
+`external_issue_surface`.
 
 ## Daemon
 

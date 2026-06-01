@@ -19,9 +19,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::{
     app::AppServices,
     commands::hive::{
-        admit_issue_mirror_file, audit_issue_mirror_file, issue_mirror_status,
-        publish_issue_mirror_to_file, readback_issue_mirror_file, sync_issue_mirror_to_file,
-        verify_issue_mirror_file,
+        admit_issue_mirror_file, audit_issue_mirror_file, issue_connector_admission_preview,
+        issue_mirror_status, publish_issue_mirror_to_file, readback_issue_mirror_file,
+        sync_issue_mirror_to_file, verify_issue_mirror_file,
     },
 };
 
@@ -522,6 +522,9 @@ async fn handle_invoke(
             let cards = state.services.hive.panel()?;
             issue_cards_with_connector_status(&state.services, cards)
         }
+        "hive_connector_registry" => Ok(serde_json::to_value(
+            state.services.hive.connector_registry(),
+        )?),
         "hive_issue_show" => {
             let issue_id = args
                 .get("issueId")
@@ -545,6 +548,22 @@ async fn handle_invoke(
                 &state.services,
                 issue_id,
                 args.get("outPath")
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+            )?)
+        }
+        "hive_issue_connector_admission" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_connector_admission requires `issueId`")?;
+            Ok(issue_connector_admission_preview(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
                     .or_else(|| args.get("out_path"))
                     .and_then(|value| value.as_str()),
             )?)
