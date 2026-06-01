@@ -195,9 +195,11 @@ comments, follows `Link` pagination for the comment list, emits
 only when target, auth, issue state/body, latest comment, and write-receipt
 binding checks pass. `storage` can override the file-backed mirror path used by
 active local adapters; for GitHub, an `http(s)://` storage value overrides the
-API base URL for fixture or GitHub Enterprise style testing. Linear readback,
-GitHub rate-limit/backoff hardening, and production retry behavior are still
-pending.
+API base URL for fixture or GitHub Enterprise style testing. GitHub REST
+operations expose attempt metadata, retry transient `5xx` responses with bounded
+backoff, and classify `403/429` rate limits as typed `remote_rate_limited`
+blockers without immediate retry. Linear readback, production drift handling,
+and broader retry policy are still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

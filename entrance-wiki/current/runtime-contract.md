@@ -182,8 +182,11 @@ is absent. GitHub readback now uses REST `GET` issue plus `GET` issue comments,
 follows `Link` pagination for the comment list, emits
 `entrance.hive.connector_remote_readback.v1`, and connector admission is ready
 only when the typed target, auth, issue state/body, latest comment, and
-write-receipt binding checks pass. Linear readback, GitHub rate-limit/backoff
-hardening, and production retry behavior are still pending.
+write-receipt binding checks pass. GitHub REST operations now expose attempt
+metadata, retry transient `5xx` responses with bounded backoff, and classify
+`403/429` rate limits as typed `remote_rate_limited` blockers without immediate
+retry. Linear readback, production drift handling, and broader retry policy are
+still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 

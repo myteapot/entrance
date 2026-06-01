@@ -49,6 +49,8 @@ const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
 const GITHUB_COMMENTS_MAX_PAGES: usize = 20;
+const GITHUB_HTTP_MAX_ATTEMPTS: usize = 2;
+const GITHUB_RETRY_BACKOFF_MS: u64 = 100;
 const GITHUB_COMMENT_IDEMPOTENCY_PREFIX: &str = "<!-- entrance-idempotency-key:";
 const GITHUB_COMMENT_IDEMPOTENCY_SUFFIX: &str = "-->";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
@@ -3442,6 +3444,9 @@ fn execute_github_remote_get_paginated_comments_operation(
             "url": next_url,
             "success": page.pointer("/success").and_then(|value| value.as_bool()),
             "http_status": page.pointer("/http_status").and_then(|value| value.as_u64()),
+            "failed_check": page.pointer("/failed_check").and_then(|value| value.as_str()),
+            "attempt_count": page.pointer("/attempt_count").and_then(|value| value.as_u64()),
+            "retry": page.pointer("/retry").cloned().unwrap_or_else(|| serde_json::json!({})),
             "item_count": page.pointer("/response/summary/count").and_then(|value| value.as_u64()),
             "next_url": page.pointer("/response/headers/link").and_then(|value| value.as_str()).and_then(github_link_header_next_url)
         }));
@@ -3464,6 +3469,9 @@ fn execute_github_remote_get_paginated_comments_operation(
                 "success": false,
                 "failed_check": page.pointer("/failed_check").and_then(|value| value.as_str()).unwrap_or("remote_comments_read"),
                 "http_status": page.pointer("/http_status").and_then(|value| value.as_u64()),
+                "attempt_count": page.pointer("/attempt_count").and_then(|value| value.as_u64()),
+                "retry": page.pointer("/retry").cloned().unwrap_or_else(|| serde_json::json!({})),
+                "attempts": page.pointer("/attempts").cloned().unwrap_or_else(|| serde_json::json!([])),
                 "request": {
                     "auth": "Authorization: Bearer <redacted>"
                 },
@@ -3590,6 +3598,40 @@ fn execute_github_remote_get_single_operation(
             "failed_check": "remote_url_missing"
         });
     }
+    let mut attempts = Vec::new();
+    for attempt_number in 1..=GITHUB_HTTP_MAX_ATTEMPTS {
+        let mut result = execute_github_remote_get_single_attempt(client, token, kind, url);
+        let should_retry = github_operation_result_should_retry_now(&result, attempt_number);
+        if should_retry {
+            github_mark_retry_scheduled(&mut result, github_retry_backoff_ms(attempt_number));
+        }
+        attempts.push(github_operation_attempt_summary(&result, attempt_number));
+        if !should_retry {
+            return github_operation_with_attempts(result, attempts);
+        }
+        std::thread::sleep(Duration::from_millis(github_retry_backoff_ms(
+            attempt_number,
+        )));
+    }
+
+    serde_json::json!({
+        "kind": kind,
+        "method": "GET",
+        "url": url,
+        "success": false,
+        "failed_check": "remote_retry_exhausted",
+        "attempt_count": attempts.len(),
+        "max_attempts": GITHUB_HTTP_MAX_ATTEMPTS,
+        "attempts": attempts
+    })
+}
+
+fn execute_github_remote_get_single_attempt(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    kind: &str,
+    url: &str,
+) -> serde_json::Value {
     let response = client
         .get(url)
         .bearer_auth(token)
@@ -3605,16 +3647,13 @@ fn execute_github_remote_get_single_operation(
                 "url": url,
                 "success": false,
                 "failed_check": "remote_request_failed",
+                "retry": github_request_retry_metadata(),
                 "error": error.to_string()
             });
         }
     };
     let status = response.status().as_u16();
-    let link_header = response
-        .headers()
-        .get("link")
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
+    let headers = response.headers().clone();
     let text = match response.text() {
         Ok(text) => text,
         Err(error) => {
@@ -3625,6 +3664,7 @@ fn execute_github_remote_get_single_operation(
                 "success": false,
                 "failed_check": "remote_response_read_failed",
                 "http_status": status,
+                "retry": github_response_read_retry_metadata(),
                 "error": error.to_string()
             });
         }
@@ -3634,26 +3674,30 @@ fn execute_github_remote_get_single_operation(
     let parsed_ok = parsed.is_some();
     let status_success = (200..300).contains(&status);
     let success = status_success && parsed_ok;
+    let failed_check = if success {
+        None
+    } else if !status_success {
+        Some(github_http_failed_check(status, &headers))
+    } else {
+        Some("remote_response_parse_failed")
+    };
     serde_json::json!({
         "kind": kind,
         "method": "GET",
         "url": url,
         "success": success,
-        "failed_check": if success {
-            None::<&str>
-        } else if !status_success {
-            Some("remote_http_status_failed")
-        } else {
-            Some("remote_response_parse_failed")
-        },
+        "failed_check": failed_check,
         "http_status": status,
+        "retry": if status_success {
+            github_parse_retry_metadata(parsed_ok)
+        } else {
+            github_http_retry_metadata(status, &headers)
+        },
         "request": {
             "auth": "Authorization: Bearer <redacted>"
         },
         "response": {
-            "headers": {
-                "link": link_header
-            },
+            "headers": github_response_headers_summary(&headers),
             "bytes": digest.bytes,
             "sha256": digest.sha256,
             "parsed": parsed_ok,
@@ -3667,6 +3711,211 @@ fn execute_github_remote_get_single_operation(
             })
         }
     })
+}
+
+fn github_operation_result_should_retry_now(
+    result: &serde_json::Value,
+    attempt_number: usize,
+) -> bool {
+    if attempt_number >= GITHUB_HTTP_MAX_ATTEMPTS {
+        return false;
+    }
+    if result.pointer("/success").and_then(|value| value.as_bool()) == Some(true) {
+        return false;
+    }
+    if result
+        .pointer("/retry/rate_limited")
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        return false;
+    }
+    result
+        .pointer("/retry/retryable")
+        .and_then(|value| value.as_bool())
+        == Some(true)
+}
+
+fn github_operation_with_attempts(
+    mut result: serde_json::Value,
+    attempts: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let success = result.pointer("/success").and_then(|value| value.as_bool()) == Some(true);
+    let rate_limited = result
+        .pointer("/retry/rate_limited")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let retryable = result
+        .pointer("/retry/retryable")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let attempted = attempts.len() > 1;
+    let exhausted =
+        !success && retryable && !rate_limited && attempts.len() >= GITHUB_HTTP_MAX_ATTEMPTS;
+    let mut retry = result
+        .pointer("/retry")
+        .cloned()
+        .unwrap_or_else(|| github_terminal_retry_metadata("success"));
+    if let Some(object) = retry.as_object_mut() {
+        object.insert("attempted".to_string(), serde_json::json!(attempted));
+        object.insert("exhausted".to_string(), serde_json::json!(exhausted));
+    }
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "attempt_count".to_string(),
+            serde_json::json!(attempts.len()),
+        );
+        object.insert(
+            "max_attempts".to_string(),
+            serde_json::json!(GITHUB_HTTP_MAX_ATTEMPTS),
+        );
+        object.insert("retry".to_string(), retry);
+        object.insert("attempts".to_string(), serde_json::Value::Array(attempts));
+    }
+    result
+}
+
+fn github_operation_attempt_summary(
+    result: &serde_json::Value,
+    attempt_number: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "attempt": attempt_number,
+        "success": result.pointer("/success").and_then(|value| value.as_bool()),
+        "failed_check": result.pointer("/failed_check").and_then(|value| value.as_str()),
+        "http_status": result.pointer("/http_status").and_then(|value| value.as_u64()),
+        "retry": result.pointer("/retry").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "error": result.pointer("/error").and_then(|value| value.as_str()),
+        "response_headers": result.pointer("/response/headers").cloned().unwrap_or_else(|| serde_json::json!({}))
+    })
+}
+
+fn github_mark_retry_scheduled(result: &mut serde_json::Value, backoff_ms: u64) {
+    if let Some(object) = result.as_object_mut() {
+        let retry = object
+            .entry("retry".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !retry.is_object() {
+            *retry = serde_json::json!({});
+        }
+        if let Some(retry_object) = retry.as_object_mut() {
+            retry_object.insert("scheduled".to_string(), serde_json::json!(true));
+            retry_object.insert("backoff_ms".to_string(), serde_json::json!(backoff_ms));
+        }
+    }
+}
+
+fn github_retry_backoff_ms(attempt_number: usize) -> u64 {
+    GITHUB_RETRY_BACKOFF_MS.saturating_mul(attempt_number as u64)
+}
+
+fn github_http_failed_check(status: u16, headers: &reqwest::header::HeaderMap) -> &'static str {
+    if github_http_rate_limited(status, headers) {
+        "remote_rate_limited"
+    } else if github_http_retryable_status(status) {
+        "remote_retryable_http_status"
+    } else {
+        "remote_http_status_failed"
+    }
+}
+
+fn github_http_retry_metadata(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+) -> serde_json::Value {
+    let rate_limited = github_http_rate_limited(status, headers);
+    let retryable = github_http_retryable_status(status);
+    serde_json::json!({
+        "retryable": retryable,
+        "rate_limited": rate_limited,
+        "scheduled": false,
+        "backoff_ms": None::<u64>,
+        "reason": if rate_limited {
+            "rate_limited"
+        } else if retryable {
+            "retryable_http_status"
+        } else {
+            "http_status_failed"
+        },
+        "retry_after_secs": github_retry_after_secs(headers),
+        "rate_limit": {
+            "remaining": github_header_value(headers, "x-ratelimit-remaining"),
+            "reset": github_header_value(headers, "x-ratelimit-reset"),
+            "resource": github_header_value(headers, "x-ratelimit-resource")
+        }
+    })
+}
+
+fn github_request_retry_metadata() -> serde_json::Value {
+    serde_json::json!({
+        "retryable": true,
+        "rate_limited": false,
+        "scheduled": false,
+        "backoff_ms": None::<u64>,
+        "reason": "request_failed"
+    })
+}
+
+fn github_response_read_retry_metadata() -> serde_json::Value {
+    serde_json::json!({
+        "retryable": true,
+        "rate_limited": false,
+        "scheduled": false,
+        "backoff_ms": None::<u64>,
+        "reason": "response_read_failed"
+    })
+}
+
+fn github_parse_retry_metadata(parsed: bool) -> serde_json::Value {
+    github_terminal_retry_metadata(if parsed {
+        "success"
+    } else {
+        "response_parse_failed"
+    })
+}
+
+fn github_terminal_retry_metadata(reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "retryable": false,
+        "rate_limited": false,
+        "scheduled": false,
+        "backoff_ms": None::<u64>,
+        "reason": reason
+    })
+}
+
+fn github_http_rate_limited(status: u16, headers: &reqwest::header::HeaderMap) -> bool {
+    status == 429
+        || (status == 403
+            && (github_header_value(headers, "x-ratelimit-remaining").as_deref() == Some("0")
+                || github_header_value(headers, "retry-after").is_some()))
+}
+
+fn github_http_retryable_status(status: u16) -> bool {
+    matches!(status, 500 | 502 | 503 | 504)
+}
+
+fn github_response_headers_summary(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
+    serde_json::json!({
+        "link": github_header_value(headers, "link"),
+        "retry_after": github_header_value(headers, "retry-after"),
+        "x_ratelimit_remaining": github_header_value(headers, "x-ratelimit-remaining"),
+        "x_ratelimit_reset": github_header_value(headers, "x-ratelimit-reset"),
+        "x_ratelimit_resource": github_header_value(headers, "x-ratelimit-resource")
+    })
+}
+
+fn github_retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    github_header_value(headers, "retry-after").and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+fn github_header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn github_link_header_next_url(link_header: &str) -> Option<String> {
@@ -5905,6 +6154,51 @@ fn execute_github_remote_write_operation(
         .pointer("/body")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
+    let mut attempts = Vec::new();
+    for attempt_number in 1..=GITHUB_HTTP_MAX_ATTEMPTS {
+        let mut result = execute_github_remote_write_attempt(
+            client,
+            token,
+            operation,
+            method.clone(),
+            method_label,
+            url,
+            &body,
+        );
+        let should_retry = github_operation_result_should_retry_now(&result, attempt_number);
+        if should_retry {
+            github_mark_retry_scheduled(&mut result, github_retry_backoff_ms(attempt_number));
+        }
+        attempts.push(github_operation_attempt_summary(&result, attempt_number));
+        if !should_retry {
+            return github_operation_with_attempts(result, attempts);
+        }
+        std::thread::sleep(Duration::from_millis(github_retry_backoff_ms(
+            attempt_number,
+        )));
+    }
+
+    serde_json::json!({
+        "kind": operation.pointer("/kind").and_then(|value| value.as_str()),
+        "method": method_label,
+        "url": url,
+        "success": false,
+        "failed_check": "remote_retry_exhausted",
+        "attempt_count": attempts.len(),
+        "max_attempts": GITHUB_HTTP_MAX_ATTEMPTS,
+        "attempts": attempts
+    })
+}
+
+fn execute_github_remote_write_attempt(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    operation: &serde_json::Value,
+    method: Method,
+    method_label: &str,
+    url: &str,
+    body: &serde_json::Value,
+) -> serde_json::Value {
     let response = client
         .request(method, url)
         .bearer_auth(token)
@@ -5921,11 +6215,13 @@ fn execute_github_remote_write_operation(
                 "url": url,
                 "success": false,
                 "failed_check": "remote_request_failed",
+                "retry": github_request_retry_metadata(),
                 "error": error.to_string()
             });
         }
     };
     let status = response.status().as_u16();
+    let headers = response.headers().clone();
     let text = match response.text() {
         Ok(text) => text,
         Err(error) => {
@@ -5936,6 +6232,7 @@ fn execute_github_remote_write_operation(
                 "success": false,
                 "failed_check": "remote_response_read_failed",
                 "http_status": status,
+                "retry": github_response_read_retry_metadata(),
                 "error": error.to_string()
             });
         }
@@ -5943,18 +6240,29 @@ fn execute_github_remote_write_operation(
     let digest = digest_bytes(text.as_bytes());
     let parsed = serde_json::from_str::<serde_json::Value>(&text).ok();
     let success = (200..300).contains(&status);
+    let failed_check = if success {
+        None
+    } else {
+        Some(github_http_failed_check(status, &headers))
+    };
     serde_json::json!({
         "kind": operation.pointer("/kind").and_then(|value| value.as_str()),
         "method": method_label,
         "url": url,
         "success": success,
-        "failed_check": if success { None::<&str> } else { Some("remote_http_status_failed") },
+        "failed_check": failed_check,
         "http_status": status,
+        "retry": if success {
+            github_terminal_retry_metadata("success")
+        } else {
+            github_http_retry_metadata(status, &headers)
+        },
         "request": {
             "body_sha256": digest_bytes(serde_json::to_vec(&body).unwrap_or_default().as_slice()).sha256,
             "auth": "Authorization: Bearer <redacted>"
         },
         "response": {
+            "headers": github_response_headers_summary(&headers),
             "bytes": digest.bytes,
             "sha256": digest.sha256,
             "summary": parsed.as_ref().map(compact_github_response_summary)
@@ -7595,6 +7903,92 @@ mod tests {
         (base_url, requests, handle)
     }
 
+    fn spawn_github_transient_write_server(
+    ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let request_log = Arc::clone(&requests);
+        let handle = thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("test request should connect");
+                let mut buffer = [0_u8; 8192];
+                let read = stream.read(&mut buffer).unwrap_or_default();
+                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                request_log
+                    .lock()
+                    .expect("request log should lock")
+                    .push(request.clone());
+                let (status, body) = if index == 0 {
+                    (
+                        "503 Service Unavailable",
+                        serde_json::json!({"message": "temporary unavailable"}).to_string(),
+                    )
+                } else if request.starts_with("PATCH /repos/owner/repo/issues/46 ") {
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "id": 46,
+                            "node_id": "I_kwDO-retry",
+                            "number": 46,
+                            "url": "http://localhost/repos/owner/repo/issues/46",
+                            "html_url": "http://localhost/owner/repo/issues/46",
+                            "state": "closed",
+                            "state_reason": "completed",
+                            "title": "Loop #46: GitHub retry",
+                            "comments": 0,
+                            "created_at": "2026-01-01T00:00:00Z",
+                            "updated_at": "2026-01-01T00:04:00Z"
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    (
+                        "404 Not Found",
+                        serde_json::json!({"message": "not found"}).to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("test response should write");
+            }
+        });
+        (base_url, requests, handle)
+    }
+
+    fn spawn_github_rate_limit_write_server(
+    ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let request_log = Arc::clone(&requests);
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test request should connect");
+            let mut buffer = [0_u8; 8192];
+            let read = stream.read(&mut buffer).unwrap_or_default();
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            request_log
+                .lock()
+                .expect("request log should lock")
+                .push(request);
+            let body = serde_json::json!({"message": "API rate limit exceeded"}).to_string();
+            let response = format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nRetry-After: 60\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 1780000000\r\nX-RateLimit-Resource: core\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test response should write");
+        });
+        (base_url, requests, handle)
+    }
+
     #[test]
     fn flags_read_values_and_presence_independently() {
         let args = vec![
@@ -8440,6 +8834,142 @@ mod tests {
                 .map(Vec::len),
             Some(0)
         );
+    }
+
+    #[test]
+    fn github_remote_write_retries_retryable_http_status() {
+        let mut github =
+            test_connector_provider("github", "GitHub", "active", true, true, vec!["github:"]);
+        github.mode = "remote-issue-api".to_string();
+        github.auth_required = true;
+        github.auth_env = vec!["ENTRANCE_TEST_GITHUB_RETRY_TOKEN".to_string()];
+        std::env::set_var("ENTRANCE_TEST_GITHUB_RETRY_TOKEN", "test-token");
+        let (base_url, requests, server) = spawn_github_transient_write_server();
+        let plan = serde_json::json!({
+            "schema_version": "entrance.hive.connector_remote_write_plan.v1",
+            "remote_object_kind": "github.issue",
+            "operations": [
+                {
+                    "kind": "update_issue",
+                    "method": "PATCH",
+                    "url": format!("{base_url}/repos/owner/repo/issues/46"),
+                    "body": {
+                        "title": "Loop #46: GitHub retry",
+                        "state": "closed",
+                        "state_reason": "completed"
+                    }
+                }
+            ]
+        });
+
+        let execution = execute_github_remote_write_plan(&github, &plan);
+        server.join().expect("test server should finish");
+        std::env::remove_var("ENTRANCE_TEST_GITHUB_RETRY_TOKEN");
+
+        assert_eq!(
+            execution
+                .pointer("/success")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempt_count")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempts/0/failed_check")
+                .and_then(|value| value.as_str()),
+            Some("remote_retryable_http_status")
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempts/0/retry/scheduled")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/retry/attempted")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/http_status")
+                .and_then(|value| value.as_u64()),
+            Some(200)
+        );
+        assert_eq!(requests.lock().expect("request log should lock").len(), 2);
+    }
+
+    #[test]
+    fn github_remote_write_reports_rate_limit_without_immediate_retry() {
+        let mut github =
+            test_connector_provider("github", "GitHub", "active", true, true, vec!["github:"]);
+        github.mode = "remote-issue-api".to_string();
+        github.auth_required = true;
+        github.auth_env = vec!["ENTRANCE_TEST_GITHUB_RATE_TOKEN".to_string()];
+        std::env::set_var("ENTRANCE_TEST_GITHUB_RATE_TOKEN", "test-token");
+        let (base_url, requests, server) = spawn_github_rate_limit_write_server();
+        let plan = serde_json::json!({
+            "schema_version": "entrance.hive.connector_remote_write_plan.v1",
+            "remote_object_kind": "github.issue",
+            "operations": [
+                {
+                    "kind": "update_issue",
+                    "method": "PATCH",
+                    "url": format!("{base_url}/repos/owner/repo/issues/46"),
+                    "body": {
+                        "title": "Loop #46: GitHub rate limit"
+                    }
+                }
+            ]
+        });
+
+        let execution = execute_github_remote_write_plan(&github, &plan);
+        server.join().expect("test server should finish");
+        std::env::remove_var("ENTRANCE_TEST_GITHUB_RATE_TOKEN");
+
+        assert_eq!(
+            execution
+                .pointer("/success")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            execution
+                .pointer("/failed_checks/0")
+                .and_then(|value| value.as_str()),
+            Some("remote_rate_limited")
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempt_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/retry/rate_limited")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/retry/retry_after_secs")
+                .and_then(|value| value.as_u64()),
+            Some(60)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/response/headers/x_ratelimit_remaining")
+                .and_then(|value| value.as_str()),
+            Some("0")
+        );
+        assert_eq!(requests.lock().expect("request log should lock").len(), 1);
     }
 
     #[test]
