@@ -618,6 +618,10 @@ fn compact_issue_connector_admission_preview(report: &serde_json::Value) -> serd
         "mirror_current": report.pointer("/connector/current").and_then(|value| value.as_bool()),
         "publish_required": report.pointer("/connector/publish_required").and_then(|value| value.as_bool()),
         "reason": report.pointer("/connector/reason").and_then(|value| value.as_str()),
+        "adapter": report.pointer("/adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "remote_contract": report.pointer("/remote_contract").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "writer_blockers": report.pointer("/writer_blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "checks": report.pointer("/checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "admissible": report.pointer("/decision/admissible").and_then(|value| value.as_bool()),
         "route_to": report.pointer("/decision/route_to").and_then(|value| value.as_str()),
         "blockers": report.pointer("/decision/blockers").and_then(|value| value.as_array()).cloned().unwrap_or_default(),
@@ -786,12 +790,24 @@ pub(crate) fn issue_connector_admission_preview(
         .pointer("/current")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
+    let writer_blockers = connector_writer_blockers(provider);
+    let remote_contract = compact_connector_remote_contract(provider);
+    let remote_contract_required = !remote_contract.is_null();
     let mut blockers = Vec::new();
     if provider.is_none() {
         blockers.push("unsupported_provider".to_string());
     }
     if let Some(provider_admission) = provider_admission {
         blockers.extend(provider_admission.blockers.iter().cloned());
+    }
+    if remote_contract_required {
+        blockers.extend(writer_blockers.iter().cloned());
+        if !provider
+            .map(|provider| provider.supports_readback)
+            .unwrap_or(false)
+        {
+            blockers.push("readback_not_supported".to_string());
+        }
     }
     if !mirror_current {
         blockers.push("mirror_not_current".to_string());
@@ -810,6 +826,13 @@ pub(crate) fn issue_connector_admission_preview(
     blockers.extend(failed_checks);
     blockers.sort();
     blockers.dedup();
+    let checks = connector_admission_preview_checks(
+        provider,
+        provider_admission,
+        &status,
+        &writer_blockers,
+        remote_contract_required,
+    );
     let admissible = blockers.is_empty();
     let route_to = if admissible {
         provider_admission
@@ -832,6 +855,10 @@ pub(crate) fn issue_connector_admission_preview(
         "review_surface": mirror.review_surface,
         "external_key": mirror.external_key,
         "connector": status,
+        "adapter": compact_connector_writer_adapter(&mirror.provider, provider),
+        "remote_contract": remote_contract,
+        "writer_blockers": writer_blockers,
+        "checks": checks,
         "policy": {
             "schema_version": registry.admission.schema_version,
             "gate": registry.admission.gate,
@@ -997,6 +1024,27 @@ fn apply_connector_provider_admission_preview(
             .cloned()
             .unwrap_or_else(|| serde_json::json!({})),
     );
+    object.insert(
+        "provider_checks".to_string(),
+        provider_preview
+            .pointer("/checks")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    );
+    object.insert(
+        "writer_adapter".to_string(),
+        provider_preview
+            .pointer("/adapter")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+    );
+    object.insert(
+        "remote_contract".to_string(),
+        provider_preview
+            .pointer("/remote_contract")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(null)),
+    );
 
     if admissible {
         if let Some(decision) = object
@@ -1027,6 +1075,91 @@ fn apply_connector_provider_admission_preview(
         );
         decision.insert("blockers".to_string(), blockers);
     }
+}
+
+fn connector_admission_preview_checks(
+    provider: Option<&ConnectorProviderSpec>,
+    provider_admission: Option<&ConnectorProviderAdmissionSpec>,
+    connector_status: &serde_json::Value,
+    writer_blockers: &[String],
+    remote_contract_required: bool,
+) -> Vec<serde_json::Value> {
+    let provider_admission_blockers = provider_admission
+        .map(|admission| {
+            admission
+                .blockers
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let connector_failed_checks = connector_status
+        .pointer("/failed_checks")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    let mirror_current = connector_status
+        .pointer("/current")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let provider_admission_ready = provider_admission
+        .map(|admission| admission.status == "ready" && admission.blockers.is_empty())
+        .unwrap_or(false);
+    let remote_readback_available = provider
+        .map(|provider| provider.supports_readback)
+        .unwrap_or(false);
+    let remote_write_contract_ready =
+        !remote_contract_required || (writer_blockers.is_empty() && remote_readback_available);
+
+    vec![
+        readback_check(
+            "provider_supported",
+            "Connector provider is registered for this issue surface.",
+            provider.is_some(),
+            serde_json::json!({
+                "provider": provider.map(|provider| provider.name.as_str()),
+                "mode": provider.map(|provider| provider.mode.as_str())
+            }),
+        ),
+        readback_check(
+            "provider_admission_ready",
+            "Provider admission policy is ready for this connector.",
+            provider_admission_ready,
+            serde_json::json!({
+                "status": provider_admission.map(|admission| admission.status.as_str()),
+                "blockers": provider_admission_blockers
+            }),
+        ),
+        readback_check(
+            "mirror_current",
+            "Connector mirror status is current before admission.",
+            mirror_current,
+            serde_json::json!({
+                "reason": connector_status.pointer("/reason"),
+                "publish_required": connector_status.pointer("/publish_required")
+            }),
+        ),
+        readback_check(
+            "readback_checks_passed",
+            "Issue/status/comment readback checks pass for the connector mirror.",
+            connector_failed_checks.is_empty(),
+            serde_json::json!({
+                "failed_checks": connector_failed_checks
+            }),
+        ),
+        readback_check(
+            "remote_write_contract_ready",
+            "Remote write/readback contract is ready when the provider needs a remote issue API.",
+            remote_write_contract_ready,
+            serde_json::json!({
+                "required": remote_contract_required,
+                "writer_blockers": writer_blockers,
+                "supports_readback": remote_readback_available
+            }),
+        ),
+    ]
 }
 
 fn record_issue_mirror_readback(
@@ -1199,6 +1332,22 @@ fn record_issue_mirror_admission(
         .filter_map(|value| value.as_str())
         .collect::<Vec<_>>()
         .join(", ");
+    let provider_checks = admission
+        .pointer("/provider_checks")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let provider_check_count = provider_checks.as_array().map(Vec::len).unwrap_or_default();
+    let provider_passed_check_count = provider_checks
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|check| {
+            check
+                .pointer("/passed")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .count();
     let body = if admitted {
         format!("Connector admission admitted: {route_to}.")
     } else if failed_label.is_empty() {
@@ -1236,6 +1385,10 @@ fn record_issue_mirror_admission(
                     "gate": admission.pointer("/policy/gate"),
                     "route_to": route_to,
                     "failed_checks": failed_checks,
+                    "provider_check_count": provider_check_count,
+                    "provider_passed_check_count": provider_passed_check_count,
+                    "writer_adapter": admission.pointer("/writer_adapter"),
+                    "remote_contract": admission.pointer("/remote_contract"),
                     "dry_run": admission.pointer("/dry_run")
                 }
             }),
@@ -1277,6 +1430,9 @@ fn record_issue_mirror_admission(
                     "decision": admission.pointer("/decision").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "provider_admission": admission.pointer("/provider_admission").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "provider_decision": admission.pointer("/provider_decision").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "provider_checks": provider_checks,
+                    "writer_adapter": admission.pointer("/writer_adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
+                    "remote_contract": admission.pointer("/remote_contract").cloned().unwrap_or_else(|| serde_json::json!(null)),
                     "policy": admission.pointer("/policy").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "receipt": admission.pointer("/receipt").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "failed_checks": admission.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
@@ -2230,6 +2386,17 @@ fn compact_issue_mirror_admission_summary(report: &serde_json::Value) -> serde_j
         "provider": report.pointer("/provider").and_then(|value| value.as_str()),
         "provider_admission_status": report.pointer("/provider_admission/status").and_then(|value| value.as_str()),
         "provider_admission_blockers": report.pointer("/provider_admission/blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "provider_checks": report.pointer("/provider_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "provider_check_count": report.pointer("/provider_checks").and_then(|value| value.as_array()).map(Vec::len),
+        "provider_passed_check_count": report.pointer("/provider_checks").and_then(|value| value.as_array()).map(|checks| {
+            checks.iter().filter(|check| {
+                check.pointer("/passed").and_then(|value| value.as_bool()).unwrap_or(false)
+            }).count()
+        }),
+        "adapter_driver": report.pointer("/writer_adapter/driver").and_then(|value| value.as_str()),
+        "adapter_blockers": report.pointer("/writer_adapter/blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "remote_contract_schema_version": report.pointer("/remote_contract/schema_version").and_then(|value| value.as_str()),
+        "remote_object_kind": report.pointer("/remote_contract/remote_object_kind").and_then(|value| value.as_str()),
         "review_surface": report.pointer("/review_surface").and_then(|value| value.as_str()),
         "external_key": report.pointer("/external_key").and_then(|value| value.as_str()),
         "gate": report.pointer("/policy/gate").and_then(|value| value.as_str()),
@@ -3574,13 +3741,15 @@ mod tests {
 
     use super::{
         compact_connector_publish_plan, compact_connector_queue, compact_issue_board,
-        compact_issue_detail, compact_issue_mirror, compact_issue_mirror_admission,
-        compact_issue_mirror_admission_summary, compact_issue_mirror_audit,
-        compact_issue_mirror_audit_summary, compact_issue_mirror_publish,
-        compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
-        compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
-        compact_loop_audit, default_issue_mirror_path, default_issue_mirror_path_for_provider,
-        flag_present, flag_value, issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
+        compact_issue_connector_admission_preview, compact_issue_detail, compact_issue_mirror,
+        compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
+        compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
+        compact_issue_mirror_publish, compact_issue_mirror_readback,
+        compact_issue_mirror_readback_summary, compact_issue_mirror_status,
+        compact_issue_mirror_sync, compact_issue_mirror_verify, compact_loop_audit,
+        connector_admission_preview_checks, connector_writer_blockers, default_issue_mirror_path,
+        default_issue_mirror_path_for_provider, flag_present, flag_value,
+        issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -4198,6 +4367,128 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(blockers.contains(&"provider_not_active"));
         assert!(blockers.contains(&"publish_not_supported"));
+    }
+
+    #[test]
+    fn connector_admission_preview_checks_explain_remote_contract_blockers() {
+        let provider =
+            test_connector_provider("linear", "Linear", "planned", false, false, vec!["linear:"]);
+        let admission = test_provider_admission(&provider);
+        let status = serde_json::json!({
+            "current": false,
+            "publish_required": true,
+            "reason": "mirror_file_missing",
+            "failed_checks": ["remote_file_present"]
+        });
+        let writer_blockers = connector_writer_blockers(Some(&provider));
+
+        let checks = connector_admission_preview_checks(
+            Some(&provider),
+            Some(&admission),
+            &status,
+            &writer_blockers,
+            true,
+        );
+
+        assert_eq!(checks.len(), 5);
+        let names = checks
+            .iter()
+            .filter_map(|check| check.pointer("/name").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"provider_admission_ready"));
+        assert!(names.contains(&"remote_write_contract_ready"));
+        let remote_contract_check = checks
+            .iter()
+            .find(|check| {
+                check.pointer("/name").and_then(|value| value.as_str())
+                    == Some("remote_write_contract_ready")
+            })
+            .expect("remote contract check should be present");
+        assert_eq!(
+            remote_contract_check
+                .pointer("/passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            remote_contract_check
+                .pointer("/details/writer_blockers/2")
+                .and_then(|value| value.as_str()),
+            Some("publish_not_supported")
+        );
+    }
+
+    #[test]
+    fn compact_connector_admission_preview_exposes_checks_and_contract() {
+        let report = serde_json::json!({
+            "schema_version": "entrance.hive.issue_connector_admission_preview.v1",
+            "issue": {"id": 9, "loop_id": 4},
+            "provider_name": "linear",
+            "provider": {
+                "name": "linear",
+                "status": "planned",
+                "configured": false
+            },
+            "provider_admission": {
+                "status": "blocked",
+                "blockers": ["provider_not_active"]
+            },
+            "review_surface": "linear:ENT-9",
+            "connector": {
+                "current": false,
+                "publish_required": true,
+                "reason": "mirror_file_missing"
+            },
+            "adapter": {
+                "driver": "unavailable",
+                "blockers": ["provider_not_active", "connector_not_configured", "publish_not_supported"]
+            },
+            "remote_contract": {
+                "schema_version": "entrance.hive.connector_remote_contract.v1",
+                "remote_object_kind": "linear.issue"
+            },
+            "writer_blockers": ["provider_not_active", "connector_not_configured", "publish_not_supported"],
+            "checks": [{
+                "name": "remote_write_contract_ready",
+                "passed": false
+            }],
+            "decision": {
+                "admissible": false,
+                "blockers": ["provider_not_active", "publish_not_supported"]
+            },
+            "policy": {
+                "gate": "connector_mirror_receipt",
+                "expected_object_kind": "ISSUE_CONNECTOR_MIRROR_RECEIPT"
+            },
+            "commands": {}
+        });
+
+        let compact = compact_issue_connector_admission_preview(&report);
+
+        assert_eq!(
+            compact
+                .pointer("/adapter/driver")
+                .and_then(|value| value.as_str()),
+            Some("unavailable")
+        );
+        assert_eq!(
+            compact
+                .pointer("/remote_contract/remote_object_kind")
+                .and_then(|value| value.as_str()),
+            Some("linear.issue")
+        );
+        assert_eq!(
+            compact
+                .pointer("/checks/0/name")
+                .and_then(|value| value.as_str()),
+            Some("remote_write_contract_ready")
+        );
+        assert_eq!(
+            compact
+                .pointer("/writer_blockers/2")
+                .and_then(|value| value.as_str()),
+            Some("publish_not_supported")
+        );
     }
 
     #[test]

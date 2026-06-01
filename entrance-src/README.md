@@ -144,7 +144,9 @@ env, and required pre/post-write checks before a real writer is allowed to run.
 active/planned issue-surface providers, provider-specific admission status, and
 the connector admission gate, while `hive issue
 connector-admission <id> --compact` dry-runs whether the current mirror can be
-routed to `external_issue_surface`.
+routed to `external_issue_surface`. Admission previews include a typed check
+vector, writer adapter blockers, and any remote contract so the CLI/Panel can
+explain which provider, readback, or remote-write gate stopped the route.
 Connector provider config is read from `entrance.toml`; for example
 `[connectors.linear] enabled = true` with `auth_env = ["LINEAR_API_KEY"]`
 marks Linear as configured while it remains a planned provider until a real

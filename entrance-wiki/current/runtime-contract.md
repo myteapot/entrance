@@ -136,7 +136,9 @@ required pre/post-write checks, but they cannot be executed until a real writer
 is active. `hive issue
 connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
-`external_issue_surface`.
+`external_issue_surface`; it now emits a typed provider check vector, writer
+adapter blockers, and any remote contract so rejected admissions can be traced
+to provider readiness, mirror readback, or remote-write requirements.
 Provider overrides are read from `entrance.toml` under `[connectors.<provider>]`.
 Enabling a planned provider can mark auth/storage config as present, but
 admission still blocks until that provider has an active implementation.

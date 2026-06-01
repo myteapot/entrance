@@ -505,12 +505,20 @@ type IssueMirrorReadbackReport = {
     } | null;
   } | null;
 };
+type AdmissionCheck = {
+  name: string;
+  passed: boolean;
+  summary?: string | null;
+};
 type IssueMirrorAdmissionReport = {
   schema_version: string;
   admitted: boolean;
   result: string;
   reason: string;
   failed_checks: string[];
+  provider_checks?: AdmissionCheck[] | null;
+  writer_adapter?: ConnectorWriterAdapter | null;
+  remote_contract?: ConnectorRemoteContract | null;
   decision: {
     route_to: string;
   };
@@ -1046,16 +1054,18 @@ export default function App() {
         issueId: card.issue.id,
         record: true,
       });
+      const checkLabel = admissionCheckLabel(report.provider_checks);
+      const checkSuffix = checkLabel ? `, ${checkLabel}` : "";
       if (report.admitted) {
         const evidenceLabel = report.recorded?.evidence_id ? `E#${report.recorded.evidence_id}` : "recorded";
         const publishLabel = report.recorded?.publish?.required ? "; publish required" : "";
         setBanner(
-          `Admitted connector mirror ${compactText(report.receipt.sha256 ?? "no-sha", 12)}: ${report.decision.route_to} (${evidenceLabel})${publishLabel}`,
+          `Admitted connector mirror ${compactText(report.receipt.sha256 ?? "no-sha", 12)}: ${report.decision.route_to} (${evidenceLabel}${checkSuffix})${publishLabel}`,
         );
       } else {
         const evidenceLabel = report.recorded?.evidence_id ? ` (E#${report.recorded.evidence_id})` : "";
         const publishLabel = report.recorded?.publish?.required ? "; publish required" : "";
-        setBanner(`Connector admission rejected: ${compactText(report.failed_checks.join(", "), 96)}${evidenceLabel}${publishLabel}`);
+        setBanner(`Connector admission rejected${checkLabel ? ` (${checkLabel})` : ""}: ${compactText(report.failed_checks.join(", "), 96)}${evidenceLabel}${publishLabel}`);
       }
     } catch (error) {
       setBanner(`Issue #${card.issue.id} admission failed: ${actionErrorMessage(error)}`);
@@ -1668,6 +1678,11 @@ export default function App() {
     `entrance hive issue mirror-readback ${card.issue.id} --record --compact`;
   const issueMirrorAdmitCommand = (card: IssueCard) =>
     `entrance hive issue mirror-admit ${card.issue.id} --record --compact`;
+  const admissionCheckLabel = (checks?: AdmissionCheck[] | null) => {
+    if (!checks?.length) return null;
+    const passed = checks.filter((check) => check.passed).length;
+    return `${passed}/${checks.length} checks`;
+  };
   const issueMirrorSyncLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Syncing" ? "Syncing" : "Sync";
   const issueMirrorPublishLabel = (card: IssueCard) =>
