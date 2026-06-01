@@ -180,7 +180,278 @@ CREATE TABLE IF NOT EXISTS bus_commands (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_hive_loop_contracts_status ON hive_loop_contracts(status);
+CREATE INDEX IF NOT EXISTS idx_hive_loop_stages_loop_round_role ON hive_loop_stages(loop_id, round, role);
+CREATE INDEX IF NOT EXISTS idx_hive_loop_policies_loop ON hive_loop_policies(loop_id);
+CREATE INDEX IF NOT EXISTS idx_hive_loop_packets_loop_round ON hive_loop_packets(loop_id, round);
+CREATE INDEX IF NOT EXISTS idx_hive_loop_admissions_loop_packet ON hive_loop_admissions(loop_id, packet_id);
+CREATE INDEX IF NOT EXISTS idx_hive_loop_evidence_loop_round ON hive_loop_evidence(loop_id, round);
+CREATE INDEX IF NOT EXISTS idx_hive_loop_verdicts_loop_round ON hive_loop_verdicts(loop_id, round);
+CREATE INDEX IF NOT EXISTS idx_hive_issues_loop_status ON hive_issues(loop_id, status);
+CREATE INDEX IF NOT EXISTS idx_hive_comments_issue ON hive_comments(issue_id);
+CREATE INDEX IF NOT EXISTS idx_launcher_entries_normalized ON launcher_entries(normalized_name);
+CREATE INDEX IF NOT EXISTS idx_bus_commands_topic_status ON bus_commands(topic, status);
 "#;
+
+const CORE_SCHEMA_VERSION: i64 = 1;
+const CORE_SCHEMA_NAME: &str = "entrance.sqlite.core.v1";
+
+#[derive(Debug, Clone, Copy)]
+struct TableSpec {
+    name: &'static str,
+    columns: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IndexSpec {
+    name: &'static str,
+    table: &'static str,
+    columns: &'static [&'static str],
+}
+
+const CORE_TABLES: &[TableSpec] = &[
+    TableSpec {
+        name: "drawer_entries",
+        columns: &[
+            "id",
+            "title",
+            "kind",
+            "source_path",
+            "storage_path",
+            "tags_json",
+            "encrypted",
+            "created_at",
+            "updated_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_runs",
+        columns: &[
+            "id",
+            "title",
+            "mode",
+            "status",
+            "project_dir",
+            "summary",
+            "payload_json",
+            "created_at",
+            "updated_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_loop_contracts",
+        columns: &[
+            "id",
+            "title",
+            "goal",
+            "boundary",
+            "approach_space_json",
+            "eval_space_json",
+            "review_surface",
+            "autonomy_level",
+            "runtime",
+            "status",
+            "active_phase",
+            "current_round",
+            "created_at",
+            "updated_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_loop_stages",
+        columns: &[
+            "id",
+            "loop_id",
+            "round",
+            "role",
+            "status",
+            "summary",
+            "input_json",
+            "output_json",
+            "started_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_loop_policies",
+        columns: &[
+            "id",
+            "loop_id",
+            "object_kind",
+            "writer_role",
+            "route_from",
+            "route_to",
+            "gate",
+            "status",
+            "created_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_loop_packets",
+        columns: &[
+            "id",
+            "loop_id",
+            "round",
+            "object_kind",
+            "writer_role",
+            "route_from",
+            "route_to",
+            "state_code",
+            "payload_json",
+            "created_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_loop_admissions",
+        columns: &[
+            "id",
+            "loop_id",
+            "packet_id",
+            "result",
+            "reason",
+            "policy_json",
+            "created_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_loop_evidence",
+        columns: &[
+            "id",
+            "loop_id",
+            "stage_id",
+            "round",
+            "kind",
+            "summary",
+            "path",
+            "payload_json",
+            "created_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_loop_verdicts",
+        columns: &[
+            "id",
+            "loop_id",
+            "round",
+            "decision",
+            "summary",
+            "score_json",
+            "evidence_json",
+            "created_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_issues",
+        columns: &[
+            "id",
+            "loop_id",
+            "title",
+            "status",
+            "summary",
+            "created_at",
+            "updated_at",
+        ],
+    },
+    TableSpec {
+        name: "hive_comments",
+        columns: &[
+            "id",
+            "issue_id",
+            "author",
+            "body",
+            "payload_json",
+            "created_at",
+        ],
+    },
+    TableSpec {
+        name: "launcher_entries",
+        columns: &[
+            "id",
+            "name",
+            "normalized_name",
+            "command",
+            "arguments",
+            "working_dir",
+            "source",
+            "launch_count",
+            "pinned",
+            "created_at",
+            "updated_at",
+        ],
+    },
+    TableSpec {
+        name: "bus_commands",
+        columns: &[
+            "id",
+            "topic",
+            "payload_json",
+            "status",
+            "created_at",
+            "updated_at",
+        ],
+    },
+];
+
+const CORE_INDEXES: &[IndexSpec] = &[
+    IndexSpec {
+        name: "idx_hive_loop_contracts_status",
+        table: "hive_loop_contracts",
+        columns: &["status"],
+    },
+    IndexSpec {
+        name: "idx_hive_loop_stages_loop_round_role",
+        table: "hive_loop_stages",
+        columns: &["loop_id", "round", "role"],
+    },
+    IndexSpec {
+        name: "idx_hive_loop_policies_loop",
+        table: "hive_loop_policies",
+        columns: &["loop_id"],
+    },
+    IndexSpec {
+        name: "idx_hive_loop_packets_loop_round",
+        table: "hive_loop_packets",
+        columns: &["loop_id", "round"],
+    },
+    IndexSpec {
+        name: "idx_hive_loop_admissions_loop_packet",
+        table: "hive_loop_admissions",
+        columns: &["loop_id", "packet_id"],
+    },
+    IndexSpec {
+        name: "idx_hive_loop_evidence_loop_round",
+        table: "hive_loop_evidence",
+        columns: &["loop_id", "round"],
+    },
+    IndexSpec {
+        name: "idx_hive_loop_verdicts_loop_round",
+        table: "hive_loop_verdicts",
+        columns: &["loop_id", "round"],
+    },
+    IndexSpec {
+        name: "idx_hive_issues_loop_status",
+        table: "hive_issues",
+        columns: &["loop_id", "status"],
+    },
+    IndexSpec {
+        name: "idx_hive_comments_issue",
+        table: "hive_comments",
+        columns: &["issue_id"],
+    },
+    IndexSpec {
+        name: "idx_launcher_entries_normalized",
+        table: "launcher_entries",
+        columns: &["normalized_name"],
+    },
+    IndexSpec {
+        name: "idx_bus_commands_topic_status",
+        table: "bus_commands",
+        columns: &["topic", "status"],
+    },
+];
 
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -192,11 +463,44 @@ pub struct Store {
 pub struct AppStatus {
     pub app_root: String,
     pub db_path: String,
+    pub schema: StoreSchemaStatus,
     pub drawer_entries: i64,
     pub hive_runs: i64,
     pub hive_loops: i64,
     pub launcher_entries: i64,
     pub generated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreSchemaStatus {
+    pub schema_version: String,
+    pub db_path: String,
+    pub user_version: i64,
+    pub expected_user_version: i64,
+    pub healthy: bool,
+    pub tables: Vec<StoreSchemaTableStatus>,
+    pub indexes: Vec<StoreSchemaIndexStatus>,
+    pub missing_tables: Vec<String>,
+    pub missing_columns: Vec<String>,
+    pub missing_indexes: Vec<String>,
+    pub generated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreSchemaTableStatus {
+    pub name: String,
+    pub present: bool,
+    pub column_count: usize,
+    pub required_column_count: usize,
+    pub missing_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreSchemaIndexStatus {
+    pub name: String,
+    pub table: String,
+    pub present: bool,
+    pub columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -534,6 +838,10 @@ impl Store {
         let connection = Connection::open(&db_path)
             .with_context(|| format!("failed to open database at {}", db_path.display()))?;
         connection.execute_batch(CORE_SCHEMA)?;
+        let user_version = read_user_version(&connection)?;
+        if user_version < CORE_SCHEMA_VERSION {
+            connection.execute_batch(&format!("PRAGMA user_version = {CORE_SCHEMA_VERSION}"))?;
+        }
 
         Ok(Self {
             db_path,
@@ -543,6 +851,56 @@ impl Store {
 
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    pub fn schema_status(&self) -> Result<StoreSchemaStatus> {
+        let connection = self.connection();
+        let user_version = read_user_version(&connection)?;
+        let tables = CORE_TABLES
+            .iter()
+            .map(|spec| schema_table_status(&connection, spec))
+            .collect::<Result<Vec<_>>>()?;
+        let indexes = CORE_INDEXES
+            .iter()
+            .map(|spec| schema_index_status(&connection, spec))
+            .collect::<Result<Vec<_>>>()?;
+        let missing_tables = tables
+            .iter()
+            .filter(|table| !table.present)
+            .map(|table| table.name.clone())
+            .collect::<Vec<_>>();
+        let missing_columns = tables
+            .iter()
+            .flat_map(|table| {
+                table
+                    .missing_columns
+                    .iter()
+                    .map(|column| format!("{}.{}", table.name, column))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let missing_indexes = indexes
+            .iter()
+            .filter(|index| !index.present)
+            .map(|index| index.name.clone())
+            .collect::<Vec<_>>();
+        let healthy = user_version >= CORE_SCHEMA_VERSION
+            && missing_tables.is_empty()
+            && missing_columns.is_empty()
+            && missing_indexes.is_empty();
+        Ok(StoreSchemaStatus {
+            schema_version: CORE_SCHEMA_NAME.to_string(),
+            db_path: self.db_path.display().to_string(),
+            user_version,
+            expected_user_version: CORE_SCHEMA_VERSION,
+            healthy,
+            tables,
+            indexes,
+            missing_tables,
+            missing_columns,
+            missing_indexes,
+            generated_at: timestamp(),
+        })
     }
 
     pub fn apply_migrations(&self, steps: &[MigrationStep]) -> Result<()> {
@@ -1233,6 +1591,7 @@ impl Store {
         Ok(AppStatus {
             app_root: app_root.display().to_string(),
             db_path: self.db_path.display().to_string(),
+            schema: self.schema_status()?,
             drawer_entries: self.count("drawer_entries")?,
             hive_runs: self.count("hive_runs")?,
             hive_loops: self.count("hive_loop_contracts")?,
@@ -1267,6 +1626,72 @@ fn normalize_text(value: &str) -> String {
 fn timestamp() -> String {
     let value: DateTime<Utc> = Utc::now();
     value.to_rfc3339()
+}
+
+fn read_user_version(connection: &Connection) -> Result<i64> {
+    connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .context("failed to read sqlite user_version")
+}
+
+fn schema_table_status(
+    connection: &Connection,
+    spec: &TableSpec,
+) -> Result<StoreSchemaTableStatus> {
+    let present = sqlite_object_exists(connection, "table", spec.name)?;
+    let columns = if present {
+        table_columns(connection, spec.name)?
+    } else {
+        Vec::new()
+    };
+    let missing_columns = spec
+        .columns
+        .iter()
+        .filter(|column| !columns.iter().any(|present| present == **column))
+        .map(|column| (*column).to_string())
+        .collect::<Vec<_>>();
+    Ok(StoreSchemaTableStatus {
+        name: spec.name.to_string(),
+        present,
+        column_count: columns.len(),
+        required_column_count: spec.columns.len(),
+        missing_columns,
+    })
+}
+
+fn schema_index_status(
+    connection: &Connection,
+    spec: &IndexSpec,
+) -> Result<StoreSchemaIndexStatus> {
+    Ok(StoreSchemaIndexStatus {
+        name: spec.name.to_string(),
+        table: spec.table.to_string(),
+        present: sqlite_object_exists(connection, "index", spec.name)?,
+        columns: spec
+            .columns
+            .iter()
+            .map(|column| (*column).to_string())
+            .collect(),
+    })
+}
+
+fn sqlite_object_exists(connection: &Connection, object_type: &str, name: &str) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = ?1 AND name = ?2 LIMIT 1",
+            params![object_type, name],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .context("failed to inspect sqlite schema object")
+}
+
+fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to inspect sqlite table columns")
 }
 
 fn map_drawer_entry(row: &Row<'_>) -> rusqlite::Result<DrawerEntry> {
@@ -1469,4 +1894,49 @@ fn map_persisted_command(row: &Row<'_>) -> rusqlite::Result<PersistedCommand> {
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{Store, CORE_SCHEMA_VERSION};
+
+    fn temp_db_path(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join("entrance-store-tests")
+            .join(format!("{name}-{}-{nanos}.db", std::process::id()))
+    }
+
+    #[test]
+    fn schema_status_reports_core_tables_indexes_and_version() {
+        let db_path = temp_db_path("schema-status");
+        let store = Store::open(&db_path).expect("store should open");
+
+        let status = store.schema_status().expect("schema status should load");
+
+        assert!(status.healthy);
+        assert_eq!(status.user_version, CORE_SCHEMA_VERSION);
+        assert_eq!(status.expected_user_version, CORE_SCHEMA_VERSION);
+        assert!(status.missing_tables.is_empty());
+        assert!(status.missing_columns.is_empty());
+        assert!(status.missing_indexes.is_empty());
+        assert!(status
+            .tables
+            .iter()
+            .any(|table| table.name == "hive_loop_evidence" && table.present));
+        assert!(status
+            .indexes
+            .iter()
+            .any(|index| index.name == "idx_hive_loop_evidence_loop_round" && index.present));
+
+        let _ = fs::remove_file(db_path);
+    }
 }

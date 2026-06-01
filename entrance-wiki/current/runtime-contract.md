@@ -24,6 +24,7 @@ cargo run -p entrance-app --bin entrance -- hive connector publish-plan --compac
 cargo run -p entrance-app --bin entrance -- hive connector publish-execute --plan-id <sha256> --compact
 cargo run -p entrance-app --bin entrance -- hive issue connector-admission 1 --compact
 cargo run -p entrance-app --bin entrance -- hive issue decide 1 request-review --body "Need human call"
+cargo run -p entrance-app --bin entrance -- hive schema --compact
 cargo run -p entrance-app --bin entrance -- launcher list
 ```
 
@@ -49,6 +50,11 @@ recent rounds failed and whether the current round recovered from them.
 Pending Doctor next actions prefer the issue-first compact command
 `hive issue run <id> --runtime <runtime> --compact` when a loop has a linked
 issue, so operators stay on the issue/status/comment surface.
+`hive schema --compact` reports the SQLite ledger schema contract for local
+operators: core schema version, `PRAGMA user_version`, table/column/index
+presence, and missing object lists. The Runtime panel shows the same schema
+health line as `ok v1/1 tables 13/13 indexes 11/11` when the local ledger is
+ready.
 Admission receipts include the packet receipt requirements, missing receipt
 fields, and a boolean satisfied flag. Default MVP gates admit packets only when
 their typed receipt requirements are present. Worker receipts are stricter than

@@ -60,6 +60,7 @@ Local agent-loop MVP:
 .\entrance.exe hive loop audit 1
 .\entrance.exe hive loop doctor 1
 .\entrance.exe hive loop policies 1
+.\entrance.exe hive schema --compact
 .\entrance.exe hive policy registry
 .\entrance.exe hive connector registry --compact
 .\entrance.exe hive connector queue --compact
@@ -93,6 +94,11 @@ with recent comments, evidence, stages, round recovery, and next actions.
 Pending Doctor next actions prefer the issue-first compact command
 `hive issue run <id> --runtime <runtime> --compact` when a loop has a linked
 issue.
+`hive schema --compact` reports the SQLite ledger schema health: core schema
+version, `PRAGMA user_version`, expected/present table counts, expected/present
+index counts, and missing table/column/index lists. The Runtime panel surfaces
+the same health line so operators can see whether the local ledger structure is
+ready before trusting loop evidence.
 `hive policy registry` exposes the typed gate registry plus runtime worker
 policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
 required worker receipt fields, role binding, connector retry budgets, and the

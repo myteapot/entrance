@@ -222,6 +222,9 @@ async fn handle_invoke(
                 .store
                 .app_status(&state.services.kernel.root)?,
         )?),
+        "hive_schema" => Ok(serde_json::to_value(
+            state.services.kernel.store.schema_status()?,
+        )?),
         "drawer_summary" => Ok(serde_json::to_value(state.services.drawer.summary()?)?),
         "drawer_list" => Ok(serde_json::to_value(
             state

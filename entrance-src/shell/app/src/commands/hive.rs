@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use entrance_core::{HiveCommentCreate, HiveLoopEvidenceCreate};
+use entrance_core::{HiveCommentCreate, HiveLoopEvidenceCreate, StoreSchemaStatus};
 use entrance_hive::{
     connector_retry_policy_for_provider, ConnectorAdmissionCheckSpec,
     ConnectorProviderAdmissionSpec, ConnectorProviderSpec, ConnectorRegistryReport,
@@ -77,13 +77,21 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop demo [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive schema [--compact]\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop demo [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
         [flag] if cli::is_help(flag) => run(services, &[]),
         [command] if command == "list" => print_json(&services.hive.list()?),
         [command] if command == "summary" => print_json(&services.hive.summary()?),
+        [command, rest @ ..] if command == "schema" => {
+            let status = services.kernel.store.schema_status()?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_store_schema_status(&status))
+            } else {
+                print_json(&status)
+            }
+        }
         [command, flag, title] if command == "dispatch" && flag == "--title" => {
             let report = services.hive.dispatch(HiveDispatchRequest {
                 title: title.clone(),
@@ -1129,6 +1137,35 @@ fn compact_json_array_tail(value: Option<&serde_json::Value>, limit: usize) -> s
     };
     let start = values.len().saturating_sub(limit);
     serde_json::Value::Array(values[start..].to_vec())
+}
+
+fn compact_store_schema_status(status: &StoreSchemaStatus) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "entrance.hive.schema.compact.v1",
+        "source_schema_version": status.schema_version.as_str(),
+        "healthy": status.healthy,
+        "db_path": status.db_path.as_str(),
+        "user_version": status.user_version,
+        "expected_user_version": status.expected_user_version,
+        "tables": {
+            "present": status.tables.iter().filter(|table| table.present).count(),
+            "expected": status.tables.len(),
+            "missing": status.missing_tables.len()
+        },
+        "columns": {
+            "missing": status.missing_columns.len()
+        },
+        "indexes": {
+            "present": status.indexes.iter().filter(|index| index.present).count(),
+            "expected": status.indexes.len(),
+            "missing": status.missing_indexes.len()
+        },
+        "missing": {
+            "tables": status.missing_tables,
+            "columns": status.missing_columns,
+            "indexes": status.missing_indexes
+        }
+    })
 }
 
 fn compact_policy_registry(report: &PolicyRegistryReport) -> serde_json::Value {
@@ -10318,13 +10355,13 @@ mod tests {
         compact_issue_mirror_roundtrip_summary, compact_issue_mirror_status,
         compact_issue_mirror_sync, compact_issue_mirror_verify,
         compact_linear_issue_mirror_readback, compact_loop_audit, compact_loop_start_summary,
-        connector_admission_check_failed, connector_admission_preview_checks,
-        connector_github_remote_comment_body, connector_issue_writer_blockers,
-        connector_linear_remote_comment_body, connector_remote_issue_body,
-        connector_remote_issue_idempotency_key, connector_remote_target,
-        connector_remote_write_issue_from_mirror, connector_remote_write_plan,
-        connector_remote_write_receipt_from_execution, connector_write_receipt,
-        connector_writer_blockers, default_issue_mirror_path,
+        compact_store_schema_status, connector_admission_check_failed,
+        connector_admission_preview_checks, connector_github_remote_comment_body,
+        connector_issue_writer_blockers, connector_linear_remote_comment_body,
+        connector_remote_issue_body, connector_remote_issue_idempotency_key,
+        connector_remote_target, connector_remote_write_issue_from_mirror,
+        connector_remote_write_plan, connector_remote_write_receipt_from_execution,
+        connector_write_receipt, connector_writer_blockers, default_issue_mirror_path,
         default_issue_mirror_path_for_provider, digest_bytes, execute_github_remote_readback,
         execute_github_remote_write_plan, execute_linear_remote_write_plan, flag_present,
         flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
@@ -10332,7 +10369,10 @@ mod tests {
         mirror_receipt_path, MirrorFileDigest, CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION,
         CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION, ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
     };
-    use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
+    use entrance_core::{
+        HiveComment, HiveIssue, HiveLoopContract, StoreSchemaIndexStatus, StoreSchemaStatus,
+        StoreSchemaTableStatus,
+    };
     use entrance_hive::{
         ConnectorAdmissionCheckSpec, ConnectorAdmissionPolicySpec, ConnectorProviderAdmissionSpec,
         ConnectorProviderSpec, ConnectorRegistryReport, HiveLoopAuditCheck, HiveLoopAuditReport,
@@ -11163,6 +11203,53 @@ mod tests {
 
         assert_eq!(request.runtime, "local");
         assert_eq!(request.eval_space, vec!["cli ok", "panel ok"]);
+    }
+
+    #[test]
+    fn compact_store_schema_status_exposes_health_and_missing_counts() {
+        let summary = compact_store_schema_status(&StoreSchemaStatus {
+            schema_version: "entrance.sqlite.core.v1".to_string(),
+            db_path: "/tmp/entrance.db".to_string(),
+            user_version: 1,
+            expected_user_version: 1,
+            healthy: true,
+            tables: vec![StoreSchemaTableStatus {
+                name: "hive_loop_contracts".to_string(),
+                present: true,
+                column_count: 14,
+                required_column_count: 14,
+                missing_columns: vec![],
+            }],
+            indexes: vec![StoreSchemaIndexStatus {
+                name: "idx_hive_loop_packets_loop_round".to_string(),
+                table: "hive_loop_packets".to_string(),
+                present: true,
+                columns: vec!["loop_id".to_string(), "round".to_string()],
+            }],
+            missing_tables: vec![],
+            missing_columns: vec![],
+            missing_indexes: vec![],
+            generated_at: "2026-01-01T00:00:00Z".to_string(),
+        });
+
+        assert_eq!(
+            summary
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.schema.compact.v1")
+        );
+        assert_eq!(
+            summary
+                .pointer("/healthy")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            summary
+                .pointer("/indexes/present")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
     }
 
     #[test]

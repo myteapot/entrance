@@ -12,10 +12,36 @@ type ActiveCommentComposer = {
 type AppStatus = {
   app_root: string;
   db_path: string;
+  schema: StoreSchemaStatus;
   drawer_entries: number;
   hive_runs: number;
   hive_loops: number;
   launcher_entries: number;
+  generated_at: string;
+};
+
+type StoreSchemaStatus = {
+  schema_version: string;
+  db_path: string;
+  user_version: number;
+  expected_user_version: number;
+  healthy: boolean;
+  tables: Array<{
+    name: string;
+    present: boolean;
+    column_count: number;
+    required_column_count: number;
+    missing_columns: string[];
+  }>;
+  indexes: Array<{
+    name: string;
+    table: string;
+    present: boolean;
+    columns: string[];
+  }>;
+  missing_tables: string[];
+  missing_columns: string[];
+  missing_indexes: string[];
   generated_at: string;
 };
 
@@ -2453,6 +2479,23 @@ export default function App() {
       ["Worker", workerLabel(card) ?? "pending"],
     ];
   };
+  const storeSchemaLabel = () => {
+    const schema = status()?.schema;
+    if (!schema) return "pending";
+    const tables = schema.tables.filter((table) => table.present).length;
+    const indexes = schema.indexes.filter((index) => index.present).length;
+    return `${schema.healthy ? "ok" : "blocked"} v${schema.user_version}/${schema.expected_user_version} tables ${tables}/${schema.tables.length} indexes ${indexes}/${schema.indexes.length}`;
+  };
+  const storeSchemaTitle = () => {
+    const schema = status()?.schema;
+    if (!schema) return "Store schema pending";
+    const missing = [
+      ...schema.missing_tables.map((value) => `table:${value}`),
+      ...schema.missing_columns.map((value) => `column:${value}`),
+      ...schema.missing_indexes.map((value) => `index:${value}`),
+    ];
+    return missing.length ? missing.join(" | ") : schema.schema_version;
+  };
 
   return (
     <div class="app-shell">
@@ -2483,6 +2526,7 @@ export default function App() {
                 <dl class="metric-list">
                   <div><dt>App root</dt><dd>{status()?.app_root ?? "..."}</dd></div>
                   <div><dt>Database</dt><dd>{status()?.db_path ?? "..."}</dd></div>
+                  <div><dt>Schema</dt><dd title={storeSchemaTitle()}>{storeSchemaLabel()}</dd></div>
                   <div><dt>Drawer</dt><dd>{status()?.drawer_entries ?? 0}</dd></div>
                   <div><dt>Hive</dt><dd>{status()?.hive_runs ?? 0}</dd></div>
                   <div><dt>Loops</dt><dd>{status()?.hive_loops ?? 0}</dd></div>

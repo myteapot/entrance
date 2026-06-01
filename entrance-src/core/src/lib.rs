@@ -27,6 +27,7 @@ pub use store::{
     HiveLoopPacket, HiveLoopPacketCreate, HiveLoopPolicy, HiveLoopPolicyCreate, HiveLoopStage,
     HiveLoopStageCreate, HiveLoopVerdict, HiveLoopVerdictCreate, HiveRun, HiveRunCreate,
     LauncherEntry, LauncherEntryCreate, LauncherQuery, MigrationStep, PersistedCommand, Store,
+    StoreSchemaIndexStatus, StoreSchemaStatus, StoreSchemaTableStatus,
 };
 pub use supervision::{RetryPolicy, Supervision};
 pub use versioning::{CommitSummary, Versioning};
