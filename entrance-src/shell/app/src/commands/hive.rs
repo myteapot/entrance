@@ -19,6 +19,7 @@ use crate::{app::AppServices, cli, print_json};
 const ISSUE_MIRROR_SYNC_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync.v1";
 const ISSUE_MIRROR_SYNC_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync_receipt.v1";
 const ISSUE_MIRROR_PUBLISH_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_publish.v1";
+const ISSUE_MIRROR_STATUS_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_status.v1";
 const ISSUE_MIRROR_VERIFY_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_verify.v1";
 const ISSUE_MIRROR_AUDIT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_audit.v1";
 const ISSUE_MIRROR_READBACK_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_readback.v1";
@@ -37,7 +38,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -226,6 +227,11 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 id.parse::<i64>()?,
                 flag_value(rest, "--path").or_else(|| flag_value(rest, "--out")),
             )?;
+            print_json(&report)
+        }
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-status" => {
+            let report =
+                issue_mirror_status(services, id.parse::<i64>()?, flag_value(rest, "--path"))?;
             print_json(&report)
         }
         [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-verify" => {
@@ -516,6 +522,15 @@ pub(crate) fn publish_issue_mirror_to_file(
 ) -> Result<serde_json::Value> {
     let sync = sync_issue_mirror_to_file(services, issue_id, path)?;
     Ok(compact_issue_mirror_publish(&sync))
+}
+
+pub(crate) fn issue_mirror_status(
+    services: &AppServices,
+    issue_id: i64,
+    path: Option<&str>,
+) -> Result<serde_json::Value> {
+    let readback = readback_issue_mirror_file(services, issue_id, path, false)?;
+    Ok(compact_issue_mirror_status(&readback))
 }
 
 pub(crate) fn verify_issue_mirror_file(
@@ -1134,6 +1149,65 @@ fn compact_issue_mirror_publish(sync: &serde_json::Value) -> serde_json::Value {
         "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", issue_id.unwrap_or_default()),
         "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", issue_id.unwrap_or_default())
     })
+}
+
+fn compact_issue_mirror_status(readback: &serde_json::Value) -> serde_json::Value {
+    let issue_id = readback
+        .pointer("/issue_id")
+        .and_then(|value| value.as_i64());
+    let current = readback
+        .pointer("/passed")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let failed_checks = readback
+        .pointer("/failed_checks")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let reason = if current {
+        "connector_mirror_current".to_string()
+    } else {
+        connector_status_reason(&failed_checks).to_string()
+    };
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_STATUS_SCHEMA_VERSION,
+        "current": current,
+        "publish_required": !current,
+        "reason": reason,
+        "failed_checks": failed_checks,
+        "provider": readback.pointer("/provider"),
+        "review_surface": readback.pointer("/review_surface"),
+        "external_key": readback.pointer("/external_key"),
+        "issue_id": issue_id,
+        "issue_status": readback.pointer("/issue_status"),
+        "loop_id": readback.pointer("/loop_id"),
+        "loop_round": readback.pointer("/loop_round"),
+        "path": readback.pointer("/path"),
+        "receipt_path": readback.pointer("/receipt_path"),
+        "current_sha256": readback.pointer("/current/digest/sha256"),
+        "remote_sha256": readback.pointer("/remote/digest/sha256"),
+        "current_comment_count": readback.pointer("/current/comments/count"),
+        "remote_comment_count": readback.pointer("/remote/surface/comments/count"),
+        "remote_parsed": readback.pointer("/remote/parsed"),
+        "receipt_found": readback.pointer("/receipt/found"),
+        "publish_command": format!("entrance hive issue mirror-publish {} --compact", issue_id.unwrap_or_default()),
+        "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", issue_id.unwrap_or_default()),
+        "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", issue_id.unwrap_or_default())
+    })
+}
+
+fn connector_status_reason(failed_checks: &serde_json::Value) -> &'static str {
+    let first_check = failed_checks
+        .as_array()
+        .and_then(|checks| checks.iter().find_map(|value| value.as_str()));
+    match first_check {
+        Some("remote_file_present") => "mirror_file_missing",
+        Some("remote_parse") => "mirror_parse_failed",
+        Some("remote_digest_current") => "mirror_stale",
+        Some("remote_binding") => "mirror_binding_stale",
+        Some("remote_comment_surface") => "mirror_comment_surface_stale",
+        Some("receipt_current") => "mirror_receipt_stale",
+        _ => "connector_mirror_stale",
+    }
 }
 
 fn compact_issue_mirror_verify(
@@ -2088,9 +2162,10 @@ mod tests {
         compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
         compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
         compact_issue_mirror_publish, compact_issue_mirror_readback,
-        compact_issue_mirror_readback_summary, compact_issue_mirror_sync,
-        compact_issue_mirror_verify, compact_loop_audit, default_issue_mirror_path, flag_present,
-        flag_value, issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
+        compact_issue_mirror_readback_summary, compact_issue_mirror_status,
+        compact_issue_mirror_sync, compact_issue_mirror_verify, compact_loop_audit,
+        default_issue_mirror_path, flag_present, flag_value, issue_mirror_sync_receipt,
+        mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -2696,6 +2771,31 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue mirror-readback 8 --record --compact")
         );
+        let current_status = compact_issue_mirror_status(&readback);
+        assert_eq!(
+            current_status
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror_status.v1")
+        );
+        assert_eq!(
+            current_status
+                .pointer("/current")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            current_status
+                .pointer("/publish_required")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            current_status
+                .pointer("/publish_command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-publish 8 --compact")
+        );
         let mut recorded_readback = readback.clone();
         recorded_readback
             .as_object_mut()
@@ -2804,6 +2904,25 @@ mod tests {
         assert!(readback_failures
             .iter()
             .any(|value| value.as_str() == Some("remote_comment_surface")));
+        let stale_status = compact_issue_mirror_status(&stale_readback);
+        assert_eq!(
+            stale_status
+                .pointer("/current")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            stale_status
+                .pointer("/publish_required")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            stale_status
+                .pointer("/reason")
+                .and_then(|value| value.as_str()),
+            Some("mirror_stale")
+        );
 
         let mut drifted = receipt;
         *drifted

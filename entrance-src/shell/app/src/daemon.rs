@@ -10,7 +10,7 @@ use axum::{
 use entrance_core::LauncherQuery;
 use entrance_drawer::VaultSecret;
 use entrance_hive::{
-    HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest,
+    HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest, IssueCard,
     IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, ReviewDecision,
 };
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::{
     app::AppServices,
     commands::hive::{
-        admit_issue_mirror_file, audit_issue_mirror_file, publish_issue_mirror_to_file,
-        readback_issue_mirror_file, sync_issue_mirror_to_file, verify_issue_mirror_file,
+        admit_issue_mirror_file, audit_issue_mirror_file, issue_mirror_status,
+        publish_issue_mirror_to_file, readback_issue_mirror_file, sync_issue_mirror_to_file,
+        verify_issue_mirror_file,
     },
 };
 
@@ -170,6 +171,40 @@ fn cors_headers() -> [(&'static str, &'static str); 3] {
         ("access-control-allow-methods", "GET, POST, OPTIONS"),
         ("access-control-allow-headers", "content-type"),
     ]
+}
+
+fn issue_cards_with_connector_status(
+    services: &AppServices,
+    cards: Vec<IssueCard>,
+) -> Result<serde_json::Value> {
+    let cards = cards
+        .into_iter()
+        .map(|card| issue_card_with_connector_status(services, card))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(serde_json::Value::Array(cards))
+}
+
+fn issue_card_with_connector_status(
+    services: &AppServices,
+    card: IssueCard,
+) -> Result<serde_json::Value> {
+    let issue_id = card.issue.id;
+    let mut card = serde_json::to_value(card)?;
+    if let Some(object) = card.as_object_mut() {
+        let connector = issue_mirror_status(services, issue_id, None).unwrap_or_else(|error| {
+            serde_json::json!({
+                "schema_version": "entrance.hive.issue_mirror_status.v1",
+                "current": false,
+                "publish_required": null,
+                "reason": "connector_status_unavailable",
+                "error": error.to_string(),
+                "issue_id": issue_id,
+                "publish_command": format!("entrance hive issue mirror-publish {} --compact", issue_id)
+            })
+        });
+        object.insert("connector".to_string(), connector);
+    }
+    Ok(card)
 }
 
 async fn handle_invoke(
@@ -483,7 +518,10 @@ async fn handle_invoke(
                 .await
                 .context("hive_loop_run worker panicked")?
         }
-        "hive_panel" => Ok(serde_json::to_value(state.services.hive.panel()?)?),
+        "hive_panel" => {
+            let cards = state.services.hive.panel()?;
+            issue_cards_with_connector_status(&state.services, cards)
+        }
         "hive_issue_show" => {
             let issue_id = args
                 .get("issueId")
@@ -491,9 +529,10 @@ async fn handle_invoke(
                 .or_else(|| args.get("id"))
                 .and_then(|value| value.as_i64())
                 .context("hive_issue_show requires `issueId`")?;
-            Ok(serde_json::to_value(
+            issue_card_with_connector_status(
+                &state.services,
                 state.services.hive.issue_report(issue_id)?,
-            )?)
+            )
         }
         "hive_issue_mirror_sync" => {
             let issue_id = args
@@ -518,6 +557,22 @@ async fn handle_invoke(
                 .and_then(|value| value.as_i64())
                 .context("hive_issue_mirror_publish requires `issueId`")?;
             Ok(publish_issue_mirror_to_file(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+            )?)
+        }
+        "hive_issue_mirror_status" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_status requires `issueId`")?;
+            Ok(issue_mirror_status(
                 &state.services,
                 issue_id,
                 args.get("path")

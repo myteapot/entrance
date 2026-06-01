@@ -177,6 +177,7 @@ type IssueCard = {
     }>;
   } | null;
   doctor: IssueDoctorSummary | null;
+  connector?: IssueConnectorStatus | null;
 };
 
 type IssueAction = {
@@ -188,6 +189,25 @@ type IssueAction = {
   input: string;
   destructive: boolean;
   runtime: string | null;
+};
+
+type IssueConnectorStatus = {
+  schema_version: string;
+  current: boolean;
+  publish_required: boolean | null;
+  reason: string;
+  failed_checks: string[];
+  provider?: string | null;
+  review_surface?: string | null;
+  path?: string | null;
+  current_comment_count?: number | null;
+  remote_comment_count?: number | null;
+  current_sha256?: string | null;
+  remote_sha256?: string | null;
+  publish_command: string;
+  readback_command?: string | null;
+  admit_command?: string | null;
+  error?: string | null;
 };
 
 type OperatorEvent = {
@@ -468,6 +488,9 @@ export default function App() {
   const selectedIssueDoctor = createMemo(() => selectedIssueCard()?.doctor ?? null);
   const issueCardsForStatus = (statusName: string) =>
     (issueCards() ?? []).filter((card) => card.issue.status === statusName);
+  const connectorPublishQueue = createMemo(() =>
+    (issueCards() ?? []).filter((card) => card.connector?.publish_required === true),
+  );
   const revealIssueDetail = () => {
     window.setTimeout(() => {
       issueDetailPanel?.scrollIntoView({ block: "start", behavior: "auto" });
@@ -512,6 +535,9 @@ export default function App() {
   };
   const refetchLoopSurfaces = async () => {
     await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchStatus()]);
+  };
+  const refetchIssueCardsQuietly = () => {
+    void Promise.resolve(refetchIssueCards()).catch(() => undefined);
   };
   const pollLoopSurfaces = () => {
     void refetchLoopSurfaces().catch(() => undefined);
@@ -662,6 +688,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} sync failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
+      refetchIssueCardsQuietly();
     }
   };
   const publishIssueMirror = async (card: IssueCard) => {
@@ -677,6 +704,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} publish failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
+      refetchIssueCardsQuietly();
     }
   };
   const verifyIssueMirror = async (card: IssueCard) => {
@@ -696,6 +724,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} verify failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
+      refetchIssueCardsQuietly();
     }
   };
   const readbackIssueMirror = async (card: IssueCard) => {
@@ -722,6 +751,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} readback failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
+      refetchIssueCardsQuietly();
     }
   };
   const admitIssueMirror = async (card: IssueCard) => {
@@ -748,6 +778,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} admission failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
+      refetchIssueCardsQuietly();
     }
   };
   const workerLimitRunArgs = (): LoopRunArgs => {
@@ -1264,6 +1295,40 @@ export default function App() {
     card.doctor?.audit_failure_details.length
       ? card.doctor.audit_failure_details
       : card.trace?.audit_failure_details ?? [];
+  const connectorStatusTone = (connector?: IssueConnectorStatus | null) => {
+    if (!connector) return "pending";
+    if (connector.current) return "ok";
+    return connector.publish_required ? "warn" : "pending";
+  };
+  const connectorStatusLabel = (connector?: IssueConnectorStatus | null) => {
+    if (!connector) return "connector pending";
+    if (connector.current) return "connector current";
+    if (connector.publish_required) return "publish required";
+    return "connector unknown";
+  };
+  const connectorCommentLabel = (connector?: IssueConnectorStatus | null) => {
+    if (!connector) return null;
+    const current = connector.current_comment_count;
+    const remote = connector.remote_comment_count;
+    if (current == null && remote == null) return null;
+    return `comments ${remote ?? 0}/${current ?? 0}`;
+  };
+  const connectorReasonLabel = (connector?: IssueConnectorStatus | null) => {
+    if (!connector || connector.current) return null;
+    return connector.reason;
+  };
+  const connectorStatusStrip = (card: IssueCard, surface: string) =>
+    card.connector ? (
+      <div
+        class={`connector-strip connector-strip--${connectorStatusTone(card.connector)}`}
+        data-testid={`issue-connector-${surface}-${card.issue.id}`}
+      >
+        <strong>Connector</strong>
+        <span>{connectorStatusLabel(card.connector)}</span>
+        {connectorCommentLabel(card.connector) ? <span>{connectorCommentLabel(card.connector)}</span> : null}
+        {connectorReasonLabel(card.connector) ? <span>{connectorReasonLabel(card.connector)}</span> : null}
+      </div>
+    ) : null;
   const loopAuditCommand = (card: IssueCard) =>
     card.issue.loop_id ? `entrance hive loop audit ${card.issue.loop_id} --compact` : null;
   const loopEvidenceCommand = (card: IssueCard) =>
@@ -1625,6 +1690,7 @@ export default function App() {
                       <>
                         <h3>{card.issue.title}</h3>
                         <p class="muted">{card.issue.summary ?? "No summary"}</p>
+                        {connectorStatusStrip(card, "detail")}
                         <Show when={selectedIssueDoctor()} keyed>
                           {(doctor) => (
                             <div class={`doctor-summary doctor-summary--${doctorHealthTone(doctor.health)}`}>
@@ -2017,6 +2083,28 @@ export default function App() {
               <article class="panel panel--board">
                 <p class="panel-kicker">Issues</p>
                 <h3>Status board</h3>
+                <div class="connector-queue" data-testid="connector-publish-queue">
+                  <div>
+                    <strong>Connector queue</strong>
+                    <span>
+                      {connectorPublishQueue().length
+                        ? `${connectorPublishQueue().length} publish required`
+                        : "all current"}
+                    </span>
+                  </div>
+                  {connectorPublishQueue().slice(0, 4).map((card) => (
+                    <button
+                      type="button"
+                      aria-label={`Publish issue #${card.issue.id} from connector queue`}
+                      data-testid={`connector-publish-queue-publish-${card.issue.id}`}
+                      disabled={Boolean(issuePendingLabel(card.issue.id))}
+                      title={card.connector?.publish_command ?? issueMirrorPublishCommand(card)}
+                      onClick={() => void publishIssueMirror(card)}
+                    >
+                      #{card.issue.id} Publish
+                    </button>
+                  ))}
+                </div>
                 <div class="board-columns">
                   {ISSUE_STATUSES.map((statusName) => (
                     <section
@@ -2042,6 +2130,7 @@ export default function App() {
                                 <span>#{card.issue.id}</span>
                               </div>
                               <p class="muted">{card.issue.summary ?? "No summary"}</p>
+                              {connectorStatusStrip(card, "board")}
                               <Show when={cardDoctor(card)} keyed>
                                 {(doctor) => (
                                   <div class={`doctor-strip doctor-strip--${doctorHealthTone(doctor.health)}`}>

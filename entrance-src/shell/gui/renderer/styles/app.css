@@ -499,6 +499,78 @@
   background: rgba(255, 255, 255, 0.025);
 }
 
+.connector-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+.connector-strip strong {
+  color: var(--text);
+}
+
+.connector-strip span {
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.connector-strip--ok {
+  border-color: rgba(121, 215, 167, 0.24);
+  background: rgba(121, 215, 167, 0.055);
+}
+
+.connector-strip--warn {
+  border-color: rgba(255, 193, 7, 0.32);
+  background: rgba(255, 193, 7, 0.08);
+}
+
+.connector-strip--pending {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.connector-queue {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.connector-queue div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 170px;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+.connector-queue strong {
+  color: var(--text);
+}
+
+.connector-queue button {
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 193, 7, 0.09);
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
 .audit-preview {
   display: grid;
   gap: 6px;
