@@ -204,6 +204,8 @@ type IssueConnectorStatus = {
   remote_comment_count?: number | null;
   current_sha256?: string | null;
   remote_sha256?: string | null;
+  checks?: AdmissionCheck[] | null;
+  remote_readback_checks?: AdmissionCheck[] | null;
   publish_command: string;
   readback_command?: string | null;
   admit_command?: string | null;
@@ -370,6 +372,9 @@ type ConnectorQueueIssue = {
   remote_write_plan?: ConnectorRemoteWritePlan | null;
   admission_status: string | null;
   admission_blockers: string[];
+  checks?: AdmissionCheck[] | null;
+  remote_readback_checks?: AdmissionCheck[] | null;
+  admission_checks?: AdmissionCheck[] | null;
   review_surface: string | null;
   publish_required: boolean;
   current: boolean | null;
@@ -1874,6 +1879,37 @@ export default function App() {
     if (!connector || connector.current) return null;
     return connector.reason;
   };
+  const connectorCheckSummary = (checks?: AdmissionCheck[] | null) => {
+    if (!checks?.length) return null;
+    const passed = checks.filter((check) => check.passed).length;
+    return `${passed}/${checks.length}`;
+  };
+  const connectorCheckTitle = (checks?: AdmissionCheck[] | null) =>
+    checks
+      ?.map((check) => {
+        const status = check.passed ? "ok" : "blocked";
+        return `${status} ${check.name}${check.summary ? `: ${check.summary}` : ""}`;
+      })
+      .join(" | ") ?? "";
+  const connectorCheckTone = (checks?: AdmissionCheck[] | null) =>
+    checks?.some((check) => !check.passed) ? "warn" : "ok";
+  const connectorCheckChip = (
+    label: string,
+    checks: AdmissionCheck[] | null | undefined,
+    testId: string,
+  ) => {
+    const summary = connectorCheckSummary(checks);
+    if (!summary) return null;
+    return (
+      <span
+        class={`connector-check connector-check--${connectorCheckTone(checks)}`}
+        data-testid={testId}
+        title={connectorCheckTitle(checks)}
+      >
+        {label} {summary}
+      </span>
+    );
+  };
   const connectorProviderCapabilityLabel = (provider: ConnectorProvider) => {
     const capabilities = [
       provider.supports_status ? "status" : null,
@@ -1924,6 +1960,16 @@ export default function App() {
         <span>{connectorStatusLabel(card.connector)}</span>
         {connectorCommentLabel(card.connector) ? <span>{connectorCommentLabel(card.connector)}</span> : null}
         {connectorReasonLabel(card.connector) ? <span>{connectorReasonLabel(card.connector)}</span> : null}
+        {connectorCheckChip(
+          "readback",
+          connectorQueueIssueById(card.issue.id)?.checks ?? card.connector.checks,
+          `connector-readback-checks-${surface}-${card.issue.id}`,
+        )}
+        {connectorCheckChip(
+          "admit",
+          connectorQueueIssueById(card.issue.id)?.admission_checks,
+          `connector-admission-checks-${surface}-${card.issue.id}`,
+        )}
         {connectorRemoteTargetChip(
           connectorQueueIssueTarget(card.issue.id),
           `connector-target-${surface}-${card.issue.id}`,
@@ -2798,6 +2844,16 @@ export default function App() {
                   ))}
                   {connectorPublishQueue().slice(0, 4).map((card) => (
                     <div class="connector-queue-issue">
+                      {connectorCheckChip(
+                        "readback",
+                        connectorQueueIssueById(card.issue.id)?.checks ?? card.connector?.checks,
+                        `connector-queue-readback-checks-${card.issue.id}`,
+                      )}
+                      {connectorCheckChip(
+                        "admit",
+                        connectorQueueIssueById(card.issue.id)?.admission_checks,
+                        `connector-queue-admission-checks-${card.issue.id}`,
+                      )}
                       {connectorRemoteTargetChip(
                         connectorQueueIssueTarget(card.issue.id),
                         `connector-queue-target-${card.issue.id}`,

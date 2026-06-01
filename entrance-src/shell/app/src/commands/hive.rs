@@ -2378,6 +2378,8 @@ fn compact_issue_mirror_status(readback: &serde_json::Value) -> serde_json::Valu
         "remote_comment_count": readback.pointer("/remote/surface/comments/count"),
         "remote_parsed": readback.pointer("/remote/parsed"),
         "receipt_found": readback.pointer("/receipt/found"),
+        "checks": readback.pointer("/checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "remote_readback_checks": readback.pointer("/remote_readback/checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "publish_command": format!("entrance hive issue mirror-publish {} --compact", issue_id.unwrap_or_default()),
         "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", issue_id.unwrap_or_default()),
         "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", issue_id.unwrap_or_default()),
@@ -6561,6 +6563,18 @@ fn compact_connector_queue_issue(
     let remote_target = connector_remote_target(provider, review_surface, external_key);
     let remote_write_plan =
         connector_remote_write_plan(provider, issue, &remote_target, &publish_blockers);
+    let connector_status = issue
+        .pointer("/connector")
+        .unwrap_or(&serde_json::Value::Null);
+    let remote_contract = compact_connector_remote_contract(provider);
+    let admission_checks = connector_admission_preview_checks(
+        provider,
+        admission,
+        connector_status,
+        &publish_blockers,
+        !remote_contract.is_null(),
+        &remote_target,
+    );
     let admission_blockers = admission
         .map(|admission| {
             admission
@@ -6618,6 +6632,7 @@ fn compact_connector_queue_issue(
         "remote_write_plan": remote_write_plan,
         "admission_status": admission.map(|admission| admission.status.as_str()),
         "admission_blockers": admission_blockers,
+        "admission_checks": admission_checks,
         "review_surface": review_surface,
         "external_key": external_key,
         "publish_required": true,
@@ -6630,6 +6645,8 @@ fn compact_connector_queue_issue(
         "remote_comment_count": issue.pointer("/connector/remote_comment_count").and_then(|value| value.as_u64()),
         "failed_checks": failed_checks,
         "failed_check_count": failed_check_count,
+        "checks": issue.pointer("/connector/checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "remote_readback_checks": issue.pointer("/connector/remote_readback_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "commands": commands,
         "dry_run_action": dry_run_action
     })
@@ -7455,6 +7472,25 @@ mod tests {
                 .pointer("/issues/0/adapter/driver")
                 .and_then(|value| value.as_str()),
             Some("file-mirror")
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/admission_checks")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(6)
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/admission_checks/2/name")
+                .and_then(|value| value.as_str()),
+            Some("mirror_current")
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/admission_checks/2/passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
         );
         assert_eq!(
             queue
@@ -9082,6 +9118,19 @@ mod tests {
                 .pointer("/publish_command")
                 .and_then(|value| value.as_str()),
             Some("entrance hive issue mirror-publish 8 --compact")
+        );
+        assert_eq!(
+            current_status
+                .pointer("/checks")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(6)
+        );
+        assert_eq!(
+            current_status
+                .pointer("/checks/0/name")
+                .and_then(|value| value.as_str()),
+            Some("remote_file_present")
         );
         let mut recorded_readback = readback.clone();
         recorded_readback
