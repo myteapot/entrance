@@ -11,7 +11,7 @@ use entrance_core::{
     HiveIssueCreate, HiveLoopAdmission, HiveLoopAdmissionCreate, HiveLoopContract,
     HiveLoopContractCreate, HiveLoopEvidence, HiveLoopEvidenceCreate, HiveLoopPacket,
     HiveLoopPacketCreate, HiveLoopPolicy, HiveLoopPolicyCreate, HiveLoopStage, HiveLoopStageCreate,
-    HiveLoopVerdict, HiveLoopVerdictCreate, Store,
+    HiveLoopVerdict, HiveLoopVerdictCreate, Store, StoreSchemaStatus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1591,6 +1591,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
     let verdicts = store.list_hive_loop_verdicts(loop_id)?;
     let issues = store.list_hive_issues_for_loop(loop_id)?;
     let evidence = store.list_hive_loop_evidence(loop_id)?;
+    let schema_status = store.schema_status()?;
     let packet_by_id = packets
         .iter()
         .map(|packet| (packet.id, packet))
@@ -1656,6 +1657,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
                 "current_round": contract.current_round
             }),
         ),
+        store_schema_audit_check(&schema_status),
         audit_check(
             "active_policy_registry",
             policy_errors.is_empty(),
@@ -1863,6 +1865,64 @@ pub fn doctor(store: &Store, loop_id: i64) -> Result<HiveLoopDoctorReport> {
         checks,
         trace: trace_summary,
     })
+}
+
+fn store_schema_audit_check(status: &StoreSchemaStatus) -> HiveLoopAuditCheck {
+    let present_table_count = status.tables.iter().filter(|table| table.present).count();
+    let present_index_count = status.indexes.iter().filter(|index| index.present).count();
+    let errors = store_schema_audit_errors(status);
+    let health = if status.healthy {
+        "healthy"
+    } else {
+        "unhealthy"
+    };
+    audit_check(
+        "store_schema",
+        status.healthy,
+        format!(
+            "SQLite ledger schema is {health}: user_version {}/{}; tables {}/{}; indexes {}/{}.",
+            status.user_version,
+            status.expected_user_version,
+            present_table_count,
+            status.tables.len(),
+            present_index_count,
+            status.indexes.len()
+        ),
+        serde_json::json!({
+            "schema_version": status.schema_version,
+            "db_path": status.db_path,
+            "user_version": status.user_version,
+            "expected_user_version": status.expected_user_version,
+            "present_table_count": present_table_count,
+            "expected_table_count": status.tables.len(),
+            "present_index_count": present_index_count,
+            "expected_index_count": status.indexes.len(),
+            "missing_tables": &status.missing_tables,
+            "missing_columns": &status.missing_columns,
+            "missing_indexes": &status.missing_indexes,
+            "errors": errors
+        }),
+    )
+}
+
+fn store_schema_audit_errors(status: &StoreSchemaStatus) -> Vec<&'static str> {
+    let mut errors = Vec::new();
+    if status.user_version < status.expected_user_version {
+        errors.push("schema.user_version");
+    }
+    if !status.missing_tables.is_empty() {
+        errors.push("schema.missing_tables");
+    }
+    if !status.missing_columns.is_empty() {
+        errors.push("schema.missing_columns");
+    }
+    if !status.missing_indexes.is_empty() {
+        errors.push("schema.missing_indexes");
+    }
+    if !status.healthy && errors.is_empty() {
+        errors.push("schema.healthy");
+    }
+    errors
 }
 
 fn audit_failure_details(report: &HiveLoopAuditReport) -> Vec<String> {
@@ -7214,7 +7274,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use entrance_core::Store;
+    use entrance_core::{Store, StoreSchemaStatus};
 
     use super::*;
 
@@ -7470,6 +7530,100 @@ mod tests {
                     .any(|field| field.as_str() == Some("gate.expected_object_kind"))))));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loop_audit_and_doctor_gate_on_store_schema_health() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-schema-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Schema audit loop".to_string(),
+                goal: "Gate loop audit on SQLite schema health".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let schema_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "store_schema")
+            .expect("store schema audit check should exist");
+        assert!(schema_check.passed);
+        assert_eq!(
+            schema_check.details.pointer("/missing_tables"),
+            Some(&serde_json::json!([]))
+        );
+        assert_eq!(
+            schema_check.details.pointer("/missing_columns"),
+            Some(&serde_json::json!([]))
+        );
+        assert_eq!(
+            schema_check.details.pointer("/missing_indexes"),
+            Some(&serde_json::json!([]))
+        );
+        assert!(schema_check
+            .details
+            .pointer("/expected_index_count")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|count| count > 0));
+
+        let doctor_report =
+            super::doctor(&store, created.contract.id).expect("doctor should resolve");
+        assert!(doctor_report
+            .checks
+            .iter()
+            .any(|check| check.name == "store_schema" && check.passed));
+        assert!(!doctor_report
+            .failed_checks
+            .iter()
+            .any(|check| check == "store_schema"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn store_schema_audit_check_fails_closed_when_schema_drifts() {
+        let check = super::store_schema_audit_check(&StoreSchemaStatus {
+            schema_version: "entrance.sqlite.core.v1".to_string(),
+            db_path: "/tmp/drifted.db".to_string(),
+            user_version: 0,
+            expected_user_version: 1,
+            healthy: false,
+            tables: Vec::new(),
+            indexes: Vec::new(),
+            missing_tables: vec!["hive_loop_packets".to_string()],
+            missing_columns: vec!["hive_loop_packets.payload".to_string()],
+            missing_indexes: vec!["idx_hive_loop_packets_loop_round".to_string()],
+            generated_at: "2026-06-01T00:00:00Z".to_string(),
+        });
+
+        assert_eq!(check.name, "store_schema");
+        assert!(!check.passed);
+        assert_eq!(
+            check.details.pointer("/errors"),
+            Some(&serde_json::json!([
+                "schema.user_version",
+                "schema.missing_tables",
+                "schema.missing_columns",
+                "schema.missing_indexes"
+            ]))
+        );
     }
 
     #[test]

@@ -115,10 +115,13 @@ without packet transcripts.
 `hive loop evidence <id>` returns the compact evidence ledger with stage role,
 admission result, worker receipt, packet envelope diagnostics, missing receipts,
 operator options, and short transcript excerpts.
-`hive loop audit <id>` returns a compiler-style audit over the loop contract,
-active policies, runtime policy, stage sequence, stage evidence, typed packets,
-packet sequence, admission receipts, worker receipts, verdict packets, and
-linked issue surface. The active policy check verifies the canonical
+`hive loop audit <id>` returns a compiler-style audit over the SQLite ledger
+schema, loop contract, active policies, runtime policy, stage sequence, stage
+evidence, typed packets, packet sequence, admission receipts, worker receipts,
+verdict packets, and linked issue surface. The `store_schema` check gates loop
+health on the same table/column/index contract surfaced by `hive schema`, so
+doctor and issue cards fail closed when the local ledger structure drifts. The
+active policy check verifies the canonical
 Explorer/Doer/Evaluator route and gate contract. The stage sequence check
 rejects duplicate role stages in a loop round and verifies terminal loops still
 have the expected current-round stages. The stage evidence check verifies each

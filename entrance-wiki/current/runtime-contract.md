@@ -54,7 +54,9 @@ issue, so operators stay on the issue/status/comment surface.
 operators: core schema version, `PRAGMA user_version`, table/column/index
 presence, and missing object lists. The Runtime panel shows the same schema
 health line as `ok v1/1 tables 13/13 indexes 11/11` when the local ledger is
-ready.
+ready. Loop audit also runs this as the `store_schema` gate, so doctor and
+issue/status/comment surfaces report `audit_failed` if the ledger schema drifts
+before operators trust packet, evidence, or verdict rows.
 Admission receipts include the packet receipt requirements, missing receipt
 fields, and a boolean satisfied flag. Default MVP gates admit packets only when
 their typed receipt requirements are present. Worker receipts are stricter than
