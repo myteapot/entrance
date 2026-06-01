@@ -163,6 +163,15 @@ typed blockers such as `remote_target_invalid`, `github_owner_missing`, or
 `github_repo_missing` before any remote write can be admitted. The Panel renders
 these parsed targets as connector target chips on issue cards and the connector
 queue, so invalid targets are visible without opening raw JSON.
+The same queue and publish-plan surfaces now include
+`entrance.hive.connector_remote_write_plan.v1`: a typed request envelope that
+spells out the provider, remote object kind, auth expectation, source issue,
+planned HTTP/GraphQL/file operations, receipt schema, readback schema, and
+publish blockers. GitHub plans produce REST issue/comment operations, Linear
+plans produce GraphQL issue/comment operations, and unsupported or inactive
+providers stay blocked at the plan boundary. The Panel renders these envelopes
+as remote write-plan chips so operators can see the planned remote request
+without treating it as an executed third-party write.
 `hive connector registry --compact` exposes
 active/planned issue-surface providers, provider-specific admission status, and
 the connector admission gate, while `hive issue

@@ -154,7 +154,15 @@ Linear issue URL. Invalid targets surface typed blockers such as
 `remote_target_invalid`, `github_owner_missing`, or `github_repo_missing` before
 any remote writer can be admitted. The Panel displays those parsed targets as
 connector target chips in the issue detail, board card, and connector queue
-surfaces, using warning styling for invalid targets. `hive issue
+surfaces, using warning styling for invalid targets. Queue and publish-plan
+issues also expose `entrance.hive.connector_remote_write_plan.v1`, a typed
+provider request envelope with auth expectations, source issue fields,
+HTTP/GraphQL/file operations, receipt/readback schemas, and blockers. GitHub
+plans enumerate REST issue/comment operations, Linear plans enumerate GraphQL
+issue/comment operations, and inactive or unsupported providers remain blocked
+at the plan boundary. The Panel renders those envelopes as remote write-plan
+chips in the issue detail, board card, and connector queue without implying that
+the third-party write has executed. `hive issue
 connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`; it now emits a typed provider check vector, writer

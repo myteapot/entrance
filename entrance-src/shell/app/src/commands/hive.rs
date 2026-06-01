@@ -39,6 +39,8 @@ const CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION: &str =
     "entrance.hive.connector_remote_write_receipt.v1";
 const CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION: &str = "entrance.hive.connector_remote_readback.v1";
 const CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION: &str = "entrance.hive.connector_remote_target.v1";
+const CONNECTOR_REMOTE_WRITE_PLAN_SCHEMA_VERSION: &str =
+    "entrance.hive.connector_remote_write_plan.v1";
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
@@ -3973,6 +3975,7 @@ fn compact_connector_remote_contract(
         },
         "write": {
             "operation": "upsert_remote_issue_surface",
+            "plan_schema_version": CONNECTOR_REMOTE_WRITE_PLAN_SCHEMA_VERSION,
             "receipt_schema_version": CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION,
             "required_receipt_fields": [
                 "provider",
@@ -4275,6 +4278,327 @@ fn connector_generic_remote_target(
         "remote_url": serde_json::Value::Null,
         "api_url": serde_json::Value::Null
     })
+}
+
+fn connector_remote_write_plan(
+    provider: Option<&ConnectorProviderSpec>,
+    issue: &serde_json::Value,
+    remote_target: &serde_json::Value,
+    publish_blockers: &[String],
+) -> serde_json::Value {
+    let Some(provider) = provider else {
+        return serde_json::Value::Null;
+    };
+    if !connector_provider_uses_remote_contract(provider) {
+        return serde_json::Value::Null;
+    }
+    let target_valid = remote_target
+        .pointer("/valid")
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let mut blockers = publish_blockers.to_vec();
+    if !target_valid
+        && !blockers
+            .iter()
+            .any(|blocker| blocker == "remote_target_invalid")
+    {
+        blockers.push("remote_target_invalid".to_string());
+    }
+    let source = connector_remote_write_source(issue);
+    let operations = match provider.name.as_str() {
+        "github" => connector_github_remote_write_operations(remote_target, issue),
+        "linear" => connector_linear_remote_write_operations(remote_target, issue),
+        "remote-fixture" => connector_fixture_remote_write_operations(remote_target, issue),
+        _ => connector_generic_remote_write_operations(provider, remote_target, issue),
+    };
+    blockers.extend(connector_remote_write_operation_blockers(&operations));
+    blockers.sort();
+    blockers.dedup();
+    let executable = blockers.is_empty();
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_WRITE_PLAN_SCHEMA_VERSION,
+        "provider": provider.name.as_str(),
+        "remote_object_kind": connector_remote_object_kind(&provider.name),
+        "operation": "upsert_remote_issue_surface",
+        "executable": executable,
+        "blocked_by": blockers,
+        "auth": connector_remote_write_auth_plan(provider),
+        "remote_target": remote_target,
+        "source": source,
+        "operations": operations,
+        "receipt_schema_version": CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION,
+        "readback_schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION
+    })
+}
+
+fn connector_remote_write_operation_blockers(operations: &serde_json::Value) -> Vec<String> {
+    operations
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|operation| {
+            operation
+                .pointer("/blocked_by")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn connector_remote_write_source(issue: &serde_json::Value) -> serde_json::Value {
+    let latest_comment = issue
+        .pointer("/latest_comment")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    serde_json::json!({
+        "issue_id": issue.pointer("/id").and_then(|value| value.as_i64()),
+        "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
+        "title": issue.pointer("/title").and_then(|value| value.as_str()),
+        "status": issue.pointer("/status").and_then(|value| value.as_str()),
+        "summary": issue.pointer("/summary").and_then(|value| value.as_str()),
+        "comment_count": issue.pointer("/comment_count").and_then(|value| value.as_u64()),
+        "latest_comment": latest_comment,
+        "current_sha256": issue.pointer("/connector/current_sha256").and_then(|value| value.as_str()),
+        "external_key": issue.pointer("/connector/external_key").and_then(|value| value.as_str())
+    })
+}
+
+fn connector_remote_write_auth_plan(provider: &ConnectorProviderSpec) -> serde_json::Value {
+    serde_json::json!({
+        "required": provider.auth_required,
+        "configured": provider.configured,
+        "env": provider.auth_env.iter().map(String::as_str).collect::<Vec<_>>(),
+        "header": if provider.auth_required { Some("Authorization: Bearer <redacted>") } else { None::<&str> }
+    })
+}
+
+fn connector_github_remote_write_operations(
+    remote_target: &serde_json::Value,
+    issue: &serde_json::Value,
+) -> serde_json::Value {
+    let api_url = remote_target
+        .pointer("/api_url")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let issue_number = remote_target
+        .pointer("/issue_number")
+        .and_then(|value| value.as_u64());
+    let status = issue
+        .pointer("/status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Todo");
+    let state = connector_github_issue_state(status);
+    let state_reason = connector_github_issue_state_reason(status);
+    let method = if issue_number.is_some() {
+        "PATCH"
+    } else {
+        "POST"
+    };
+    let mut body = serde_json::json!({
+        "title": issue.pointer("/title").and_then(|value| value.as_str()).unwrap_or("Entrance issue"),
+        "body": connector_remote_issue_body(issue),
+        "state": state
+    });
+    if let Some(reason) = state_reason {
+        if let Some(object) = body.as_object_mut() {
+            object.insert(
+                "state_reason".to_string(),
+                serde_json::Value::String(reason.to_string()),
+            );
+        }
+    }
+    let comment_operation = issue_number.map(|number| {
+        let owner = remote_target
+            .pointer("/owner")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let repo = remote_target
+            .pointer("/repo")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        serde_json::json!({
+            "kind": "append_latest_comment",
+            "method": "POST",
+            "url": format!("https://api.github.com/repos/{owner}/{repo}/issues/{number}/comments"),
+            "headers": connector_github_headers(),
+            "body": {
+                "body": connector_remote_comment_body(issue)
+            },
+            "source": "hive_issue.latest_comment"
+        })
+    });
+    let mut operations = vec![serde_json::json!({
+            "kind": if issue_number.is_some() { "update_issue" } else { "create_issue" },
+            "method": method,
+            "url": empty_str_none(api_url),
+            "headers": connector_github_headers(),
+            "body": body,
+            "source": "hive_issue.status_title_summary"
+    })];
+    if let Some(comment_operation) = comment_operation {
+        operations.push(comment_operation);
+    }
+    serde_json::Value::Array(operations)
+}
+
+fn connector_linear_remote_write_operations(
+    remote_target: &serde_json::Value,
+    issue: &serde_json::Value,
+) -> serde_json::Value {
+    let issue_key = remote_target
+        .pointer("/issue_key")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    serde_json::json!([
+        {
+            "kind": "update_issue",
+            "method": "POST",
+            "url": "https://api.linear.app/graphql",
+            "headers": connector_linear_headers(),
+            "graphql": {
+                "operation": "EntranceIssueUpdate",
+                "query": "mutation EntranceIssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id identifier title state { id name } } } }",
+                "variables": {
+                    "id": issue_key,
+                    "input": {
+                        "title": issue.pointer("/title").and_then(|value| value.as_str()).unwrap_or("Entrance issue"),
+                        "description": connector_remote_issue_body(issue)
+                    }
+                }
+            },
+            "source": "hive_issue.status_title_summary",
+            "status_mapping": {
+                "strategy": "requires_linear_state_mapping",
+                "source_status": issue.pointer("/status").and_then(|value| value.as_str())
+            }
+        },
+        {
+            "kind": "append_latest_comment",
+            "method": "POST",
+            "url": "https://api.linear.app/graphql",
+            "headers": connector_linear_headers(),
+            "graphql": {
+                "operation": "EntranceCommentCreate",
+                "query": "mutation EntranceCommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id body } } }",
+                "variables": {
+                    "input": {
+                        "issueId": "<readback.issue.id>",
+                        "body": connector_remote_comment_body(issue)
+                    }
+                }
+            },
+            "source": "hive_issue.latest_comment",
+            "blocked_by": ["linear_issue_uuid_readback_required"]
+        }
+    ])
+}
+
+fn connector_fixture_remote_write_operations(
+    remote_target: &serde_json::Value,
+    issue: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!([
+        {
+            "kind": "upsert_fixture_issue",
+            "method": "WRITE_FILE",
+            "url": remote_target.pointer("/remote_id").and_then(|value| value.as_str()),
+            "body": {
+                "title": issue.pointer("/title").and_then(|value| value.as_str()),
+                "status": issue.pointer("/status").and_then(|value| value.as_str()),
+                "summary": issue.pointer("/summary").and_then(|value| value.as_str()),
+                "comment_count": issue.pointer("/comment_count").and_then(|value| value.as_u64())
+            },
+            "source": "hive_issue.mirror"
+        }
+    ])
+}
+
+fn connector_generic_remote_write_operations(
+    provider: &ConnectorProviderSpec,
+    remote_target: &serde_json::Value,
+    issue: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!([
+        {
+            "kind": "upsert_remote_issue",
+            "method": "PROVIDER_ADAPTER",
+            "url": remote_target.pointer("/remote_url").and_then(|value| value.as_str()),
+            "provider": provider.name.as_str(),
+            "body": {
+                "title": issue.pointer("/title").and_then(|value| value.as_str()),
+                "status": issue.pointer("/status").and_then(|value| value.as_str()),
+                "summary": issue.pointer("/summary").and_then(|value| value.as_str())
+            },
+            "source": "hive_issue"
+        }
+    ])
+}
+
+fn connector_github_headers() -> Vec<&'static str> {
+    vec![
+        "Accept: application/vnd.github+json",
+        "Authorization: Bearer <redacted>",
+        "X-GitHub-Api-Version: 2026-03-10",
+    ]
+}
+
+fn connector_linear_headers() -> Vec<&'static str> {
+    vec![
+        "Content-Type: application/json",
+        "Authorization: Bearer <redacted>",
+    ]
+}
+
+fn connector_github_issue_state(status: &str) -> &'static str {
+    match status {
+        "Done" | "Canceled" => "closed",
+        _ => "open",
+    }
+}
+
+fn connector_github_issue_state_reason(status: &str) -> Option<&'static str> {
+    match status {
+        "Done" => Some("completed"),
+        "Canceled" => Some("not_planned"),
+        _ => None,
+    }
+}
+
+fn connector_remote_issue_body(issue: &serde_json::Value) -> String {
+    let summary = issue
+        .pointer("/summary")
+        .and_then(|value| value.as_str())
+        .unwrap_or("No summary.");
+    let status = issue
+        .pointer("/status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Unknown");
+    let issue_id = issue
+        .pointer("/id")
+        .and_then(|value| value.as_i64())
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let external_key = issue
+        .pointer("/connector/external_key")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    format!("Entrance mirror for issue #{issue_id}.\n\nStatus: {status}\nExternal key: {external_key}\n\n{summary}")
+}
+
+fn connector_remote_comment_body(issue: &serde_json::Value) -> String {
+    let latest = issue
+        .pointer("/latest_comment/body")
+        .and_then(|value| value.as_str())
+        .unwrap_or("No comment body.");
+    let author = issue
+        .pointer("/latest_comment/author")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    format!("Entrance comment from {author}:\n\n{latest}")
 }
 
 fn connector_remote_target_examples(provider_name: &str) -> Vec<&'static str> {
@@ -4697,6 +5021,7 @@ fn compact_connector_roundtrip_plan_summary(plan: &serde_json::Value) -> serde_j
                 "current_sha256": current_sha256,
                 "current_digest": compact_digest_label(current_sha256),
                 "remote_target": issue.pointer("/remote_target").cloned().unwrap_or(serde_json::Value::Null),
+                "remote_write_plan": issue.pointer("/remote_write_plan").cloned().unwrap_or(serde_json::Value::Null),
                 "commands": {
                     "roundtrip": issue.pointer("/commands/roundtrip").and_then(|value| value.as_str())
                 }
@@ -4807,6 +5132,7 @@ fn compact_connector_roundtrip_plan_issue(issue: &serde_json::Value) -> serde_js
         "publish_blockers": issue.pointer("/publish_blockers").cloned().unwrap_or_else(|| serde_json::json!(["connector_writer_unknown"])),
         "adapter": issue.pointer("/adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
         "remote_target": issue.pointer("/remote_target").cloned().unwrap_or(serde_json::Value::Null),
+        "remote_write_plan": issue.pointer("/remote_write_plan").cloned().unwrap_or(serde_json::Value::Null),
         "commands": {
             "publish": issue.pointer("/commands/publish").and_then(|value| value.as_str()),
             "readback": issue.pointer("/commands/readback").and_then(|value| value.as_str()),
@@ -4851,6 +5177,7 @@ fn compact_connector_publish_plan_issue(issue: &serde_json::Value) -> serde_json
         "publish_blockers": issue.pointer("/publish_blockers").cloned().unwrap_or_else(|| serde_json::json!(["connector_writer_unknown"])),
         "adapter": issue.pointer("/adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
         "remote_target": issue.pointer("/remote_target").cloned().unwrap_or(serde_json::Value::Null),
+        "remote_write_plan": issue.pointer("/remote_write_plan").cloned().unwrap_or(serde_json::Value::Null),
         "commands": {
             "publish": issue.pointer("/commands/publish").and_then(|value| value.as_str()),
             "readback": issue.pointer("/commands/readback").and_then(|value| value.as_str()),
@@ -5009,6 +5336,8 @@ fn compact_connector_queue_issue(
     let can_publish = publish_blockers.is_empty();
     let adapter = compact_connector_writer_adapter(&provider_name, provider);
     let remote_target = connector_remote_target(provider, review_surface, external_key);
+    let remote_write_plan =
+        connector_remote_write_plan(provider, issue, &remote_target, &publish_blockers);
     let admission_blockers = admission
         .map(|admission| {
             admission
@@ -5039,6 +5368,7 @@ fn compact_connector_queue_issue(
         "supports_publish": provider.map(|provider| provider.supports_publish),
         "adapter": adapter,
         "remote_target": remote_target,
+        "remote_write_plan": remote_write_plan,
         "would_write": connector_writer_target_label(provider),
         "remote_write": provider
             .map(|provider| connector_provider_uses_remote_contract(provider) && provider.supports_publish)
@@ -5062,6 +5392,7 @@ fn compact_connector_queue_issue(
         "publish_blockers": publish_blockers,
         "adapter": adapter,
         "remote_target": remote_target,
+        "remote_write_plan": remote_write_plan,
         "admission_status": admission.map(|admission| admission.status.as_str()),
         "admission_blockers": admission_blockers,
         "review_surface": review_surface,
@@ -5322,9 +5653,10 @@ mod tests {
         compact_issue_mirror_roundtrip, compact_issue_mirror_roundtrip_summary,
         compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
         compact_loop_audit, connector_admission_preview_checks, connector_issue_writer_blockers,
-        connector_remote_target, connector_write_receipt, connector_writer_blockers,
-        default_issue_mirror_path, default_issue_mirror_path_for_provider, flag_present,
-        flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
+        connector_remote_target, connector_remote_write_plan, connector_write_receipt,
+        connector_writer_blockers, default_issue_mirror_path,
+        default_issue_mirror_path_for_provider, flag_present, flag_value,
+        issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
         issue_mirror_sync_receipt_for_provider, mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
@@ -6101,6 +6433,122 @@ mod tests {
                 .pointer("/issue_number")
                 .and_then(|value| value.as_u64()),
             Some(37)
+        );
+    }
+
+    #[test]
+    fn remote_write_plan_exposes_provider_request_envelopes() {
+        let mut github =
+            test_connector_provider("github", "GitHub", "active", true, true, vec!["github:"]);
+        github.mode = "remote-issue-api".to_string();
+        let issue = serde_json::json!({
+            "id": 42,
+            "loop_id": 7,
+            "title": "Loop #7: remote writer",
+            "status": "Done",
+            "summary": "Ship a typed remote writer plan.",
+            "comment_count": 2,
+            "latest_comment": {
+                "author": "hive",
+                "body": "Evaluator kept the candidate."
+            },
+            "connector": {
+                "external_key": "hive-loop-7-issue-42",
+                "current_sha256": "sha-remote"
+            }
+        });
+        let target = connector_remote_target(
+            Some(&github),
+            "github:owner/repo#42",
+            "hive-loop-7-issue-42",
+        );
+        let plan = connector_remote_write_plan(Some(&github), &issue, &target, &[]);
+        assert_eq!(
+            plan.pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_remote_write_plan.v1")
+        );
+        assert_eq!(
+            plan.pointer("/executable")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            plan.pointer("/operations/0/method")
+                .and_then(|value| value.as_str()),
+            Some("PATCH")
+        );
+        assert_eq!(
+            plan.pointer("/operations/0/url")
+                .and_then(|value| value.as_str()),
+            Some("https://api.github.com/repos/owner/repo/issues/42")
+        );
+        assert_eq!(
+            plan.pointer("/operations/0/body/state")
+                .and_then(|value| value.as_str()),
+            Some("closed")
+        );
+        assert_eq!(
+            plan.pointer("/operations/0/body/state_reason")
+                .and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
+            plan.pointer("/operations/1/url")
+                .and_then(|value| value.as_str()),
+            Some("https://api.github.com/repos/owner/repo/issues/42/comments")
+        );
+
+        let invalid_target =
+            connector_remote_target(Some(&github), "github:not-a-target", "hive-loop-7-issue-42");
+        let invalid_plan = connector_remote_write_plan(
+            Some(&github),
+            &issue,
+            &invalid_target,
+            &["remote_target_invalid".to_string()],
+        );
+        assert_eq!(
+            invalid_plan
+                .pointer("/executable")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            invalid_plan
+                .pointer("/blocked_by/0")
+                .and_then(|value| value.as_str()),
+            Some("remote_target_invalid")
+        );
+
+        let mut linear =
+            test_connector_provider("linear", "Linear", "active", true, true, vec!["linear:"]);
+        linear.mode = "remote-issue-api".to_string();
+        let linear_target =
+            connector_remote_target(Some(&linear), "linear:ENT-37", "hive-loop-8-issue-8");
+        let linear_plan = connector_remote_write_plan(Some(&linear), &issue, &linear_target, &[]);
+        assert_eq!(
+            linear_plan
+                .pointer("/operations/0/graphql/operation")
+                .and_then(|value| value.as_str()),
+            Some("EntranceIssueUpdate")
+        );
+        assert_eq!(
+            linear_plan
+                .pointer("/operations/1/blocked_by/0")
+                .and_then(|value| value.as_str()),
+            Some("linear_issue_uuid_readback_required")
+        );
+        assert_eq!(
+            linear_plan
+                .pointer("/blocked_by/0")
+                .and_then(|value| value.as_str()),
+            Some("linear_issue_uuid_readback_required")
+        );
+        assert_eq!(
+            linear_plan
+                .pointer("/executable")
+                .and_then(|value| value.as_bool()),
+            Some(false)
         );
     }
 

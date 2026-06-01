@@ -285,6 +285,26 @@ type ConnectorRemoteTarget = {
   write_mode?: string | null;
 };
 
+type ConnectorRemoteWriteOperation = {
+  kind?: string | null;
+  method?: string | null;
+  url?: string | null;
+  source?: string | null;
+  blocked_by?: string[];
+  graphql?: {
+    operation?: string | null;
+  } | null;
+};
+
+type ConnectorRemoteWritePlan = {
+  schema_version?: string;
+  provider?: string | null;
+  remote_object_kind?: string | null;
+  executable?: boolean | null;
+  blocked_by?: string[];
+  operations?: ConnectorRemoteWriteOperation[];
+};
+
 type ConnectorWriterAdapter = {
   schema_version: string;
   provider: string;
@@ -347,6 +367,7 @@ type ConnectorQueueIssue = {
   publish_blockers?: string[];
   adapter?: ConnectorWriterAdapter | null;
   remote_target?: ConnectorRemoteTarget | null;
+  remote_write_plan?: ConnectorRemoteWritePlan | null;
   admission_status: string | null;
   admission_blockers: string[];
   review_surface: string | null;
@@ -767,6 +788,8 @@ export default function App() {
     connectorQueueIssueById(issueId)?.can_publish !== false;
   const connectorQueueIssueTarget = (issueId: number) =>
     connectorQueueIssueById(issueId)?.remote_target ?? null;
+  const connectorQueueIssueWritePlan = (issueId: number) =>
+    connectorQueueIssueById(issueId)?.remote_write_plan ?? null;
   const connectorRemoteTargetIdentity = (target?: ConnectorRemoteTarget | null) => {
     if (!target) return null;
     if (target.issue_key) return target.issue_key;
@@ -810,6 +833,62 @@ export default function App() {
         class={`connector-target connector-target--${connectorRemoteTargetTone(target)}`}
         data-testid={testId}
         title={connectorRemoteTargetTitle(target)}
+      >
+        {label}
+      </span>
+    ) : null;
+  };
+  const connectorRemoteWriteOperationLabel = (operation?: ConnectorRemoteWriteOperation | null) => {
+    if (!operation) return null;
+    const graphqlOperation = operation.graphql?.operation;
+    if (graphqlOperation) return `plan ${graphqlOperation}`;
+    return operation.method ? `plan ${operation.method}` : null;
+  };
+  const connectorRemoteWritePlanLabel = (plan?: ConnectorRemoteWritePlan | null) => {
+    if (!plan) return null;
+    const primary = connectorRemoteWriteOperationLabel(plan.operations?.[0]);
+    if (!primary) return null;
+    return plan.executable === false ? `${primary} blocked` : primary;
+  };
+  const connectorRemoteWritePlanTitle = (plan?: ConnectorRemoteWritePlan | null) => {
+    if (!plan) return undefined;
+    const operations = plan.operations
+      ?.map((operation) =>
+        [
+          operation.kind,
+          operation.method,
+          operation.graphql?.operation,
+          operation.url,
+          operation.blocked_by?.length ? `blocked: ${operation.blocked_by.join(", ")}` : null,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      )
+      .filter(Boolean);
+    const parts = [
+      plan.schema_version,
+      plan.remote_object_kind,
+      plan.blocked_by?.length ? `plan blocked: ${plan.blocked_by.join(", ")}` : null,
+      operations?.length ? `ops: ${operations.join(" | ")}` : null,
+    ].filter((part): part is string => Boolean(part));
+    return parts.length ? parts.join(" | ") : undefined;
+  };
+  const connectorRemoteWritePlanTone = (plan?: ConnectorRemoteWritePlan | null) =>
+    plan?.executable === false ||
+    Boolean(plan?.blocked_by?.length) ||
+    Boolean(plan?.operations?.some((operation) => operation.blocked_by?.length))
+      ? "warn"
+      : "ok";
+  const connectorRemoteWritePlanChip = (
+    plan: ConnectorRemoteWritePlan | null | undefined,
+    testId: string,
+  ) => {
+    const label = connectorRemoteWritePlanLabel(plan);
+    return label ? (
+      <span
+        class={`connector-write-plan connector-write-plan--${connectorRemoteWritePlanTone(plan)}`}
+        data-testid={testId}
+        title={connectorRemoteWritePlanTitle(plan)}
       >
         {label}
       </span>
@@ -1849,6 +1928,10 @@ export default function App() {
           connectorQueueIssueTarget(card.issue.id),
           `connector-target-${surface}-${card.issue.id}`,
         )}
+        {connectorRemoteWritePlanChip(
+          connectorQueueIssueWritePlan(card.issue.id),
+          `connector-write-plan-${surface}-${card.issue.id}`,
+        )}
       </div>
     ) : null;
   const loopAuditCommand = (card: IssueCard) =>
@@ -2718,6 +2801,10 @@ export default function App() {
                       {connectorRemoteTargetChip(
                         connectorQueueIssueTarget(card.issue.id),
                         `connector-queue-target-${card.issue.id}`,
+                      )}
+                      {connectorRemoteWritePlanChip(
+                        connectorQueueIssueWritePlan(card.issue.id),
+                        `connector-queue-write-plan-${card.issue.id}`,
                       )}
                       <button
                         type="button"

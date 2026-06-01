@@ -541,13 +541,30 @@
   overflow-wrap: anywhere;
 }
 
+.connector-write-plan {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .connector-target--ok {
   border: 1px solid rgba(121, 215, 167, 0.26);
   color: #a7ecc6;
   background: rgba(121, 215, 167, 0.09);
 }
 
+.connector-write-plan--ok {
+  border: 1px solid rgba(81, 199, 194, 0.26);
+  color: #9de7e3;
+  background: rgba(81, 199, 194, 0.09);
+}
+
 .connector-target--warn {
+  border: 1px solid rgba(255, 193, 7, 0.34);
+  color: #ffd86b;
+  background: rgba(255, 193, 7, 0.11);
+}
+
+.connector-write-plan--warn {
   border: 1px solid rgba(255, 193, 7, 0.34);
   color: #ffd86b;
   background: rgba(255, 193, 7, 0.11);
@@ -597,6 +614,13 @@
 }
 
 .connector-queue .connector-queue-issue .connector-target {
+  padding: 4px 7px;
+  border-radius: 8px;
+  font-size: 0.74rem;
+  line-height: 1.15;
+}
+
+.connector-queue .connector-queue-issue .connector-write-plan {
   padding: 4px 7px;
   border-radius: 8px;
   font-size: 0.74rem;
