@@ -892,6 +892,14 @@ fn publish_issue_mirror_to_github(
         .and_then(|value| value.as_bool())
         != Some(true)
     {
+        write_issue_mirror_receipt_with_remote_write_failure(
+            mirror,
+            target_path,
+            receipt_path,
+            &digest,
+            provider,
+            &remote_write_execution,
+        )?;
         return Ok(compact_issue_mirror_remote_publish_failed(
             mirror,
             target_path,
@@ -989,6 +997,14 @@ fn publish_issue_mirror_to_linear(
         .and_then(|value| value.as_bool())
         != Some(true)
     {
+        write_issue_mirror_receipt_with_remote_write_failure(
+            mirror,
+            target_path,
+            receipt_path,
+            &digest,
+            provider,
+            &remote_write_execution,
+        )?;
         return Ok(compact_issue_mirror_remote_publish_failed(
             mirror,
             target_path,
@@ -2095,6 +2111,41 @@ fn write_issue_mirror_receipt_with_remote_execution(
     Ok(digest_bytes(&payload))
 }
 
+fn write_issue_mirror_receipt_with_remote_write_failure(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    receipt_path: &Path,
+    digest: &MirrorFileDigest,
+    provider: &ConnectorProviderSpec,
+    remote_write_execution: &serde_json::Value,
+) -> Result<MirrorFileDigest> {
+    if let Some(parent) = receipt_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create mirror receipt directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut receipt =
+        issue_mirror_sync_receipt_for_provider(mirror, path, receipt_path, digest, Some(provider));
+    if let Some(object) = receipt.as_object_mut() {
+        object.insert("remote_write_receipt".to_string(), serde_json::Value::Null);
+        object.insert(
+            "remote_write_execution".to_string(),
+            remote_write_execution.clone(),
+        );
+    }
+    let payload = serde_json::to_vec_pretty(&receipt)?;
+    fs::write(receipt_path, &payload).with_context(|| {
+        format!(
+            "failed to write issue mirror receipt {}",
+            receipt_path.display()
+        )
+    })?;
+    Ok(digest_bytes(&payload))
+}
+
 fn mirror_payload(mirror: &IssueMirrorReport) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec_pretty(mirror)?)
 }
@@ -2524,11 +2575,256 @@ fn compact_issue_mirror_status(readback: &serde_json::Value) -> serde_json::Valu
         "receipt_found": readback.pointer("/receipt/found"),
         "checks": readback.pointer("/checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "remote_readback_checks": readback.pointer("/remote_readback/checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "remote_diagnostics": connector_remote_diagnostics(readback),
         "publish_command": format!("entrance hive issue mirror-publish {} --compact", issue_id.unwrap_or_default()),
         "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", issue_id.unwrap_or_default()),
         "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", issue_id.unwrap_or_default()),
         "roundtrip_command": format!("entrance hive issue mirror-roundtrip {} --compact", issue_id.unwrap_or_default())
     })
+}
+
+fn connector_remote_diagnostics(readback: &serde_json::Value) -> serde_json::Value {
+    let write = connector_remote_execution_diagnostics(
+        "write",
+        connector_remote_write_execution_from_readback(readback),
+    );
+    let remote_readback = connector_remote_execution_diagnostics(
+        "readback",
+        readback.pointer("/remote_readback/execution"),
+    );
+    let signals = [&write, &remote_readback]
+        .iter()
+        .filter_map(|diagnostic| diagnostic.pointer("/signal").cloned())
+        .filter(|signal| !signal.is_null())
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": "entrance.hive.connector_remote_diagnostics.v1",
+        "write": write,
+        "readback": remote_readback,
+        "signals": signals
+    })
+}
+
+fn connector_remote_write_execution_from_readback(
+    readback: &serde_json::Value,
+) -> Option<&serde_json::Value> {
+    readback
+        .pointer("/receipt/remote_write_receipt/write_execution")
+        .or_else(|| readback.pointer("/receipt/remote_write_execution"))
+}
+
+fn connector_remote_execution_diagnostics(
+    stage: &str,
+    execution: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let Some(execution) = execution.filter(|value| value.is_object()) else {
+        return serde_json::Value::Null;
+    };
+    let operations = connector_remote_execution_operations(execution);
+    let primary_operation = connector_remote_primary_operation(&operations)
+        .map(connector_remote_operation_diagnostics)
+        .unwrap_or_else(|| serde_json::Value::Null);
+    let failed_checks = connector_remote_execution_failed_checks(execution, &primary_operation);
+    let success = execution
+        .pointer("/success")
+        .and_then(|value| value.as_bool())
+        .or_else(|| {
+            primary_operation
+                .pointer("/success")
+                .and_then(|value| value.as_bool())
+        });
+    let operation_count = execution
+        .pointer("/operation_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(operations.len() as u64);
+    let signal =
+        connector_remote_execution_signal(stage, success, &failed_checks, &primary_operation);
+    serde_json::json!({
+        "schema_version": "entrance.hive.connector_remote_execution_diagnostics.v1",
+        "stage": stage,
+        "success": success,
+        "failed_checks": failed_checks,
+        "operation_count": operation_count,
+        "primary_operation": primary_operation,
+        "signal": signal
+    })
+}
+
+fn connector_remote_execution_operations(execution: &serde_json::Value) -> Vec<&serde_json::Value> {
+    if let Some(operations) = execution
+        .pointer("/operations")
+        .and_then(|value| value.as_array())
+    {
+        return operations.iter().collect();
+    }
+    ["issue", "comments"]
+        .iter()
+        .filter_map(|key| execution.get(*key))
+        .filter(|value| value.is_object())
+        .collect()
+}
+
+fn connector_remote_primary_operation<'a>(
+    operations: &'a [&'a serde_json::Value],
+) -> Option<&'a serde_json::Value> {
+    operations
+        .iter()
+        .copied()
+        .find(|operation| {
+            operation
+                .pointer("/success")
+                .and_then(|value| value.as_bool())
+                == Some(false)
+        })
+        .or_else(|| {
+            operations.iter().copied().find(|operation| {
+                operation
+                    .pointer("/retry/rate_limited")
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+                    || operation
+                        .pointer("/retry/attempted")
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
+                    || operation
+                        .pointer("/retry/scheduled")
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
+            })
+        })
+        .or_else(|| operations.first().copied())
+}
+
+fn connector_remote_execution_failed_checks(
+    execution: &serde_json::Value,
+    primary_operation: &serde_json::Value,
+) -> serde_json::Value {
+    if let Some(checks) = execution
+        .pointer("/failed_checks")
+        .and_then(|value| value.as_array())
+    {
+        return serde_json::Value::Array(checks.clone());
+    }
+    primary_operation
+        .pointer("/failed_check")
+        .and_then(|value| value.as_str())
+        .map(|check| serde_json::json!([check]))
+        .unwrap_or_else(|| serde_json::json!([]))
+}
+
+fn connector_remote_operation_diagnostics(operation: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "kind": operation.pointer("/kind").and_then(|value| value.as_str()),
+        "method": operation.pointer("/method").and_then(|value| value.as_str()),
+        "graphql_operation": operation.pointer("/graphql/operation").and_then(|value| value.as_str()),
+        "success": operation.pointer("/success").and_then(|value| value.as_bool()),
+        "failed_check": operation.pointer("/failed_check").and_then(|value| value.as_str()),
+        "http_status": operation.pointer("/http_status").and_then(|value| value.as_u64()),
+        "attempt_count": operation.pointer("/attempt_count").and_then(|value| value.as_u64()),
+        "max_attempts": operation.pointer("/max_attempts").and_then(|value| value.as_u64()),
+        "retry": connector_remote_retry_diagnostics(operation.pointer("/retry"))
+    })
+}
+
+fn connector_remote_retry_diagnostics(retry: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(retry) = retry.filter(|value| value.is_object()) else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "reason": retry.pointer("/reason").and_then(|value| value.as_str()),
+        "retryable": retry.pointer("/retryable").and_then(|value| value.as_bool()),
+        "scheduled": retry.pointer("/scheduled").and_then(|value| value.as_bool()),
+        "attempted": retry.pointer("/attempted").and_then(|value| value.as_bool()),
+        "exhausted": retry.pointer("/exhausted").and_then(|value| value.as_bool()),
+        "rate_limited": retry.pointer("/rate_limited").and_then(|value| value.as_bool()),
+        "backoff_ms": retry.pointer("/backoff_ms").and_then(|value| value.as_u64()),
+        "retry_after_secs": retry.pointer("/retry_after_secs").and_then(|value| value.as_u64()),
+        "rate_limit": retry.pointer("/rate_limit").cloned().unwrap_or_else(|| serde_json::json!(null))
+    })
+}
+
+fn connector_remote_execution_signal(
+    stage: &str,
+    success: Option<bool>,
+    failed_checks: &serde_json::Value,
+    primary_operation: &serde_json::Value,
+) -> serde_json::Value {
+    let retry = primary_operation.pointer("/retry");
+    let attempt_count = primary_operation
+        .pointer("/attempt_count")
+        .and_then(|value| value.as_u64());
+    let retry_attempted = retry
+        .and_then(|value| value.pointer("/attempted"))
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let retry_scheduled = retry
+        .and_then(|value| value.pointer("/scheduled"))
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let retry_exhausted = retry
+        .and_then(|value| value.pointer("/exhausted"))
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let rate_limited = retry
+        .and_then(|value| value.pointer("/rate_limited"))
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let retry_after_secs = retry
+        .and_then(|value| value.pointer("/retry_after_secs"))
+        .and_then(|value| value.as_u64());
+    let http_status = primary_operation
+        .pointer("/http_status")
+        .and_then(|value| value.as_u64());
+    let first_failed_check = failed_checks
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|value| value.as_str())
+        .or_else(|| {
+            primary_operation
+                .pointer("/failed_check")
+                .and_then(|value| value.as_str())
+        });
+
+    if success == Some(false) || rate_limited || retry_exhausted {
+        let failed_check = first_failed_check.unwrap_or("remote_failed");
+        let mut parts = vec![stage.to_string(), failed_check.to_string()];
+        if let Some(status) = http_status {
+            parts.push(status.to_string());
+        }
+        if let Some(attempts) = attempt_count.filter(|attempts| *attempts > 1) {
+            parts.push(format!("{attempts} attempts"));
+        }
+        if let Some(seconds) = retry_after_secs {
+            parts.push(format!("retry after {seconds}s"));
+        }
+        return serde_json::json!({
+            "stage": stage,
+            "tone": "warn",
+            "label": parts.join(" "),
+            "failed_check": failed_check,
+            "http_status": http_status,
+            "attempt_count": attempt_count,
+            "retry": primary_operation.pointer("/retry").cloned().unwrap_or_else(|| serde_json::json!(null))
+        });
+    }
+
+    if success == Some(true)
+        && (retry_attempted || retry_scheduled || attempt_count.unwrap_or(0) > 1)
+    {
+        let attempts = attempt_count.unwrap_or(1);
+        return serde_json::json!({
+            "stage": stage,
+            "tone": "info",
+            "label": format!("{stage} retry {attempts} attempts"),
+            "failed_check": first_failed_check,
+            "http_status": http_status,
+            "attempt_count": attempt_count,
+            "retry": primary_operation.pointer("/retry").cloned().unwrap_or_else(|| serde_json::json!(null))
+        });
+    }
+
+    serde_json::Value::Null
 }
 
 fn connector_status_reason(failed_checks: &serde_json::Value) -> &'static str {
@@ -2910,7 +3206,8 @@ fn compact_issue_mirror_readback(
             "bytes": receipt.and_then(|value| json_pointer_u64(value, "/mirror/bytes")),
             "issue_status": receipt.and_then(|value| json_pointer_str(value, "/issue/status")),
             "loop_round": receipt.and_then(|value| json_pointer_i64(value, "/loop/round")),
-            "remote_write_receipt": receipt.and_then(|value| value.pointer("/remote_write_receipt"))
+            "remote_write_receipt": receipt.and_then(|value| value.pointer("/remote_write_receipt")),
+            "remote_write_execution": receipt.and_then(|value| value.pointer("/remote_write_execution"))
         },
         "remote_contract": compact_connector_remote_contract(provider),
         "remote_target": connector_remote_target(
@@ -3146,7 +3443,8 @@ fn compact_github_issue_mirror_readback(
             "schema_version": receipt.and_then(|value| json_pointer_str(value, "/schema_version")),
             "issue_status": receipt.and_then(|value| json_pointer_str(value, "/issue/status")),
             "loop_round": receipt.and_then(|value| json_pointer_i64(value, "/loop/round")),
-            "remote_write_receipt": receipt.and_then(|value| value.pointer("/remote_write_receipt"))
+            "remote_write_receipt": receipt.and_then(|value| value.pointer("/remote_write_receipt")),
+            "remote_write_execution": receipt.and_then(|value| value.pointer("/remote_write_execution"))
         },
         "remote_contract": compact_connector_remote_contract(Some(provider)),
         "remote_target": connector_remote_target(
@@ -3474,7 +3772,8 @@ fn compact_linear_issue_mirror_readback(
             "schema_version": receipt.and_then(|value| json_pointer_str(value, "/schema_version")),
             "issue_status": receipt.and_then(|value| json_pointer_str(value, "/issue/status")),
             "loop_round": receipt.and_then(|value| json_pointer_i64(value, "/loop/round")),
-            "remote_write_receipt": receipt.and_then(|value| value.pointer("/remote_write_receipt"))
+            "remote_write_receipt": receipt.and_then(|value| value.pointer("/remote_write_receipt")),
+            "remote_write_execution": receipt.and_then(|value| value.pointer("/remote_write_execution"))
         },
         "remote_contract": compact_connector_remote_contract(Some(provider)),
         "remote_target": connector_remote_target(
@@ -8803,6 +9102,7 @@ fn compact_connector_queue_issue(
         "failed_check_count": failed_check_count,
         "checks": issue.pointer("/connector/checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "remote_readback_checks": issue.pointer("/connector/remote_readback_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "remote_diagnostics": issue.pointer("/connector/remote_diagnostics").cloned().unwrap_or_else(|| serde_json::json!(null)),
         "commands": commands,
         "dry_run_action": dry_run_action
     })
@@ -9066,7 +9366,8 @@ mod tests {
         execute_github_remote_write_plan, execute_linear_remote_write_plan, flag_present,
         flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
         issue_mirror_sync_receipt_for_provider, mirror_payload, mirror_receipt_path,
-        MirrorFileDigest,
+        MirrorFileDigest, CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION,
+        CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION, ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -10288,6 +10589,174 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(blockers.contains(&"provider_not_active"));
         assert!(blockers.contains(&"publish_not_supported"));
+    }
+
+    #[test]
+    fn connector_status_and_queue_expose_remote_retry_diagnostics() {
+        let readback = serde_json::json!({
+            "schema_version": ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
+            "passed": false,
+            "failed_checks": ["remote_issue_read"],
+            "provider": "linear",
+            "review_surface": "linear:ENT-50",
+            "external_key": "ENT-50",
+            "issue_id": 50,
+            "issue_status": "Todo",
+            "path": "/tmp/linear-ent-50.json",
+            "receipt": {
+                "found": true,
+                "remote_write_receipt": {
+                    "schema_version": CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION,
+                    "write_execution": {
+                        "schema_version": CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION,
+                        "success": true,
+                        "failed_checks": [],
+                        "operation_count": 1,
+                        "operations": [{
+                            "kind": "read_issue_for_write",
+                            "success": true,
+                            "http_status": 200,
+                            "attempt_count": 2,
+                            "max_attempts": 2,
+                            "retry": {
+                                "reason": "success",
+                                "retryable": false,
+                                "scheduled": false,
+                                "attempted": true,
+                                "exhausted": false,
+                                "rate_limited": false
+                            }
+                        }]
+                    }
+                }
+            },
+            "remote_readback": {
+                "execution": {
+                    "success": false,
+                    "failed_checks": ["remote_rate_limited"],
+                    "issue": {
+                        "kind": "read_issue",
+                        "success": false,
+                        "failed_check": "remote_rate_limited",
+                        "http_status": 429,
+                        "attempt_count": 1,
+                        "max_attempts": 2,
+                        "retry": {
+                            "reason": "rate_limited",
+                            "retryable": false,
+                            "scheduled": false,
+                            "attempted": false,
+                            "exhausted": false,
+                            "rate_limited": true,
+                            "retry_after_secs": 60
+                        }
+                    }
+                }
+            },
+            "checks": [],
+            "current": {
+                "digest": {"sha256": "sha-current"},
+                "comments": {"count": 1}
+            },
+            "remote": {
+                "digest": {"sha256": "sha-remote"},
+                "surface": {"comments": {"count": 0}}
+            }
+        });
+        let status = compact_issue_mirror_status(&readback);
+
+        assert_eq!(
+            status
+                .pointer("/remote_diagnostics/write/signal/label")
+                .and_then(|value| value.as_str()),
+            Some("write retry 2 attempts")
+        );
+        assert_eq!(
+            status
+                .pointer("/remote_diagnostics/readback/signal/label")
+                .and_then(|value| value.as_str()),
+            Some("readback remote_rate_limited 429 retry after 60s")
+        );
+        assert_eq!(
+            status
+                .pointer("/remote_diagnostics/signals/1/retry/rate_limited")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let registry = test_connector_registry();
+        let queue = compact_connector_queue(
+            &registry,
+            &[serde_json::json!({
+                "id": 50,
+                "loop_id": 7,
+                "title": "Loop #7: remote diagnostics",
+                "status": "Todo",
+                "connector": status
+            })],
+            Some("linear"),
+        );
+
+        assert_eq!(
+            queue
+                .pointer("/issues/0/remote_diagnostics/signals/0/label")
+                .and_then(|value| value.as_str()),
+            Some("write retry 2 attempts")
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/remote_diagnostics/signals/1/failed_check")
+                .and_then(|value| value.as_str()),
+            Some("remote_rate_limited")
+        );
+
+        let failed_write_status = compact_issue_mirror_status(&serde_json::json!({
+            "schema_version": ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
+            "passed": false,
+            "failed_checks": ["write_receipt_binding"],
+            "provider": "linear",
+            "review_surface": "linear:ENT-52",
+            "external_key": "ENT-52",
+            "issue_id": 52,
+            "issue_status": "Todo",
+            "receipt": {
+                "found": true,
+                "remote_write_receipt": null,
+                "remote_write_execution": {
+                    "schema_version": CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION,
+                    "success": false,
+                    "failed_checks": ["remote_rate_limited"],
+                    "operation_count": 1,
+                    "operations": [{
+                        "kind": "read_issue_for_write",
+                        "success": false,
+                        "failed_check": "remote_rate_limited",
+                        "http_status": 429,
+                        "attempt_count": 1,
+                        "max_attempts": 2,
+                        "retry": {
+                            "reason": "rate_limited",
+                            "retryable": false,
+                            "scheduled": false,
+                            "attempted": false,
+                            "exhausted": false,
+                            "rate_limited": true,
+                            "retry_after_secs": 60
+                        }
+                    }]
+                }
+            },
+            "remote_readback": {
+                "execution": null
+            },
+            "checks": []
+        }));
+        assert_eq!(
+            failed_write_status
+                .pointer("/remote_diagnostics/write/signal/label")
+                .and_then(|value| value.as_str()),
+            Some("write remote_rate_limited 429 retry after 60s")
+        );
     }
 
     #[test]

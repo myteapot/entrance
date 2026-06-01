@@ -551,6 +551,11 @@
   overflow-wrap: anywhere;
 }
 
+.connector-remote-signal {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .connector-target--ok {
   border: 1px solid rgba(121, 215, 167, 0.26);
   color: #a7ecc6;
@@ -585,6 +590,18 @@
   border: 1px solid rgba(255, 193, 7, 0.34);
   color: #ffd86b;
   background: rgba(255, 193, 7, 0.1);
+}
+
+.connector-remote-signal--info {
+  border: 1px solid rgba(125, 177, 255, 0.3);
+  color: #b7d2ff;
+  background: rgba(125, 177, 255, 0.09);
+}
+
+.connector-remote-signal--warn {
+  border: 1px solid rgba(255, 132, 132, 0.34);
+  color: #ffb3b3;
+  background: rgba(255, 132, 132, 0.1);
 }
 
 .connector-queue {
@@ -645,6 +662,13 @@
 }
 
 .connector-queue .connector-queue-issue .connector-check {
+  padding: 4px 7px;
+  border-radius: 8px;
+  font-size: 0.74rem;
+  line-height: 1.15;
+}
+
+.connector-queue .connector-queue-issue .connector-remote-signal {
   padding: 4px 7px;
   border-radius: 8px;
   font-size: 0.74rem;

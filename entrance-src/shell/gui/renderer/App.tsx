@@ -206,6 +206,7 @@ type IssueConnectorStatus = {
   remote_sha256?: string | null;
   checks?: AdmissionCheck[] | null;
   remote_readback_checks?: AdmissionCheck[] | null;
+  remote_diagnostics?: ConnectorRemoteDiagnostics | null;
   publish_command: string;
   readback_command?: string | null;
   admit_command?: string | null;
@@ -307,6 +308,31 @@ type ConnectorRemoteWritePlan = {
   operations?: ConnectorRemoteWriteOperation[];
 };
 
+type ConnectorRemoteSignal = {
+  stage?: string | null;
+  tone?: string | null;
+  label?: string | null;
+  failed_check?: string | null;
+  http_status?: number | null;
+  attempt_count?: number | null;
+  retry?: {
+    reason?: string | null;
+    retryable?: boolean | null;
+    scheduled?: boolean | null;
+    attempted?: boolean | null;
+    exhausted?: boolean | null;
+    rate_limited?: boolean | null;
+    backoff_ms?: number | null;
+    retry_after_secs?: number | null;
+    rate_limit?: Record<string, unknown> | null;
+  } | null;
+};
+
+type ConnectorRemoteDiagnostics = {
+  schema_version?: string | null;
+  signals?: ConnectorRemoteSignal[];
+};
+
 type ConnectorWriterAdapter = {
   schema_version: string;
   provider: string;
@@ -375,6 +401,7 @@ type ConnectorQueueIssue = {
   checks?: AdmissionCheck[] | null;
   remote_readback_checks?: AdmissionCheck[] | null;
   admission_checks?: AdmissionCheck[] | null;
+  remote_diagnostics?: ConnectorRemoteDiagnostics | null;
   review_surface: string | null;
   publish_required: boolean;
   current: boolean | null;
@@ -899,6 +926,44 @@ export default function App() {
       </span>
     ) : null;
   };
+  const selectedIssueConnector = (issueId: number) =>
+    (issueCards() ?? []).find((card) => card.issue.id === issueId)?.connector ?? null;
+  const connectorRemoteDiagnostics = (issueId: number) =>
+    connectorQueueIssueById(issueId)?.remote_diagnostics ??
+    selectedIssueConnector(issueId)?.remote_diagnostics ??
+    null;
+  const connectorRemoteSignalTone = (signal: ConnectorRemoteSignal) =>
+    signal.tone === "warn" ? "warn" : "info";
+  const connectorRemoteSignalTitle = (signal: ConnectorRemoteSignal) => {
+    const retry = signal.retry;
+    const parts = [
+      signal.stage ? `stage: ${signal.stage}` : null,
+      signal.failed_check ? `failed: ${signal.failed_check}` : null,
+      signal.http_status ? `http: ${signal.http_status}` : null,
+      signal.attempt_count ? `attempts: ${signal.attempt_count}` : null,
+      retry?.reason ? `retry: ${retry.reason}` : null,
+      retry?.retry_after_secs ? `retry-after: ${retry.retry_after_secs}s` : null,
+      retry?.backoff_ms ? `backoff: ${retry.backoff_ms}ms` : null,
+      retry?.rate_limited ? "rate limited" : null,
+      retry?.exhausted ? "retry exhausted" : null,
+    ].filter((part): part is string => Boolean(part));
+    return parts.length ? parts.join(" | ") : undefined;
+  };
+  const connectorRemoteDiagnosticChips = (
+    diagnostics: ConnectorRemoteDiagnostics | null | undefined,
+    testIdPrefix: string,
+  ) =>
+    diagnostics?.signals?.slice(0, 2).map((signal, index) =>
+      signal.label ? (
+        <span
+          class={`connector-remote-signal connector-remote-signal--${connectorRemoteSignalTone(signal)}`}
+          data-testid={`${testIdPrefix}-${index}`}
+          title={connectorRemoteSignalTitle(signal)}
+        >
+          {compactText(signal.label, 72)}
+        </span>
+      ) : null,
+    ) ?? [];
   const connectorQueueIssuePublishTitle = (card: IssueCard) => {
     const queueIssue = connectorQueueIssueById(card.issue.id);
     if (queueIssue?.can_publish === false && queueIssue.publish_blockers?.length) {
@@ -1978,6 +2043,10 @@ export default function App() {
           connectorQueueIssueWritePlan(card.issue.id),
           `connector-write-plan-${surface}-${card.issue.id}`,
         )}
+        {connectorRemoteDiagnosticChips(
+          connectorRemoteDiagnostics(card.issue.id),
+          `connector-remote-signal-${surface}-${card.issue.id}`,
+        )}
       </div>
     ) : null;
   const loopAuditCommand = (card: IssueCard) =>
@@ -2861,6 +2930,10 @@ export default function App() {
                       {connectorRemoteWritePlanChip(
                         connectorQueueIssueWritePlan(card.issue.id),
                         `connector-queue-write-plan-${card.issue.id}`,
+                      )}
+                      {connectorRemoteDiagnosticChips(
+                        connectorRemoteDiagnostics(card.issue.id),
+                        `connector-queue-remote-signal-${card.issue.id}`,
                       )}
                       <button
                         type="button"
