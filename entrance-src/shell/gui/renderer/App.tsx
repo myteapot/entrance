@@ -261,6 +261,13 @@ type IssueMirrorVerifyReport = {
     bytes: number;
   };
 };
+type IssueMirrorAuditReport = {
+  schema_version: string;
+  passed: boolean;
+  failed_count: number;
+  failed_checks: string[];
+  verify: IssueMirrorVerifyReport;
+};
 type CommentPill = {
   label: string;
   evidenceId?: number;
@@ -600,13 +607,13 @@ export default function App() {
     setSelectedIssueId(card.issue.id);
     setPendingIssue(card.issue.id, "Verifying");
     try {
-      const report = await bridge.invoke<IssueMirrorVerifyReport>("hive_issue_mirror_verify", {
+      const report = await bridge.invoke<IssueMirrorAuditReport>("hive_issue_mirror_audit", {
         issueId: card.issue.id,
       });
       if (report.passed) {
-        setBanner(`Verified issue mirror ${compactText(report.current.sha256, 12)}.`);
+        setBanner(`Verified issue mirror ${compactText(report.verify.current.sha256, 12)}.`);
       } else {
-        setBanner(`Issue #${card.issue.id} mirror drift: ${compactText(report.failures.join(", "), 96)}`);
+        setBanner(`Issue #${card.issue.id} mirror audit failed: ${compactText(report.failed_checks.join(", "), 96)}`);
       }
     } catch (error) {
       setBanner(`Issue #${card.issue.id} verify failed: ${actionErrorMessage(error)}`);
@@ -1137,7 +1144,7 @@ export default function App() {
   const issueMirrorSyncCommand = (card: IssueCard) =>
     `entrance hive issue mirror-sync ${card.issue.id}`;
   const issueMirrorVerifyCommand = (card: IssueCard) =>
-    `entrance hive issue mirror-verify ${card.issue.id}`;
+    `entrance hive issue mirror-audit ${card.issue.id} --compact`;
   const issueMirrorSyncLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Syncing" ? "Syncing" : "Sync";
   const issueMirrorVerifyLabel = (card: IssueCard) =>

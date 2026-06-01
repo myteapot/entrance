@@ -17,6 +17,8 @@ use crate::{app::AppServices, cli, print_json};
 const ISSUE_MIRROR_SYNC_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync.v1";
 const ISSUE_MIRROR_SYNC_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync_receipt.v1";
 const ISSUE_MIRROR_VERIFY_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_verify.v1";
+const ISSUE_MIRROR_AUDIT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_audit.v1";
+const ISSUE_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MirrorFileDigest {
@@ -28,7 +30,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -210,6 +212,15 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             let report =
                 verify_issue_mirror_file(services, id.parse::<i64>()?, flag_value(rest, "--path"))?;
             print_json(&report)
+        }
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-audit" => {
+            let report =
+                audit_issue_mirror_file(services, id.parse::<i64>()?, flag_value(rest, "--path"))?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_mirror_audit_summary(&report))
+            } else {
+                print_json(&report)
+            }
         }
         [scope, action, id, rest @ ..] if scope == "issue" && action == "comment" => {
             let body = flag_value(rest, "--body").unwrap_or_default();
@@ -434,6 +445,15 @@ pub(crate) fn verify_issue_mirror_file(
         actual_digest.as_ref(),
         receipt.as_ref(),
     ))
+}
+
+pub(crate) fn audit_issue_mirror_file(
+    services: &AppServices,
+    issue_id: i64,
+    path: Option<&str>,
+) -> Result<serde_json::Value> {
+    let verify = verify_issue_mirror_file(services, issue_id, path)?;
+    Ok(compact_issue_mirror_audit(&verify))
 }
 
 fn default_issue_mirror_path(app_root: &Path, external_key: &str) -> PathBuf {
@@ -719,6 +739,167 @@ fn compact_issue_mirror_verify(
         "receipt": receipt_summary,
         "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
         "verify_command": format!("entrance hive issue mirror-verify {}", mirror.issue.id)
+    })
+}
+
+fn compact_issue_mirror_audit(verify: &serde_json::Value) -> serde_json::Value {
+    let failures = verify_failures(verify);
+    let issue_id = verify.pointer("/issue_id").and_then(|value| value.as_i64());
+    let checks = vec![
+        mirror_audit_check(
+            "mirror_file_current",
+            "Mirror file matches the current Hive issue mirror.",
+            &failures,
+            &["mirror_file_missing", "mirror_current_mismatch"],
+            serde_json::json!({
+                "path": verify.pointer("/path"),
+                "current": verify.pointer("/current"),
+                "file": verify.pointer("/file")
+            }),
+        ),
+        mirror_audit_check(
+            "receipt_schema",
+            "Mirror receipt exists and uses the expected schema.",
+            &failures,
+            &["receipt_file_missing", "receipt_schema_mismatch"],
+            serde_json::json!({
+                "receipt_path": verify.pointer("/receipt_path"),
+                "receipt": verify.pointer("/receipt")
+            }),
+        ),
+        mirror_audit_check(
+            "receipt_binding",
+            "Mirror receipt is bound to the current issue status, update time, and loop round.",
+            &failures,
+            &[
+                "receipt_issue_id_mismatch",
+                "receipt_issue_status_mismatch",
+                "receipt_issue_updated_at_mismatch",
+                "receipt_loop_round_mismatch",
+            ],
+            serde_json::json!({
+                "issue": {
+                    "id": verify.pointer("/issue_id"),
+                    "status": verify.pointer("/issue_status"),
+                    "loop_id": verify.pointer("/loop_id"),
+                    "loop_round": verify.pointer("/loop_round")
+                },
+                "receipt": verify.pointer("/receipt")
+            }),
+        ),
+        mirror_audit_check(
+            "receipt_digest",
+            "Mirror receipt digest matches the written mirror file.",
+            &failures,
+            &["receipt_file_digest_mismatch"],
+            serde_json::json!({
+                "file": verify.pointer("/file"),
+                "receipt": verify.pointer("/receipt")
+            }),
+        ),
+    ];
+    let failed_checks = checks
+        .iter()
+        .filter(|check| {
+            !check
+                .pointer("/passed")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .filter_map(|check| {
+            check
+                .pointer("/name")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_AUDIT_SCHEMA_VERSION,
+        "passed": failed_checks.is_empty(),
+        "failed_count": failed_checks.len(),
+        "failed_checks": failed_checks,
+        "issue_id": issue_id,
+        "provider": verify.pointer("/provider"),
+        "review_surface": verify.pointer("/review_surface"),
+        "external_key": verify.pointer("/external_key"),
+        "gate": {
+            "schema_version": "entrance.hive.policy.v1",
+            "gate": ISSUE_MIRROR_RECEIPT_GATE,
+            "description": "Connector mirror receipts must match the current Hive issue mirror before external issue/status/comment surfaces trust them.",
+            "expected_object_kind": "ISSUE_MIRROR_SYNC_RECEIPT"
+        },
+        "verify": verify,
+        "checks": checks,
+        "actions": [
+            compact_loop_action(
+                "sync",
+                "Sync",
+                format!("entrance hive issue mirror-sync {}", issue_id.unwrap_or_default())
+            ),
+            compact_loop_action(
+                "verify",
+                "Verify",
+                format!("entrance hive issue mirror-verify {}", issue_id.unwrap_or_default())
+            ),
+            compact_loop_action(
+                "audit",
+                "Audit",
+                format!("entrance hive issue mirror-audit {} --compact", issue_id.unwrap_or_default())
+            )
+        ]
+    })
+}
+
+fn compact_issue_mirror_audit_summary(report: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue_mirror_audit.compact.v1",
+        "source_schema_version": report.pointer("/schema_version").and_then(|value| value.as_str()),
+        "passed": report.pointer("/passed").and_then(|value| value.as_bool()),
+        "failed_count": report.pointer("/failed_count").and_then(|value| value.as_u64()),
+        "failed_checks": report.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "issue_id": report.pointer("/issue_id").and_then(|value| value.as_i64()),
+        "provider": report.pointer("/provider").and_then(|value| value.as_str()),
+        "review_surface": report.pointer("/review_surface").and_then(|value| value.as_str()),
+        "gate": report.pointer("/gate/gate").and_then(|value| value.as_str()),
+        "path": report.pointer("/verify/path").and_then(|value| value.as_str()),
+        "receipt_path": report.pointer("/verify/receipt_path").and_then(|value| value.as_str()),
+        "sha256": report.pointer("/verify/current/sha256").and_then(|value| value.as_str()),
+        "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
+    })
+}
+
+fn verify_failures(verify: &serde_json::Value) -> Vec<String> {
+    verify
+        .pointer("/failures")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+        .collect()
+}
+
+fn mirror_audit_check(
+    name: &str,
+    summary: &str,
+    failures: &[String],
+    failure_codes: &[&str],
+    details: serde_json::Value,
+) -> serde_json::Value {
+    let matched_failures = failure_codes
+        .iter()
+        .filter(|code| failures.iter().any(|failure| failure == **code))
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "name": name,
+        "passed": matched_failures.is_empty(),
+        "summary": if matched_failures.is_empty() {
+            summary.to_string()
+        } else {
+            format!("{} Failed: {}.", summary, matched_failures.join(", "))
+        },
+        "failure_codes": matched_failures,
+        "details": details
     })
 }
 
@@ -1011,7 +1192,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        compact_issue_board, compact_issue_detail, compact_issue_mirror, compact_issue_mirror_sync,
+        compact_issue_board, compact_issue_detail, compact_issue_mirror,
+        compact_issue_mirror_audit, compact_issue_mirror_audit_summary, compact_issue_mirror_sync,
         compact_issue_mirror_verify, compact_loop_audit, default_issue_mirror_path, flag_present,
         flag_value, issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
     };
@@ -1578,6 +1760,52 @@ mod tests {
         assert!(failures
             .iter()
             .any(|value| value.as_str() == Some("receipt_issue_status_mismatch")));
+
+        let audit = compact_issue_mirror_audit(&drift_report);
+        assert_eq!(
+            audit
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror_audit.v1")
+        );
+        assert_eq!(
+            audit.pointer("/passed").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            audit
+                .pointer("/failed_checks/0")
+                .and_then(|value| value.as_str()),
+            Some("receipt_binding")
+        );
+        assert_eq!(
+            audit.pointer("/gate/gate").and_then(|value| value.as_str()),
+            Some("connector_mirror_receipt_current")
+        );
+        assert_eq!(
+            audit
+                .pointer("/actions/0/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-sync 8")
+        );
+
+        let compact = compact_issue_mirror_audit_summary(&audit);
+        assert_eq!(
+            compact
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror_audit.compact.v1")
+        );
+        assert_eq!(
+            compact
+                .pointer("/failed_checks/0")
+                .and_then(|value| value.as_str()),
+            Some("receipt_binding")
+        );
+        assert_eq!(
+            compact.pointer("/gate").and_then(|value| value.as_str()),
+            Some("connector_mirror_receipt_current")
+        );
     }
 
     #[test]
