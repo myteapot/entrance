@@ -186,16 +186,17 @@ activates the GitHub REST adapter; `[connectors.linear] enabled = true` plus an
 env such as `LINEAR_API_KEY` activates the Linear GraphQL adapter. Publish
 records `entrance.hive.connector_remote_write_execute.v1` and redacted
 `entrance.hive.connector_remote_write_receipt.v1` evidence. GitHub comment
-publish uses an Entrance idempotency marker: it lists existing issue comments,
-patches the matching comment when present, and only creates a new comment when
-the marker is absent. GitHub readback uses REST `GET` issue plus `GET` issue
-comments, follows `Link` pagination for the comment list, emits
+publish uses an issue-stable Entrance idempotency marker: it lists existing
+issue comments, patches the matching comment when present, and only creates a
+new comment when the marker is absent. GitHub readback uses REST `GET` issue
+plus `GET` issue comments, follows `Link` pagination for the comment list, emits
 `entrance.hive.connector_remote_readback.v1`, and connector admission can pass
 only when target, auth, issue state/body, latest comment, and write-receipt
 binding checks pass. Linear publish reads the issue UUID by identifier, updates
-title/description through GraphQL, appends idempotency-marked comments, emits the
-same remote write/readback schemas, and gates admission on typed target, auth,
-issue body, comment surface, and write-receipt checks. `storage` can override
+title/description through GraphQL, updates the matching issue-stable comment
+marker when present, creates one only when absent, emits the same remote
+write/readback schemas, and gates admission on typed target, auth, issue body,
+comment surface, and write-receipt checks. `storage` can override
 the file-backed mirror path used by active local adapters; for GitHub it can
 override the REST API base URL, and for Linear an `http(s)://` value overrides
 the GraphQL endpoint for fixtures or self-hosted-compatible testing. GitHub REST

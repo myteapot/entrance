@@ -2441,11 +2441,11 @@ fn connector_remote_issue_idempotency_key(
     issue: &serde_json::Value,
 ) -> String {
     let basis = serde_json::json!({
+        "surface": "issue_latest_comment",
         "provider": provider_name,
         "external_key": issue.pointer("/connector/external_key").and_then(|value| value.as_str()),
-        "issue_updated_at": issue.pointer("/updated_at").and_then(|value| value.as_str()),
-        "latest_comment_id": issue.pointer("/latest_comment/id").and_then(|value| value.as_i64()),
-        "mirror_sha256": issue.pointer("/connector/current_sha256").and_then(|value| value.as_str())
+        "issue_id": issue.pointer("/id").and_then(|value| value.as_i64()),
+        "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64())
     });
     let payload = serde_json::to_vec(&basis).unwrap_or_default();
     digest_bytes(&payload).sha256
@@ -5898,7 +5898,7 @@ fn compact_connector_remote_contract(
             "identity_fields": ["provider", "review_surface", "external_key"],
             "status_source": "hive_issue.status",
             "comment_source": "hive_issue.comments",
-            "comment_mode": "append_missing_comments"
+            "comment_mode": "upsert_latest_comment_by_issue_stable_marker"
         },
         "target": {
             "schema_version": CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION,
@@ -5935,11 +5935,11 @@ fn compact_connector_remote_contract(
         },
         "idempotency": {
             "key_parts": [
+                "surface",
                 "provider",
                 "external_key",
-                "issue.updated_at",
-                "latest_comment.id",
-                "mirror.sha256"
+                "issue.id",
+                "loop.id"
             ],
             "conflict_policy": "readback-before-write"
         },
@@ -6734,10 +6734,8 @@ fn execute_linear_remote_write_plan_blocking(
                     .to_string(),
             );
         }
-        if matches!(
-            result.pointer("/kind").and_then(|value| value.as_str()),
-            Some("read_issue_for_write" | "update_issue")
-        ) {
+        if result.pointer("/kind").and_then(|value| value.as_str()) == Some("read_issue_for_write")
+        {
             if let Some(summary) = result.pointer("/response/summary") {
                 issue_context = summary.clone();
             }
@@ -8723,10 +8721,10 @@ mod tests {
         compact_linear_issue_mirror_readback, compact_loop_audit,
         connector_admission_preview_checks, connector_github_remote_comment_body,
         connector_issue_writer_blockers, connector_linear_remote_comment_body,
-        connector_remote_issue_body, connector_remote_target,
-        connector_remote_write_issue_from_mirror, connector_remote_write_plan,
-        connector_remote_write_receipt_from_execution, connector_write_receipt,
-        connector_writer_blockers, default_issue_mirror_path,
+        connector_remote_issue_body, connector_remote_issue_idempotency_key,
+        connector_remote_target, connector_remote_write_issue_from_mirror,
+        connector_remote_write_plan, connector_remote_write_receipt_from_execution,
+        connector_write_receipt, connector_writer_blockers, default_issue_mirror_path,
         default_issue_mirror_path_for_provider, digest_bytes, execute_github_remote_readback,
         execute_github_remote_write_plan, execute_linear_remote_write_plan, flag_present,
         flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
@@ -9152,6 +9150,13 @@ mod tests {
     }
 
     fn spawn_linear_graphql_server() -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+        spawn_linear_graphql_server_with_comment(None, 4)
+    }
+
+    fn spawn_linear_graphql_server_with_comment(
+        initial_comment_body: Option<String>,
+        request_count: usize,
+    ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -9159,11 +9164,11 @@ mod tests {
         let state = Arc::new(Mutex::new(LinearFixtureState {
             title: "Loop #47: Linear connector".to_string(),
             description: "Old Linear description".to_string(),
-            comment_body: None,
+            comment_body: initial_comment_body,
         }));
         let fixture_state = Arc::clone(&state);
         let handle = thread::spawn(move || {
-            for _ in 0..4 {
+            for _ in 0..request_count {
                 let (mut stream, _) = listener.accept().expect("test request should connect");
                 let mut buffer = [0_u8; 16384];
                 let read = stream.read(&mut buffer).unwrap_or_default();
@@ -9294,6 +9299,54 @@ mod tests {
                 "name": "Entrance"
             }
         })
+    }
+
+    fn linear_test_mirror(issue_id: i64, comment_id: i64, comment_body: &str) -> IssueMirrorReport {
+        IssueMirrorReport {
+            schema_version: "entrance.hive.issue_mirror.v1".to_string(),
+            provider: "linear".to_string(),
+            review_surface: "linear:ENT-47".to_string(),
+            external_key: format!("hive-loop-{issue_id}-issue-{issue_id}"),
+            issue: HiveIssue {
+                id: issue_id,
+                loop_id: Some(issue_id),
+                title: format!("Loop #{issue_id}: Linear connector"),
+                status: "Todo".to_string(),
+                summary: Some("Validate Linear GraphQL mirror.".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:04:00Z".to_string(),
+            },
+            loop_contract: Some(HiveLoopContract {
+                id: issue_id,
+                title: "Linear connector".to_string(),
+                goal: "Verify Linear issue/status/comment surface.".to_string(),
+                boundary: "Use a local GraphQL fixture.".to_string(),
+                approach_space: vec!["GraphQL write".to_string(), "GraphQL readback".to_string()],
+                eval_space: vec!["readback passes".to_string()],
+                review_surface: "linear:ENT-47".to_string(),
+                autonomy_level: "run-approved-candidates".to_string(),
+                runtime: "local".to_string(),
+                status: "todo".to_string(),
+                active_phase: "explorer".to_string(),
+                current_round: 1,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:04:00Z".to_string(),
+            }),
+            comments: vec![HiveComment {
+                id: comment_id,
+                issue_id,
+                author: "hive".to_string(),
+                body: comment_body.to_string(),
+                payload: serde_json::json!({
+                    "schema_version": "entrance.hive.system_comment.v1",
+                    "source": "hive"
+                }),
+                created_at: "2026-01-01T00:02:00Z".to_string(),
+            }],
+            actions: vec![],
+            trace: None,
+            doctor: None,
+        }
     }
 
     #[test]
@@ -10235,6 +10288,77 @@ mod tests {
         assert!(request_log.contains("\"operationName\":\"EntranceCommentCreate\""));
         assert!(connector_linear_remote_comment_body(&source_issue)
             .contains("<!-- entrance-idempotency-key:"));
+    }
+
+    #[test]
+    fn linear_remote_write_updates_existing_idempotent_comment_after_local_comment_changes() {
+        let mut linear =
+            test_connector_provider("linear", "Linear", "active", true, true, vec!["linear:"]);
+        linear.mode = "remote-issue-api".to_string();
+        linear.auth_required = true;
+        linear.auth_env = vec!["ENTRANCE_TEST_LINEAR_GRAPHQL_UPSERT_TOKEN".to_string()];
+        std::env::set_var("ENTRANCE_TEST_LINEAR_GRAPHQL_UPSERT_TOKEN", "test-token");
+        let mirror = linear_test_mirror(48, 4802, "Current local connector observation.");
+        let digest = digest_bytes(&mirror_payload(&mirror).expect("mirror should serialize"));
+        let source_issue = connector_remote_write_issue_from_mirror(&mirror, &digest);
+        let mut old_source_issue = source_issue.clone();
+        if let Some(value) = old_source_issue.pointer_mut("/latest_comment/id") {
+            *value = serde_json::json!(4801);
+        }
+        if let Some(value) = old_source_issue.pointer_mut("/latest_comment/body") {
+            *value = serde_json::json!("Old remote connector observation.");
+        }
+        if let Some(value) = old_source_issue.pointer_mut("/connector/current_sha256") {
+            *value = serde_json::json!("old-linear-sha");
+        }
+        let existing_comment_body = connector_linear_remote_comment_body(&old_source_issue);
+        let (base_url, requests, server) =
+            spawn_linear_graphql_server_with_comment(Some(existing_comment_body), 3);
+        linear.storage = base_url;
+        let target = connector_remote_target(Some(&linear), "linear:ENT-47", &mirror.external_key);
+        let plan = connector_remote_write_plan(Some(&linear), &source_issue, &target, &[]);
+        let expected_comment_body = connector_linear_remote_comment_body(&source_issue);
+
+        let execution = execute_linear_remote_write_plan(&linear, &plan);
+        server.join().expect("test server should finish");
+        std::env::remove_var("ENTRANCE_TEST_LINEAR_GRAPHQL_UPSERT_TOKEN");
+
+        assert_eq!(
+            connector_remote_issue_idempotency_key("linear", &old_source_issue),
+            connector_remote_issue_idempotency_key("linear", &source_issue)
+        );
+        assert_eq!(
+            execution
+                .pointer("/success")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/2/mode")
+                .and_then(|value| value.as_str()),
+            Some("update_existing_comment")
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/2/matched_comment/id")
+                .and_then(|value| value.as_str()),
+            Some("comment-47")
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/2/write/response/summary/body")
+                .and_then(|value| value.as_str()),
+            Some(expected_comment_body.as_str())
+        );
+        let request_log = requests
+            .lock()
+            .expect("request log should lock")
+            .join("\n---\n");
+        assert!(request_log.contains("\"operationName\":\"EntranceIssueRead\""));
+        assert!(request_log.contains("\"operationName\":\"EntranceIssueUpdate\""));
+        assert!(request_log.contains("\"operationName\":\"EntranceCommentUpdate\""));
+        assert!(!request_log.contains("\"operationName\":\"EntranceCommentCreate\""));
     }
 
     #[test]

@@ -176,18 +176,19 @@ with a configured token env. `[connectors.github] enabled = true` with
 activates GraphQL issue/comment publish operations. Both record
 `entrance.hive.connector_remote_write_execute.v1` plus redacted
 `entrance.hive.connector_remote_write_receipt.v1` evidence. GitHub comment
-publish uses an Entrance idempotency marker: it lists issue comments, patches
-the matching comment when present, and creates one only when the marker is
-absent. GitHub readback uses REST `GET` issue plus `GET` issue comments, follows
-`Link` pagination for the comment list, emits
+publish uses an issue-stable Entrance idempotency marker: it lists issue
+comments, patches the matching comment when present, and creates one only when
+the marker is absent. GitHub readback uses REST `GET` issue plus `GET` issue
+comments, follows `Link` pagination for the comment list, emits
 `entrance.hive.connector_remote_readback.v1`, and connector admission is ready
 only when the typed target, auth, issue state/body, latest comment, and
 write-receipt binding checks pass. Linear publish reads the issue UUID by
-identifier, updates title/description through GraphQL, appends
-idempotency-marked comments, emits the same remote write/readback schemas, and
-gates admission on typed target, auth, issue body, comment surface, and
-write-receipt checks. GitHub REST operations now expose attempt metadata, retry
-transient `5xx` responses with bounded backoff, and classify `403/429` rate
+identifier, updates title/description through GraphQL, updates the matching
+issue-stable comment marker when present, creates one only when absent, emits the
+same remote write/readback schemas, and gates admission on typed target, auth,
+issue body, comment surface, and write-receipt checks. GitHub REST operations
+now expose attempt metadata, retry transient `5xx` responses with bounded
+backoff, and classify `403/429` rate
 limits as typed `remote_rate_limited` blockers without immediate retry.
 Production drift handling, richer Linear state mapping, real-token coverage, and
 broader retry policy are still pending.
