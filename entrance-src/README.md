@@ -200,10 +200,12 @@ comment surface, and write-receipt checks. `storage` can override
 the file-backed mirror path used by active local adapters; for GitHub it can
 override the REST API base URL, and for Linear an `http(s)://` value overrides
 the GraphQL endpoint for fixtures or self-hosted-compatible testing. GitHub REST
-operations expose attempt metadata, retry transient `5xx` responses with bounded
-backoff, and classify `403/429` rate limits as typed `remote_rate_limited`
-blockers without immediate retry. Production drift handling, richer Linear state
-mapping, real-token coverage, and broader retry policy are still pending.
+and Linear GraphQL operations expose attempt metadata, retry transient HTTP
+`5xx` responses with bounded backoff, and classify `403/429` rate limits as
+typed `remote_rate_limited` blockers without immediate retry; Linear also
+classifies GraphQL rate-limit errors as the same typed blocker. Production drift
+handling, richer Linear state mapping, real-token coverage, and broader retry
+policy are still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

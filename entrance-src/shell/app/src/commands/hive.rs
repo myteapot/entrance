@@ -51,6 +51,8 @@ const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
 const GITHUB_COMMENTS_MAX_PAGES: usize = 20;
 const GITHUB_HTTP_MAX_ATTEMPTS: usize = 2;
 const GITHUB_RETRY_BACKOFF_MS: u64 = 100;
+const LINEAR_HTTP_MAX_ATTEMPTS: usize = 2;
+const LINEAR_RETRY_BACKOFF_MS: u64 = 100;
 const GITHUB_COMMENT_IDEMPOTENCY_PREFIX: &str = "<!-- entrance-idempotency-key:";
 const GITHUB_COMMENT_IDEMPOTENCY_SUFFIX: &str = "-->";
 const LINEAR_COMMENT_IDEMPOTENCY_PREFIX: &str = "<!-- entrance-idempotency-key:";
@@ -6725,7 +6727,10 @@ fn execute_linear_remote_write_plan_blocking(
                 execute_linear_graphql_operation(&client, &token, &operation)
             }
         };
-        if result.pointer("/success").and_then(|value| value.as_bool()) != Some(true) {
+        let result_kind = result.pointer("/kind").and_then(|value| value.as_str());
+        let result_success =
+            result.pointer("/success").and_then(|value| value.as_bool()) == Some(true);
+        if !result_success {
             failed_checks.push(
                 result
                     .pointer("/failed_check")
@@ -6734,13 +6739,16 @@ fn execute_linear_remote_write_plan_blocking(
                     .to_string(),
             );
         }
-        if result.pointer("/kind").and_then(|value| value.as_str()) == Some("read_issue_for_write")
-        {
+        if result_kind == Some("read_issue_for_write") {
             if let Some(summary) = result.pointer("/response/summary") {
                 issue_context = summary.clone();
             }
         }
+        let stop_after_result = result_kind == Some("read_issue_for_write") && !result_success;
         operation_results.push(result);
+        if stop_after_result {
+            break;
+        }
     }
     failed_checks.sort();
     failed_checks.dedup();
@@ -6905,6 +6913,49 @@ fn execute_linear_graphql_operation(
         "query": operation.pointer("/graphql/query").and_then(|value| value.as_str()).unwrap_or_default(),
         "variables": operation.pointer("/graphql/variables").cloned().unwrap_or_else(|| serde_json::json!({}))
     });
+    let mut attempts = Vec::new();
+    for attempt_number in 1..=LINEAR_HTTP_MAX_ATTEMPTS {
+        let mut result = execute_linear_graphql_operation_attempt(
+            client,
+            token,
+            operation,
+            method_label,
+            url,
+            &body,
+        );
+        let should_retry = linear_operation_result_should_retry_now(&result, attempt_number);
+        if should_retry {
+            linear_mark_retry_scheduled(&mut result, linear_retry_backoff_ms(attempt_number));
+        }
+        attempts.push(linear_operation_attempt_summary(&result, attempt_number));
+        if !should_retry {
+            return linear_operation_with_attempts(result, attempts);
+        }
+        std::thread::sleep(Duration::from_millis(linear_retry_backoff_ms(
+            attempt_number,
+        )));
+    }
+
+    serde_json::json!({
+        "kind": operation.pointer("/kind").and_then(|value| value.as_str()),
+        "method": method_label,
+        "url": url,
+        "success": false,
+        "failed_check": "remote_retry_exhausted",
+        "attempt_count": attempts.len(),
+        "max_attempts": LINEAR_HTTP_MAX_ATTEMPTS,
+        "attempts": attempts
+    })
+}
+
+fn execute_linear_graphql_operation_attempt(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    operation: &serde_json::Value,
+    method_label: &str,
+    url: &str,
+    body: &serde_json::Value,
+) -> serde_json::Value {
     let response = client
         .post(url)
         .bearer_auth(token)
@@ -6920,11 +6971,13 @@ fn execute_linear_graphql_operation(
                 "url": url,
                 "success": false,
                 "failed_check": "remote_request_failed",
+                "retry": linear_request_retry_metadata(),
                 "error": error.to_string()
             });
         }
     };
     let status = response.status().as_u16();
+    let headers = response.headers().clone();
     let text = match response.text() {
         Ok(text) => text,
         Err(error) => {
@@ -6935,6 +6988,7 @@ fn execute_linear_graphql_operation(
                 "success": false,
                 "failed_check": "remote_response_read_failed",
                 "http_status": status,
+                "retry": linear_response_read_retry_metadata(),
                 "error": error.to_string()
             });
         }
@@ -6949,6 +7003,7 @@ fn execute_linear_graphql_operation(
         .and_then(|value| value.as_array())
         .map(|errors| !errors.is_empty())
         .unwrap_or(false);
+    let graphql_rate_limited = linear_graphql_errors_rate_limited(parsed.as_ref());
     let summary = parsed
         .as_ref()
         .map(|value| compact_linear_graphql_response_summary(value, operation));
@@ -6964,20 +7019,38 @@ fn execute_linear_graphql_operation(
         "failed_check": if success {
             None::<&str>
         } else if !status_success {
-            Some("remote_http_status_failed")
+            Some(linear_http_failed_check(status, &headers))
         } else if !parsed_ok {
             Some("remote_response_parse_failed")
+        } else if graphql_rate_limited {
+            Some("remote_rate_limited")
         } else if graphql_errors {
             Some("remote_graphql_errors")
         } else {
             Some("remote_graphql_result_failed")
         },
         "http_status": status,
+        "retry": if success {
+            linear_terminal_retry_metadata("success")
+        } else if !status_success {
+            linear_http_retry_metadata(status, &headers)
+        } else if !parsed_ok {
+            linear_parse_retry_metadata(parsed_ok)
+        } else if graphql_rate_limited {
+            linear_graphql_rate_limit_retry_metadata(&headers, parsed.as_ref())
+        } else {
+            linear_terminal_retry_metadata(if graphql_errors {
+                "graphql_errors"
+            } else {
+                "graphql_result_failed"
+            })
+        },
         "request": {
             "body_sha256": digest_bytes(serde_json::to_vec(&body).unwrap_or_default().as_slice()).sha256,
             "auth": "Authorization: Bearer <redacted>"
         },
         "response": {
+            "headers": linear_response_headers_summary(&headers),
             "bytes": digest.bytes,
             "sha256": digest.sha256,
             "parsed": parsed_ok,
@@ -6985,6 +7058,270 @@ fn execute_linear_graphql_operation(
             "errors": parsed.as_ref().and_then(|value| value.pointer("/errors")).cloned().unwrap_or_else(|| serde_json::json!([]))
         }
     })
+}
+
+fn linear_operation_result_should_retry_now(
+    result: &serde_json::Value,
+    attempt_number: usize,
+) -> bool {
+    if attempt_number >= LINEAR_HTTP_MAX_ATTEMPTS {
+        return false;
+    }
+    if result.pointer("/success").and_then(|value| value.as_bool()) == Some(true) {
+        return false;
+    }
+    if result
+        .pointer("/retry/rate_limited")
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        return false;
+    }
+    result
+        .pointer("/retry/retryable")
+        .and_then(|value| value.as_bool())
+        == Some(true)
+}
+
+fn linear_operation_with_attempts(
+    mut result: serde_json::Value,
+    attempts: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let success = result.pointer("/success").and_then(|value| value.as_bool()) == Some(true);
+    let rate_limited = result
+        .pointer("/retry/rate_limited")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let retryable = result
+        .pointer("/retry/retryable")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let attempted = attempts.len() > 1;
+    let exhausted =
+        !success && retryable && !rate_limited && attempts.len() >= LINEAR_HTTP_MAX_ATTEMPTS;
+    let mut retry = result
+        .pointer("/retry")
+        .cloned()
+        .unwrap_or_else(|| linear_terminal_retry_metadata("success"));
+    if let Some(object) = retry.as_object_mut() {
+        object.insert("attempted".to_string(), serde_json::json!(attempted));
+        object.insert("exhausted".to_string(), serde_json::json!(exhausted));
+    }
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "attempt_count".to_string(),
+            serde_json::json!(attempts.len()),
+        );
+        object.insert(
+            "max_attempts".to_string(),
+            serde_json::json!(LINEAR_HTTP_MAX_ATTEMPTS),
+        );
+        object.insert("retry".to_string(), retry);
+        object.insert("attempts".to_string(), serde_json::Value::Array(attempts));
+    }
+    result
+}
+
+fn linear_operation_attempt_summary(
+    result: &serde_json::Value,
+    attempt_number: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "attempt": attempt_number,
+        "success": result.pointer("/success").and_then(|value| value.as_bool()),
+        "failed_check": result.pointer("/failed_check").and_then(|value| value.as_str()),
+        "http_status": result.pointer("/http_status").and_then(|value| value.as_u64()),
+        "retry": result.pointer("/retry").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "error": result.pointer("/error").and_then(|value| value.as_str()),
+        "response_headers": result.pointer("/response/headers").cloned().unwrap_or_else(|| serde_json::json!({}))
+    })
+}
+
+fn linear_mark_retry_scheduled(result: &mut serde_json::Value, backoff_ms: u64) {
+    if let Some(object) = result.as_object_mut() {
+        let retry = object
+            .entry("retry".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !retry.is_object() {
+            *retry = serde_json::json!({});
+        }
+        if let Some(retry_object) = retry.as_object_mut() {
+            retry_object.insert("scheduled".to_string(), serde_json::json!(true));
+            retry_object.insert("backoff_ms".to_string(), serde_json::json!(backoff_ms));
+        }
+    }
+}
+
+fn linear_retry_backoff_ms(attempt_number: usize) -> u64 {
+    LINEAR_RETRY_BACKOFF_MS.saturating_mul(attempt_number as u64)
+}
+
+fn linear_http_failed_check(status: u16, headers: &reqwest::header::HeaderMap) -> &'static str {
+    if linear_http_rate_limited(status, headers) {
+        "remote_rate_limited"
+    } else if linear_http_retryable_status(status) {
+        "remote_retryable_http_status"
+    } else {
+        "remote_http_status_failed"
+    }
+}
+
+fn linear_http_retry_metadata(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+) -> serde_json::Value {
+    let rate_limited = linear_http_rate_limited(status, headers);
+    let retryable = linear_http_retryable_status(status);
+    serde_json::json!({
+        "retryable": retryable,
+        "rate_limited": rate_limited,
+        "scheduled": false,
+        "backoff_ms": None::<u64>,
+        "reason": if rate_limited {
+            "rate_limited"
+        } else if retryable {
+            "retryable_http_status"
+        } else {
+            "http_status_failed"
+        },
+        "retry_after_secs": linear_retry_after_secs(headers),
+        "rate_limit": linear_rate_limit_summary(headers)
+    })
+}
+
+fn linear_request_retry_metadata() -> serde_json::Value {
+    serde_json::json!({
+        "retryable": true,
+        "rate_limited": false,
+        "scheduled": false,
+        "backoff_ms": None::<u64>,
+        "reason": "request_failed"
+    })
+}
+
+fn linear_response_read_retry_metadata() -> serde_json::Value {
+    serde_json::json!({
+        "retryable": true,
+        "rate_limited": false,
+        "scheduled": false,
+        "backoff_ms": None::<u64>,
+        "reason": "response_read_failed"
+    })
+}
+
+fn linear_parse_retry_metadata(parsed: bool) -> serde_json::Value {
+    linear_terminal_retry_metadata(if parsed {
+        "success"
+    } else {
+        "response_parse_failed"
+    })
+}
+
+fn linear_graphql_rate_limit_retry_metadata(
+    headers: &reqwest::header::HeaderMap,
+    parsed: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "retryable": false,
+        "rate_limited": true,
+        "scheduled": false,
+        "backoff_ms": None::<u64>,
+        "reason": "graphql_rate_limited",
+        "retry_after_secs": linear_retry_after_secs(headers),
+        "rate_limit": linear_rate_limit_summary(headers),
+        "graphql_errors": parsed.and_then(|value| value.pointer("/errors")).cloned().unwrap_or_else(|| serde_json::json!([]))
+    })
+}
+
+fn linear_terminal_retry_metadata(reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "retryable": false,
+        "rate_limited": false,
+        "scheduled": false,
+        "backoff_ms": None::<u64>,
+        "reason": reason
+    })
+}
+
+fn linear_http_rate_limited(status: u16, headers: &reqwest::header::HeaderMap) -> bool {
+    status == 429
+        || (status == 403
+            && (linear_header_value(headers, "x-ratelimit-remaining").as_deref() == Some("0")
+                || linear_header_value(headers, "x-rate-limit-remaining").as_deref() == Some("0")
+                || linear_header_value(headers, "retry-after").is_some()))
+}
+
+fn linear_http_retryable_status(status: u16) -> bool {
+    matches!(status, 500 | 502 | 503 | 504)
+}
+
+fn linear_response_headers_summary(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
+    serde_json::json!({
+        "retry_after": linear_header_value(headers, "retry-after"),
+        "x_ratelimit_remaining": linear_header_value(headers, "x-ratelimit-remaining"),
+        "x_ratelimit_reset": linear_header_value(headers, "x-ratelimit-reset"),
+        "x_ratelimit_limit": linear_header_value(headers, "x-ratelimit-limit"),
+        "x_rate_limit_remaining": linear_header_value(headers, "x-rate-limit-remaining"),
+        "x_rate_limit_reset": linear_header_value(headers, "x-rate-limit-reset"),
+        "x_rate_limit_limit": linear_header_value(headers, "x-rate-limit-limit")
+    })
+}
+
+fn linear_rate_limit_summary(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
+    serde_json::json!({
+        "remaining": linear_header_value(headers, "x-ratelimit-remaining")
+            .or_else(|| linear_header_value(headers, "x-rate-limit-remaining")),
+        "reset": linear_header_value(headers, "x-ratelimit-reset")
+            .or_else(|| linear_header_value(headers, "x-rate-limit-reset")),
+        "limit": linear_header_value(headers, "x-ratelimit-limit")
+            .or_else(|| linear_header_value(headers, "x-rate-limit-limit"))
+    })
+}
+
+fn linear_retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    linear_header_value(headers, "retry-after").and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+fn linear_header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn linear_graphql_errors_rate_limited(parsed: Option<&serde_json::Value>) -> bool {
+    parsed
+        .and_then(|value| value.pointer("/errors"))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .any(|error| {
+            [
+                "message",
+                "extensions/code",
+                "extensions/type",
+                "extensions/category",
+            ]
+            .into_iter()
+            .filter_map(|path| {
+                let pointer = format!("/{}", path.replace('/', "/"));
+                error.pointer(&pointer).and_then(|value| value.as_str())
+            })
+            .any(linear_graphql_error_value_is_rate_limit)
+        })
+}
+
+fn linear_graphql_error_value_is_rate_limit(value: &str) -> bool {
+    let normalized = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    normalized.contains("ratelimit")
+        || normalized.contains("ratelimited")
+        || normalized.contains("toomanyrequests")
 }
 
 fn compact_linear_graphql_response_summary(
@@ -9142,6 +9479,107 @@ mod tests {
         (base_url, requests, handle)
     }
 
+    fn spawn_linear_transient_graphql_server(
+    ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let request_log = Arc::clone(&requests);
+        let handle = thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("test request should connect");
+                let mut buffer = [0_u8; 8192];
+                let read = stream.read(&mut buffer).unwrap_or_default();
+                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                request_log
+                    .lock()
+                    .expect("request log should lock")
+                    .push(request);
+                let (status, body) = if index == 0 {
+                    (
+                        "503 Service Unavailable",
+                        serde_json::json!({"errors": [{"message": "temporary unavailable"}]})
+                            .to_string(),
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "data": {
+                                "issueUpdate": {
+                                    "success": true,
+                                    "issue": {
+                                        "id": "lin-uuid-49",
+                                        "identifier": "ENT-49",
+                                        "title": "Loop #49: Linear retry",
+                                        "description": "Retry succeeded.",
+                                        "url": "https://linear.app/acme/issue/ENT-49/linear-retry",
+                                        "state": {
+                                            "id": "state-todo",
+                                            "name": "Todo",
+                                            "type": "unstarted"
+                                        },
+                                        "comments": {
+                                            "nodes": []
+                                        }
+                                    }
+                                }
+                            }
+                        })
+                        .to_string(),
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("test response should write");
+            }
+        });
+        (base_url, requests, handle)
+    }
+
+    fn spawn_linear_rate_limit_graphql_server(
+    ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let request_log = Arc::clone(&requests);
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test request should connect");
+            let mut buffer = [0_u8; 8192];
+            let read = stream.read(&mut buffer).unwrap_or_default();
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            request_log
+                .lock()
+                .expect("request log should lock")
+                .push(request);
+            let body = serde_json::json!({
+                "errors": [
+                    {
+                        "message": "Too many requests",
+                        "extensions": {
+                            "code": "RATE_LIMITED"
+                        }
+                    }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 60\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 1780000000\r\nX-RateLimit-Limit: 1500\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test response should write");
+        });
+        (base_url, requests, handle)
+    }
+
     #[derive(Debug)]
     struct LinearFixtureState {
         title: String,
@@ -10359,6 +10797,154 @@ mod tests {
         assert!(request_log.contains("\"operationName\":\"EntranceIssueUpdate\""));
         assert!(request_log.contains("\"operationName\":\"EntranceCommentUpdate\""));
         assert!(!request_log.contains("\"operationName\":\"EntranceCommentCreate\""));
+    }
+
+    #[test]
+    fn linear_remote_write_retries_retryable_http_status() {
+        let mut linear =
+            test_connector_provider("linear", "Linear", "active", true, true, vec!["linear:"]);
+        linear.mode = "remote-issue-api".to_string();
+        linear.auth_required = true;
+        linear.auth_env = vec!["ENTRANCE_TEST_LINEAR_RETRY_TOKEN".to_string()];
+        std::env::set_var("ENTRANCE_TEST_LINEAR_RETRY_TOKEN", "test-token");
+        let (base_url, requests, server) = spawn_linear_transient_graphql_server();
+        let plan = serde_json::json!({
+            "schema_version": "entrance.hive.connector_remote_write_plan.v1",
+            "remote_object_kind": "linear.issue",
+            "operations": [
+                {
+                    "kind": "update_issue",
+                    "method": "POST",
+                    "url": base_url,
+                    "graphql": {
+                        "operation": "EntranceIssueUpdate",
+                        "query": "mutation EntranceIssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id identifier title description url state { id name type } comments { nodes { id body createdAt updatedAt user { name } } } } } }",
+                        "variables": {
+                            "id": "lin-uuid-49",
+                            "input": {
+                                "title": "Loop #49: Linear retry"
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+
+        let execution = execute_linear_remote_write_plan(&linear, &plan);
+        server.join().expect("test server should finish");
+        std::env::remove_var("ENTRANCE_TEST_LINEAR_RETRY_TOKEN");
+
+        assert_eq!(
+            execution
+                .pointer("/success")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempt_count")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempts/0/failed_check")
+                .and_then(|value| value.as_str()),
+            Some("remote_retryable_http_status")
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempts/0/retry/scheduled")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/retry/attempted")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/http_status")
+                .and_then(|value| value.as_u64()),
+            Some(200)
+        );
+        assert_eq!(requests.lock().expect("request log should lock").len(), 2);
+    }
+
+    #[test]
+    fn linear_remote_write_reports_rate_limit_without_immediate_retry() {
+        let mut linear =
+            test_connector_provider("linear", "Linear", "active", true, true, vec!["linear:"]);
+        linear.mode = "remote-issue-api".to_string();
+        linear.auth_required = true;
+        linear.auth_env = vec!["ENTRANCE_TEST_LINEAR_RATE_TOKEN".to_string()];
+        std::env::set_var("ENTRANCE_TEST_LINEAR_RATE_TOKEN", "test-token");
+        let (base_url, requests, server) = spawn_linear_rate_limit_graphql_server();
+        let plan = serde_json::json!({
+            "schema_version": "entrance.hive.connector_remote_write_plan.v1",
+            "remote_object_kind": "linear.issue",
+            "operations": [
+                {
+                    "kind": "update_issue",
+                    "method": "POST",
+                    "url": base_url,
+                    "graphql": {
+                        "operation": "EntranceIssueUpdate",
+                        "query": "mutation EntranceIssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id identifier title } } }",
+                        "variables": {
+                            "id": "lin-uuid-49",
+                            "input": {
+                                "title": "Loop #49: Linear rate limit"
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+
+        let execution = execute_linear_remote_write_plan(&linear, &plan);
+        server.join().expect("test server should finish");
+        std::env::remove_var("ENTRANCE_TEST_LINEAR_RATE_TOKEN");
+
+        assert_eq!(
+            execution
+                .pointer("/success")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            execution
+                .pointer("/failed_checks/0")
+                .and_then(|value| value.as_str()),
+            Some("remote_rate_limited")
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/attempt_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/retry/rate_limited")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/retry/retry_after_secs")
+                .and_then(|value| value.as_u64()),
+            Some(60)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/0/response/headers/x_ratelimit_remaining")
+                .and_then(|value| value.as_str()),
+            Some("0")
+        );
+        assert_eq!(requests.lock().expect("request log should lock").len(), 1);
     }
 
     #[test]

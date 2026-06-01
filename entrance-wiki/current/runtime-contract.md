@@ -186,12 +186,13 @@ write-receipt binding checks pass. Linear publish reads the issue UUID by
 identifier, updates title/description through GraphQL, updates the matching
 issue-stable comment marker when present, creates one only when absent, emits the
 same remote write/readback schemas, and gates admission on typed target, auth,
-issue body, comment surface, and write-receipt checks. GitHub REST operations
-now expose attempt metadata, retry transient `5xx` responses with bounded
-backoff, and classify `403/429` rate
-limits as typed `remote_rate_limited` blockers without immediate retry.
-Production drift handling, richer Linear state mapping, real-token coverage, and
-broader retry policy are still pending.
+issue body, comment surface, and write-receipt checks. GitHub REST and Linear
+GraphQL operations expose attempt metadata, retry transient HTTP `5xx` responses
+with bounded backoff, and classify `403/429` rate limits as typed
+`remote_rate_limited` blockers without immediate retry; Linear also classifies
+GraphQL rate-limit errors as the same typed blocker. Production drift handling,
+richer Linear state mapping, real-token coverage, and broader retry policy are
+still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 
