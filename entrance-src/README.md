@@ -182,10 +182,17 @@ explain which provider, readback, or remote-write gate stopped the route.
 Connector provider config is read from `entrance.toml`; for example
 `[connectors.linear] enabled = true` with `auth_env = ["LINEAR_API_KEY"]`
 marks Linear as configured while it remains a planned provider until a real
-remote writer is implemented. `storage` can override the file-backed mirror
-path used by active local adapters. `hive issue mirror-admit <id> --compact` also
-uses the provider admission status, so a current Linear/GitHub mirror remains
-rejected until the provider is active.
+remote writer is implemented. GitHub has a guarded publish writer slice:
+`[connectors.github] enabled = true` plus a configured token env such as
+`GITHUB_TOKEN` or `GH_TOKEN` activates the GitHub writer adapter for REST
+issue/comment publish operations. The writer records
+`entrance.hive.connector_remote_write_execute.v1` and redacted
+`entrance.hive.connector_remote_write_receipt.v1` evidence, but GitHub
+read-after-write and connector admission still remain blocked until the real
+remote readback path is implemented. `storage` can override the file-backed
+mirror path used by active local adapters. `hive issue mirror-admit <id>
+--compact` also uses the provider admission status, so a current Linear/GitHub
+mirror remains rejected until that provider has active readback/admission.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

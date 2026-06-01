@@ -1160,6 +1160,19 @@ fn apply_connector_provider_config(
         }
 
         provider.configured = connector_provider_auth_configured(provider);
+        if provider.configured && provider.name == "github" && provider.mode == "remote-issue-api" {
+            provider.status = "active".to_string();
+            provider.supports_status = true;
+            provider.supports_publish = true;
+            provider.supports_readback = false;
+            provider.supports_admission = false;
+            if provider.storage == "not-configured" {
+                provider.storage = "github-rest-api".to_string();
+            }
+            provider.notes =
+                "GitHub REST publish writer is active; readback and admission are still pending."
+                    .to_string();
+        }
         provider.notes = format!("{} Configured from entrance.toml.", provider.notes);
     }
 }
@@ -7119,6 +7132,46 @@ mod tests {
             .blockers
             .iter()
             .any(|blocker| blocker == "connector_not_configured"));
+    }
+
+    #[test]
+    fn github_connector_can_activate_from_config_and_token_env() {
+        let token_env = "ENTRANCE_TEST_GITHUB_TOKEN_ACTIVATE";
+        std::env::set_var(token_env, "test-token");
+        let config = ConnectorsConfig {
+            github: ConnectorProviderConfig {
+                enabled: Some(true),
+                auth_env: vec![token_env.to_string()],
+                ..ConnectorProviderConfig::default()
+            },
+            ..ConnectorsConfig::default()
+        };
+
+        let registry = connector_registry_with_config(&config);
+        std::env::remove_var(token_env);
+
+        let github = registry
+            .providers
+            .iter()
+            .find(|provider| provider.name == "github")
+            .expect("github connector should be registered");
+        assert_eq!(github.status, "active");
+        assert!(github.configured);
+        assert!(github.supports_publish);
+        assert!(!github.supports_readback);
+        assert!(!github.supports_admission);
+        assert_eq!(github.storage, "github-rest-api");
+        assert!(github.notes.contains("REST publish writer is active"));
+        let github_admission = registry
+            .provider_admissions
+            .iter()
+            .find(|admission| admission.provider == "github")
+            .expect("github admission should be registered");
+        assert_eq!(github_admission.status, "blocked");
+        assert!(github_admission
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "admission_not_supported"));
     }
 
     #[test]

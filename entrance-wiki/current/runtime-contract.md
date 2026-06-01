@@ -170,7 +170,14 @@ adapter blockers, and any remote contract so rejected admissions can be traced
 to provider readiness, mirror readback, or remote-write requirements.
 Provider overrides are read from `entrance.toml` under `[connectors.<provider>]`.
 Enabling a planned provider can mark auth/storage config as present, but
-admission still blocks until that provider has an active implementation.
+admission still blocks until that provider has an active implementation. GitHub
+is the first guarded remote writer slice: `[connectors.github] enabled = true`
+with a configured token env such as `GITHUB_TOKEN` or `GH_TOKEN` activates REST
+issue/comment publish operations and records
+`entrance.hive.connector_remote_write_execute.v1` plus redacted
+`entrance.hive.connector_remote_write_receipt.v1` evidence. This is still only
+the write side of the connector; GitHub read-after-write and admission remain
+blocked until the remote readback path exists.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 

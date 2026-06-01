@@ -17,6 +17,7 @@ entrance-core.workspace = true
 entrance-drawer.workspace = true
 entrance-hive.workspace = true
 entrance-launcher.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
