@@ -28,6 +28,8 @@ const ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_
 const CONNECTOR_PUBLISH_HINT_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_hint.v1";
 const CONNECTOR_PUBLISH_PLAN_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_plan.v1";
 const CONNECTOR_PUBLISH_EXECUTE_SCHEMA_VERSION: &str = "entrance.hive.connector_publish_execute.v1";
+const CONNECTOR_WRITER_ADAPTER_SCHEMA_VERSION: &str = "entrance.hive.connector_writer_adapter.v1";
+const CONNECTOR_WRITE_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.connector_write_receipt.v1";
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
@@ -701,9 +703,7 @@ pub(crate) fn sync_issue_mirror_to_file(
     out_path: Option<&str>,
 ) -> Result<serde_json::Value> {
     let mirror = services.hive.issue_mirror(issue_id)?;
-    let path = out_path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_issue_mirror_path(&services.kernel.root, &mirror.external_key));
+    let path = resolve_issue_mirror_path(services, &mirror, out_path);
     let receipt_path = mirror_receipt_path(&path);
     let digest = write_issue_mirror_file(&mirror, &path)?;
     write_issue_mirror_receipt(&mirror, &path, &receipt_path, &digest)?;
@@ -720,8 +720,36 @@ pub(crate) fn publish_issue_mirror_to_file(
     issue_id: i64,
     path: Option<&str>,
 ) -> Result<serde_json::Value> {
+    let mirror = services.hive.issue_mirror(issue_id)?;
+    let registry = services.hive.connector_registry();
+    let provider =
+        connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
+    let blockers = connector_writer_blockers(provider);
+    let target_path =
+        resolve_issue_mirror_path_for_provider(&services.kernel.root, &mirror, provider, path);
+    let receipt_path = mirror_receipt_path(&target_path);
+    if !blockers.is_empty() {
+        return Ok(compact_issue_mirror_publish_blocked(
+            &mirror,
+            &target_path,
+            &receipt_path,
+            provider,
+            &blockers,
+        ));
+    }
     let sync = sync_issue_mirror_to_file(services, issue_id, path)?;
-    Ok(compact_issue_mirror_publish(&sync))
+    let mut publish = compact_issue_mirror_publish(&sync);
+    if let Some(object) = publish.as_object_mut() {
+        object.insert(
+            "adapter".to_string(),
+            compact_connector_writer_adapter(&mirror.provider, provider),
+        );
+        object.insert(
+            "write_receipt".to_string(),
+            connector_write_receipt(&mirror, &sync, provider),
+        );
+    }
+    Ok(publish)
 }
 
 pub(crate) fn issue_mirror_status(
@@ -827,9 +855,7 @@ pub(crate) fn verify_issue_mirror_file(
     path: Option<&str>,
 ) -> Result<serde_json::Value> {
     let mirror = services.hive.issue_mirror(issue_id)?;
-    let path = path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_issue_mirror_path(&services.kernel.root, &mirror.external_key));
+    let path = resolve_issue_mirror_path(services, &mirror, path);
     let receipt_path = mirror_receipt_path(&path);
     let expected_digest = digest_bytes(&mirror_payload(&mirror)?);
     let actual_digest = read_digest(&path)?;
@@ -851,9 +877,7 @@ pub(crate) fn readback_issue_mirror_file(
     record: bool,
 ) -> Result<serde_json::Value> {
     let mirror = services.hive.issue_mirror(issue_id)?;
-    let path = path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_issue_mirror_path(&services.kernel.root, &mirror.external_key));
+    let path = resolve_issue_mirror_path(services, &mirror, path);
     let receipt_path = mirror_receipt_path(&path);
     let expected_digest = digest_bytes(&mirror_payload(&mirror)?);
     let remote_payload = read_payload_with_digest(&path)?;
@@ -1283,6 +1307,65 @@ fn connector_record_publish_hint(issue_id: i64) -> serde_json::Value {
     })
 }
 
+fn resolve_issue_mirror_path(
+    services: &AppServices,
+    mirror: &IssueMirrorReport,
+    explicit_path: Option<&str>,
+) -> PathBuf {
+    let registry = services.hive.connector_registry();
+    let provider =
+        connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
+    resolve_issue_mirror_path_for_provider(&services.kernel.root, mirror, provider, explicit_path)
+}
+
+fn resolve_issue_mirror_path_for_provider(
+    app_root: &Path,
+    mirror: &IssueMirrorReport,
+    provider: Option<&ConnectorProviderSpec>,
+    explicit_path: Option<&str>,
+) -> PathBuf {
+    explicit_path.map(PathBuf::from).unwrap_or_else(|| {
+        default_issue_mirror_path_for_provider(app_root, &mirror.external_key, provider)
+    })
+}
+
+fn default_issue_mirror_path_for_provider(
+    app_root: &Path,
+    external_key: &str,
+    provider: Option<&ConnectorProviderSpec>,
+) -> PathBuf {
+    let Some(provider) = provider else {
+        return default_issue_mirror_path(app_root, external_key);
+    };
+    let storage = provider.storage.trim();
+    if storage.is_empty()
+        || storage == "not-configured"
+        || storage == "sqlite"
+        || storage.starts_with("sqlite:")
+    {
+        return default_issue_mirror_path(app_root, external_key);
+    }
+
+    let key = sanitize_mirror_key(external_key);
+    let storage_path = if storage.contains("{external_key}") {
+        storage.replace("{external_key}", &key)
+    } else if storage.contains('*') {
+        storage.replacen('*', &key, 1)
+    } else if storage.ends_with('/') {
+        format!("{storage}{key}.json")
+    } else if storage.ends_with(".json") {
+        storage.to_string()
+    } else {
+        format!("{}/{key}.json", storage.trim_end_matches('/'))
+    };
+    let path = PathBuf::from(storage_path);
+    if path.is_absolute() {
+        path
+    } else {
+        app_root.join(path)
+    }
+}
+
 fn default_issue_mirror_path(app_root: &Path, external_key: &str) -> PathBuf {
     app_root
         .join("connectors")
@@ -1513,6 +1596,66 @@ fn compact_issue_mirror_publish(sync: &serde_json::Value) -> serde_json::Value {
         "publish_command": format!("entrance hive issue mirror-publish {} --compact", issue_id.unwrap_or_default()),
         "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", issue_id.unwrap_or_default()),
         "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", issue_id.unwrap_or_default())
+    })
+}
+
+fn compact_issue_mirror_publish_blocked(
+    mirror: &IssueMirrorReport,
+    path: &Path,
+    receipt_path: &Path,
+    provider: Option<&ConnectorProviderSpec>,
+    blockers: &[String],
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_PUBLISH_SCHEMA_VERSION,
+        "published": false,
+        "reason": "connector_writer_blocked",
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue_id": mirror.issue.id,
+        "issue_status": mirror.issue.status.as_str(),
+        "loop_id": mirror.issue.loop_id,
+        "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round),
+        "path": path.display().to_string(),
+        "receipt_path": receipt_path.display().to_string(),
+        "failed_checks": blockers,
+        "adapter": compact_connector_writer_adapter(&mirror.provider, provider),
+        "publish_command": format!("entrance hive issue mirror-publish {} --compact", mirror.issue.id),
+        "registry_command": "entrance hive connector registry --compact",
+        "queue_command": format!("entrance hive connector queue --provider {} --compact", mirror.provider)
+    })
+}
+
+fn connector_write_receipt(
+    mirror: &IssueMirrorReport,
+    sync: &serde_json::Value,
+    provider: Option<&ConnectorProviderSpec>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": CONNECTOR_WRITE_RECEIPT_SCHEMA_VERSION,
+        "object_kind": "ISSUE_CONNECTOR_WRITE",
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue": issue_mirror_issue_binding(mirror),
+        "loop": issue_mirror_loop_binding(mirror),
+        "adapter": compact_connector_writer_adapter(&mirror.provider, provider),
+        "status_surface": {
+            "status": mirror.issue.status.as_str(),
+            "updated_at": mirror.issue.updated_at.as_str()
+        },
+        "comment_surface": issue_mirror_comment_surface(mirror),
+        "mirror": {
+            "path": sync.pointer("/path"),
+            "receipt_path": sync.pointer("/receipt_path"),
+            "bytes": sync.pointer("/bytes"),
+            "sha256": sync.pointer("/sha256")
+        },
+        "readback": {
+            "available": provider.map(|provider| provider.supports_readback).unwrap_or(false),
+            "command": sync.pointer("/readback_command")
+        }
     })
 }
 
@@ -2653,6 +2796,72 @@ fn connector_provider_matches_surface(
     })
 }
 
+fn connector_writer_blockers(provider: Option<&ConnectorProviderSpec>) -> Vec<String> {
+    let Some(provider) = provider else {
+        return vec!["unsupported_provider".to_string()];
+    };
+    let mut blockers = Vec::new();
+    if provider.status != "active" {
+        blockers.push("provider_not_active".to_string());
+    }
+    if !provider.configured {
+        blockers.push("connector_not_configured".to_string());
+    }
+    if !provider.supports_publish {
+        blockers.push("publish_not_supported".to_string());
+    }
+    blockers
+}
+
+fn compact_connector_writer_adapter(
+    provider_name: &str,
+    provider: Option<&ConnectorProviderSpec>,
+) -> serde_json::Value {
+    let blockers = connector_writer_blockers(provider);
+    let driver = provider.map_or("unknown", |provider| {
+        if !blockers.is_empty() {
+            "unavailable"
+        } else if provider.name == "file" || provider.mode == "local-json-mirror" {
+            "file-mirror"
+        } else if provider.mode == "remote-issue-api" {
+            "remote-issue-api"
+        } else {
+            "custom"
+        }
+    });
+    let remote_write = provider
+        .map(|provider| blockers.is_empty() && provider.mode == "remote-issue-api")
+        .unwrap_or(false);
+    serde_json::json!({
+        "schema_version": CONNECTOR_WRITER_ADAPTER_SCHEMA_VERSION,
+        "provider": provider.map(|provider| provider.name.as_str()).unwrap_or(provider_name),
+        "driver": driver,
+        "mode": provider.map(|provider| provider.mode.as_str()),
+        "status": provider.map(|provider| provider.status.as_str()),
+        "configured": provider.map(|provider| provider.configured),
+        "supports_publish": provider.map(|provider| provider.supports_publish),
+        "supports_readback": provider.map(|provider| provider.supports_readback),
+        "supports_admission": provider.map(|provider| provider.supports_admission),
+        "storage": provider.map(|provider| provider.storage.as_str()),
+        "remote_write": remote_write,
+        "blockers": blockers
+    })
+}
+
+fn connector_writer_target_label(provider: Option<&ConnectorProviderSpec>) -> &'static str {
+    if !connector_writer_blockers(provider).is_empty() {
+        return "blocked provider adapter";
+    }
+    if provider
+        .map(|provider| provider.mode == "remote-issue-api")
+        .unwrap_or(false)
+    {
+        "remote issue/status/comment surface"
+    } else {
+        "local connector mirror file"
+    }
+}
+
 fn compact_connector_queue(
     registry: &ConnectorRegistryReport,
     issues: &[serde_json::Value],
@@ -2765,6 +2974,16 @@ fn compact_connector_publish_plan(queue: &serde_json::Value) -> Result<serde_jso
         {
             blockers.push("current_digest_missing".to_string());
         }
+        blockers.extend(
+            issue
+                .pointer("/publish_blockers")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(ToOwned::to_owned),
+        );
     }
     blockers.sort();
     blockers.dedup();
@@ -2821,6 +3040,11 @@ fn compact_connector_publish_plan_issue(issue: &serde_json::Value) -> serde_json
         "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
         "provider": issue.pointer("/provider").and_then(|value| value.as_str()),
         "provider_status": issue.pointer("/provider_status").and_then(|value| value.as_str()),
+        "configured": issue.pointer("/configured").and_then(|value| value.as_bool()),
+        "supports_publish": issue.pointer("/supports_publish").and_then(|value| value.as_bool()),
+        "supports_readback": issue.pointer("/supports_readback").and_then(|value| value.as_bool()),
+        "mode": issue.pointer("/mode").and_then(|value| value.as_str()),
+        "storage": issue.pointer("/storage").and_then(|value| value.as_str()),
         "review_surface": issue.pointer("/review_surface").and_then(|value| value.as_str()),
         "status": issue.pointer("/status").and_then(|value| value.as_str()),
         "reason": issue.pointer("/reason").and_then(|value| value.as_str()),
@@ -2832,6 +3056,9 @@ fn compact_connector_publish_plan_issue(issue: &serde_json::Value) -> serde_json
         "failed_checks": issue.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "admission_status": issue.pointer("/admission_status").and_then(|value| value.as_str()),
         "admission_blockers": issue.pointer("/admission_blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "can_publish": issue.pointer("/can_publish").and_then(|value| value.as_bool()).unwrap_or(false),
+        "publish_blockers": issue.pointer("/publish_blockers").cloned().unwrap_or_else(|| serde_json::json!(["connector_writer_unknown"])),
+        "adapter": issue.pointer("/adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
         "commands": {
             "publish": issue.pointer("/commands/publish").and_then(|value| value.as_str()),
             "readback": issue.pointer("/commands/readback").and_then(|value| value.as_str()),
@@ -2840,8 +3067,11 @@ fn compact_connector_publish_plan_issue(issue: &serde_json::Value) -> serde_json
         "dry_run_action": {
             "schema_version": "entrance.hive.connector_publish_plan_item.v1",
             "action": "publish",
-            "remote_write": false,
-            "would_write": "local connector mirror file"
+            "remote_write": issue.pointer("/dry_run_action/remote_write").and_then(|value| value.as_bool()).unwrap_or(false),
+            "would_write": issue
+                .pointer("/dry_run_action/would_write")
+                .and_then(|value| value.as_str())
+                .unwrap_or("blocked provider adapter")
         }
     })
 }
@@ -2913,7 +3143,9 @@ fn compact_connector_queue_provider(
         "admission_blockers": admission
             .map(|admission| admission.blockers.iter().map(String::as_str).collect::<Vec<_>>())
             .unwrap_or_default(),
+        "mode": provider.mode.as_str(),
         "storage": provider.storage.as_str(),
+        "adapter": compact_connector_writer_adapter(&provider.name, Some(provider)),
         "issue_count": provider_issues.len(),
         "current_count": current_count,
         "publish_required_count": publish_required_count,
@@ -2925,8 +3157,9 @@ fn compact_connector_queue_provider(
             "provider_status": provider.status.as_str(),
             "provider_configured": provider.configured,
             "supports_publish": provider.supports_publish,
-            "would_write": "local connector mirror file",
-            "remote_write": false
+            "adapter": compact_connector_writer_adapter(&provider.name, Some(provider)),
+            "would_write": connector_writer_target_label(Some(provider)),
+            "remote_write": provider.mode == "remote-issue-api" && provider.supports_publish
         }
     })
 }
@@ -2960,6 +3193,7 @@ fn compact_connector_queue_issue(
                 issue_id.unwrap_or_default()
             )
         });
+    let publish_blockers = connector_writer_blockers(provider);
     serde_json::json!({
         "id": issue_id,
         "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
@@ -2969,6 +3203,13 @@ fn compact_connector_queue_issue(
         "provider_status": provider.map(|provider| provider.status.as_str()),
         "configured": provider.map(|provider| provider.configured),
         "supports_publish": provider.map(|provider| provider.supports_publish),
+        "supports_readback": provider.map(|provider| provider.supports_readback),
+        "supports_admission": provider.map(|provider| provider.supports_admission),
+        "mode": provider.map(|provider| provider.mode.as_str()),
+        "storage": provider.map(|provider| provider.storage.as_str()),
+        "can_publish": publish_blockers.is_empty(),
+        "publish_blockers": publish_blockers,
+        "adapter": compact_connector_writer_adapter(&provider_name, provider),
         "admission_status": admission.map(|admission| admission.status.as_str()),
         "admission_blockers": admission
             .map(|admission| admission.blockers.iter().map(String::as_str).collect::<Vec<_>>())
@@ -3000,8 +3241,11 @@ fn compact_connector_queue_issue(
             "provider_status": provider.map(|provider| provider.status.as_str()),
             "provider_configured": provider.map(|provider| provider.configured),
             "supports_publish": provider.map(|provider| provider.supports_publish),
-            "would_write": "local connector mirror file",
-            "remote_write": false,
+            "adapter": compact_connector_writer_adapter(&provider_name, provider),
+            "would_write": connector_writer_target_label(provider),
+            "remote_write": provider
+                .map(|provider| provider.mode == "remote-issue-api" && provider.supports_publish)
+                .unwrap_or(false),
             "command": publish_command
         }
     })
@@ -3245,8 +3489,8 @@ mod tests {
         compact_issue_mirror_audit_summary, compact_issue_mirror_publish,
         compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
         compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
-        compact_loop_audit, default_issue_mirror_path, flag_present, flag_value,
-        issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
+        compact_loop_audit, default_issue_mirror_path, default_issue_mirror_path_for_provider,
+        flag_present, flag_value, issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
     use entrance_hive::{
@@ -3721,6 +3965,18 @@ mod tests {
         );
         assert_eq!(
             queue
+                .pointer("/issues/0/can_publish")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            queue
+                .pointer("/issues/0/adapter/driver")
+                .and_then(|value| value.as_str()),
+            Some("file-mirror")
+        );
+        assert_eq!(
+            queue
                 .pointer("/providers/0/publish_required_count")
                 .and_then(|value| value.as_u64()),
             Some(1)
@@ -3771,10 +4027,58 @@ mod tests {
         );
         assert_eq!(
             linear_queue
+                .pointer("/issues/0/can_publish")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/publish_blockers/0")
+                .and_then(|value| value.as_str()),
+            Some("provider_not_active")
+        );
+        assert_eq!(
+            linear_queue
+                .pointer("/issues/0/publish_blockers/1")
+                .and_then(|value| value.as_str()),
+            Some("publish_not_supported")
+        );
+        assert_eq!(
+            linear_queue
                 .pointer("/commands/publish_plan")
                 .and_then(|value| value.as_str()),
             Some("entrance hive connector publish-plan --provider linear --compact")
         );
+
+        let linear_plan =
+            compact_connector_publish_plan(&linear_queue).expect("linear plan should render");
+        assert_eq!(
+            linear_plan
+                .pointer("/can_execute")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            linear_plan
+                .pointer("/reason")
+                .and_then(|value| value.as_str()),
+            Some("plan_blocked")
+        );
+        assert_eq!(
+            linear_plan
+                .pointer("/commands/execute")
+                .and_then(|value| value.as_str()),
+            None
+        );
+        let blockers = linear_plan
+            .pointer("/blockers")
+            .and_then(|value| value.as_array())
+            .expect("linear plan blockers should be present")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(blockers.contains(&"provider_not_active"));
+        assert!(blockers.contains(&"publish_not_supported"));
     }
 
     #[test]
@@ -3971,6 +4275,41 @@ mod tests {
         assert_eq!(
             path,
             Path::new("/tmp/root/connectors/issue-mirrors/linear-ENT-42-x.json")
+        );
+    }
+
+    #[test]
+    fn provider_storage_templates_resolve_mirror_paths() {
+        let mut provider =
+            test_connector_provider("file", "File Mirror", "active", true, true, vec!["file:"]);
+        provider.storage = "connectors/custom/{external_key}.json".to_string();
+        assert_eq!(
+            default_issue_mirror_path_for_provider(
+                Path::new("/tmp/root"),
+                "file:Loop/7?",
+                Some(&provider),
+            ),
+            Path::new("/tmp/root/connectors/custom/file-Loop-7.json")
+        );
+
+        provider.storage = "connectors/custom/*.json".to_string();
+        assert_eq!(
+            default_issue_mirror_path_for_provider(
+                Path::new("/tmp/root"),
+                "file:Loop/7?",
+                Some(&provider),
+            ),
+            Path::new("/tmp/root/connectors/custom/file-Loop-7.json")
+        );
+
+        provider.storage = "not-configured".to_string();
+        assert_eq!(
+            default_issue_mirror_path_for_provider(
+                Path::new("/tmp/root"),
+                "file:Loop/7?",
+                Some(&provider),
+            ),
+            Path::new("/tmp/root/connectors/issue-mirrors/file-Loop-7.json")
         );
     }
 

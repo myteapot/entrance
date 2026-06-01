@@ -274,6 +274,7 @@ type ConnectorQueueProvider = {
   name: string;
   display_name: string;
   status: string;
+  mode: string;
   configured: boolean;
   supports_publish: boolean;
   supports_admission: boolean;
@@ -295,6 +296,12 @@ type ConnectorQueueIssue = {
   provider_status: string | null;
   configured: boolean | null;
   supports_publish: boolean | null;
+  supports_readback?: boolean | null;
+  supports_admission?: boolean | null;
+  mode?: string | null;
+  storage?: string | null;
+  can_publish?: boolean | null;
+  publish_blockers?: string[];
   admission_status: string | null;
   admission_blockers: string[];
   review_surface: string | null;
@@ -327,6 +334,9 @@ type ConnectorPublishPlan = {
   issues: Array<{
     id: number | null;
     provider: string | null;
+    provider_status?: string | null;
+    can_publish?: boolean | null;
+    publish_blockers?: string[];
     path: string | null;
     current_sha256: string | null;
   }>;
@@ -411,9 +421,11 @@ type IssueMirrorSyncReport = {
   bytes: number;
   sha256: string;
 };
-type IssueMirrorPublishReport = IssueMirrorSyncReport & {
+type IssueMirrorPublishReport = Partial<IssueMirrorSyncReport> & {
+  schema_version: string;
   published: boolean;
   reason: string;
+  failed_checks?: string[];
 };
 type IssueMirrorVerifyReport = {
   schema_version: string;
@@ -664,6 +676,19 @@ export default function App() {
     connectorProviderAdmissions().find((admission) => admission.provider === provider.name) ?? null;
   const connectorQueueIssueById = (issueId: number) =>
     connectorQueueIssues().find((issue) => issue.id === issueId) ?? null;
+  const connectorQueueIssueCanPublish = (issueId: number) =>
+    connectorQueueIssueById(issueId)?.can_publish !== false;
+  const connectorQueueIssuePublishTitle = (card: IssueCard) => {
+    const queueIssue = connectorQueueIssueById(card.issue.id);
+    if (queueIssue?.can_publish === false && queueIssue.publish_blockers?.length) {
+      return `Publish blocked: ${queueIssue.publish_blockers.join(", ")}`;
+    }
+    return (
+      queueIssue?.commands.publish ??
+      card.connector?.publish_command ??
+      issueMirrorPublishCommand(card)
+    );
+  };
   const revealIssueDetail = () => {
     window.setTimeout(() => {
       issueDetailPanel?.scrollIntoView({ block: "start", behavior: "auto" });
@@ -876,7 +901,16 @@ export default function App() {
       const report = await bridge.invoke<IssueMirrorPublishReport>("hive_issue_mirror_publish", {
         issueId: card.issue.id,
       });
-      setBanner(`Published connector mirror ${compactText(report.sha256, 12)}: ${compactText(report.path, 86)}`);
+      if (report.published === false) {
+        const blockers = report.failed_checks?.length
+          ? `: ${report.failed_checks.slice(0, 3).join(", ")}`
+          : "";
+        setBanner(`Connector publish blocked${blockers}`);
+      } else {
+        setBanner(
+          `Published connector mirror ${compactText(report.sha256 ?? "", 12)}: ${compactText(report.path ?? "", 86)}`,
+        );
+      }
     } catch (error) {
       setBanner(`Issue #${card.issue.id} publish failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -890,10 +924,13 @@ export default function App() {
     try {
       const plan = await bridge.invoke<ConnectorPublishPlan>("hive_connector_publish_plan", {});
       setConnectorPublishPlan(plan);
+      const blockers = plan.blockers?.length
+        ? `: ${plan.blockers.slice(0, 3).join(", ")}`
+        : "";
       setBanner(
         plan.can_execute
           ? `Connector publish plan ${compactText(plan.plan_id, 12)}: ${plan.issue_count} issues.`
-          : `Connector publish plan blocked: ${plan.reason}`,
+          : `Connector publish plan blocked: ${plan.reason}${blockers}`,
       );
     } catch (error) {
       setBanner(`Connector publish plan failed: ${actionErrorMessage(error)}`);
@@ -2074,8 +2111,11 @@ export default function App() {
                               type="button"
                               aria-label={`Publish issue #${card.issue.id} mirror to connector from detail`}
                               data-testid={`issue-action-detail-publish-${card.issue.id}`}
-                              disabled={Boolean(issuePendingLabel(card.issue.id))}
-                              title={issueMirrorPublishCommand(card)}
+                              disabled={
+                                Boolean(issuePendingLabel(card.issue.id)) ||
+                                !connectorQueueIssueCanPublish(card.issue.id)
+                              }
+                              title={connectorQueueIssuePublishTitle(card)}
                               onClick={() => void publishIssueMirror(card)}
                             >
                               {issueMirrorPublishLabel(card)}
@@ -2387,12 +2427,11 @@ export default function App() {
                       type="button"
                       aria-label={`Publish issue #${card.issue.id} from connector queue`}
                       data-testid={`connector-publish-queue-publish-${card.issue.id}`}
-                      disabled={Boolean(issuePendingLabel(card.issue.id))}
-                      title={
-                        connectorQueueIssueById(card.issue.id)?.commands.publish ??
-                        card.connector?.publish_command ??
-                        issueMirrorPublishCommand(card)
+                      disabled={
+                        Boolean(issuePendingLabel(card.issue.id)) ||
+                        !connectorQueueIssueCanPublish(card.issue.id)
                       }
+                      title={connectorQueueIssuePublishTitle(card)}
                       onClick={() => void publishIssueMirror(card)}
                     >
                       #{card.issue.id} Publish
@@ -2680,8 +2719,11 @@ export default function App() {
                                     type="button"
                                     aria-label={`Publish issue #${card.issue.id} mirror to connector from board`}
                                     data-testid={`issue-action-board-publish-${card.issue.id}`}
-                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
-                                    title={issueMirrorPublishCommand(card)}
+                                    disabled={
+                                      Boolean(issuePendingLabel(card.issue.id)) ||
+                                      !connectorQueueIssueCanPublish(card.issue.id)
+                                    }
+                                    title={connectorQueueIssuePublishTitle(card)}
                                     onClick={() => void publishIssueMirror(card)}
                                   >
                                     {issueMirrorPublishLabel(card)}

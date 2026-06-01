@@ -129,10 +129,14 @@ Compact issue surfaces include connector mirror status: `hive issue show
 `hive connector queue --compact` exposes the provider-scoped publish queue,
 `hive connector queue --provider <name> --compact` narrows the queue to a
 single issue-surface provider, and `hive connector publish-plan --compact`
-produces a digest-bound two-step plan before
+produces a digest-bound two-step plan that is also bound to the provider writer
+adapter. Planned or unsupported providers expose blockers such as
+`provider_not_active` or `publish_not_supported`; when a plan is executable,
 `hive connector publish-execute --plan-id <sha256> --compact` records a typed
 connector publish execution comment/evidence on each issue and then writes local
-connector mirrors containing that receipt. `hive connector registry --compact` exposes
+connector mirrors containing that receipt. Successful writes include a typed
+connector write receipt with adapter, status, comment surface, mirror digest,
+and readback command. `hive connector registry --compact` exposes
 active/planned issue-surface providers, provider-specific admission status, and
 the connector admission gate, while `hive issue
 connector-admission <id> --compact` dry-runs whether the current mirror can be
@@ -140,7 +144,8 @@ routed to `external_issue_surface`.
 Connector provider config is read from `entrance.toml`; for example
 `[connectors.linear] enabled = true` with `auth_env = ["LINEAR_API_KEY"]`
 marks Linear as configured while it remains a planned provider until a real
-remote writer is implemented. `hive issue mirror-admit <id> --compact` also
+remote writer is implemented. `storage` can override the file-backed mirror
+path used by active local adapters. `hive issue mirror-admit <id> --compact` also
 uses the provider admission status, so a current Linear/GitHub mirror remains
 rejected until the provider is active.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only

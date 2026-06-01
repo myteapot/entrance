@@ -122,12 +122,15 @@ providers, names the admission gate, and exposes provider-specific admission
 status/blockers. `hive connector queue --compact` returns a provider-scoped
 publish queue, and `--provider <name>` narrows the dry-run plan to one
 issue-surface provider. `hive connector publish-plan --compact` creates a
-digest-bound local mirror publish plan from the current queue; `hive connector
-publish-execute --plan-id <sha256> --compact` recomputes that plan and refuses
-to execute if the queue or issue mirror digest changed. Successful execution
+digest-bound local mirror publish plan from the current queue and the provider
+writer adapter contract; `hive connector publish-execute --plan-id <sha256>
+--compact` recomputes that plan and refuses to execute if the queue, issue
+mirror digest, or provider writer capability changed. Successful execution
 records a typed connector publish comment/evidence on each issue before writing
-the mirror, so the external issue/status/comment surface receives the execution
-receipt in the same publish. `hive issue
+the mirror, and each publish returns a typed connector write receipt with
+adapter, status, comment surface, digest, and readback command. Planned
+Linear/GitHub providers remain visible with adapter blockers, but they cannot be
+executed until a real writer is active. `hive issue
 connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`.
