@@ -87,7 +87,10 @@
 
 .hero-action,
 .primary-button,
-.record-actions button {
+.record-actions button,
+.form-actions button,
+.empty-state button,
+.issue-card--empty button {
   border: 1px solid rgba(230, 184, 79, 0.34);
   border-radius: 999px;
   background: rgba(230, 184, 79, 0.14);
@@ -98,6 +101,9 @@
 .hero-action:disabled,
 .primary-button:disabled,
 .record-actions button:disabled,
+.form-actions button:disabled,
+.empty-state button:disabled,
+.issue-card--empty button:disabled,
 .comment-box button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -159,6 +165,13 @@
 }
 
 .primary-button {
+  margin-top: 14px;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   margin-top: 14px;
 }
 
@@ -288,6 +301,7 @@
   display: grid;
   min-height: 72px;
   place-items: center;
+  gap: 10px;
   border-style: dashed;
   color: var(--text-muted);
   background: rgba(255, 255, 255, 0.015);
@@ -295,6 +309,13 @@
 
 .issue-card--empty span {
   margin-top: 0;
+}
+
+.empty-state {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  color: var(--text-muted);
 }
 
 .detail-grid {

@@ -804,6 +804,7 @@ export default function App() {
   const [commentBody, setCommentBody] = createSignal("");
   const [pendingLoopActions, setPendingLoopActions] = createSignal<Record<number, string>>({});
   const [pendingIssueActions, setPendingIssueActions] = createSignal<Record<number, string>>({});
+  const [pendingDemoAction, setPendingDemoAction] = createSignal<string | null>(null);
   const [drawerTitle, setDrawerTitle] = createSignal("");
   const [drawerBody, setDrawerBody] = createSignal("");
   const [banner, setBanner] = createSignal<string>("");
@@ -1605,6 +1606,8 @@ export default function App() {
     });
     return merged;
   };
+  const demoRunArgs = () =>
+    mergeRunArgs({ runtime: "codex", workerTimeoutSecs: 90, workerAttempts: 1 }, workerLimitRunArgs());
   const hasRunArgs = (args: LoopRunArgs) =>
     Boolean(args.runtime || args.workerTimeoutSecs || args.workerAttempts);
   const issueRunArgs = (card: IssueCard) => {
@@ -1646,6 +1649,48 @@ export default function App() {
     return summary
       ? `${verb} issue #${card.issue.id} from ${surface} with ${summary}`
       : `${verb} issue #${card.issue.id} from ${surface}`;
+  };
+
+  const startDemoLoop = async () => {
+    if (pendingDemoAction()) return;
+    setView("panel");
+    setPendingDemoAction("Running Demo");
+    setBanner("Running Entrance MVP demo.");
+    try {
+      const runArgs = demoRunArgs();
+      const report = await bridge.invoke<{ contract?: HiveLoop; issues: IssueCard[] }>("hive_loop_create", {
+        title: "Entrance MVP demo",
+        goal: "Run the Entrance Explorer -> Doer -> Evaluator loop and expose it on the issue/status/comment panel.",
+        boundary: "Use the local Hive SQLite ledger, typed receipts, compact CLI output, and the local Panel surface.",
+        runtime: "codex",
+        approachSpace: [
+          "Compile the natural-language goal into a typed candidate",
+          "Execute only the admitted candidate",
+          "Evaluate the evidence with keep/reject/block gates",
+        ],
+        evalSpace: [
+          "Explorer, Doer, and Evaluator each produce role receipts",
+          "Admissions bind packets to policy gates",
+          "Panel shows issue status, comments, evidence, verdict, and recovery actions",
+        ],
+      });
+      const issue = report.issues[0];
+      if (!issue) throw new Error("Demo loop did not create an issue.");
+      setSelectedIssueId(issue.issue.id);
+      await refetchLoopSurfaces();
+      await withLoopProgressPolling(bridge.invoke("hive_issue_run", {
+        issueId: issue.issue.id,
+        ...runArgs,
+      }));
+      const loopId = issue.issue.loop_id ?? report.contract?.id;
+      setBanner(loopId ? `Demo loop #${loopId} finished.` : "Demo loop finished.");
+      await refetchLoopSurfaces();
+      revealIssueDetail();
+    } catch (error) {
+      setBanner(`Demo loop failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingDemoAction(null);
+    }
   };
 
   const runHiveLoop = async (loop: HiveLoop) => {
@@ -2621,9 +2666,19 @@ export default function App() {
                     onInput={(event) => setLoopWorkerAttempts(event.currentTarget.value)}
                     placeholder="Worker attempts"
                   />
-                  <button type="button" class="primary-button" onClick={() => void createHiveLoop()}>
-                    Create Loop
-                  </button>
+                  <div class="form-actions">
+                    <button
+                      type="button"
+                      data-testid="panel-run-demo"
+                      disabled={Boolean(pendingDemoAction())}
+                      onClick={() => void startDemoLoop()}
+                    >
+                      {pendingDemoAction() ?? "Run Demo"}
+                    </button>
+                    <button type="button" onClick={() => void createHiveLoop()}>
+                      Create Loop
+                    </button>
+                  </div>
                 </article>
 
                 <article
@@ -2633,7 +2688,23 @@ export default function App() {
                   }}
                 >
                   <p class="panel-kicker">Issue</p>
-                  <Show when={selectedIssueCard()} keyed fallback={<p class="muted">No issues</p>}>
+                  <Show
+                    when={selectedIssueCard()}
+                    keyed
+                    fallback={
+                      <div class="empty-state">
+                        <span>No issues</span>
+                        <button
+                          type="button"
+                          data-testid="issue-detail-run-demo"
+                          disabled={Boolean(pendingDemoAction())}
+                          onClick={() => void startDemoLoop()}
+                        >
+                          {pendingDemoAction() ?? "Run Demo"}
+                        </button>
+                      </div>
+                    }
+                  >
                     {(card) => (
                       <>
                         <h3>{card.issue.title}</h3>
@@ -3542,6 +3613,16 @@ export default function App() {
                         ) : (
                           <li class="record-card issue-card issue-card--empty">
                             <span>No issues</span>
+                            {statusName === "Todo" && !(issueCards() ?? []).length ? (
+                              <button
+                                type="button"
+                                data-testid="issue-empty-run-demo"
+                                disabled={Boolean(pendingDemoAction())}
+                                onClick={() => void startDemoLoop()}
+                              >
+                                {pendingDemoAction() ?? "Run Demo"}
+                              </button>
+                            ) : null}
                           </li>
                         )}
                       </ul>
