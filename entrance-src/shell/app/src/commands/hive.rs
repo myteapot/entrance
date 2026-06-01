@@ -48,6 +48,8 @@ const CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION: &str =
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
+const GITHUB_COMMENT_IDEMPOTENCY_PREFIX: &str = "<!-- entrance-idempotency-key:";
+const GITHUB_COMMENT_IDEMPOTENCY_SUFFIX: &str = "-->";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 const ISSUE_STATUSES: &[&str] = &[
     "Todo",
@@ -2297,13 +2299,20 @@ fn connector_remote_idempotency_key(
     digest: &MirrorFileDigest,
     provider: &ConnectorProviderSpec,
 ) -> String {
-    let latest_comment_id = mirror.comments.last().map(|comment| comment.id);
+    let issue = connector_remote_write_issue_from_mirror(mirror, digest);
+    connector_remote_issue_idempotency_key(provider.name.as_str(), &issue)
+}
+
+fn connector_remote_issue_idempotency_key(
+    provider_name: &str,
+    issue: &serde_json::Value,
+) -> String {
     let basis = serde_json::json!({
-        "provider": provider.name.as_str(),
-        "external_key": mirror.external_key.as_str(),
-        "issue_updated_at": mirror.issue.updated_at.as_str(),
-        "latest_comment_id": latest_comment_id,
-        "mirror_sha256": digest.sha256.as_str()
+        "provider": provider_name,
+        "external_key": issue.pointer("/connector/external_key").and_then(|value| value.as_str()),
+        "issue_updated_at": issue.pointer("/updated_at").and_then(|value| value.as_str()),
+        "latest_comment_id": issue.pointer("/latest_comment/id").and_then(|value| value.as_i64()),
+        "mirror_sha256": issue.pointer("/connector/current_sha256").and_then(|value| value.as_str())
     });
     let payload = serde_json::to_vec(&basis).unwrap_or_default();
     digest_bytes(&payload).sha256
@@ -3057,7 +3066,7 @@ fn connector_github_remote_readback_report(
     let expected_comment = mirror
         .comments
         .last()
-        .map(|_| connector_remote_comment_body(&source_issue));
+        .map(|_| connector_github_remote_comment_body(&source_issue));
     let issue_summary = execution.pointer("/issue/response/summary");
     let comments_summary = execution.pointer("/comments/response/summary");
     let remote_issue_number = issue_summary
@@ -3465,7 +3474,8 @@ fn execute_github_remote_get_operation(
             "sha256": digest.sha256,
             "parsed": parsed_ok,
             "summary": parsed.as_ref().map(|value| {
-                if kind == "list_issue_comments" {
+                if kind == "list_issue_comments" || kind == "lookup_issue_comments_for_idempotency"
+                {
                     compact_github_comments_readback_summary(value)
                 } else {
                     compact_github_issue_readback_summary(value)
@@ -5268,6 +5278,7 @@ fn connector_remote_write_issue_from_mirror(
         "title": mirror.issue.title.as_str(),
         "status": mirror.issue.status.as_str(),
         "summary": mirror.issue.summary.as_deref(),
+        "updated_at": mirror.issue.updated_at.as_str(),
         "comment_count": mirror.comments.len(),
         "latest_comment": mirror.comments.last().map(|comment| serde_json::json!({
             "id": comment.id,
@@ -5340,15 +5351,26 @@ fn connector_github_remote_write_operations(
             .pointer("/api_base_url")
             .and_then(|value| value.as_str())
             .unwrap_or("https://api.github.com");
+        let idempotency_key = connector_remote_issue_idempotency_key("github", issue);
         serde_json::json!({
-            "kind": "append_latest_comment",
-            "method": "POST",
+            "kind": "upsert_latest_comment",
+            "method": "GET_PATCH_OR_POST",
             "url": format!("{api_base_url}/repos/{owner}/{repo}/issues/{number}/comments"),
+            "lookup": {
+                "method": "GET",
+                "url": format!("{api_base_url}/repos/{owner}/{repo}/issues/{number}/comments?per_page=100"),
+                "idempotency_key": idempotency_key.as_str()
+            },
+            "update": {
+                "method": "PATCH",
+                "url_template": format!("{api_base_url}/repos/{owner}/{repo}/issues/comments/{{comment_id}}")
+            },
             "headers": connector_github_headers(),
             "body": {
-                "body": connector_remote_comment_body(issue)
+                "body": connector_github_remote_comment_body(issue)
             },
-            "source": "hive_issue.latest_comment"
+            "source": "hive_issue.latest_comment",
+            "idempotency_key": idempotency_key
         })
     });
     let mut operations = vec![serde_json::json!({
@@ -5521,6 +5543,19 @@ fn connector_remote_comment_body(issue: &serde_json::Value) -> String {
     format!("Entrance comment from {author}:\n\n{latest}")
 }
 
+fn connector_github_remote_comment_body(issue: &serde_json::Value) -> String {
+    let body = connector_remote_comment_body(issue);
+    let idempotency_key = connector_remote_issue_idempotency_key("github", issue);
+    if idempotency_key.trim().is_empty() {
+        body
+    } else {
+        format!(
+            "{body}\n\n{}{} {}",
+            GITHUB_COMMENT_IDEMPOTENCY_PREFIX, idempotency_key, GITHUB_COMMENT_IDEMPOTENCY_SUFFIX
+        )
+    }
+}
+
 fn execute_github_remote_write_plan(
     provider: &ConnectorProviderSpec,
     plan: &serde_json::Value,
@@ -5639,6 +5674,10 @@ fn execute_github_remote_write_operation(
     token: &str,
     operation: &serde_json::Value,
 ) -> serde_json::Value {
+    if operation.pointer("/kind").and_then(|value| value.as_str()) == Some("upsert_latest_comment")
+    {
+        return execute_github_upsert_latest_comment_operation(client, token, operation);
+    }
     let method_label = operation
         .pointer("/method")
         .and_then(|value| value.as_str())
@@ -5725,6 +5764,133 @@ fn execute_github_remote_write_operation(
             "summary": parsed.as_ref().map(compact_github_response_summary)
         }
     })
+}
+
+fn execute_github_upsert_latest_comment_operation(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    operation: &serde_json::Value,
+) -> serde_json::Value {
+    let lookup_url = operation
+        .pointer("/lookup/url")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let idempotency_key = operation
+        .pointer("/idempotency_key")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let lookup = execute_github_remote_get_operation(
+        client,
+        token,
+        "lookup_issue_comments_for_idempotency",
+        lookup_url,
+    );
+    if lookup.pointer("/success").and_then(|value| value.as_bool()) != Some(true) {
+        return serde_json::json!({
+            "kind": operation.pointer("/kind").and_then(|value| value.as_str()),
+            "method": operation.pointer("/method").and_then(|value| value.as_str()),
+            "url": operation.pointer("/url").and_then(|value| value.as_str()),
+            "success": false,
+            "failed_check": "remote_comments_lookup_failed",
+            "idempotency_key": idempotency_key,
+            "lookup": lookup
+        });
+    }
+
+    let matched_comment = github_comment_summary_find_idempotency_key(
+        lookup.pointer("/response/summary"),
+        idempotency_key,
+    );
+    let body = operation
+        .pointer("/body")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let (mode, write_operation) = if let Some(comment) = matched_comment.as_ref() {
+        let comment_id = comment
+            .pointer("/id")
+            .and_then(|value| value.as_i64())
+            .map(|value| value.to_string());
+        let update_url = comment
+            .pointer("/url")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                comment_id.as_ref().and_then(|id| {
+                    operation
+                        .pointer("/update/url_template")
+                        .and_then(|value| value.as_str())
+                        .map(|template| template.replace("{comment_id}", id))
+                })
+            })
+            .unwrap_or_default();
+        (
+            "update_existing_comment",
+            serde_json::json!({
+                "kind": "update_latest_comment",
+                "method": operation.pointer("/update/method").and_then(|value| value.as_str()).unwrap_or("PATCH"),
+                "url": update_url,
+                "body": body,
+                "source": operation.pointer("/source").and_then(|value| value.as_str())
+            }),
+        )
+    } else {
+        (
+            "append_new_comment",
+            serde_json::json!({
+                "kind": "append_latest_comment",
+                "method": "POST",
+                "url": operation.pointer("/url").and_then(|value| value.as_str()).unwrap_or_default(),
+                "body": body,
+                "source": operation.pointer("/source").and_then(|value| value.as_str())
+            }),
+        )
+    };
+    let write = execute_github_remote_write_operation(client, token, &write_operation);
+    let success = write.pointer("/success").and_then(|value| value.as_bool()) == Some(true);
+    serde_json::json!({
+        "kind": operation.pointer("/kind").and_then(|value| value.as_str()),
+        "method": write.pointer("/method").and_then(|value| value.as_str()),
+        "url": write.pointer("/url").and_then(|value| value.as_str()),
+        "success": success,
+        "failed_check": if success { None::<&str> } else { Some("remote_comment_upsert_failed") },
+        "mode": mode,
+        "idempotency_key": idempotency_key,
+        "matched_comment": matched_comment.map(|comment| serde_json::json!({
+            "id": comment.pointer("/id").and_then(|value| value.as_i64()),
+            "url": comment.pointer("/url").and_then(|value| value.as_str())
+        })),
+        "lookup": lookup,
+        "write": write
+    })
+}
+
+fn github_comment_summary_find_idempotency_key(
+    comments_summary: Option<&serde_json::Value>,
+    idempotency_key: &str,
+) -> Option<serde_json::Value> {
+    if idempotency_key.trim().is_empty() {
+        return None;
+    }
+    comments_summary
+        .and_then(|value| value.pointer("/items"))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .find(|comment| {
+            comment
+                .pointer("/body")
+                .and_then(|value| value.as_str())
+                .map(|body| github_comment_body_has_idempotency_key(body, idempotency_key))
+                == Some(true)
+        })
+        .cloned()
+}
+
+fn github_comment_body_has_idempotency_key(body: &str, idempotency_key: &str) -> bool {
+    body.contains(&format!(
+        "{}{}",
+        GITHUB_COMMENT_IDEMPOTENCY_PREFIX, idempotency_key
+    ))
 }
 
 fn compact_github_response_summary(response: &serde_json::Value) -> serde_json::Value {
@@ -6885,6 +7051,7 @@ mod tests {
         io::{Read, Write},
         net::TcpListener,
         path::Path,
+        sync::{Arc, Mutex},
         thread,
     };
 
@@ -6898,8 +7065,8 @@ mod tests {
         compact_issue_mirror_readback_summary, compact_issue_mirror_roundtrip,
         compact_issue_mirror_roundtrip_summary, compact_issue_mirror_status,
         compact_issue_mirror_sync, compact_issue_mirror_verify, compact_loop_audit,
-        connector_admission_preview_checks, connector_issue_writer_blockers,
-        connector_remote_comment_body, connector_remote_issue_body, connector_remote_target,
+        connector_admission_preview_checks, connector_github_remote_comment_body,
+        connector_issue_writer_blockers, connector_remote_issue_body, connector_remote_target,
         connector_remote_write_issue_from_mirror, connector_remote_write_plan,
         connector_write_receipt, connector_writer_blockers, default_issue_mirror_path,
         default_issue_mirror_path_for_provider, digest_bytes, execute_github_remote_readback,
@@ -7123,6 +7290,86 @@ mod tests {
             }
         });
         (base_url, handle)
+    }
+
+    fn spawn_github_comment_upsert_server(
+        existing_comment_body: String,
+    ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server_base_url = base_url.clone();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let request_log = Arc::clone(&requests);
+        let handle = thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().expect("test request should connect");
+                let mut buffer = [0_u8; 8192];
+                let read = stream.read(&mut buffer).unwrap_or_default();
+                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                request_log
+                    .lock()
+                    .expect("request log should lock")
+                    .push(request.clone());
+                let body = if request.starts_with("PATCH /repos/owner/repo/issues/88 ") {
+                    serde_json::json!({
+                        "id": 88,
+                        "node_id": "I_kwDO-upsert",
+                        "number": 88,
+                        "url": "http://localhost/repos/owner/repo/issues/88",
+                        "html_url": "http://localhost/owner/repo/issues/88",
+                        "state": "closed",
+                        "state_reason": "completed",
+                        "title": "Loop #44: GitHub upsert",
+                        "comments": 1,
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:04:00Z"
+                    })
+                    .to_string()
+                } else if request
+                    .starts_with("GET /repos/owner/repo/issues/88/comments?per_page=100 ")
+                {
+                    serde_json::json!([
+                        {
+                            "id": 9001,
+                            "node_id": "IC_kwDO-upsert",
+                            "url": format!("{server_base_url}/repos/owner/repo/issues/comments/9001"),
+                            "html_url": "http://localhost/owner/repo/issues/88#issuecomment-9001",
+                            "body": existing_comment_body.as_str(),
+                            "created_at": "2026-01-01T00:02:00Z",
+                            "updated_at": "2026-01-01T00:02:00Z"
+                        }
+                    ])
+                    .to_string()
+                } else if request.starts_with("PATCH /repos/owner/repo/issues/comments/9001 ") {
+                    serde_json::json!({
+                        "id": 9001,
+                        "node_id": "IC_kwDO-upsert",
+                        "url": format!("{server_base_url}/repos/owner/repo/issues/comments/9001"),
+                        "html_url": "http://localhost/owner/repo/issues/88#issuecomment-9001",
+                        "body": "updated",
+                        "created_at": "2026-01-01T00:02:00Z",
+                        "updated_at": "2026-01-01T00:04:00Z"
+                    })
+                    .to_string()
+                } else {
+                    serde_json::json!({"message": "not found"}).to_string()
+                };
+                let status = if body.contains("not found") {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("test response should write");
+            }
+        });
+        (base_url, requests, handle)
     }
 
     #[test]
@@ -7825,10 +8072,39 @@ mod tests {
             Some("completed")
         );
         assert_eq!(
+            plan.pointer("/operations/1/kind")
+                .and_then(|value| value.as_str()),
+            Some("upsert_latest_comment")
+        );
+        assert_eq!(
+            plan.pointer("/operations/1/method")
+                .and_then(|value| value.as_str()),
+            Some("GET_PATCH_OR_POST")
+        );
+        assert_eq!(
             plan.pointer("/operations/1/url")
                 .and_then(|value| value.as_str()),
             Some("https://api.github.com/repos/owner/repo/issues/42/comments")
         );
+        assert_eq!(
+            plan.pointer("/operations/1/lookup/url")
+                .and_then(|value| value.as_str()),
+            Some("https://api.github.com/repos/owner/repo/issues/42/comments?per_page=100")
+        );
+        assert_eq!(
+            plan.pointer("/operations/1/update/url_template")
+                .and_then(|value| value.as_str()),
+            Some("https://api.github.com/repos/owner/repo/issues/comments/{comment_id}")
+        );
+        assert!(plan
+            .pointer("/operations/1/idempotency_key")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(plan
+            .pointer("/operations/1/body/body")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .contains("<!-- entrance-idempotency-key:"));
 
         let invalid_target =
             connector_remote_target(Some(&github), "github:not-a-target", "hive-loop-7-issue-42");
@@ -7944,6 +8220,100 @@ mod tests {
     }
 
     #[test]
+    fn github_remote_write_upserts_existing_idempotent_comment() {
+        let mut github =
+            test_connector_provider("github", "GitHub", "active", true, true, vec!["github:"]);
+        github.mode = "remote-issue-api".to_string();
+        github.auth_required = true;
+        github.auth_env = vec!["ENTRANCE_TEST_GITHUB_UPSERT_TOKEN".to_string()];
+        std::env::set_var("ENTRANCE_TEST_GITHUB_UPSERT_TOKEN", "test-token");
+        let issue = serde_json::json!({
+            "id": 44,
+            "loop_id": 44,
+            "title": "Loop #44: GitHub upsert",
+            "status": "Done",
+            "summary": "Avoid duplicate connector comments.",
+            "updated_at": "2026-01-01T00:04:00Z",
+            "comment_count": 1,
+            "latest_comment": {
+                "id": 101,
+                "author": "hive",
+                "body": "Need an idempotent comment.",
+                "created_at": "2026-01-01T00:03:00Z"
+            },
+            "connector": {
+                "external_key": "hive-loop-44-issue-44",
+                "current_sha256": "sha-upsert"
+            }
+        });
+        let existing_comment_body = connector_github_remote_comment_body(&issue)
+            .replace("Need an idempotent comment.", "Old copy.");
+        let (base_url, requests, server) =
+            spawn_github_comment_upsert_server(existing_comment_body);
+        github.storage = base_url;
+        let target = connector_remote_target(
+            Some(&github),
+            "github:owner/repo#88",
+            "hive-loop-44-issue-44",
+        );
+        let plan = connector_remote_write_plan(Some(&github), &issue, &target, &[]);
+
+        let execution = execute_github_remote_write_plan(&github, &plan);
+        server.join().expect("test server should finish");
+        std::env::remove_var("ENTRANCE_TEST_GITHUB_UPSERT_TOKEN");
+
+        assert_eq!(
+            plan.pointer("/operations/1/kind")
+                .and_then(|value| value.as_str()),
+            Some("upsert_latest_comment")
+        );
+        assert_eq!(
+            execution
+                .pointer("/success")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/1/mode")
+                .and_then(|value| value.as_str()),
+            Some("update_existing_comment")
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/1/method")
+                .and_then(|value| value.as_str()),
+            Some("PATCH")
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/1/matched_comment/id")
+                .and_then(|value| value.as_i64()),
+            Some(9001)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/1/lookup/success")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            execution
+                .pointer("/operations/1/write/success")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        let request_log = requests
+            .lock()
+            .expect("request log should lock")
+            .join("\n---\n");
+        assert!(request_log.contains("PATCH /repos/owner/repo/issues/88 "));
+        assert!(request_log.contains("GET /repos/owner/repo/issues/88/comments?per_page=100 "));
+        assert!(request_log.contains("PATCH /repos/owner/repo/issues/comments/9001 "));
+        assert!(!request_log.contains("POST /repos/owner/repo/issues/88/comments "));
+    }
+
+    #[test]
     fn github_remote_readback_requires_auth_before_network() {
         let mut github =
             test_connector_provider("github", "GitHub", "active", true, true, vec!["github:"]);
@@ -8033,7 +8403,7 @@ mod tests {
         let digest = digest_bytes(&mirror_payload(&mirror).expect("mirror should serialize"));
         let source_issue = connector_remote_write_issue_from_mirror(&mirror, &digest);
         let issue_body = connector_remote_issue_body(&source_issue);
-        let comment_body = connector_remote_comment_body(&source_issue);
+        let comment_body = connector_github_remote_comment_body(&source_issue);
         let (base_url, server) = spawn_github_readback_server(issue_body, comment_body);
         github.storage = base_url.clone();
         let target =

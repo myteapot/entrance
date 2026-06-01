@@ -186,14 +186,17 @@ remote writer is implemented. GitHub has a guarded publish/readback slice:
 `[connectors.github] enabled = true` plus a configured token env such as
 `GITHUB_TOKEN` or `GH_TOKEN` activates the GitHub REST adapter. Publish records
 `entrance.hive.connector_remote_write_execute.v1` and redacted
-`entrance.hive.connector_remote_write_receipt.v1` evidence. Readback calls
-GitHub REST `GET` issue and `GET` issue comments, emits
-`entrance.hive.connector_remote_readback.v1`, and connector admission can pass
-only when target, auth, issue state/body, latest comment, and write-receipt
-binding checks pass. `storage` can override the file-backed mirror path used by
-active local adapters; for GitHub, an `http(s)://` storage value overrides the
-API base URL for fixture or GitHub Enterprise style testing. Linear readback and
-production-grade idempotent GitHub update/retry behavior are still pending.
+`entrance.hive.connector_remote_write_receipt.v1` evidence. The comment write
+path uses an Entrance idempotency marker: it lists existing issue comments,
+patches the matching comment when present, and only creates a new comment when
+the marker is absent. Readback calls GitHub REST `GET` issue and `GET` issue
+comments, emits `entrance.hive.connector_remote_readback.v1`, and connector
+admission can pass only when target, auth, issue state/body, latest comment, and
+write-receipt binding checks pass. `storage` can override the file-backed mirror
+path used by active local adapters; for GitHub, an `http(s)://` storage value
+overrides the API base URL for fixture or GitHub Enterprise style testing.
+Linear readback, GitHub pagination hardening, and production retry behavior are
+still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

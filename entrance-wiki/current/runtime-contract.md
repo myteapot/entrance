@@ -175,12 +175,14 @@ is the first guarded remote publish/readback slice: `[connectors.github]
 enabled = true` with a configured token env such as `GITHUB_TOKEN` or `GH_TOKEN`
 activates REST issue/comment publish operations and records
 `entrance.hive.connector_remote_write_execute.v1` plus redacted
-`entrance.hive.connector_remote_write_receipt.v1` evidence. GitHub readback now
-uses REST `GET` issue plus `GET` issue comments, emits
-`entrance.hive.connector_remote_readback.v1`, and connector admission is ready
-only when the typed target, auth, issue state/body, latest comment, and
-write-receipt binding checks pass. Linear readback and production-grade
-idempotent GitHub update/retry behavior are still pending.
+`entrance.hive.connector_remote_write_receipt.v1` evidence. GitHub comment
+publish now uses an Entrance idempotency marker: it lists issue comments,
+patches the matching comment when present, and creates one only when the marker
+is absent. GitHub readback now uses REST `GET` issue plus `GET` issue comments,
+emits `entrance.hive.connector_remote_readback.v1`, and connector admission is
+ready only when the typed target, auth, issue state/body, latest comment, and
+write-receipt binding checks pass. Linear readback, GitHub pagination hardening,
+and production retry behavior are still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 
