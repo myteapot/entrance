@@ -250,6 +250,10 @@ type IssueMirrorSyncReport = {
   bytes: number;
   sha256: string;
 };
+type IssueMirrorPublishReport = IssueMirrorSyncReport & {
+  published: boolean;
+  reason: string;
+};
 type IssueMirrorVerifyReport = {
   schema_version: string;
   passed: boolean;
@@ -660,6 +664,21 @@ export default function App() {
       setPendingIssue(card.issue.id, null);
     }
   };
+  const publishIssueMirror = async (card: IssueCard) => {
+    if (issuePendingLabel(card.issue.id)) return;
+    setSelectedIssueId(card.issue.id);
+    setPendingIssue(card.issue.id, "Publishing");
+    try {
+      const report = await bridge.invoke<IssueMirrorPublishReport>("hive_issue_mirror_publish", {
+        issueId: card.issue.id,
+      });
+      setBanner(`Published connector mirror ${compactText(report.sha256, 12)}: ${compactText(report.path, 86)}`);
+    } catch (error) {
+      setBanner(`Issue #${card.issue.id} publish failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(card.issue.id, null);
+    }
+  };
   const verifyIssueMirror = async (card: IssueCard) => {
     if (issuePendingLabel(card.issue.id)) return;
     setSelectedIssueId(card.issue.id);
@@ -689,7 +708,7 @@ export default function App() {
         record: true,
       });
       const evidenceLabel = report.recorded?.evidence_id ? ` (E#${report.recorded.evidence_id})` : "";
-      const publishLabel = report.recorded?.publish?.required ? "; sync to publish" : "";
+      const publishLabel = report.recorded?.publish?.required ? "; publish required" : "";
       if (report.passed) {
         setBanner(
           `Read back issue mirror ${compactText(report.current.digest.sha256, 12)}: ${report.remote.surface?.comments.count ?? 0} comments${evidenceLabel}${publishLabel}`,
@@ -716,13 +735,13 @@ export default function App() {
       });
       if (report.admitted) {
         const evidenceLabel = report.recorded?.evidence_id ? `E#${report.recorded.evidence_id}` : "recorded";
-        const publishLabel = report.recorded?.publish?.required ? "; sync to publish" : "";
+        const publishLabel = report.recorded?.publish?.required ? "; publish required" : "";
         setBanner(
           `Admitted connector mirror ${compactText(report.receipt.sha256 ?? "no-sha", 12)}: ${report.decision.route_to} (${evidenceLabel})${publishLabel}`,
         );
       } else {
         const evidenceLabel = report.recorded?.evidence_id ? ` (E#${report.recorded.evidence_id})` : "";
-        const publishLabel = report.recorded?.publish?.required ? "; sync to publish" : "";
+        const publishLabel = report.recorded?.publish?.required ? "; publish required" : "";
         setBanner(`Connector admission rejected: ${compactText(report.failed_checks.join(", "), 96)}${evidenceLabel}${publishLabel}`);
       }
     } catch (error) {
@@ -1253,6 +1272,8 @@ export default function App() {
     `entrance hive issue mirror ${card.issue.id} --compact`;
   const issueMirrorSyncCommand = (card: IssueCard) =>
     `entrance hive issue mirror-sync ${card.issue.id}`;
+  const issueMirrorPublishCommand = (card: IssueCard) =>
+    `entrance hive issue mirror-publish ${card.issue.id} --compact`;
   const issueMirrorVerifyCommand = (card: IssueCard) =>
     `entrance hive issue mirror-audit ${card.issue.id} --compact`;
   const issueMirrorReadbackCommand = (card: IssueCard) =>
@@ -1261,6 +1282,8 @@ export default function App() {
     `entrance hive issue mirror-admit ${card.issue.id} --record --compact`;
   const issueMirrorSyncLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Syncing" ? "Syncing" : "Sync";
+  const issueMirrorPublishLabel = (card: IssueCard) =>
+    issuePendingLabel(card.issue.id) === "Publishing" ? "Publishing" : "Publish";
   const issueMirrorVerifyLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Verifying" ? "Verifying" : "Verify";
   const issueMirrorReadbackLabel = (card: IssueCard) =>
@@ -1728,6 +1751,16 @@ export default function App() {
                               onClick={() => void syncIssueMirror(card)}
                             >
                               {issueMirrorSyncLabel(card)}
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Publish issue #${card.issue.id} mirror to connector from detail`}
+                              data-testid={`issue-action-detail-publish-${card.issue.id}`}
+                              disabled={Boolean(issuePendingLabel(card.issue.id))}
+                              title={issueMirrorPublishCommand(card)}
+                              onClick={() => void publishIssueMirror(card)}
+                            >
+                              {issueMirrorPublishLabel(card)}
                             </button>
                             <button
                               type="button"
@@ -2239,6 +2272,16 @@ export default function App() {
                                     onClick={() => void syncIssueMirror(card)}
                                   >
                                     {issueMirrorSyncLabel(card)}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Publish issue #${card.issue.id} mirror to connector from board`}
+                                    data-testid={`issue-action-board-publish-${card.issue.id}`}
+                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                    title={issueMirrorPublishCommand(card)}
+                                    onClick={() => void publishIssueMirror(card)}
+                                  >
+                                    {issueMirrorPublishLabel(card)}
                                   </button>
                                   <button
                                     type="button"

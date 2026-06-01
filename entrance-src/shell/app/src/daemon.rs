@@ -19,8 +19,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::{
     app::AppServices,
     commands::hive::{
-        admit_issue_mirror_file, audit_issue_mirror_file, readback_issue_mirror_file,
-        sync_issue_mirror_to_file, verify_issue_mirror_file,
+        admit_issue_mirror_file, audit_issue_mirror_file, publish_issue_mirror_to_file,
+        readback_issue_mirror_file, sync_issue_mirror_to_file, verify_issue_mirror_file,
     },
 };
 
@@ -506,6 +506,22 @@ async fn handle_invoke(
                 &state.services,
                 issue_id,
                 args.get("outPath")
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+            )?)
+        }
+        "hive_issue_mirror_publish" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_publish requires `issueId`")?;
+            Ok(publish_issue_mirror_to_file(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
                     .or_else(|| args.get("out_path"))
                     .and_then(|value| value.as_str()),
             )?)
