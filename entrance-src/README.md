@@ -85,8 +85,9 @@ Pending Doctor next actions prefer the issue-first compact command
 issue.
 `hive policy registry` exposes the typed gate registry plus runtime worker
 policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
-required worker receipt fields, and role binding. `hive loop policies <id>`
-shows the active policy rows loaded into a specific loop contract.
+required worker receipt fields, role binding, connector retry budgets, and the
+connector admission required-check contract. `hive loop policies <id>` shows the
+active policy rows loaded into a specific loop contract.
 `hive loop trace <id>` returns the compact round-aware health view, including
 the evaluator score vector and current-round worker duration/timeout totals,
 without packet transcripts.
@@ -212,9 +213,10 @@ failed-check, retry reason, and backoff rows. The same GitHub/Linear retry budge
 is exposed through `hive policy registry --compact` and embedded in active remote
 contracts. Connector admission previews include a `retry_policy_bound` check that
 compares observed write/readback attempt counts with that active budget before a
-remote issue surface can be admitted. Production drift handling, richer Linear
-state mapping, real-token coverage, and configurable/adaptive retry policy are
-still pending.
+remote issue surface can be admitted, and `hive policy registry --compact`
+exposes the same check name inside the connector admission `required_checks`
+contract. Production drift handling, richer Linear state mapping, real-token
+coverage, and configurable/adaptive retry policy are still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

@@ -570,6 +570,7 @@ fn compact_policy_registry(report: &PolicyRegistryReport) -> serde_json::Value {
                 "expected_object_kind": report.connector.admission.expected_object_kind.as_str(),
                 "check": report.connector.admission.check.as_str(),
                 "required_receipts": report.connector.admission.required_receipts.iter().map(String::as_str).collect::<Vec<_>>(),
+                "required_checks": report.connector.admission.required_checks.iter().map(String::as_str).collect::<Vec<_>>(),
                 "dry_run_command": report.connector.admission.dry_run_command.as_str()
             },
             "retry": report.connector.retry.iter().map(compact_connector_retry_policy).collect::<Vec<_>>()
@@ -662,6 +663,7 @@ fn compact_connector_registry(report: &ConnectorRegistryReport) -> serde_json::V
             "expected_object_kind": report.admission.expected_object_kind.as_str(),
             "check": report.admission.check.as_str(),
             "required_receipts": report.admission.required_receipts.iter().map(String::as_str).collect::<Vec<_>>(),
+            "required_checks": report.admission.required_checks.iter().map(String::as_str).collect::<Vec<_>>(),
             "dry_run_command": report.admission.dry_run_command.as_str()
         }
     })
@@ -710,6 +712,7 @@ fn compact_connector_provider_admission(
         "expected_object_kind": admission.expected_object_kind.as_str(),
         "check": admission.check.as_str(),
         "required_receipts": admission.required_receipts.iter().map(String::as_str).collect::<Vec<_>>(),
+        "required_checks": admission.required_checks.iter().map(String::as_str).collect::<Vec<_>>(),
         "blockers": admission.blockers.iter().map(String::as_str).collect::<Vec<_>>(),
         "dry_run_command": admission.dry_run_command.as_str()
     })
@@ -741,6 +744,7 @@ fn compact_issue_connector_admission_preview(report: &serde_json::Value) -> serd
         "blockers": report.pointer("/decision/blockers").and_then(|value| value.as_array()).cloned().unwrap_or_default(),
         "gate": report.pointer("/policy/gate").and_then(|value| value.as_str()),
         "expected_object_kind": report.pointer("/policy/expected_object_kind").and_then(|value| value.as_str()),
+        "required_checks": report.pointer("/policy/required_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "commands": report.pointer("/commands")
     })
 }
@@ -1232,7 +1236,8 @@ pub(crate) fn issue_connector_admission_preview(
             "route_to": registry.admission.route_to,
             "expected_object_kind": registry.admission.expected_object_kind,
             "check": registry.admission.check,
-            "required_receipts": registry.admission.required_receipts
+            "required_receipts": registry.admission.required_receipts,
+            "required_checks": registry.admission.required_checks
         },
         "decision": {
             "admissible": admissible,
@@ -9643,15 +9648,16 @@ mod tests {
     };
 
     use super::{
-        compact_connector_publish_plan, compact_connector_queue, compact_connector_remote_contract,
-        compact_connector_roundtrip_plan, compact_github_issue_mirror_readback,
-        compact_issue_board, compact_issue_connector_admission_preview, compact_issue_detail,
-        compact_issue_mirror, compact_issue_mirror_admission,
-        compact_issue_mirror_admission_summary, compact_issue_mirror_audit,
-        compact_issue_mirror_audit_summary, compact_issue_mirror_publish,
-        compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
-        compact_issue_mirror_roundtrip, compact_issue_mirror_roundtrip_summary,
-        compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
+        compact_connector_publish_plan, compact_connector_queue, compact_connector_registry,
+        compact_connector_remote_contract, compact_connector_roundtrip_plan,
+        compact_github_issue_mirror_readback, compact_issue_board,
+        compact_issue_connector_admission_preview, compact_issue_detail, compact_issue_mirror,
+        compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
+        compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
+        compact_issue_mirror_publish, compact_issue_mirror_readback,
+        compact_issue_mirror_readback_summary, compact_issue_mirror_roundtrip,
+        compact_issue_mirror_roundtrip_summary, compact_issue_mirror_status,
+        compact_issue_mirror_sync, compact_issue_mirror_verify,
         compact_linear_issue_mirror_readback, compact_loop_audit, connector_admission_check_failed,
         connector_admission_preview_checks, connector_github_remote_comment_body,
         connector_issue_writer_blockers, connector_linear_remote_comment_body,
@@ -9754,10 +9760,45 @@ mod tests {
                 expected_object_kind: "ISSUE_CONNECTOR_MIRROR".to_string(),
                 check: "external_receipt_current".to_string(),
                 required_receipts: vec!["mirror_file_current".to_string()],
+                required_checks: test_connector_admission_required_checks(),
                 dry_run_command: "entrance hive issue connector-admission <id> --compact"
                     .to_string(),
             },
         }
+    }
+
+    fn test_connector_admission_required_checks() -> Vec<String> {
+        [
+            "provider_supported",
+            "provider_admission_ready",
+            "mirror_current",
+            "readback_checks_passed",
+            "remote_write_contract_ready",
+            "remote_target_valid",
+            "retry_policy_bound",
+        ]
+        .iter()
+        .map(|check| (*check).to_string())
+        .collect()
+    }
+
+    #[test]
+    fn compact_connector_registry_exposes_admission_check_contract() {
+        let registry = test_connector_registry();
+        let compact = compact_connector_registry(&registry);
+
+        assert_eq!(
+            compact
+                .pointer("/admission/required_checks/6")
+                .and_then(|value| value.as_str()),
+            Some("retry_policy_bound")
+        );
+        assert_eq!(
+            compact
+                .pointer("/provider_admissions/0/required_checks/6")
+                .and_then(|value| value.as_str()),
+            Some("retry_policy_bound")
+        );
     }
 
     fn test_provider_admission(provider: &ConnectorProviderSpec) -> ConnectorProviderAdmissionSpec {
@@ -9784,6 +9825,7 @@ mod tests {
             expected_object_kind: "ISSUE_CONNECTOR_MIRROR".to_string(),
             check: "external_receipt_current".to_string(),
             required_receipts: vec!["mirror_file_current".to_string()],
+            required_checks: test_connector_admission_required_checks(),
             blockers,
             dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
         }
@@ -12427,7 +12469,8 @@ mod tests {
             },
             "policy": {
                 "gate": "connector_mirror_receipt",
-                "expected_object_kind": "ISSUE_CONNECTOR_MIRROR_RECEIPT"
+                "expected_object_kind": "ISSUE_CONNECTOR_MIRROR_RECEIPT",
+                "required_checks": test_connector_admission_required_checks()
             },
             "commands": {}
         });
@@ -12457,6 +12500,12 @@ mod tests {
                 .pointer("/writer_blockers/2")
                 .and_then(|value| value.as_str()),
             Some("publish_not_supported")
+        );
+        assert_eq!(
+            compact
+                .pointer("/required_checks/6")
+                .and_then(|value| value.as_str()),
+            Some("retry_policy_bound")
         );
     }
 

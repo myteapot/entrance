@@ -42,6 +42,15 @@ const DEFAULT_WORKER_ATTEMPTS: u64 = 1;
 const MAX_WORKER_ATTEMPTS: u64 = 3;
 const CONNECTOR_RETRY_MAX_ATTEMPTS: u64 = 2;
 const CONNECTOR_RETRY_BASE_BACKOFF_MS: u64 = 100;
+const CONNECTOR_ADMISSION_REQUIRED_CHECKS: &[&str] = &[
+    "provider_supported",
+    "provider_admission_ready",
+    "mirror_current",
+    "readback_checks_passed",
+    "remote_write_contract_ready",
+    "remote_target_valid",
+    "retry_policy_bound",
+];
 
 #[derive(Debug, Clone, Copy)]
 struct GateSpec {
@@ -161,6 +170,7 @@ pub struct ConnectorAdmissionPolicySpec {
     pub expected_object_kind: String,
     pub check: String,
     pub required_receipts: Vec<String>,
+    pub required_checks: Vec<String>,
     pub dry_run_command: String,
 }
 
@@ -174,6 +184,7 @@ pub struct ConnectorProviderAdmissionSpec {
     pub expected_object_kind: String,
     pub check: String,
     pub required_receipts: Vec<String>,
+    pub required_checks: Vec<String>,
     pub blockers: Vec<String>,
     pub dry_run_command: String,
 }
@@ -1160,6 +1171,10 @@ fn connector_admission_policy_spec() -> ConnectorAdmissionPolicySpec {
             .iter()
             .map(|receipt| (*receipt).to_string())
             .collect(),
+        required_checks: CONNECTOR_ADMISSION_REQUIRED_CHECKS
+            .iter()
+            .map(|check| (*check).to_string())
+            .collect(),
         dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
     }
 }
@@ -1347,6 +1362,7 @@ fn connector_provider_admission_spec(
         expected_object_kind: admission.expected_object_kind.clone(),
         check: admission.check.clone(),
         required_receipts: admission.required_receipts.clone(),
+        required_checks: admission.required_checks.clone(),
         blockers,
         dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
     }
@@ -6986,6 +7002,19 @@ mod tests {
             registry.connector.admission.expected_object_kind,
             CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND
         );
+        assert_eq!(
+            registry.connector.admission.required_checks,
+            CONNECTOR_ADMISSION_REQUIRED_CHECKS
+                .iter()
+                .map(|check| (*check).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(registry
+            .connector
+            .admission
+            .required_checks
+            .iter()
+            .any(|check| check == "retry_policy_bound"));
         let github_retry = registry
             .connector
             .retry
@@ -7007,6 +7036,12 @@ mod tests {
             .expect("Linear retry policy should be registered");
         assert_eq!(linear_retry.transport, "graphql");
         assert!(linear_retry.rate_limit_http_statuses.contains(&429));
+        let connector_registry = connector_registry();
+        assert!(connector_registry
+            .provider_admissions
+            .iter()
+            .all(|admission| admission.required_checks
+                == registry.connector.admission.required_checks));
         assert_eq!(
             registry.runtime.worker.default_timeout_secs,
             DEFAULT_WORKER_TIMEOUT_SECS

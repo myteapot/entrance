@@ -222,6 +222,7 @@ type ConnectorRegistry = {
     expected_object_kind: string;
     check: string;
     required_receipts: string[];
+    required_checks: string[];
     dry_run_command: string;
   };
   provider_admissions: ConnectorProviderAdmission[];
@@ -253,6 +254,7 @@ type ConnectorProviderAdmission = {
   expected_object_kind: string;
   check: string;
   required_receipts: string[];
+  required_checks: string[];
   blockers: string[];
   dry_run_command: string;
 };
@@ -2115,6 +2117,15 @@ export default function App() {
     if (!admission || !admission.blockers.length) return provider.notes;
     return `${provider.notes} Admission blockers: ${admission.blockers.join(", ")}`;
   };
+  const connectorAdmissionCheckContract = () => connectorRegistry()?.admission.required_checks ?? [];
+  const connectorAdmissionCheckContractLabel = () => {
+    const checks = connectorAdmissionCheckContract();
+    return checks.length ? `${checks.length} checks` : "checks pending";
+  };
+  const connectorAdmissionCheckContractTitle = () => {
+    const checks = connectorAdmissionCheckContract();
+    return checks.length ? checks.join(" | ") : "Connector admission check contract pending";
+  };
   const connectorProviderTone = (provider: ConnectorProvider) =>
     provider.status === "active" && provider.configured ? "active" : "planned";
   const connectorQueueProviderTone = (provider: ConnectorQueueProvider) =>
@@ -3098,6 +3109,9 @@ export default function App() {
                       {activeConnectorCount()}/{connectorProviders().length} active
                     </span>
                     <span>{connectorRegistry()?.admission.gate ?? "gate pending"}</span>
+                    <span title={connectorAdmissionCheckContractTitle()}>
+                      {connectorAdmissionCheckContractLabel()}
+                    </span>
                   </div>
                   {connectorProviders().map((provider) => (
                     <span
