@@ -1489,6 +1489,10 @@ pub(crate) fn publish_issue_mirror_to_file(
     let registry = services.hive.connector_registry();
     let provider =
         connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
+    if let Some(provider) = provider.filter(|provider| connector_provider_is_local_panel(provider))
+    {
+        return compact_local_panel_issue_mirror_publish(&mirror, provider);
+    }
     let blockers =
         connector_issue_writer_blockers(provider, &mirror.review_surface, &mirror.external_key);
     let target_path =
@@ -1898,6 +1902,10 @@ pub(crate) fn verify_issue_mirror_file(
     let registry = services.hive.connector_registry();
     let provider =
         connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
+    if let Some(provider) = provider.filter(|provider| connector_provider_is_local_panel(provider))
+    {
+        return compact_local_panel_issue_mirror_verify(&mirror, provider);
+    }
     let path =
         resolve_issue_mirror_path_for_provider(&services.kernel.root, &mirror, provider, path);
     let receipt_path = mirror_receipt_path(&path);
@@ -1924,6 +1932,17 @@ pub(crate) fn readback_issue_mirror_file(
     let registry = services.hive.connector_registry();
     let provider =
         connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
+    if let Some(provider) = provider.filter(|provider| connector_provider_is_local_panel(provider))
+    {
+        let mut readback = compact_local_panel_issue_mirror_readback(&mirror, provider)?;
+        if record {
+            let recorded = record_issue_mirror_readback(services, &readback)?;
+            if let Some(object) = readback.as_object_mut() {
+                object.insert("recorded".to_string(), recorded);
+            }
+        }
+        return Ok(readback);
+    }
     let path =
         resolve_issue_mirror_path_for_provider(&services.kernel.root, &mirror, provider, path);
     let receipt_path = mirror_receipt_path(&path);
@@ -3250,6 +3269,55 @@ fn compact_issue_mirror_publish(sync: &serde_json::Value) -> serde_json::Value {
     })
 }
 
+fn compact_local_panel_issue_mirror_publish(
+    mirror: &IssueMirrorReport,
+    provider: &ConnectorProviderSpec,
+) -> Result<serde_json::Value> {
+    let digest = digest_bytes(&mirror_payload(mirror)?);
+    Ok(serde_json::json!({
+        "schema_version": ISSUE_MIRROR_PUBLISH_SCHEMA_VERSION,
+        "published": true,
+        "reason": "local_panel_in_process",
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue_id": mirror.issue.id,
+        "issue_status": mirror.issue.status.as_str(),
+        "loop_id": mirror.issue.loop_id,
+        "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round),
+        "path": serde_json::Value::Null,
+        "receipt_path": serde_json::Value::Null,
+        "bytes": digest.bytes,
+        "sha256": digest.sha256.as_str(),
+        "adapter": compact_connector_writer_adapter(&mirror.provider, Some(provider)),
+        "write_receipt": {
+            "schema_version": CONNECTOR_WRITE_RECEIPT_SCHEMA_VERSION,
+            "object_kind": "ISSUE_CONNECTOR_WRITE",
+            "provider": mirror.provider.as_str(),
+            "review_surface": mirror.review_surface.as_str(),
+            "external_key": mirror.external_key.as_str(),
+            "adapter": compact_connector_writer_adapter(&mirror.provider, Some(provider)),
+            "status_surface": {
+                "status": mirror.issue.status.as_str(),
+                "updated_at": mirror.issue.updated_at.as_str()
+            },
+            "comment_surface": issue_mirror_comment_surface(mirror),
+            "mirror": {
+                "bytes": digest.bytes,
+                "sha256": digest.sha256.as_str()
+            },
+            "readback": {
+                "available": true,
+                "command": format!("entrance hive issue mirror-readback {} --record --compact", mirror.issue.id)
+            }
+        },
+        "publish_command": format!("entrance hive issue mirror-publish {} --compact", mirror.issue.id),
+        "readback_command": format!("entrance hive issue mirror-readback {} --record --compact", mirror.issue.id),
+        "admit_command": format!("entrance hive issue mirror-admit {} --record --compact", mirror.issue.id),
+        "roundtrip_command": format!("entrance hive issue mirror-roundtrip {} --compact", mirror.issue.id)
+    }))
+}
+
 fn compact_issue_mirror_publish_blocked(
     mirror: &IssueMirrorReport,
     path: &Path,
@@ -4015,6 +4083,135 @@ fn compact_issue_mirror_audit_summary(report: &serde_json::Value) -> serde_json:
         "sha256": report.pointer("/verify/current/sha256").and_then(|value| value.as_str()),
         "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
     })
+}
+
+fn compact_local_panel_issue_mirror_verify(
+    mirror: &IssueMirrorReport,
+    provider: &ConnectorProviderSpec,
+) -> Result<serde_json::Value> {
+    let digest = digest_bytes(&mirror_payload(mirror)?);
+    Ok(serde_json::json!({
+        "schema_version": ISSUE_MIRROR_VERIFY_SCHEMA_VERSION,
+        "passed": true,
+        "failures": [],
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue_id": mirror.issue.id,
+        "issue_status": mirror.issue.status.as_str(),
+        "loop_id": mirror.issue.loop_id,
+        "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round),
+        "path": serde_json::Value::Null,
+        "receipt_path": serde_json::Value::Null,
+        "current": {
+            "bytes": digest.bytes,
+            "sha256": digest.sha256.as_str()
+        },
+        "file": {
+            "bytes": digest.bytes,
+            "sha256": digest.sha256.as_str(),
+            "surface": "local-hive-panel"
+        },
+        "receipt": {
+            "found": true,
+            "schema_version": "entrance.hive.local_panel_receipt.v1",
+            "sha256": digest.sha256.as_str(),
+            "bytes": digest.bytes,
+            "issue_status": mirror.issue.status.as_str(),
+            "issue_updated_at": mirror.issue.updated_at.as_str(),
+            "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round)
+        },
+        "provider_adapter": compact_connector_writer_adapter(&mirror.provider, Some(provider)),
+        "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
+        "verify_command": format!("entrance hive issue mirror-verify {}", mirror.issue.id)
+    }))
+}
+
+fn compact_local_panel_issue_mirror_readback(
+    mirror: &IssueMirrorReport,
+    provider: &ConnectorProviderSpec,
+) -> Result<serde_json::Value> {
+    let digest = digest_bytes(&mirror_payload(mirror)?);
+    let checks = vec![
+        readback_check(
+            "local_panel_surface_current",
+            "Built-in Panel reads the current Hive issue/status/comment surface.",
+            true,
+            serde_json::json!({
+                "provider": provider.name.as_str(),
+                "mode": provider.mode.as_str(),
+                "issue": issue_mirror_issue_binding(mirror),
+                "loop": issue_mirror_loop_binding(mirror)
+            }),
+        ),
+        readback_check(
+            "local_panel_comment_surface",
+            "Built-in Panel exposes the current Hive comment surface.",
+            true,
+            serde_json::json!({
+                "comments": issue_mirror_comment_surface(mirror)
+            }),
+        ),
+    ];
+    Ok(serde_json::json!({
+        "schema_version": ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
+        "passed": true,
+        "failed_count": 0,
+        "failed_checks": [],
+        "provider": mirror.provider.as_str(),
+        "review_surface": mirror.review_surface.as_str(),
+        "external_key": mirror.external_key.as_str(),
+        "issue_id": mirror.issue.id,
+        "issue_status": mirror.issue.status.as_str(),
+        "loop_id": mirror.issue.loop_id,
+        "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round),
+        "path": serde_json::Value::Null,
+        "receipt_path": serde_json::Value::Null,
+        "current": {
+            "digest": compact_digest(&digest),
+            "surface": issue_mirror_readback_surface(mirror),
+            "comments": issue_mirror_comment_surface(mirror)
+        },
+        "remote": {
+            "found": true,
+            "parsed": true,
+            "parse_error": serde_json::Value::Null,
+            "digest": compact_digest(&digest),
+            "surface": issue_mirror_readback_surface(mirror)
+        },
+        "receipt": {
+            "found": true,
+            "schema_version": "entrance.hive.local_panel_receipt.v1",
+            "sha256": digest.sha256.as_str(),
+            "bytes": digest.bytes,
+            "issue_status": mirror.issue.status.as_str(),
+            "loop_round": mirror.loop_contract.as_ref().map(|contract| contract.current_round),
+            "remote_write_receipt": serde_json::Value::Null,
+            "remote_write_execution": serde_json::Value::Null
+        },
+        "remote_contract": serde_json::Value::Null,
+        "remote_target": serde_json::Value::Null,
+        "remote_readback": serde_json::Value::Null,
+        "verify": compact_local_panel_issue_mirror_verify(mirror, provider)?,
+        "checks": checks,
+        "actions": [
+            compact_loop_action(
+                "readback",
+                "Readback",
+                format!("entrance hive issue mirror-readback {} --record --compact", mirror.issue.id)
+            ),
+            compact_loop_action(
+                "audit",
+                "Audit",
+                format!("entrance hive issue mirror-audit {} --compact", mirror.issue.id)
+            ),
+            compact_loop_action(
+                "roundtrip",
+                "Roundtrip",
+                format!("entrance hive issue mirror-roundtrip {} --compact", mirror.issue.id)
+            )
+        ]
+    }))
 }
 
 fn compact_issue_mirror_readback(
@@ -7109,6 +7306,8 @@ fn compact_connector_writer_adapter(
     let driver = provider.map_or("unknown", |provider| {
         if !blockers.is_empty() {
             "unavailable"
+        } else if connector_provider_is_local_panel(provider) {
+            "in-process-issue-board"
         } else if provider.name == "file" || provider.mode == "local-json-mirror" {
             "file-mirror"
         } else if connector_provider_is_remote_fixture(provider) {
@@ -9314,6 +9513,10 @@ fn connector_provider_uses_remote_contract(provider: &ConnectorProviderSpec) -> 
     )
 }
 
+fn connector_provider_is_local_panel(provider: &ConnectorProviderSpec) -> bool {
+    provider.name == "local-hive-panel" || provider.mode == "in-process-issue-board"
+}
+
 fn connector_provider_is_remote_fixture(provider: &ConnectorProviderSpec) -> bool {
     provider.name == "remote-fixture" || provider.mode == "remote-issue-api-fixture"
 }
@@ -9353,6 +9556,11 @@ fn connector_writer_target_label(provider: Option<&ConnectorProviderSpec>) -> &'
         .unwrap_or(false)
     {
         "file-backed remote issue/status/comment fixture"
+    } else if provider
+        .map(connector_provider_is_local_panel)
+        .unwrap_or(false)
+    {
+        "built-in local issue/status/comment panel"
     } else if provider
         .map(connector_provider_uses_remote_contract)
         .unwrap_or(false)
@@ -10354,7 +10562,8 @@ mod tests {
         compact_issue_mirror_readback_summary, compact_issue_mirror_roundtrip,
         compact_issue_mirror_roundtrip_summary, compact_issue_mirror_status,
         compact_issue_mirror_sync, compact_issue_mirror_verify,
-        compact_linear_issue_mirror_readback, compact_loop_audit, compact_loop_start_summary,
+        compact_linear_issue_mirror_readback, compact_local_panel_issue_mirror_publish,
+        compact_local_panel_issue_mirror_readback, compact_loop_audit, compact_loop_start_summary,
         compact_store_schema_status, connector_admission_check_failed,
         connector_admission_preview_checks, connector_github_remote_comment_body,
         connector_issue_writer_blockers, connector_linear_remote_comment_body,
@@ -14059,6 +14268,131 @@ mod tests {
         assert_eq!(
             path,
             Path::new("/tmp/root/connectors/issue-mirrors/linear-ENT-42-x.json")
+        );
+    }
+
+    #[test]
+    fn local_panel_connector_is_current_without_external_publish_queue() {
+        let mut provider = test_connector_provider(
+            "local-hive-panel",
+            "Local Hive Panel",
+            "active",
+            true,
+            true,
+            vec!["local-hive-panel"],
+        );
+        provider.mode = "in-process-issue-board".to_string();
+        provider.storage = "sqlite".to_string();
+        let registry = ConnectorRegistryReport {
+            schema_version: "entrance.hive.connector_registry.v1".to_string(),
+            provider_admissions: vec![test_provider_admission(&provider)],
+            providers: vec![provider.clone()],
+            admission: ConnectorAdmissionPolicySpec {
+                schema_version: "entrance.hive.policy_registry.v1".to_string(),
+                gate: "connector_mirror_receipt_current".to_string(),
+                route_to: "external_issue_surface".to_string(),
+                expected_object_kind: "ISSUE_CONNECTOR_MIRROR".to_string(),
+                check: "external_receipt_current".to_string(),
+                required_receipts: vec!["mirror_file_current".to_string()],
+                required_checks: test_connector_admission_required_checks(),
+                check_registry: test_connector_admission_check_registry(),
+                dry_run_command: "entrance hive issue connector-admission <id> --compact"
+                    .to_string(),
+            },
+        };
+        let mirror = IssueMirrorReport {
+            schema_version: "entrance.hive.issue_mirror.v1".to_string(),
+            provider: "local-hive-panel".to_string(),
+            review_surface: "local-hive-panel".to_string(),
+            external_key: "hive-loop-3-issue-7".to_string(),
+            issue: HiveIssue {
+                id: 7,
+                loop_id: Some(3),
+                title: "Loop #3: local panel".to_string(),
+                status: "Done".to_string(),
+                summary: Some("Evaluator kept the candidate.".to_string()),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:03:00Z".to_string(),
+            },
+            loop_contract: None,
+            comments: vec![HiveComment {
+                id: 21,
+                issue_id: 7,
+                author: "hive".to_string(),
+                body: "Evaluator kept the candidate.".to_string(),
+                payload: serde_json::json!({
+                    "schema_version": "entrance.hive.system_comment.v1",
+                    "source": "hive"
+                }),
+                created_at: "2026-01-01T00:04:00Z".to_string(),
+            }],
+            actions: vec![test_issue_action(
+                "comment",
+                "Comment",
+                "entrance hive issue comment 7 --body <text> --compact",
+            )],
+            trace: None,
+            doctor: None,
+        };
+
+        let publish = compact_local_panel_issue_mirror_publish(&mirror, &provider)
+            .expect("local panel publish should be in-process");
+        assert_eq!(
+            publish
+                .pointer("/published")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            publish
+                .pointer("/adapter/driver")
+                .and_then(|value| value.as_str()),
+            Some("in-process-issue-board")
+        );
+
+        let readback = compact_local_panel_issue_mirror_readback(&mirror, &provider)
+            .expect("local panel readback should be in-process");
+        let status = compact_issue_mirror_status(&readback);
+        assert_eq!(
+            status.pointer("/current").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            status
+                .pointer("/publish_required")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            status.pointer("/reason").and_then(|value| value.as_str()),
+            Some("connector_mirror_current")
+        );
+        assert_eq!(
+            status
+                .pointer("/current_comment_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+
+        let queue_issue = serde_json::json!({
+            "id": 7,
+            "loop_id": 3,
+            "title": "Loop #3: local panel",
+            "status": "Done",
+            "connector": status
+        });
+        let queue = compact_connector_queue(&registry, &[queue_issue], None);
+        assert_eq!(
+            queue
+                .pointer("/publish_required_count")
+                .and_then(|value| value.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            queue
+                .pointer("/providers/0/current_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
         );
     }
 

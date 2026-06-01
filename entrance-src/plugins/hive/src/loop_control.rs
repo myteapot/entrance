@@ -1208,11 +1208,12 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
             auth_env: Vec::new(),
             configured: true,
             supports_status: true,
-            supports_publish: false,
+            supports_publish: true,
             supports_readback: true,
             supports_admission: true,
             storage: "sqlite".to_string(),
-            notes: "Built-in local issue/status/comment surface.".to_string(),
+            notes: "Built-in local issue/status/comment surface; publish/readback are in-process checks."
+                .to_string(),
         },
         file,
         remote_fixture,
@@ -7641,6 +7642,26 @@ mod tests {
             .iter()
             .any(|receipt| receipt == "mirror_file_current"));
         assert_eq!(registry.provider_admissions.len(), registry.providers.len());
+        let local_panel = registry
+            .providers
+            .iter()
+            .find(|provider| provider.name == "local-hive-panel")
+            .expect("local panel connector should be registered");
+        assert_eq!(local_panel.status, "active");
+        assert!(local_panel.configured);
+        assert!(local_panel.supports_publish);
+        assert!(local_panel.supports_readback);
+        assert!(local_panel.supports_admission);
+        let local_panel_admission = registry
+            .provider_admissions
+            .iter()
+            .find(|admission| admission.provider == "local-hive-panel")
+            .expect("local panel admission should be registered");
+        assert_eq!(local_panel_admission.status, "ready");
+        assert_eq!(
+            local_panel_admission.route_to.as_deref(),
+            Some("local_issue_surface")
+        );
         let file = registry
             .providers
             .iter()

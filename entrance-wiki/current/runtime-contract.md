@@ -154,7 +154,11 @@ writer adapter contract; `hive connector publish-execute --plan-id <sha256>
 mirror digest, or provider writer capability changed. Successful execution
 records a typed connector publish comment/evidence on each issue before writing
 the mirror, and each publish returns a typed connector write receipt with
-adapter, status, comment surface, digest, and readback command. `hive issue
+adapter, status, comment surface, digest, and readback command. The built-in
+`local-hive-panel` surface is an in-process issue/status/comment board; its
+publish/readback checks are satisfied from SQLite and do not create an external
+publish queue item. `file:`, `remote-fixture:`, `linear:`, and `github:` are the
+surfaces that represent external mirror or remote issue sync. `hive issue
 mirror-roundtrip <id> --compact` wraps the issue-scoped publish -> readback ->
 admission workflow into one typed report; recorded readback/admission
 observations are republished before the final readback check. `hive connector

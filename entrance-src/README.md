@@ -151,6 +151,12 @@ the issue is bound to a loop, mirrors it into the loop ledger as
 Compact issue surfaces include connector mirror status: `hive issue show
 <id> --compact` exposes the issue's `connector` block, and `hive issue list
 --compact` also returns a `connector_queue` for publish-required mirrors.
+The built-in `local-hive-panel` review surface is an in-process
+issue/status/comment board: its publish/readback checks are satisfied from the
+SQLite Hive ledger, so a local Panel issue does not enter the external publish
+queue just because no mirror file exists. Use `file:`, `remote-fixture:`,
+`linear:`, or `github:` review surfaces when the loop should sync to an
+external issue surface.
 `hive connector queue --compact` exposes the provider-scoped publish queue,
 `hive connector queue --provider <name> --compact` narrows the queue to a
 single issue-surface provider, and `hive connector publish-plan --compact`
