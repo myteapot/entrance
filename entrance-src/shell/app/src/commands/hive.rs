@@ -2779,7 +2779,34 @@ fn connector_remote_operation_diagnostics(operation: &serde_json::Value) -> serd
         "http_status": operation.pointer("/http_status").and_then(|value| value.as_u64()),
         "attempt_count": operation.pointer("/attempt_count").and_then(|value| value.as_u64()),
         "max_attempts": operation.pointer("/max_attempts").and_then(|value| value.as_u64()),
+        "attempts": connector_remote_operation_attempts(operation),
         "retry": connector_remote_retry_diagnostics(operation.pointer("/retry"))
+    })
+}
+
+fn connector_remote_operation_attempts(operation: &serde_json::Value) -> Vec<serde_json::Value> {
+    operation
+        .pointer("/attempts")
+        .and_then(|value| value.as_array())
+        .map(|attempts| {
+            attempts
+                .iter()
+                .map(connector_remote_operation_attempt_diagnostics)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn connector_remote_operation_attempt_diagnostics(
+    attempt: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "attempt": attempt.pointer("/attempt").and_then(|value| value.as_u64()),
+        "success": attempt.pointer("/success").and_then(|value| value.as_bool()),
+        "failed_check": attempt.pointer("/failed_check").and_then(|value| value.as_str()),
+        "http_status": attempt.pointer("/http_status").and_then(|value| value.as_u64()),
+        "error": attempt.pointer("/error").and_then(|value| value.as_str()),
+        "retry": connector_remote_retry_diagnostics(attempt.pointer("/retry"))
     })
 }
 
@@ -10697,7 +10724,7 @@ mod tests {
 
     #[test]
     fn connector_status_and_queue_expose_remote_retry_diagnostics() {
-        let readback = serde_json::json!({
+        let mut readback = serde_json::json!({
             "schema_version": ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
             "passed": false,
             "failed_checks": ["remote_issue_read"],
@@ -10767,6 +10794,66 @@ mod tests {
                 "surface": {"comments": {"count": 0}}
             }
         });
+        readback
+            .pointer_mut("/receipt/remote_write_receipt/write_execution/operations/0")
+            .and_then(|value| value.as_object_mut())
+            .expect("write operation should be present")
+            .insert(
+                "attempts".to_string(),
+                serde_json::json!([
+                    {
+                        "attempt": 1,
+                        "success": false,
+                        "failed_check": "remote_retryable_http_status",
+                        "http_status": 503,
+                        "retry": {
+                            "reason": "retryable_http_status",
+                            "retryable": true,
+                            "scheduled": true,
+                            "attempted": false,
+                            "exhausted": false,
+                            "rate_limited": false,
+                            "backoff_ms": 100
+                        }
+                    },
+                    {
+                        "attempt": 2,
+                        "success": true,
+                        "failed_check": null,
+                        "http_status": 200,
+                        "retry": {
+                            "reason": "success",
+                            "retryable": false,
+                            "scheduled": false,
+                            "attempted": false,
+                            "exhausted": false,
+                            "rate_limited": false
+                        }
+                    }
+                ]),
+            );
+        readback
+            .pointer_mut("/remote_readback/execution/issue")
+            .and_then(|value| value.as_object_mut())
+            .expect("readback issue operation should be present")
+            .insert(
+                "attempts".to_string(),
+                serde_json::json!([{
+                    "attempt": 1,
+                    "success": false,
+                    "failed_check": "remote_rate_limited",
+                    "http_status": 429,
+                    "retry": {
+                        "reason": "rate_limited",
+                        "retryable": false,
+                        "scheduled": false,
+                        "attempted": false,
+                        "exhausted": false,
+                        "rate_limited": true,
+                        "retry_after_secs": 60
+                    }
+                }]),
+            );
         let status = compact_issue_mirror_status(&readback);
 
         assert_eq!(
@@ -10784,6 +10871,26 @@ mod tests {
         assert_eq!(
             status
                 .pointer("/remote_diagnostics/signals/1/retry/rate_limited")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            status
+                .pointer("/remote_diagnostics/write/primary_operation/attempts/0/failed_check")
+                .and_then(|value| value.as_str()),
+            Some("remote_retryable_http_status")
+        );
+        assert_eq!(
+            status
+                .pointer("/remote_diagnostics/write/primary_operation/attempts/0/retry/backoff_ms")
+                .and_then(|value| value.as_u64()),
+            Some(100)
+        );
+        assert_eq!(
+            status
+                .pointer(
+                    "/remote_diagnostics/readback/primary_operation/attempts/0/retry/rate_limited"
+                )
                 .and_then(|value| value.as_bool()),
             Some(true)
         );
@@ -10812,6 +10919,14 @@ mod tests {
                 .pointer("/issues/0/remote_diagnostics/signals/1/failed_check")
                 .and_then(|value| value.as_str()),
             Some("remote_rate_limited")
+        );
+        assert_eq!(
+            queue
+                .pointer(
+                    "/issues/0/remote_diagnostics/write/primary_operation/attempts/0/http_status"
+                )
+                .and_then(|value| value.as_u64()),
+            Some(503)
         );
 
         let failed_write_status = compact_issue_mirror_status(&serde_json::json!({

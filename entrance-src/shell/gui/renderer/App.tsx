@@ -333,8 +333,42 @@ type ConnectorRemoteSignal = {
   } | null;
 };
 
+type ConnectorRemoteAttempt = {
+  attempt?: number | null;
+  success?: boolean | null;
+  failed_check?: string | null;
+  http_status?: number | null;
+  error?: string | null;
+  retry?: ConnectorRemoteSignal["retry"];
+};
+
+type ConnectorRemoteOperationDiagnostics = {
+  kind?: string | null;
+  method?: string | null;
+  graphql_operation?: string | null;
+  success?: boolean | null;
+  failed_check?: string | null;
+  http_status?: number | null;
+  attempt_count?: number | null;
+  max_attempts?: number | null;
+  attempts?: ConnectorRemoteAttempt[];
+  retry?: ConnectorRemoteSignal["retry"];
+};
+
+type ConnectorRemoteExecutionDiagnostics = {
+  schema_version?: string | null;
+  stage?: string | null;
+  success?: boolean | null;
+  failed_checks?: string[];
+  operation_count?: number | null;
+  primary_operation?: ConnectorRemoteOperationDiagnostics | null;
+  signal?: ConnectorRemoteSignal | null;
+};
+
 type ConnectorRemoteDiagnostics = {
   schema_version?: string | null;
+  write?: ConnectorRemoteExecutionDiagnostics | null;
+  readback?: ConnectorRemoteExecutionDiagnostics | null;
   signals?: ConnectorRemoteSignal[];
 };
 
@@ -969,6 +1003,85 @@ export default function App() {
         </span>
       ) : null,
     ) ?? [];
+  const connectorRemoteAttemptLabel = (attempt: ConnectorRemoteAttempt) => {
+    const retry = attempt.retry;
+    const parts = [
+      attempt.attempt ? `#${attempt.attempt}` : "attempt",
+      attempt.success === true ? "ok" : attempt.success === false ? "failed" : null,
+      attempt.http_status ? `HTTP ${attempt.http_status}` : null,
+      attempt.failed_check,
+      retry?.reason ? `retry ${retry.reason}` : null,
+      retry?.scheduled ? "scheduled" : null,
+      retry?.backoff_ms ? `${retry.backoff_ms}ms` : null,
+      retry?.retry_after_secs ? `retry after ${retry.retry_after_secs}s` : null,
+    ].filter((part): part is string => Boolean(part));
+    return parts.join(" / ");
+  };
+  const connectorRemoteOperationName = (
+    operation: ConnectorRemoteOperationDiagnostics | null | undefined,
+  ) => {
+    if (!operation) return "operation";
+    return operation.graphql_operation ?? operation.kind ?? operation.method ?? "operation";
+  };
+  const connectorRemoteExecutionRows = (diagnostics: ConnectorRemoteDiagnostics | null | undefined) =>
+    [
+      diagnostics?.write ? { label: "write", execution: diagnostics.write } : null,
+      diagnostics?.readback ? { label: "readback", execution: diagnostics.readback } : null,
+    ].filter(
+      (
+        row,
+      ): row is {
+        label: string;
+        execution: ConnectorRemoteExecutionDiagnostics;
+      } => Boolean(row?.execution?.primary_operation?.attempts?.length),
+    );
+  const connectorRemoteAttemptDetails = (
+    diagnostics: ConnectorRemoteDiagnostics | null | undefined,
+    testIdPrefix: string,
+  ) => {
+    const rows = connectorRemoteExecutionRows(diagnostics);
+    if (!rows.length) return null;
+    return (
+      <div class="connector-remote-drilldown" data-testid={testIdPrefix}>
+        {rows.map(({ label, execution }) => {
+          const operation = execution.primary_operation;
+          const attempts = operation?.attempts ?? [];
+          return (
+            <details
+              class="connector-remote-attempts"
+              data-testid={`${testIdPrefix}-${label}`}
+            >
+              <summary>
+                {label} attempts {attempts.length}/{operation?.max_attempts ?? attempts.length}
+              </summary>
+              <div class="connector-remote-attempt-head">
+                <span>{connectorRemoteOperationName(operation)}</span>
+                {operation?.failed_check ? <span>{operation.failed_check}</span> : null}
+                {operation?.http_status ? <span>HTTP {operation.http_status}</span> : null}
+              </div>
+              <div class="connector-remote-attempt-list">
+                {attempts.map((attempt) => (
+                  <span
+                    class={
+                      attempt.success === false ||
+                      attempt.retry?.rate_limited ||
+                      attempt.retry?.exhausted
+                        ? "connector-remote-attempt connector-remote-attempt--warn"
+                        : "connector-remote-attempt"
+                    }
+                    data-testid={`${testIdPrefix}-${label}-attempt-${attempt.attempt ?? "n"}`}
+                    title={attempt.error ?? undefined}
+                  >
+                    {connectorRemoteAttemptLabel(attempt)}
+                  </span>
+                ))}
+              </div>
+            </details>
+          );
+        })}
+      </div>
+    );
+  };
   const connectorQueueIssuePublishTitle = (card: IssueCard) => {
     const queueIssue = connectorQueueIssueById(card.issue.id);
     if (queueIssue?.can_publish === false && queueIssue.publish_blockers?.length) {
@@ -2438,6 +2551,10 @@ export default function App() {
                         <h3>{card.issue.title}</h3>
                         <p class="muted">{card.issue.summary ?? "No summary"}</p>
                         {connectorStatusStrip(card, "detail")}
+                        {connectorRemoteAttemptDetails(
+                          connectorRemoteDiagnostics(card.issue.id),
+                          `connector-remote-attempts-detail-${card.issue.id}`,
+                        )}
                         <Show when={selectedIssueDoctor()} keyed>
                           {(doctor) => (
                             <div class={`doctor-summary doctor-summary--${doctorHealthTone(doctor.health)}`}>

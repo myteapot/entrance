@@ -604,6 +604,63 @@
   background: rgba(255, 132, 132, 0.1);
 }
 
+.connector-remote-drilldown {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.connector-remote-attempts {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.connector-remote-attempts summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.connector-remote-attempt-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+}
+
+.connector-remote-attempt-head span {
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.connector-remote-attempt-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.connector-remote-attempt {
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid rgba(125, 177, 255, 0.22);
+  border-radius: 7px;
+  color: #b7d2ff;
+  background: rgba(125, 177, 255, 0.07);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.connector-remote-attempt--warn {
+  border-color: rgba(255, 132, 132, 0.3);
+  color: #ffb3b3;
+  background: rgba(255, 132, 132, 0.08);
+}
+
 .connector-queue {
   display: flex;
   flex-wrap: wrap;

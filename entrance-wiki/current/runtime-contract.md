@@ -192,10 +192,12 @@ with bounded backoff, and classify `403/429` rate limits as typed
 `remote_rate_limited` blockers without immediate retry; Linear also classifies
 GraphQL rate-limit errors as the same typed blocker. Connector status and queue
 reports include compact remote diagnostics, letting the Panel surface write or
-readback retry/rate-limit signals as first-class chips. The same GitHub/Linear
-retry budget is exposed through `hive policy registry --compact` and embedded in
-active remote contracts. Production drift handling, richer Linear state mapping,
-real-token coverage, and configurable/adaptive retry policy are still pending.
+readback retry/rate-limit signals as first-class chips and expand selected issue
+diagnostics into per-attempt HTTP status, failed-check, retry reason, and backoff
+rows. The same GitHub/Linear retry budget is exposed through
+`hive policy registry --compact` and embedded in active remote contracts.
+Production drift handling, richer Linear state mapping, real-token coverage, and
+configurable/adaptive retry policy are still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 
