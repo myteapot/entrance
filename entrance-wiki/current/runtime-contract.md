@@ -146,7 +146,13 @@ service. Planned Linear/GitHub providers remain visible with adapter blockers
 and an `entrance.hive.connector_remote_contract.v1` that specifies remote object
 kind, write receipt schema, readback schema, idempotency key parts, auth env,
 and required pre/post-write checks, but they cannot be executed until a real
-writer is active. `hive issue
+writer is active. Their admission previews also include
+`entrance.hive.connector_remote_target.v1`, parsed from provider-specific review
+surfaces such as `github:owner/repo#123`,
+`github:https://github.com/owner/repo/issues/123`, `linear:TEAM-123`, or a
+Linear issue URL. Invalid targets surface typed blockers such as
+`remote_target_invalid`, `github_owner_missing`, or `github_repo_missing` before
+any remote writer can be admitted. `hive issue
 connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`; it now emits a typed provider check vector, writer

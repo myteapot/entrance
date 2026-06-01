@@ -154,6 +154,13 @@ service. Remote issue providers also expose
 `entrance.hive.connector_remote_contract.v1`, which defines the remote issue
 object kind, write receipt schema, readback schema, idempotency key parts, auth
 env, and required pre/post-write checks before a real writer is allowed to run.
+Remote issue providers also expose
+`entrance.hive.connector_remote_target.v1` from the issue review surface before
+publish admission. GitHub targets accept forms such as `github:owner/repo#123`
+or `github:https://github.com/owner/repo/issues/123`; Linear targets accept
+forms such as `linear:TEAM-123` or a Linear issue URL. Invalid targets add
+typed blockers such as `remote_target_invalid`, `github_owner_missing`, or
+`github_repo_missing` before any remote write can be admitted.
 `hive connector registry --compact` exposes
 active/planned issue-surface providers, provider-specific admission status, and
 the connector admission gate, while `hive issue

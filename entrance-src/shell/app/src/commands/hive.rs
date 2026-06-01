@@ -38,6 +38,7 @@ const CONNECTOR_REMOTE_CONTRACT_SCHEMA_VERSION: &str = "entrance.hive.connector_
 const CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION: &str =
     "entrance.hive.connector_remote_write_receipt.v1";
 const CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION: &str = "entrance.hive.connector_remote_readback.v1";
+const CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION: &str = "entrance.hive.connector_remote_target.v1";
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
@@ -659,6 +660,7 @@ fn compact_issue_connector_admission_preview(report: &serde_json::Value) -> serd
         "reason": report.pointer("/connector/reason").and_then(|value| value.as_str()),
         "adapter": report.pointer("/adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
         "remote_contract": report.pointer("/remote_contract").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "remote_target": report.pointer("/remote_target").cloned().unwrap_or_else(|| serde_json::json!(null)),
         "writer_blockers": report.pointer("/writer_blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
         "checks": report.pointer("/checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "admissible": report.pointer("/decision/admissible").and_then(|value| value.as_bool()),
@@ -778,7 +780,8 @@ pub(crate) fn publish_issue_mirror_to_file(
     let registry = services.hive.connector_registry();
     let provider =
         connector_provider_for_surface(&registry, &mirror.provider, &mirror.review_surface);
-    let blockers = connector_writer_blockers(provider);
+    let blockers =
+        connector_issue_writer_blockers(provider, &mirror.review_surface, &mirror.external_key);
     let target_path =
         resolve_issue_mirror_path_for_provider(&services.kernel.root, &mirror, provider, path);
     let receipt_path = mirror_receipt_path(&target_path);
@@ -840,8 +843,11 @@ pub(crate) fn issue_connector_admission_preview(
         .pointer("/current")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let writer_blockers = connector_writer_blockers(provider);
+    let writer_blockers =
+        connector_issue_writer_blockers(provider, &mirror.review_surface, &mirror.external_key);
     let remote_contract = compact_connector_remote_contract(provider);
+    let remote_target =
+        connector_remote_target(provider, &mirror.review_surface, &mirror.external_key);
     let remote_contract_required = !remote_contract.is_null();
     let mut blockers = Vec::new();
     if provider.is_none() {
@@ -882,6 +888,7 @@ pub(crate) fn issue_connector_admission_preview(
         &status,
         &writer_blockers,
         remote_contract_required,
+        &remote_target,
     );
     let admissible = blockers.is_empty();
     let route_to = if admissible {
@@ -907,6 +914,7 @@ pub(crate) fn issue_connector_admission_preview(
         "connector": status,
         "adapter": compact_connector_writer_adapter(&mirror.provider, provider),
         "remote_contract": remote_contract,
+        "remote_target": remote_target,
         "writer_blockers": writer_blockers,
         "checks": checks,
         "policy": {
@@ -1190,6 +1198,13 @@ fn apply_connector_provider_admission_preview(
             .cloned()
             .unwrap_or_else(|| serde_json::json!(null)),
     );
+    object.insert(
+        "remote_target".to_string(),
+        provider_preview
+            .pointer("/remote_target")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(null)),
+    );
 
     if admissible {
         if let Some(decision) = object
@@ -1228,6 +1243,7 @@ fn connector_admission_preview_checks(
     connector_status: &serde_json::Value,
     writer_blockers: &[String],
     remote_contract_required: bool,
+    remote_target: &serde_json::Value,
 ) -> Vec<serde_json::Value> {
     let provider_admission_blockers = provider_admission
         .map(|admission| {
@@ -1257,6 +1273,11 @@ fn connector_admission_preview_checks(
         .unwrap_or(false);
     let remote_write_contract_ready =
         !remote_contract_required || (writer_blockers.is_empty() && remote_readback_available);
+    let remote_target_valid = !remote_contract_required
+        || remote_target
+            .pointer("/valid")
+            .and_then(|value| value.as_bool())
+            == Some(true);
 
     vec![
         readback_check(
@@ -1302,6 +1323,15 @@ fn connector_admission_preview_checks(
                 "required": remote_contract_required,
                 "writer_blockers": writer_blockers,
                 "supports_readback": remote_readback_available
+            }),
+        ),
+        readback_check(
+            "remote_target_valid",
+            "Review surface parses as a provider-specific remote issue target.",
+            remote_target_valid,
+            serde_json::json!({
+                "required": remote_contract_required,
+                "target": remote_target
             }),
         ),
     ]
@@ -1534,6 +1564,7 @@ fn record_issue_mirror_admission(
                     "provider_passed_check_count": provider_passed_check_count,
                     "writer_adapter": admission.pointer("/writer_adapter"),
                     "remote_contract": admission.pointer("/remote_contract"),
+                    "remote_target": admission.pointer("/remote_target"),
                     "dry_run": admission.pointer("/dry_run")
                 }
             }),
@@ -1578,6 +1609,7 @@ fn record_issue_mirror_admission(
                     "provider_checks": provider_checks,
                     "writer_adapter": admission.pointer("/writer_adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "remote_contract": admission.pointer("/remote_contract").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                    "remote_target": admission.pointer("/remote_target").cloned().unwrap_or_else(|| serde_json::json!(null)),
                     "policy": admission.pointer("/policy").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "receipt": admission.pointer("/receipt").cloned().unwrap_or_else(|| serde_json::json!({})),
                     "failed_checks": admission.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
@@ -1823,6 +1855,11 @@ fn issue_mirror_sync_receipt_for_provider(
             "path": receipt_path.display().to_string()
         },
         "remote_contract": compact_connector_remote_contract(provider),
+        "remote_target": connector_remote_target(
+            provider,
+            &mirror.review_surface,
+            &mirror.external_key
+        ),
         "remote_write_receipt": connector_remote_write_receipt(mirror, path, digest, provider),
         "commands": {
             "refresh": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
@@ -1880,6 +1917,11 @@ fn compact_issue_mirror_sync(
         "bytes": digest.bytes,
         "sha256": digest.sha256.as_str(),
         "remote_contract": compact_connector_remote_contract(provider),
+        "remote_target": connector_remote_target(
+            provider,
+            &mirror.review_surface,
+            &mirror.external_key
+        ),
         "remote_write_receipt": connector_remote_write_receipt(mirror, path, digest, provider),
         "refresh_command": format!("entrance hive issue mirror {} --compact", mirror.issue.id),
         "sync_command": format!("entrance hive issue mirror-sync {}", mirror.issue.id),
@@ -1938,6 +1980,11 @@ fn compact_issue_mirror_publish_blocked(
         "failed_checks": blockers,
         "adapter": compact_connector_writer_adapter(&mirror.provider, provider),
         "remote_contract": compact_connector_remote_contract(provider),
+        "remote_target": connector_remote_target(
+            provider,
+            &mirror.review_surface,
+            &mirror.external_key
+        ),
         "publish_command": format!("entrance hive issue mirror-publish {} --compact", mirror.issue.id),
         "registry_command": "entrance hive connector registry --compact",
         "queue_command": format!("entrance hive connector queue --provider {} --compact", mirror.provider)
@@ -1959,6 +2006,11 @@ fn connector_write_receipt(
         "loop": issue_mirror_loop_binding(mirror),
         "adapter": compact_connector_writer_adapter(&mirror.provider, provider),
         "remote_contract": compact_connector_remote_contract(provider),
+        "remote_target": connector_remote_target(
+            provider,
+            &mirror.review_surface,
+            &mirror.external_key
+        ),
         "remote_write_receipt": sync.pointer("/remote_write_receipt").cloned().unwrap_or_else(|| serde_json::json!(null)),
         "status_surface": {
             "status": mirror.issue.status.as_str(),
@@ -1990,14 +2042,17 @@ fn connector_remote_write_receipt(
         return serde_json::Value::Null;
     };
     let remote_contract = compact_connector_remote_contract(Some(provider));
+    let remote_target =
+        connector_remote_target(Some(provider), &mirror.review_surface, &mirror.external_key);
     let idempotency_key = connector_remote_idempotency_key(mirror, digest, provider);
     serde_json::json!({
         "schema_version": CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION,
         "provider": provider.name.as_str(),
         "remote_object_kind": connector_remote_object_kind(&provider.name),
-        "remote_id": connector_remote_id(mirror, provider),
-        "remote_url": connector_remote_url(mirror, provider, path),
+        "remote_id": connector_remote_id(mirror, provider, &remote_target),
+        "remote_url": connector_remote_url(mirror, provider, path, &remote_target),
         "external_key": mirror.external_key.as_str(),
+        "remote_target": remote_target,
         "status": mirror.issue.status.as_str(),
         "comment_count": mirror.comments.len(),
         "idempotency_key": idempotency_key,
@@ -2033,19 +2088,34 @@ fn connector_remote_idempotency_key(
     digest_bytes(&payload).sha256
 }
 
-fn connector_remote_id(mirror: &IssueMirrorReport, provider: &ConnectorProviderSpec) -> String {
-    format!("{}:{}", provider.name, mirror.external_key)
+fn connector_remote_id(
+    mirror: &IssueMirrorReport,
+    provider: &ConnectorProviderSpec,
+    remote_target: &serde_json::Value,
+) -> String {
+    remote_target
+        .pointer("/remote_id")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("{}:{}", provider.name, mirror.external_key))
 }
 
 fn connector_remote_url(
     mirror: &IssueMirrorReport,
     provider: &ConnectorProviderSpec,
     path: &Path,
+    remote_target: &serde_json::Value,
 ) -> String {
     if connector_provider_is_remote_fixture(provider) {
         format!("file://{}", path.display())
     } else {
-        format!("{}://{}", provider.name, mirror.external_key)
+        remote_target
+            .pointer("/remote_url")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("{}://{}", provider.name, mirror.external_key))
     }
 }
 
@@ -2467,6 +2537,11 @@ fn compact_issue_mirror_readback(
             "remote_write_receipt": receipt.and_then(|value| value.pointer("/remote_write_receipt"))
         },
         "remote_contract": compact_connector_remote_contract(provider),
+        "remote_target": connector_remote_target(
+            provider,
+            &mirror.review_surface,
+            &mirror.external_key
+        ),
         "remote_readback": connector_remote_readback_report(
             mirror,
             path,
@@ -2537,6 +2612,8 @@ fn connector_remote_readback_report(
         .and_then(|value| json_pointer_str(value, "/source_mirror_sha256"))
         == Some(expected_digest.sha256.as_str())
         && receipt_failures.is_empty();
+    let remote_target =
+        connector_remote_target(Some(provider), &mirror.review_surface, &mirror.external_key);
     let checks = vec![
         readback_check(
             "remote_identity",
@@ -2599,9 +2676,10 @@ fn connector_remote_readback_report(
         "failed_checks": failed_checks,
         "provider": provider.name.as_str(),
         "remote_object_kind": connector_remote_object_kind(&provider.name),
-        "remote_id": connector_remote_id(mirror, provider),
-        "remote_url": connector_remote_url(mirror, provider, path),
+        "remote_id": connector_remote_id(mirror, provider, &remote_target),
+        "remote_url": connector_remote_url(mirror, provider, path, &remote_target),
         "external_key": mirror.external_key.as_str(),
+        "remote_target": remote_target,
         "source_mirror_sha256": expected_digest.sha256.as_str(),
         "remote_mirror_sha256": actual_digest.map(|digest| digest.sha256.as_str()),
         "status": mirror.issue.status.as_str(),
@@ -2759,6 +2837,8 @@ fn compact_issue_mirror_admission_summary(report: &serde_json::Value) -> serde_j
         "adapter_blockers": report.pointer("/writer_adapter/blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
         "remote_contract_schema_version": report.pointer("/remote_contract/schema_version").and_then(|value| value.as_str()),
         "remote_object_kind": report.pointer("/remote_contract/remote_object_kind").and_then(|value| value.as_str()),
+        "remote_target": report.pointer("/remote_target").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "remote_target_valid": report.pointer("/remote_target/valid").and_then(|value| value.as_bool()),
         "review_surface": report.pointer("/review_surface").and_then(|value| value.as_str()),
         "external_key": report.pointer("/external_key").and_then(|value| value.as_str()),
         "gate": report.pointer("/policy/gate").and_then(|value| value.as_str()),
@@ -3796,6 +3876,36 @@ fn connector_writer_blockers(provider: Option<&ConnectorProviderSpec>) -> Vec<St
     blockers
 }
 
+fn connector_issue_writer_blockers(
+    provider: Option<&ConnectorProviderSpec>,
+    review_surface: &str,
+    external_key: &str,
+) -> Vec<String> {
+    let mut blockers = connector_writer_blockers(provider);
+    let remote_target = connector_remote_target(provider, review_surface, external_key);
+    if remote_target.is_object()
+        && remote_target
+            .pointer("/valid")
+            .and_then(|value| value.as_bool())
+            != Some(true)
+    {
+        blockers.push("remote_target_invalid".to_string());
+        blockers.extend(
+            remote_target
+                .pointer("/blockers")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(ToOwned::to_owned),
+        );
+    }
+    blockers.sort();
+    blockers.dedup();
+    blockers
+}
+
 fn compact_connector_writer_adapter(
     provider_name: &str,
     provider: Option<&ConnectorProviderSpec>,
@@ -3854,6 +3964,13 @@ fn compact_connector_remote_contract(
             "comment_source": "hive_issue.comments",
             "comment_mode": "append_missing_comments"
         },
+        "target": {
+            "schema_version": CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION,
+            "review_surface": "provider-specific issue target",
+            "required": true,
+            "examples": connector_remote_target_examples(&provider.name),
+            "required_fields": connector_remote_target_required_fields(&provider.name)
+        },
         "write": {
             "operation": "upsert_remote_issue_surface",
             "receipt_schema_version": CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION,
@@ -3905,6 +4022,325 @@ fn compact_connector_remote_contract(
             ]
         }
     })
+}
+
+fn connector_remote_target(
+    provider: Option<&ConnectorProviderSpec>,
+    review_surface: &str,
+    external_key: &str,
+) -> serde_json::Value {
+    let Some(provider) = provider else {
+        return serde_json::Value::Null;
+    };
+    if !connector_provider_uses_remote_contract(provider) {
+        return serde_json::Value::Null;
+    }
+    let raw_target = connector_remote_target_raw(provider, review_surface);
+    let target = raw_target.as_deref().unwrap_or_default().trim();
+    match provider.name.as_str() {
+        "github" => connector_github_remote_target(provider, review_surface, external_key, target),
+        "linear" => connector_linear_remote_target(provider, review_surface, external_key, target),
+        "remote-fixture" => {
+            connector_fixture_remote_target(provider, review_surface, external_key, target)
+        }
+        _ => connector_generic_remote_target(provider, review_surface, external_key, target),
+    }
+}
+
+fn connector_remote_target_raw(
+    provider: &ConnectorProviderSpec,
+    review_surface: &str,
+) -> Option<String> {
+    let review_surface = review_surface.trim();
+    provider.review_surface_prefixes.iter().find_map(|prefix| {
+        if prefix.ends_with(':') {
+            review_surface
+                .strip_prefix(prefix)
+                .map(|target| target.trim().to_string())
+        } else if review_surface == prefix {
+            Some(String::new())
+        } else {
+            None
+        }
+    })
+}
+
+fn connector_github_remote_target(
+    provider: &ConnectorProviderSpec,
+    review_surface: &str,
+    external_key: &str,
+    target: &str,
+) -> serde_json::Value {
+    let mut blockers = Vec::new();
+    let normalized = target
+        .strip_prefix("https://github.com/")
+        .or_else(|| target.strip_prefix("http://github.com/"))
+        .or_else(|| target.strip_prefix("github.com/"))
+        .unwrap_or(target)
+        .trim_matches('/');
+    if normalized.is_empty() {
+        blockers.push("github_target_missing".to_string());
+    }
+    let mut owner = "";
+    let mut repo = "";
+    let mut issue_number = None;
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    if parts.len() >= 2 {
+        owner = parts[0].trim();
+        repo = parts[1].trim();
+        if parts.get(2) == Some(&"issues") {
+            issue_number = parts.get(3).and_then(|value| parse_positive_u64(value));
+            if issue_number.is_none() {
+                blockers.push("github_issue_number_invalid".to_string());
+            }
+        } else if let Some((repo_name, issue)) = repo.split_once('#') {
+            repo = repo_name.trim();
+            issue_number = parse_positive_u64(issue);
+            if issue_number.is_none() {
+                blockers.push("github_issue_number_invalid".to_string());
+            }
+        }
+    }
+    if owner.is_empty() {
+        blockers.push("github_owner_missing".to_string());
+    }
+    if repo.is_empty() {
+        blockers.push("github_repo_missing".to_string());
+    }
+    if !owner.is_empty() && !connector_target_slug_valid(owner) {
+        blockers.push("github_owner_invalid".to_string());
+    }
+    if !repo.is_empty() && !connector_target_slug_valid(repo) {
+        blockers.push("github_repo_invalid".to_string());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let valid = blockers.is_empty();
+    let remote_id = if valid {
+        issue_number.map_or_else(
+            || format!("{owner}/{repo}"),
+            |number| format!("{owner}/{repo}#{number}"),
+        )
+    } else {
+        format!("{}:{}", provider.name, external_key)
+    };
+    let remote_url = if valid {
+        issue_number.map_or_else(
+            || format!("https://github.com/{owner}/{repo}/issues"),
+            |number| format!("https://github.com/{owner}/{repo}/issues/{number}"),
+        )
+    } else {
+        String::new()
+    };
+    let api_url = if valid {
+        issue_number.map_or_else(
+            || format!("https://api.github.com/repos/{owner}/{repo}/issues"),
+            |number| format!("https://api.github.com/repos/{owner}/{repo}/issues/{number}"),
+        )
+    } else {
+        String::new()
+    };
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION,
+        "provider": provider.name.as_str(),
+        "review_surface": review_surface,
+        "external_key": external_key,
+        "target": target,
+        "valid": valid,
+        "blockers": blockers,
+        "target_kind": "github.issue",
+        "owner": empty_str_none(owner),
+        "repo": empty_str_none(repo),
+        "issue_number": issue_number,
+        "write_mode": if issue_number.is_some() { "update_issue" } else { "create_issue" },
+        "remote_id": remote_id,
+        "remote_url": empty_string_none(remote_url),
+        "api_url": empty_string_none(api_url)
+    })
+}
+
+fn connector_linear_remote_target(
+    provider: &ConnectorProviderSpec,
+    review_surface: &str,
+    external_key: &str,
+    target: &str,
+) -> serde_json::Value {
+    let normalized = connector_linear_issue_key_candidate(target);
+    let mut blockers = Vec::new();
+    if normalized.is_empty() {
+        blockers.push("linear_issue_key_missing".to_string());
+    }
+    let (team_key, issue_number) = normalized
+        .rsplit_once('-')
+        .map(|(team, number)| (team.trim().to_ascii_uppercase(), parse_positive_u64(number)))
+        .unwrap_or_else(|| (String::new(), None));
+    if team_key.is_empty() {
+        blockers.push("linear_team_key_missing".to_string());
+    }
+    if issue_number.is_none() {
+        blockers.push("linear_issue_number_invalid".to_string());
+    }
+    if !team_key.is_empty() && !team_key.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        blockers.push("linear_team_key_invalid".to_string());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let valid = blockers.is_empty();
+    let issue_key = if valid {
+        format!("{}-{}", team_key, issue_number.unwrap_or_default())
+    } else {
+        normalized
+    };
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION,
+        "provider": provider.name.as_str(),
+        "review_surface": review_surface,
+        "external_key": external_key,
+        "target": target,
+        "valid": valid,
+        "blockers": blockers,
+        "target_kind": "linear.issue",
+        "team_key": empty_string_none(team_key),
+        "issue_key": empty_string_none(issue_key.clone()),
+        "issue_number": issue_number,
+        "write_mode": "update_issue",
+        "remote_id": if valid { issue_key.clone() } else { format!("{}:{}", provider.name, external_key) },
+        "remote_url": if valid { Some(format!("linear://{issue_key}")) } else { None },
+        "api_url": if valid { Some("https://api.linear.app/graphql") } else { None }
+    })
+}
+
+fn connector_fixture_remote_target(
+    provider: &ConnectorProviderSpec,
+    review_surface: &str,
+    external_key: &str,
+    target: &str,
+) -> serde_json::Value {
+    let fixture_key = if target.is_empty() {
+        external_key
+    } else {
+        target
+    };
+    let blockers = if fixture_key.trim().is_empty() {
+        vec!["fixture_target_missing".to_string()]
+    } else {
+        Vec::new()
+    };
+    let valid = blockers.is_empty();
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION,
+        "provider": provider.name.as_str(),
+        "review_surface": review_surface,
+        "external_key": external_key,
+        "target": fixture_key,
+        "valid": valid,
+        "blockers": blockers,
+        "target_kind": "fixture.issue",
+        "fixture_key": fixture_key,
+        "write_mode": "upsert_fixture_issue",
+        "remote_id": format!("remote-fixture:{fixture_key}"),
+        "remote_url": serde_json::Value::Null,
+        "api_url": serde_json::Value::Null
+    })
+}
+
+fn connector_generic_remote_target(
+    provider: &ConnectorProviderSpec,
+    review_surface: &str,
+    external_key: &str,
+    target: &str,
+) -> serde_json::Value {
+    let target = if target.is_empty() {
+        external_key
+    } else {
+        target
+    };
+    let blockers = if target.trim().is_empty() {
+        vec!["remote_target_missing".to_string()]
+    } else {
+        Vec::new()
+    };
+    let valid = blockers.is_empty();
+    serde_json::json!({
+        "schema_version": CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION,
+        "provider": provider.name.as_str(),
+        "review_surface": review_surface,
+        "external_key": external_key,
+        "target": target,
+        "valid": valid,
+        "blockers": blockers,
+        "target_kind": "remote.issue",
+        "write_mode": "upsert_remote_issue",
+        "remote_id": format!("{}:{}", provider.name, target),
+        "remote_url": serde_json::Value::Null,
+        "api_url": serde_json::Value::Null
+    })
+}
+
+fn connector_remote_target_examples(provider_name: &str) -> Vec<&'static str> {
+    match provider_name {
+        "github" => vec![
+            "github:owner/repo",
+            "github:owner/repo#123",
+            "github:https://github.com/owner/repo/issues/123",
+        ],
+        "linear" => vec![
+            "linear:TEAM-123",
+            "linear:https://linear.app/workspace/issue/TEAM-123/title",
+        ],
+        "remote-fixture" => vec!["remote-fixture:ENT-1"],
+        _ => vec!["provider:external-id"],
+    }
+}
+
+fn connector_remote_target_required_fields(provider_name: &str) -> Vec<&'static str> {
+    match provider_name {
+        "github" => vec!["owner", "repo"],
+        "linear" => vec!["issue_key"],
+        "remote-fixture" => vec!["fixture_key"],
+        _ => vec!["target"],
+    }
+}
+
+fn connector_linear_issue_key_candidate(target: &str) -> String {
+    let trimmed = target.trim();
+    if let Some(rest) = trimmed
+        .strip_prefix("https://linear.app/")
+        .or_else(|| trimmed.strip_prefix("http://linear.app/"))
+    {
+        let parts = rest.split('/').collect::<Vec<_>>();
+        if let Some(index) = parts.iter().position(|part| *part == "issue") {
+            if let Some(key) = parts.get(index + 1) {
+                return key.trim().to_ascii_uppercase();
+            }
+        }
+    }
+    trimmed
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_uppercase()
+}
+
+fn parse_positive_u64(value: &str) -> Option<u64> {
+    let value = value.trim().trim_start_matches('#');
+    let parsed = value.parse::<u64>().ok()?;
+    (parsed > 0).then_some(parsed)
+}
+
+fn connector_target_slug_valid(value: &str) -> bool {
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn empty_str_none(value: &str) -> Option<&str> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn empty_string_none(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
 }
 
 fn connector_remote_object_kind(provider_name: &str) -> &'static str {
@@ -4260,6 +4696,7 @@ fn compact_connector_roundtrip_plan_summary(plan: &serde_json::Value) -> serde_j
                 "reason": issue.pointer("/reason").and_then(|value| value.as_str()),
                 "current_sha256": current_sha256,
                 "current_digest": compact_digest_label(current_sha256),
+                "remote_target": issue.pointer("/remote_target").cloned().unwrap_or(serde_json::Value::Null),
                 "commands": {
                     "roundtrip": issue.pointer("/commands/roundtrip").and_then(|value| value.as_str())
                 }
@@ -4369,6 +4806,7 @@ fn compact_connector_roundtrip_plan_issue(issue: &serde_json::Value) -> serde_js
         "can_publish": issue.pointer("/can_publish").and_then(|value| value.as_bool()).unwrap_or(false),
         "publish_blockers": issue.pointer("/publish_blockers").cloned().unwrap_or_else(|| serde_json::json!(["connector_writer_unknown"])),
         "adapter": issue.pointer("/adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "remote_target": issue.pointer("/remote_target").cloned().unwrap_or(serde_json::Value::Null),
         "commands": {
             "publish": issue.pointer("/commands/publish").and_then(|value| value.as_str()),
             "readback": issue.pointer("/commands/readback").and_then(|value| value.as_str()),
@@ -4412,6 +4850,7 @@ fn compact_connector_publish_plan_issue(issue: &serde_json::Value) -> serde_json
         "can_publish": issue.pointer("/can_publish").and_then(|value| value.as_bool()).unwrap_or(false),
         "publish_blockers": issue.pointer("/publish_blockers").cloned().unwrap_or_else(|| serde_json::json!(["connector_writer_unknown"])),
         "adapter": issue.pointer("/adapter").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "remote_target": issue.pointer("/remote_target").cloned().unwrap_or(serde_json::Value::Null),
         "commands": {
             "publish": issue.pointer("/commands/publish").and_then(|value| value.as_str()),
             "readback": issue.pointer("/commands/readback").and_then(|value| value.as_str()),
@@ -4558,7 +4997,54 @@ fn compact_connector_queue_issue(
                 issue_id.unwrap_or_default()
             )
         });
-    let publish_blockers = connector_writer_blockers(provider);
+    let review_surface = issue
+        .pointer("/connector/review_surface")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let external_key = issue
+        .pointer("/connector/external_key")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let publish_blockers = connector_issue_writer_blockers(provider, review_surface, external_key);
+    let can_publish = publish_blockers.is_empty();
+    let adapter = compact_connector_writer_adapter(&provider_name, provider);
+    let remote_target = connector_remote_target(provider, review_surface, external_key);
+    let admission_blockers = admission
+        .map(|admission| {
+            admission
+                .blockers
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let commands = serde_json::json!({
+        "publish": publish_command.as_str(),
+        "readback": issue
+            .pointer("/connector/readback_command")
+            .and_then(|value| value.as_str()),
+        "admit": issue
+            .pointer("/connector/admit_command")
+            .and_then(|value| value.as_str()),
+        "roundtrip": issue
+            .pointer("/connector/roundtrip_command")
+            .and_then(|value| value.as_str())
+    });
+    let dry_run_action = serde_json::json!({
+        "schema_version": "entrance.hive.connector_publish_dry_run.v1",
+        "action": "publish",
+        "provider": provider_name.as_str(),
+        "provider_status": provider.map(|provider| provider.status.as_str()),
+        "provider_configured": provider.map(|provider| provider.configured),
+        "supports_publish": provider.map(|provider| provider.supports_publish),
+        "adapter": adapter,
+        "remote_target": remote_target,
+        "would_write": connector_writer_target_label(provider),
+        "remote_write": provider
+            .map(|provider| connector_provider_uses_remote_contract(provider) && provider.supports_publish)
+            .unwrap_or(false),
+        "command": publish_command
+    });
     serde_json::json!({
         "id": issue_id,
         "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
@@ -4572,14 +5058,14 @@ fn compact_connector_queue_issue(
         "supports_admission": provider.map(|provider| provider.supports_admission),
         "mode": provider.map(|provider| provider.mode.as_str()),
         "storage": provider.map(|provider| provider.storage.as_str()),
-        "can_publish": publish_blockers.is_empty(),
+        "can_publish": can_publish,
         "publish_blockers": publish_blockers,
-        "adapter": compact_connector_writer_adapter(&provider_name, provider),
+        "adapter": adapter,
+        "remote_target": remote_target,
         "admission_status": admission.map(|admission| admission.status.as_str()),
-        "admission_blockers": admission
-            .map(|admission| admission.blockers.iter().map(String::as_str).collect::<Vec<_>>())
-            .unwrap_or_default(),
-        "review_surface": issue.pointer("/connector/review_surface").and_then(|value| value.as_str()),
+        "admission_blockers": admission_blockers,
+        "review_surface": review_surface,
+        "external_key": external_key,
         "publish_required": true,
         "current": issue.pointer("/connector/current").and_then(|value| value.as_bool()),
         "reason": issue.pointer("/connector/reason").and_then(|value| value.as_str()),
@@ -4590,32 +5076,8 @@ fn compact_connector_queue_issue(
         "remote_comment_count": issue.pointer("/connector/remote_comment_count").and_then(|value| value.as_u64()),
         "failed_checks": failed_checks,
         "failed_check_count": failed_check_count,
-        "commands": {
-            "publish": publish_command.as_str(),
-            "readback": issue
-                .pointer("/connector/readback_command")
-                .and_then(|value| value.as_str()),
-            "admit": issue
-                .pointer("/connector/admit_command")
-                .and_then(|value| value.as_str()),
-            "roundtrip": issue
-                .pointer("/connector/roundtrip_command")
-                .and_then(|value| value.as_str())
-        },
-        "dry_run_action": {
-            "schema_version": "entrance.hive.connector_publish_dry_run.v1",
-            "action": "publish",
-            "provider": provider_name.as_str(),
-            "provider_status": provider.map(|provider| provider.status.as_str()),
-            "provider_configured": provider.map(|provider| provider.configured),
-            "supports_publish": provider.map(|provider| provider.supports_publish),
-            "adapter": compact_connector_writer_adapter(&provider_name, provider),
-            "would_write": connector_writer_target_label(provider),
-            "remote_write": provider
-                .map(|provider| connector_provider_uses_remote_contract(provider) && provider.supports_publish)
-                .unwrap_or(false),
-            "command": publish_command
-        }
+        "commands": commands,
+        "dry_run_action": dry_run_action
     })
 }
 
@@ -4859,10 +5321,10 @@ mod tests {
         compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
         compact_issue_mirror_roundtrip, compact_issue_mirror_roundtrip_summary,
         compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
-        compact_loop_audit, connector_admission_preview_checks, connector_write_receipt,
-        connector_writer_blockers, default_issue_mirror_path,
-        default_issue_mirror_path_for_provider, flag_present, flag_value,
-        issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
+        compact_loop_audit, connector_admission_preview_checks, connector_issue_writer_blockers,
+        connector_remote_target, connector_write_receipt, connector_writer_blockers,
+        default_issue_mirror_path, default_issue_mirror_path_for_provider, flag_present,
+        flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
         issue_mirror_sync_receipt_for_provider, mirror_receipt_path, MirrorFileDigest,
     };
     use entrance_core::{HiveComment, HiveIssue, HiveLoopContract};
@@ -5515,6 +5977,8 @@ mod tests {
             "failed_checks": ["remote_file_present"]
         });
         let writer_blockers = connector_writer_blockers(Some(&provider));
+        let remote_target =
+            connector_remote_target(Some(&provider), "linear:ENT-42", "hive-loop-1-issue-1");
 
         let checks = connector_admission_preview_checks(
             Some(&provider),
@@ -5522,9 +5986,10 @@ mod tests {
             &status,
             &writer_blockers,
             true,
+            &remote_target,
         );
 
-        assert_eq!(checks.len(), 5);
+        assert_eq!(checks.len(), 6);
         let names = checks
             .iter()
             .filter_map(|check| check.pointer("/name").and_then(|value| value.as_str()))
@@ -5549,6 +6014,93 @@ mod tests {
                 .pointer("/details/writer_blockers/2")
                 .and_then(|value| value.as_str()),
             Some("publish_not_supported")
+        );
+        let target_check = checks
+            .iter()
+            .find(|check| {
+                check.pointer("/name").and_then(|value| value.as_str())
+                    == Some("remote_target_valid")
+            })
+            .expect("remote target check should be present");
+        assert_eq!(
+            target_check
+                .pointer("/passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn remote_issue_targets_are_provider_specific_and_gate_publish() {
+        let mut github = test_connector_provider(
+            "github",
+            "GitHub",
+            "active",
+            true,
+            true,
+            vec!["github:", "gh:"],
+        );
+        github.mode = "remote-issue-api".to_string();
+        let target =
+            connector_remote_target(Some(&github), "github:owner/repo#42", "hive-loop-1-issue-1");
+        assert_eq!(
+            target
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_remote_target.v1")
+        );
+        assert_eq!(
+            target.pointer("/valid").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            target.pointer("/owner").and_then(|value| value.as_str()),
+            Some("owner")
+        );
+        assert_eq!(
+            target.pointer("/repo").and_then(|value| value.as_str()),
+            Some("repo")
+        );
+        assert_eq!(
+            target
+                .pointer("/issue_number")
+                .and_then(|value| value.as_u64()),
+            Some(42)
+        );
+        assert_eq!(
+            target.pointer("/api_url").and_then(|value| value.as_str()),
+            Some("https://api.github.com/repos/owner/repo/issues/42")
+        );
+
+        let invalid =
+            connector_remote_target(Some(&github), "github:not-a-target", "hive-loop-1-issue-1");
+        assert_eq!(
+            invalid.pointer("/valid").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        let blockers =
+            connector_issue_writer_blockers(Some(&github), "github:not-a-target", "hive-loop-1");
+        assert!(blockers.contains(&"remote_target_invalid".to_string()));
+        assert!(blockers.contains(&"github_repo_missing".to_string()));
+
+        let linear =
+            test_connector_provider("linear", "Linear", "active", true, true, vec!["linear:"]);
+        let linear_target = connector_remote_target(
+            Some(&linear),
+            "linear:https://linear.app/acme/issue/ENT-37/title",
+            "hive-loop-2-issue-2",
+        );
+        assert_eq!(
+            linear_target
+                .pointer("/issue_key")
+                .and_then(|value| value.as_str()),
+            Some("ENT-37")
+        );
+        assert_eq!(
+            linear_target
+                .pointer("/issue_number")
+                .and_then(|value| value.as_u64()),
+            Some(37)
         );
     }
 
