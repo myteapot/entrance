@@ -178,7 +178,8 @@ the connector admission gate, while `hive issue
 connector-admission <id> --compact` dry-runs whether the current mirror can be
 routed to `external_issue_surface`. Admission previews include a typed check
 vector, writer adapter blockers, and any remote contract so the CLI/Panel can
-explain which provider, readback, or remote-write gate stopped the route.
+explain which provider, readback, remote-write, or retry-policy gate stopped the
+route.
 Connector provider config is read from `entrance.toml`. GitHub and Linear both
 have guarded remote publish/readback slices when enabled with a configured token
 env. `[connectors.github] enabled = true` plus `GITHUB_TOKEN` or `GH_TOKEN`
@@ -209,8 +210,11 @@ or readback retry/rate-limit signals without opening raw CLI JSON; selected
 issue detail can expand those diagnostics into per-attempt HTTP status,
 failed-check, retry reason, and backoff rows. The same GitHub/Linear retry budget
 is exposed through `hive policy registry --compact` and embedded in active remote
-contracts. Production drift handling, richer Linear state mapping, real-token
-coverage, and configurable/adaptive retry policy are still pending.
+contracts. Connector admission previews include a `retry_policy_bound` check that
+compares observed write/readback attempt counts with that active budget before a
+remote issue surface can be admitted. Production drift handling, richer Linear
+state mapping, real-token coverage, and configurable/adaptive retry policy are
+still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

@@ -49,6 +49,7 @@ const CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION: &str =
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
+const POLICY_SCHEMA_VERSION: &str = "entrance.hive.policy.v1";
 const GITHUB_COMMENTS_MAX_PAGES: usize = 20;
 const GITHUB_COMMENT_IDEMPOTENCY_PREFIX: &str = "<!-- entrance-idempotency-key:";
 const GITHUB_COMMENT_IDEMPOTENCY_SUFFIX: &str = "-->";
@@ -608,7 +609,7 @@ fn compact_connector_retry_policy(policy: &ConnectorRetryPolicySpec) -> serde_js
 
 fn connector_remote_retry_policy(provider_name: &str) -> ConnectorRetryPolicySpec {
     connector_retry_policy_for_provider(provider_name).unwrap_or_else(|| ConnectorRetryPolicySpec {
-        schema_version: "entrance.hive.policy.v1".to_string(),
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
         provider: provider_name.to_string(),
         transport: "local".to_string(),
         applies_to: vec!["remote_issue_surface".to_string()],
@@ -1184,8 +1185,6 @@ pub(crate) fn issue_connector_admission_preview(
         })
         .unwrap_or_default();
     blockers.extend(failed_checks);
-    blockers.sort();
-    blockers.dedup();
     let checks = connector_admission_preview_checks(
         provider,
         provider_admission,
@@ -1193,7 +1192,13 @@ pub(crate) fn issue_connector_admission_preview(
         &writer_blockers,
         remote_contract_required,
         &remote_target,
+        &remote_contract,
     );
+    if connector_admission_check_failed(&checks, "retry_policy_bound") {
+        blockers.push("retry_policy_bound".to_string());
+    }
+    blockers.sort();
+    blockers.dedup();
     let admissible = blockers.is_empty();
     let route_to = if admissible {
         provider_admission
@@ -1597,6 +1602,7 @@ fn connector_admission_preview_checks(
     writer_blockers: &[String],
     remote_contract_required: bool,
     remote_target: &serde_json::Value,
+    remote_contract: &serde_json::Value,
 ) -> Vec<serde_json::Value> {
     let provider_admission_blockers = provider_admission
         .map(|admission| {
@@ -1687,7 +1693,184 @@ fn connector_admission_preview_checks(
                 "target": remote_target
             }),
         ),
+        connector_retry_policy_admission_check(
+            provider,
+            connector_status,
+            remote_contract_required,
+            remote_contract,
+        ),
     ]
+}
+
+fn connector_admission_check_failed(checks: &[serde_json::Value], name: &str) -> bool {
+    checks.iter().any(|check| {
+        check.pointer("/name").and_then(|value| value.as_str()) == Some(name)
+            && check.pointer("/passed").and_then(|value| value.as_bool()) != Some(true)
+    })
+}
+
+fn connector_retry_policy_admission_check(
+    provider: Option<&ConnectorProviderSpec>,
+    connector_status: &serde_json::Value,
+    remote_contract_required: bool,
+    remote_contract: &serde_json::Value,
+) -> serde_json::Value {
+    let retry_policy = remote_contract
+        .pointer("/retry")
+        .filter(|value| value.is_object());
+    let mut violations = Vec::new();
+    let expected_provider = provider.map(|provider| provider.name.as_str());
+
+    if remote_contract_required && retry_policy.is_none() {
+        violations.push(serde_json::json!({
+            "code": "retry_policy_missing",
+            "field": "remote_contract.retry"
+        }));
+    }
+
+    let schema_version = retry_policy.and_then(|policy| {
+        policy
+            .pointer("/schema_version")
+            .and_then(|value| value.as_str())
+    });
+    if remote_contract_required && schema_version != Some(POLICY_SCHEMA_VERSION) {
+        violations.push(serde_json::json!({
+            "code": "retry_policy_schema_mismatch",
+            "field": "schema_version",
+            "expected": POLICY_SCHEMA_VERSION,
+            "actual": schema_version
+        }));
+    }
+
+    let policy_provider = retry_policy
+        .and_then(|policy| policy.pointer("/provider").and_then(|value| value.as_str()));
+    if remote_contract_required
+        && expected_provider.is_some()
+        && policy_provider != expected_provider
+    {
+        violations.push(serde_json::json!({
+            "code": "retry_policy_provider_mismatch",
+            "field": "provider",
+            "expected": expected_provider,
+            "actual": policy_provider
+        }));
+    }
+
+    let policy_max_attempts = retry_policy.and_then(|policy| {
+        policy
+            .pointer("/max_attempts")
+            .and_then(|value| value.as_u64())
+    });
+    let valid_policy_max_attempts = policy_max_attempts.filter(|value| *value >= 1);
+    if remote_contract_required && valid_policy_max_attempts.is_none() {
+        violations.push(serde_json::json!({
+            "code": "retry_policy_max_attempts_invalid",
+            "field": "max_attempts",
+            "actual": policy_max_attempts
+        }));
+    }
+
+    let observed_operations = connector_retry_policy_attempt_observations(connector_status);
+    if remote_contract_required {
+        if let Some(max_attempts) = valid_policy_max_attempts {
+            for observation in &observed_operations {
+                connector_retry_policy_push_budget_violations(
+                    &mut violations,
+                    observation,
+                    max_attempts,
+                );
+            }
+        }
+    }
+
+    readback_check(
+        "retry_policy_bound",
+        "Remote retry diagnostics stay within the connector retry policy budget.",
+        violations.is_empty(),
+        serde_json::json!({
+            "required": remote_contract_required,
+            "provider": expected_provider,
+            "policy": retry_policy.map(|policy| serde_json::json!({
+                "schema_version": policy.pointer("/schema_version").and_then(|value| value.as_str()),
+                "provider": policy.pointer("/provider").and_then(|value| value.as_str()),
+                "max_attempts": policy.pointer("/max_attempts").and_then(|value| value.as_u64()),
+                "base_backoff_ms": policy.pointer("/base_backoff_ms").and_then(|value| value.as_u64()),
+                "backoff_strategy": policy.pointer("/backoff_strategy").and_then(|value| value.as_str())
+            })),
+            "observed_operations": observed_operations,
+            "violations": violations
+        }),
+    )
+}
+
+fn connector_retry_policy_attempt_observations(
+    connector_status: &serde_json::Value,
+) -> Vec<serde_json::Value> {
+    ["write", "readback"]
+        .into_iter()
+        .filter_map(|stage| {
+            let pointer = format!("/remote_diagnostics/{stage}/primary_operation");
+            let operation = connector_status.pointer(&pointer)?;
+            if !operation.is_object() {
+                return None;
+            }
+            let attempt_count = operation
+                .pointer("/attempt_count")
+                .and_then(|value| value.as_u64());
+            let operation_max_attempts = operation
+                .pointer("/max_attempts")
+                .and_then(|value| value.as_u64());
+            let attempts_len = operation
+                .pointer("/attempts")
+                .and_then(|value| value.as_array())
+                .map(|attempts| attempts.len() as u64);
+            if attempt_count.is_none() && operation_max_attempts.is_none() && attempts_len.is_none()
+            {
+                return None;
+            }
+            Some(serde_json::json!({
+                "stage": stage,
+                "kind": operation.pointer("/kind").and_then(|value| value.as_str()),
+                "method": operation.pointer("/method").and_then(|value| value.as_str()),
+                "graphql_operation": operation.pointer("/graphql_operation").and_then(|value| value.as_str()),
+                "attempt_count": attempt_count,
+                "operation_max_attempts": operation_max_attempts,
+                "attempts_len": attempts_len
+            }))
+        })
+        .collect()
+}
+
+fn connector_retry_policy_push_budget_violations(
+    violations: &mut Vec<serde_json::Value>,
+    observation: &serde_json::Value,
+    max_attempts: u64,
+) {
+    for (field, code) in [
+        ("attempt_count", "retry_attempt_budget_exceeded"),
+        ("attempts_len", "retry_attempt_budget_exceeded"),
+        (
+            "operation_max_attempts",
+            "retry_operation_budget_exceeds_policy",
+        ),
+    ] {
+        let Some(value) = observation
+            .pointer(&format!("/{field}"))
+            .and_then(|value| value.as_u64())
+        else {
+            continue;
+        };
+        if value <= max_attempts {
+            continue;
+        }
+        violations.push(serde_json::json!({
+            "code": code,
+            "stage": observation.pointer("/stage").and_then(|value| value.as_str()),
+            "field": field,
+            "value": value,
+            "max_attempts": max_attempts
+        }));
+    }
 }
 
 fn record_issue_mirror_readback(
@@ -3108,7 +3291,7 @@ fn compact_issue_mirror_audit(verify: &serde_json::Value) -> serde_json::Value {
         "review_surface": verify.pointer("/review_surface"),
         "external_key": verify.pointer("/external_key"),
         "gate": {
-            "schema_version": "entrance.hive.policy.v1",
+            "schema_version": POLICY_SCHEMA_VERSION,
             "gate": CONNECTOR_MIRROR_RECEIPT_GATE,
             "description": "Connector mirror receipts must match the current Hive issue mirror before external issue/status/comment surfaces trust them.",
             "expected_object_kind": CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND
@@ -5106,7 +5289,7 @@ fn compact_issue_mirror_admission(audit: &serde_json::Value) -> serde_json::Valu
             }
         },
         "policy": audit.pointer("/gate").cloned().unwrap_or_else(|| serde_json::json!({
-            "schema_version": "entrance.hive.policy.v1",
+            "schema_version": POLICY_SCHEMA_VERSION,
             "gate": CONNECTOR_MIRROR_RECEIPT_GATE,
             "expected_object_kind": CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND
         })),
@@ -9142,6 +9325,7 @@ fn compact_connector_queue_issue(
         &publish_blockers,
         !remote_contract.is_null(),
         &remote_target,
+        &remote_contract,
     );
     let admission_blockers = admission
         .map(|admission| {
@@ -9459,16 +9643,16 @@ mod tests {
     };
 
     use super::{
-        compact_connector_publish_plan, compact_connector_queue, compact_connector_roundtrip_plan,
-        compact_github_issue_mirror_readback, compact_issue_board,
-        compact_issue_connector_admission_preview, compact_issue_detail, compact_issue_mirror,
-        compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
-        compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
-        compact_issue_mirror_publish, compact_issue_mirror_readback,
-        compact_issue_mirror_readback_summary, compact_issue_mirror_roundtrip,
-        compact_issue_mirror_roundtrip_summary, compact_issue_mirror_status,
-        compact_issue_mirror_sync, compact_issue_mirror_verify,
-        compact_linear_issue_mirror_readback, compact_loop_audit,
+        compact_connector_publish_plan, compact_connector_queue, compact_connector_remote_contract,
+        compact_connector_roundtrip_plan, compact_github_issue_mirror_readback,
+        compact_issue_board, compact_issue_connector_admission_preview, compact_issue_detail,
+        compact_issue_mirror, compact_issue_mirror_admission,
+        compact_issue_mirror_admission_summary, compact_issue_mirror_audit,
+        compact_issue_mirror_audit_summary, compact_issue_mirror_publish,
+        compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
+        compact_issue_mirror_roundtrip, compact_issue_mirror_roundtrip_summary,
+        compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
+        compact_linear_issue_mirror_readback, compact_loop_audit, connector_admission_check_failed,
         connector_admission_preview_checks, connector_github_remote_comment_body,
         connector_issue_writer_blockers, connector_linear_remote_comment_body,
         connector_remote_issue_body, connector_remote_issue_idempotency_key,
@@ -10554,7 +10738,7 @@ mod tests {
                 .pointer("/issues/0/admission_checks")
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
-            Some(6)
+            Some(7)
         );
         assert_eq!(
             queue
@@ -10992,6 +11176,7 @@ mod tests {
         let writer_blockers = connector_writer_blockers(Some(&provider));
         let remote_target =
             connector_remote_target(Some(&provider), "linear:ENT-42", "hive-loop-1-issue-1");
+        let remote_contract = compact_connector_remote_contract(Some(&provider));
 
         let checks = connector_admission_preview_checks(
             Some(&provider),
@@ -11000,15 +11185,17 @@ mod tests {
             &writer_blockers,
             true,
             &remote_target,
+            &remote_contract,
         );
 
-        assert_eq!(checks.len(), 6);
+        assert_eq!(checks.len(), 7);
         let names = checks
             .iter()
             .filter_map(|check| check.pointer("/name").and_then(|value| value.as_str()))
             .collect::<Vec<_>>();
         assert!(names.contains(&"provider_admission_ready"));
         assert!(names.contains(&"remote_write_contract_ready"));
+        assert!(names.contains(&"retry_policy_bound"));
         let remote_contract_check = checks
             .iter()
             .find(|check| {
@@ -11040,6 +11227,78 @@ mod tests {
                 .pointer("/passed")
                 .and_then(|value| value.as_bool()),
             Some(true)
+        );
+        let retry_policy_check = checks
+            .iter()
+            .find(|check| {
+                check.pointer("/name").and_then(|value| value.as_str())
+                    == Some("retry_policy_bound")
+            })
+            .expect("retry policy check should be present");
+        assert_eq!(
+            retry_policy_check
+                .pointer("/passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            retry_policy_check
+                .pointer("/details/policy/max_attempts")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+
+        let over_budget_status = serde_json::json!({
+            "current": true,
+            "publish_required": false,
+            "failed_checks": [],
+            "remote_diagnostics": {
+                "write": {
+                    "primary_operation": {
+                        "kind": "read_issue_for_write",
+                        "attempt_count": 3,
+                        "max_attempts": 3,
+                        "attempts": [
+                            {"attempt": 1, "success": false},
+                            {"attempt": 2, "success": false},
+                            {"attempt": 3, "success": true}
+                        ]
+                    }
+                },
+                "readback": null
+            }
+        });
+        let over_budget_checks = connector_admission_preview_checks(
+            Some(&provider),
+            Some(&admission),
+            &over_budget_status,
+            &[],
+            true,
+            &remote_target,
+            &remote_contract,
+        );
+        let over_budget_retry_check = over_budget_checks
+            .iter()
+            .find(|check| {
+                check.pointer("/name").and_then(|value| value.as_str())
+                    == Some("retry_policy_bound")
+            })
+            .expect("retry policy check should be present");
+        assert_eq!(
+            over_budget_retry_check
+                .pointer("/passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            over_budget_retry_check
+                .pointer("/details/violations/0/code")
+                .and_then(|value| value.as_str()),
+            Some("retry_attempt_budget_exceeded")
+        );
+        assert_eq!(
+            connector_admission_check_failed(&over_budget_checks, "retry_policy_bound"),
+            true
         );
     }
 

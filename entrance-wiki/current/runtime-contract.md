@@ -167,7 +167,8 @@ connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`; it now emits a typed provider check vector, writer
 adapter blockers, and any remote contract so rejected admissions can be traced
-to provider readiness, mirror readback, or remote-write requirements.
+to provider readiness, mirror readback, remote-write requirements, or retry
+policy budget drift.
 Provider overrides are read from `entrance.toml` under `[connectors.<provider>]`.
 GitHub and Linear both have guarded remote publish/readback slices when enabled
 with a configured token env. `[connectors.github] enabled = true` with
@@ -196,8 +197,11 @@ readback retry/rate-limit signals as first-class chips and expand selected issue
 diagnostics into per-attempt HTTP status, failed-check, retry reason, and backoff
 rows. The same GitHub/Linear retry budget is exposed through
 `hive policy registry --compact` and embedded in active remote contracts.
-Production drift handling, richer Linear state mapping, real-token coverage, and
-configurable/adaptive retry policy are still pending.
+Connector admission previews include a `retry_policy_bound` check that compares
+observed write/readback attempt counts with that active budget before a remote
+issue surface can be admitted. Production drift handling, richer Linear state
+mapping, real-token coverage, and configurable/adaptive retry policy are still
+pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 
