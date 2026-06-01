@@ -126,6 +126,10 @@ Compact issue surfaces include connector mirror status: `hive issue show
 providers and the connector admission gate, while `hive issue
 connector-admission <id> --compact` dry-runs whether the current mirror can be
 routed to `external_issue_surface`.
+Connector provider config is read from `entrance.toml`; for example
+`[connectors.linear] enabled = true` with `auth_env = ["LINEAR_API_KEY"]`
+marks Linear as configured while it remains a planned provider until a real
+remote writer is implemented.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

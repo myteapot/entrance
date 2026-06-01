@@ -1362,7 +1362,10 @@ export default function App() {
       provider.supports_readback ? "readback" : null,
       provider.supports_admission ? "admit" : null,
     ].filter(Boolean);
-    return capabilities.length ? capabilities.join("/") : "not active";
+    if (capabilities.length) return capabilities.join("/");
+    if (provider.configured) return "configured/not active";
+    if (provider.auth_required) return "auth missing";
+    return "not active";
   };
   const connectorProviderTone = (provider: ConnectorProvider) =>
     provider.status === "active" && provider.configured ? "active" : "planned";

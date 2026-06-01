@@ -7,7 +7,8 @@ mod review;
 
 use anyhow::Result;
 use entrance_core::{
-    Bus, HiveRun, HiveRunCreate, Plugin, PluginContext, Scheduler, Store, Supervision,
+    Bus, ConnectorsConfig, HiveRun, HiveRunCreate, Plugin, PluginContext, Scheduler, Store,
+    Supervision,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +49,7 @@ pub struct HivePlugin {
     scheduler: Scheduler,
     supervision: Supervision,
     preset: SoftwareEngPreset,
+    connectors: ConnectorsConfig,
 }
 
 impl HivePlugin {
@@ -58,6 +60,7 @@ impl HivePlugin {
             scheduler: ctx.scheduler(),
             supervision: ctx.supervision(),
             preset: SoftwareEngPreset,
+            connectors: ctx.kernel.config.connectors.clone(),
         }
     }
 
@@ -113,7 +116,7 @@ impl HivePlugin {
     }
 
     pub fn connector_registry(&self) -> ConnectorRegistryReport {
-        loop_control::connector_registry()
+        loop_control::connector_registry_with_config(&self.connectors)
     }
 
     pub fn loop_policies(&self, id: i64) -> Result<HiveLoopPolicyReport> {

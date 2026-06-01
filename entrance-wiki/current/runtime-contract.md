@@ -117,6 +117,9 @@ it distinguishes active local/file providers from planned Linear/GitHub
 providers and names the admission gate. `hive issue connector-admission <id>
 --compact` is the issue-scoped dry-run for routing a current mirror to
 `external_issue_surface`.
+Provider overrides are read from `entrance.toml` under `[connectors.<provider>]`.
+Enabling a planned provider can mark auth/storage config as present, but
+admission still blocks until that provider has an active implementation.
 
 ## Daemon
 

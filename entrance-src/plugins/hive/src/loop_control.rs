@@ -7,11 +7,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use entrance_core::{
-    HiveComment, HiveCommentCreate, HiveIssue, HiveIssueCreate, HiveLoopAdmission,
-    HiveLoopAdmissionCreate, HiveLoopContract, HiveLoopContractCreate, HiveLoopEvidence,
-    HiveLoopEvidenceCreate, HiveLoopPacket, HiveLoopPacketCreate, HiveLoopPolicy,
-    HiveLoopPolicyCreate, HiveLoopStage, HiveLoopStageCreate, HiveLoopVerdict,
-    HiveLoopVerdictCreate, Store,
+    ConnectorProviderConfig, ConnectorsConfig, HiveComment, HiveCommentCreate, HiveIssue,
+    HiveIssueCreate, HiveLoopAdmission, HiveLoopAdmissionCreate, HiveLoopContract,
+    HiveLoopContractCreate, HiveLoopEvidence, HiveLoopEvidenceCreate, HiveLoopPacket,
+    HiveLoopPacketCreate, HiveLoopPolicy, HiveLoopPolicyCreate, HiveLoopStage, HiveLoopStageCreate,
+    HiveLoopVerdict, HiveLoopVerdictCreate, Store,
 };
 use serde::{Deserialize, Serialize};
 
@@ -983,10 +983,68 @@ pub fn policy_registry() -> PolicyRegistryReport {
     }
 }
 
+#[cfg(test)]
 pub fn connector_registry() -> ConnectorRegistryReport {
+    connector_registry_with_config(&ConnectorsConfig::default())
+}
+
+pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorRegistryReport {
     let connector_gate = gate_spec(CONNECTOR_MIRROR_RECEIPT_GATE)
         .map(PolicyGateSpec::from)
         .expect("connector mirror receipt gate should be registered");
+    let mut file = ConnectorProviderSpec {
+        name: "file".to_string(),
+        display_name: "File Mirror".to_string(),
+        status: "active".to_string(),
+        mode: "local-json-mirror".to_string(),
+        review_surface_prefixes: vec!["file:".to_string()],
+        auth_required: false,
+        auth_env: Vec::new(),
+        configured: true,
+        supports_status: true,
+        supports_publish: true,
+        supports_readback: true,
+        supports_admission: true,
+        storage: "connectors/issue-mirrors/*.json".to_string(),
+        notes: "Local connector mirror used as the external issue surface dry-run.".to_string(),
+    };
+    apply_connector_provider_config(&mut file, &config.file);
+    let mut linear = ConnectorProviderSpec {
+        name: "linear".to_string(),
+        display_name: "Linear".to_string(),
+        status: "planned".to_string(),
+        mode: "remote-issue-api".to_string(),
+        review_surface_prefixes: vec!["linear:".to_string()],
+        auth_required: true,
+        auth_env: vec!["LINEAR_API_KEY".to_string()],
+        configured: false,
+        supports_status: false,
+        supports_publish: false,
+        supports_readback: false,
+        supports_admission: false,
+        storage: "not-configured".to_string(),
+        notes: "Target provider for real issue/status/comment sync; connector is not active yet."
+            .to_string(),
+    };
+    apply_connector_provider_config(&mut linear, &config.linear);
+    let mut github = ConnectorProviderSpec {
+        name: "github".to_string(),
+        display_name: "GitHub Issues".to_string(),
+        status: "planned".to_string(),
+        mode: "remote-issue-api".to_string(),
+        review_surface_prefixes: vec!["github:".to_string(), "gh:".to_string()],
+        auth_required: true,
+        auth_env: vec!["GITHUB_TOKEN".to_string(), "GH_TOKEN".to_string()],
+        configured: false,
+        supports_status: false,
+        supports_publish: false,
+        supports_readback: false,
+        supports_admission: false,
+        storage: "not-configured".to_string(),
+        notes: "Target provider for GitHub issue mirrors; connector is not active yet.".to_string(),
+    };
+    apply_connector_provider_config(&mut github, &config.github);
+
     ConnectorRegistryReport {
         schema_version: CONNECTOR_REGISTRY_SCHEMA_VERSION.to_string(),
         providers: vec![
@@ -1006,54 +1064,9 @@ pub fn connector_registry() -> ConnectorRegistryReport {
                 storage: "sqlite".to_string(),
                 notes: "Built-in local issue/status/comment surface.".to_string(),
             },
-            ConnectorProviderSpec {
-                name: "file".to_string(),
-                display_name: "File Mirror".to_string(),
-                status: "active".to_string(),
-                mode: "local-json-mirror".to_string(),
-                review_surface_prefixes: vec!["file:".to_string()],
-                auth_required: false,
-                auth_env: Vec::new(),
-                configured: true,
-                supports_status: true,
-                supports_publish: true,
-                supports_readback: true,
-                supports_admission: true,
-                storage: "connectors/issue-mirrors/*.json".to_string(),
-                notes: "Local connector mirror used as the external issue surface dry-run.".to_string(),
-            },
-            ConnectorProviderSpec {
-                name: "linear".to_string(),
-                display_name: "Linear".to_string(),
-                status: "planned".to_string(),
-                mode: "remote-issue-api".to_string(),
-                review_surface_prefixes: vec!["linear:".to_string()],
-                auth_required: true,
-                auth_env: vec!["LINEAR_API_KEY".to_string()],
-                configured: false,
-                supports_status: false,
-                supports_publish: false,
-                supports_readback: false,
-                supports_admission: false,
-                storage: "not-configured".to_string(),
-                notes: "Target provider for real issue/status/comment sync; connector is not active yet.".to_string(),
-            },
-            ConnectorProviderSpec {
-                name: "github".to_string(),
-                display_name: "GitHub Issues".to_string(),
-                status: "planned".to_string(),
-                mode: "remote-issue-api".to_string(),
-                review_surface_prefixes: vec!["github:".to_string(), "gh:".to_string()],
-                auth_required: true,
-                auth_env: vec!["GITHUB_TOKEN".to_string(), "GH_TOKEN".to_string()],
-                configured: false,
-                supports_status: false,
-                supports_publish: false,
-                supports_readback: false,
-                supports_admission: false,
-                storage: "not-configured".to_string(),
-                notes: "Target provider for GitHub issue mirrors; connector is not active yet.".to_string(),
-            },
+            file,
+            linear,
+            github,
         ],
         admission: ConnectorAdmissionPolicySpec {
             schema_version: POLICY_SCHEMA_VERSION.to_string(),
@@ -1067,6 +1080,58 @@ pub fn connector_registry() -> ConnectorRegistryReport {
             dry_run_command: "entrance hive issue connector-admission <id> --compact".to_string(),
         },
     }
+}
+
+fn apply_connector_provider_config(
+    provider: &mut ConnectorProviderSpec,
+    config: &ConnectorProviderConfig,
+) {
+    if !config.auth_env.is_empty() {
+        provider.auth_env = config.auth_env.clone();
+    }
+    if !config.review_surface_prefixes.is_empty() {
+        provider.review_surface_prefixes = config.review_surface_prefixes.clone();
+    }
+    if let Some(storage) = config
+        .storage
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        provider.storage = storage.trim().to_string();
+    }
+    if let Some(mode) = config
+        .mode
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        provider.mode = mode.trim().to_string();
+    }
+
+    if let Some(enabled) = config.enabled {
+        if !enabled {
+            provider.status = "disabled".to_string();
+            provider.configured = false;
+            provider.supports_status = false;
+            provider.supports_publish = false;
+            provider.supports_readback = false;
+            provider.supports_admission = false;
+            provider.notes = format!("{} Config disabled in entrance.toml.", provider.notes);
+            return;
+        }
+
+        provider.configured = connector_provider_auth_configured(provider);
+        provider.notes = format!("{} Configured from entrance.toml.", provider.notes);
+    }
+}
+
+fn connector_provider_auth_configured(provider: &ConnectorProviderSpec) -> bool {
+    if !provider.auth_required {
+        return true;
+    }
+    provider
+        .auth_env
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
 }
 
 fn runtime_policy_registry() -> RuntimePolicyRegistry {
@@ -6873,6 +6938,45 @@ mod tests {
         assert_eq!(linear.status, "planned");
         assert!(linear.auth_required);
         assert!(!linear.configured);
+    }
+
+    #[test]
+    fn connector_registry_applies_runtime_config_overrides() {
+        let config = ConnectorsConfig {
+            file: ConnectorProviderConfig {
+                enabled: Some(false),
+                ..ConnectorProviderConfig::default()
+            },
+            linear: ConnectorProviderConfig {
+                enabled: Some(true),
+                auth_env: vec!["ENTRANCE_TEST_LINEAR_TOKEN".to_string()],
+                storage: Some("linear-dry-run".to_string()),
+                ..ConnectorProviderConfig::default()
+            },
+            github: ConnectorProviderConfig::default(),
+        };
+
+        let registry = connector_registry_with_config(&config);
+
+        let file = registry
+            .providers
+            .iter()
+            .find(|provider| provider.name == "file")
+            .expect("file connector should be registered");
+        assert_eq!(file.status, "disabled");
+        assert!(!file.configured);
+        assert!(!file.supports_publish);
+
+        let linear = registry
+            .providers
+            .iter()
+            .find(|provider| provider.name == "linear")
+            .expect("linear connector should be registered");
+        assert_eq!(linear.status, "planned");
+        assert_eq!(linear.storage, "linear-dry-run");
+        assert_eq!(linear.auth_env, vec!["ENTRANCE_TEST_LINEAR_TOKEN"]);
+        assert!(!linear.configured);
+        assert!(linear.notes.contains("Configured from entrance.toml."));
     }
 
     #[test]
