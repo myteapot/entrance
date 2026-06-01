@@ -19,6 +19,8 @@ const ISSUE_MIRROR_SYNC_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync.
 const ISSUE_MIRROR_SYNC_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_sync_receipt.v1";
 const ISSUE_MIRROR_VERIFY_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_verify.v1";
 const ISSUE_MIRROR_AUDIT_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_audit.v1";
+const ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror_admission.v1";
+const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MirrorFileDigest {
@@ -30,7 +32,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -223,6 +225,15 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 audit_issue_mirror_file(services, id.parse::<i64>()?, flag_value(rest, "--path"))?;
             if flag_present(rest, "--compact") {
                 print_json(&compact_issue_mirror_audit_summary(&report))
+            } else {
+                print_json(&report)
+            }
+        }
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "mirror-admit" => {
+            let report =
+                admit_issue_mirror_file(services, id.parse::<i64>()?, flag_value(rest, "--path"))?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_mirror_admission_summary(&report))
             } else {
                 print_json(&report)
             }
@@ -498,6 +509,15 @@ pub(crate) fn audit_issue_mirror_file(
 ) -> Result<serde_json::Value> {
     let verify = verify_issue_mirror_file(services, issue_id, path)?;
     Ok(compact_issue_mirror_audit(&verify))
+}
+
+pub(crate) fn admit_issue_mirror_file(
+    services: &AppServices,
+    issue_id: i64,
+    path: Option<&str>,
+) -> Result<serde_json::Value> {
+    let audit = audit_issue_mirror_file(services, issue_id, path)?;
+    Ok(compact_issue_mirror_admission(&audit))
 }
 
 fn default_issue_mirror_path(app_root: &Path, external_key: &str) -> PathBuf {
@@ -912,6 +932,116 @@ fn compact_issue_mirror_audit_summary(report: &serde_json::Value) -> serde_json:
     })
 }
 
+fn compact_issue_mirror_admission(audit: &serde_json::Value) -> serde_json::Value {
+    let admitted = audit
+        .pointer("/passed")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let issue_id = audit.pointer("/issue_id").and_then(|value| value.as_i64());
+    let failed_checks = audit
+        .pointer("/failed_checks")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let failed_count = audit
+        .pointer("/failed_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let route_to = if admitted {
+        "external_issue_surface"
+    } else {
+        "operator"
+    };
+    let reason = if admitted {
+        format!("{CONNECTOR_MIRROR_RECEIPT_GATE} passed")
+    } else {
+        format!("{CONNECTOR_MIRROR_RECEIPT_GATE} failed with {failed_count} check(s)")
+    };
+    serde_json::json!({
+        "schema_version": ISSUE_MIRROR_ADMISSION_SCHEMA_VERSION,
+        "object_kind": ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND,
+        "generated_at": chrono::Utc::now().to_rfc3339(),
+        "dry_run": true,
+        "admitted": admitted,
+        "result": if admitted { "admitted" } else { "rejected" },
+        "reason": reason,
+        "issue_id": issue_id,
+        "provider": audit.pointer("/provider"),
+        "review_surface": audit.pointer("/review_surface"),
+        "external_key": audit.pointer("/external_key"),
+        "failed_count": failed_count,
+        "failed_checks": failed_checks,
+        "operation": {
+            "name": "external_issue_surface_write",
+            "dry_run": true,
+            "destructive": false
+        },
+        "decision": {
+            "route_to": route_to,
+            "human_options": if admitted {
+                serde_json::json!(["write-external", "inspect"])
+            } else {
+                serde_json::json!(["sync", "inspect", "retry-admission"])
+            }
+        },
+        "policy": audit.pointer("/gate").cloned().unwrap_or_else(|| serde_json::json!({
+            "schema_version": "entrance.hive.policy.v1",
+            "gate": CONNECTOR_MIRROR_RECEIPT_GATE,
+            "expected_object_kind": CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND
+        })),
+        "receipt": {
+            "object_kind": CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+            "schema_version": audit.pointer("/verify/receipt/schema_version"),
+            "path": audit.pointer("/verify/path"),
+            "receipt_path": audit.pointer("/verify/receipt_path"),
+            "sha256": audit.pointer("/verify/current/sha256"),
+            "bytes": audit.pointer("/verify/current/bytes")
+        },
+        "audit": audit,
+        "actions": [
+            compact_loop_action(
+                "sync",
+                "Sync",
+                format!("entrance hive issue mirror-sync {}", issue_id.unwrap_or_default())
+            ),
+            compact_loop_action(
+                "audit",
+                "Audit",
+                format!("entrance hive issue mirror-audit {} --compact", issue_id.unwrap_or_default())
+            ),
+            compact_loop_action(
+                "admit",
+                "Admit",
+                format!("entrance hive issue mirror-admit {} --compact", issue_id.unwrap_or_default())
+            )
+        ]
+    })
+}
+
+fn compact_issue_mirror_admission_summary(report: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "entrance.hive.issue_mirror_admission.compact.v1",
+        "source_schema_version": report.pointer("/schema_version").and_then(|value| value.as_str()),
+        "object_kind": report.pointer("/object_kind").and_then(|value| value.as_str()),
+        "dry_run": report.pointer("/dry_run").and_then(|value| value.as_bool()),
+        "admitted": report.pointer("/admitted").and_then(|value| value.as_bool()),
+        "result": report.pointer("/result").and_then(|value| value.as_str()),
+        "reason": report.pointer("/reason").and_then(|value| value.as_str()),
+        "issue_id": report.pointer("/issue_id").and_then(|value| value.as_i64()),
+        "provider": report.pointer("/provider").and_then(|value| value.as_str()),
+        "review_surface": report.pointer("/review_surface").and_then(|value| value.as_str()),
+        "external_key": report.pointer("/external_key").and_then(|value| value.as_str()),
+        "gate": report.pointer("/policy/gate").and_then(|value| value.as_str()),
+        "route_to": report.pointer("/decision/route_to").and_then(|value| value.as_str()),
+        "failed_count": report.pointer("/failed_count").and_then(|value| value.as_u64()),
+        "failed_checks": report.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "receipt_object_kind": report.pointer("/receipt/object_kind").and_then(|value| value.as_str()),
+        "path": report.pointer("/receipt/path").and_then(|value| value.as_str()),
+        "receipt_path": report.pointer("/receipt/receipt_path").and_then(|value| value.as_str()),
+        "sha256": report.pointer("/receipt/sha256").and_then(|value| value.as_str()),
+        "actions": report.pointer("/actions").cloned().unwrap_or_else(|| serde_json::json!([]))
+    })
+}
+
 fn verify_failures(verify: &serde_json::Value) -> Vec<String> {
     verify
         .pointer("/failures")
@@ -1237,6 +1367,7 @@ mod tests {
 
     use super::{
         compact_issue_board, compact_issue_detail, compact_issue_mirror,
+        compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
         compact_issue_mirror_audit, compact_issue_mirror_audit_summary, compact_issue_mirror_sync,
         compact_issue_mirror_verify, compact_loop_audit, default_issue_mirror_path, flag_present,
         flag_value, issue_mirror_sync_receipt, mirror_receipt_path, MirrorFileDigest,
@@ -1849,6 +1980,79 @@ mod tests {
         assert_eq!(
             compact.pointer("/gate").and_then(|value| value.as_str()),
             Some("connector_mirror_receipt_current")
+        );
+
+        let rejected_admission = compact_issue_mirror_admission(&audit);
+        assert_eq!(
+            rejected_admission
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror_admission.v1")
+        );
+        assert_eq!(
+            rejected_admission
+                .pointer("/object_kind")
+                .and_then(|value| value.as_str()),
+            Some("ISSUE_CONNECTOR_ADMISSION")
+        );
+        assert_eq!(
+            rejected_admission
+                .pointer("/admitted")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            rejected_admission
+                .pointer("/decision/route_to")
+                .and_then(|value| value.as_str()),
+            Some("operator")
+        );
+        assert_eq!(
+            rejected_admission
+                .pointer("/receipt/object_kind")
+                .and_then(|value| value.as_str()),
+            Some("ISSUE_MIRROR_SYNC_RECEIPT")
+        );
+        assert_eq!(
+            rejected_admission
+                .pointer("/actions/2/command")
+                .and_then(|value| value.as_str()),
+            Some("entrance hive issue mirror-admit 8 --compact")
+        );
+
+        let admitted_audit = compact_issue_mirror_audit(&report);
+        let admitted = compact_issue_mirror_admission(&admitted_audit);
+        assert_eq!(
+            admitted
+                .pointer("/admitted")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            admitted
+                .pointer("/decision/route_to")
+                .and_then(|value| value.as_str()),
+            Some("external_issue_surface")
+        );
+        assert_eq!(
+            admitted
+                .pointer("/policy/gate")
+                .and_then(|value| value.as_str()),
+            Some("connector_mirror_receipt_current")
+        );
+
+        let compact_admission = compact_issue_mirror_admission_summary(&admitted);
+        assert_eq!(
+            compact_admission
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_mirror_admission.compact.v1")
+        );
+        assert_eq!(
+            compact_admission
+                .pointer("/route_to")
+                .and_then(|value| value.as_str()),
+            Some("external_issue_surface")
         );
     }
 

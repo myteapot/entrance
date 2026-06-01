@@ -268,6 +268,20 @@ type IssueMirrorAuditReport = {
   failed_checks: string[];
   verify: IssueMirrorVerifyReport;
 };
+type IssueMirrorAdmissionReport = {
+  schema_version: string;
+  admitted: boolean;
+  result: string;
+  reason: string;
+  failed_checks: string[];
+  decision: {
+    route_to: string;
+  };
+  receipt: {
+    sha256: string | null;
+    path: string | null;
+  };
+};
 type CommentPill = {
   label: string;
   evidenceId?: number;
@@ -617,6 +631,27 @@ export default function App() {
       }
     } catch (error) {
       setBanner(`Issue #${card.issue.id} verify failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingIssue(card.issue.id, null);
+    }
+  };
+  const admitIssueMirror = async (card: IssueCard) => {
+    if (issuePendingLabel(card.issue.id)) return;
+    setSelectedIssueId(card.issue.id);
+    setPendingIssue(card.issue.id, "Admitting");
+    try {
+      const report = await bridge.invoke<IssueMirrorAdmissionReport>("hive_issue_mirror_admit", {
+        issueId: card.issue.id,
+      });
+      if (report.admitted) {
+        setBanner(
+          `Admitted connector mirror ${compactText(report.receipt.sha256 ?? "no-sha", 12)}: ${report.decision.route_to}`,
+        );
+      } else {
+        setBanner(`Connector admission rejected: ${compactText(report.failed_checks.join(", "), 96)}`);
+      }
+    } catch (error) {
+      setBanner(`Issue #${card.issue.id} admission failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
     }
@@ -1145,10 +1180,14 @@ export default function App() {
     `entrance hive issue mirror-sync ${card.issue.id}`;
   const issueMirrorVerifyCommand = (card: IssueCard) =>
     `entrance hive issue mirror-audit ${card.issue.id} --compact`;
+  const issueMirrorAdmitCommand = (card: IssueCard) =>
+    `entrance hive issue mirror-admit ${card.issue.id} --compact`;
   const issueMirrorSyncLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Syncing" ? "Syncing" : "Sync";
   const issueMirrorVerifyLabel = (card: IssueCard) =>
     issuePendingLabel(card.issue.id) === "Verifying" ? "Verifying" : "Verify";
+  const issueMirrorAdmitLabel = (card: IssueCard) =>
+    issuePendingLabel(card.issue.id) === "Admitting" ? "Admitting" : "Admit";
 
   const compactAuditFailureDetail = (detail: string) => {
     const parts = detail.split(":").filter(Boolean);
@@ -1620,6 +1659,16 @@ export default function App() {
                               onClick={() => void verifyIssueMirror(card)}
                             >
                               {issueMirrorVerifyLabel(card)}
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Admit issue #${card.issue.id} mirror for connector from detail`}
+                              data-testid={`issue-action-detail-admit-${card.issue.id}`}
+                              disabled={Boolean(issuePendingLabel(card.issue.id))}
+                              title={issueMirrorAdmitCommand(card)}
+                              onClick={() => void admitIssueMirror(card)}
+                            >
+                              {issueMirrorAdmitLabel(card)}
                             </button>
                           </div>
                         ) : null}
@@ -2111,6 +2160,16 @@ export default function App() {
                                     onClick={() => void verifyIssueMirror(card)}
                                   >
                                     {issueMirrorVerifyLabel(card)}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Admit issue #${card.issue.id} mirror for connector from board`}
+                                    data-testid={`issue-action-board-admit-${card.issue.id}`}
+                                    disabled={Boolean(issuePendingLabel(card.issue.id))}
+                                    title={issueMirrorAdmitCommand(card)}
+                                    onClick={() => void admitIssueMirror(card)}
+                                  >
+                                    {issueMirrorAdmitLabel(card)}
                                   </button>
                                   <button
                                     type="button"
