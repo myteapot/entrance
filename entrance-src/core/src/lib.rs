@@ -12,14 +12,20 @@ pub mod versioning;
 
 pub use boot::{boot, resolve_app_root, AppKernel};
 pub use bus::{Bus, BusEvent, CommandEnvelope};
-pub use config::{AppConfig, DrawerConfig, HiveConfig, LauncherConfig};
+pub use config::{
+    AppConfig, ConnectorProviderConfig, ConnectorsConfig, DrawerConfig, HiveConfig, LauncherConfig,
+};
 pub use crypto::Crypto;
 pub use fs::{FileChange, FileSystem};
 pub use persona::{Persona, PersonaProfile};
 pub use plugin_api::{Plugin, PluginContext};
 pub use scheduler::{RoundState, Scheduler, TaskCheckpoint, TaskState};
 pub use store::{
-    AppStatus, DrawerEntry, DrawerEntryCreate, DrawerFilter, DrawerMode, HiveRun, HiveRunCreate,
+    AppStatus, DrawerEntry, DrawerEntryCreate, DrawerFilter, DrawerMode, HiveComment,
+    HiveCommentCreate, HiveIssue, HiveIssueCreate, HiveLoopAdmission, HiveLoopAdmissionCreate,
+    HiveLoopContract, HiveLoopContractCreate, HiveLoopEvidence, HiveLoopEvidenceCreate,
+    HiveLoopPacket, HiveLoopPacketCreate, HiveLoopPolicy, HiveLoopPolicyCreate, HiveLoopStage,
+    HiveLoopStageCreate, HiveLoopVerdict, HiveLoopVerdictCreate, HiveRun, HiveRunCreate,
     LauncherEntry, LauncherEntryCreate, LauncherQuery, MigrationStep, PersistedCommand, Store,
 };
 pub use supervision::{RetryPolicy, Supervision};

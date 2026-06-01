@@ -15,6 +15,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub hive: HiveConfig,
     #[serde(default)]
+    pub connectors: ConnectorsConfig,
+    #[serde(default)]
     pub launcher: LauncherConfig,
 }
 
@@ -24,6 +26,7 @@ impl Default for AppConfig {
             persona: "operator".to_string(),
             drawer: DrawerConfig::default(),
             hive: HiveConfig::default(),
+            connectors: ConnectorsConfig::default(),
             launcher: LauncherConfig::default(),
         }
     }
@@ -58,6 +61,30 @@ impl Default for HiveConfig {
             http_port: default_hive_http_port(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConnectorsConfig {
+    #[serde(default)]
+    pub file: ConnectorProviderConfig,
+    #[serde(default)]
+    pub linear: ConnectorProviderConfig,
+    #[serde(default)]
+    pub github: ConnectorProviderConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConnectorProviderConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub auth_env: Vec<String>,
+    #[serde(default)]
+    pub review_surface_prefixes: Vec<String>,
+    #[serde(default)]
+    pub storage: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +149,46 @@ mod tests {
         let result = AppConfig::load_or_create(&path);
 
         assert!(result.is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn connector_config_parses_provider_overrides() {
+        let path = std::env::temp_dir().join(format!(
+            "entrance-connector-config-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            r#"
+persona = "operator"
+
+[connectors.file]
+enabled = false
+
+[connectors.linear]
+enabled = true
+auth_env = ["ENTRANCE_TEST_LINEAR_TOKEN"]
+storage = "linear-dry-run"
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load_or_create(&path).unwrap();
+
+        assert_eq!(config.connectors.file.enabled, Some(false));
+        assert_eq!(config.connectors.linear.enabled, Some(true));
+        assert_eq!(
+            config.connectors.linear.auth_env,
+            vec!["ENTRANCE_TEST_LINEAR_TOKEN"]
+        );
+        assert_eq!(
+            config.connectors.linear.storage.as_deref(),
+            Some("linear-dry-run")
+        );
         let _ = fs::remove_file(path);
     }
 }

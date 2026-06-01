@@ -23,6 +23,8 @@ dirs = "5"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+sha2 = "0.10"
 tokio = { version = "1.50.0", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 toml = "0.8"
 tracing = "0.1"

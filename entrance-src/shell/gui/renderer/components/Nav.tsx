@@ -1,4 +1,4 @@
-type NavKey = "status" | "drawer" | "hive" | "launcher";
+type NavKey = "status" | "drawer" | "hive" | "panel" | "launcher";
 
 type NavProps = {
   current: NavKey;
@@ -9,6 +9,7 @@ const items: Array<{ key: NavKey; label: string; detail: string }> = [
   { key: "status", label: "Status", detail: "Kernel snapshot" },
   { key: "drawer", label: "Drawer", detail: "File and note intake" },
   { key: "hive", label: "Hive", detail: "Dispatch surface" },
+  { key: "panel", label: "Panel", detail: "Issue board" },
   { key: "launcher", label: "Launcher", detail: "Search and launch" },
 ];
 

@@ -9,11 +9,23 @@ use axum::{
 };
 use entrance_core::LauncherQuery;
 use entrance_drawer::VaultSecret;
-use entrance_hive::{HiveCallbackRequest, HiveDispatchRequest, ReviewDecision};
+use entrance_hive::{
+    HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest, IssueCard,
+    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, ReviewDecision,
+};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::app::AppServices;
+use crate::{
+    app::AppServices,
+    commands::hive::{
+        admit_issue_mirror_file, audit_issue_mirror_file, connector_publish_plan_report,
+        connector_queue_report, connector_roundtrip_plan_report, execute_connector_publish_plan,
+        execute_connector_roundtrip_plan, issue_connector_admission_preview, issue_mirror_status,
+        publish_issue_mirror_to_file, readback_issue_mirror_file, roundtrip_issue_mirror_file,
+        sync_issue_mirror_to_file, verify_issue_mirror_file,
+    },
+};
 
 #[derive(Debug, Clone)]
 struct DaemonState {
@@ -103,7 +115,7 @@ pub async fn run_http(services: AppServices) -> Result<()> {
     let state = Arc::new(DaemonState { services });
     let router = Router::new()
         .route("/health", get(http_health))
-        .route("/invoke", post(http_invoke))
+        .route("/invoke", post(http_invoke).options(http_options))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -114,14 +126,21 @@ pub async fn run_http(services: AppServices) -> Result<()> {
 }
 
 async fn http_health(State(state): State<Arc<DaemonState>>) -> impl IntoResponse {
-    Json(
-        state
-            .services
-            .kernel
-            .store
-            .app_status(&state.services.kernel.root)
-            .unwrap(),
+    (
+        cors_headers(),
+        Json(
+            state
+                .services
+                .kernel
+                .store
+                .app_status(&state.services.kernel.root)
+                .unwrap(),
+        ),
     )
+}
+
+async fn http_options() -> impl IntoResponse {
+    cors_headers()
 }
 
 async fn http_invoke(
@@ -129,17 +148,65 @@ async fn http_invoke(
     Json(request): Json<InvokeRequest>,
 ) -> impl IntoResponse {
     match handle_invoke(state.as_ref(), request.command, request.args).await {
-        Ok(result) => Json(serde_json::json!({
-            "ok": true,
-            "id": request.id,
-            "result": result
-        })),
-        Err(error) => Json(serde_json::json!({
-            "ok": false,
-            "id": request.id,
-            "error": error.to_string()
-        })),
+        Ok(result) => (
+            cors_headers(),
+            Json(serde_json::json!({
+                "ok": true,
+                "id": request.id,
+                "result": result
+            })),
+        ),
+        Err(error) => (
+            cors_headers(),
+            Json(serde_json::json!({
+                "ok": false,
+                "id": request.id,
+                "error": error.to_string()
+            })),
+        ),
     }
+}
+
+fn cors_headers() -> [(&'static str, &'static str); 3] {
+    [
+        ("access-control-allow-origin", "*"),
+        ("access-control-allow-methods", "GET, POST, OPTIONS"),
+        ("access-control-allow-headers", "content-type"),
+    ]
+}
+
+fn issue_cards_with_connector_status(
+    services: &AppServices,
+    cards: Vec<IssueCard>,
+) -> Result<serde_json::Value> {
+    let cards = cards
+        .into_iter()
+        .map(|card| issue_card_with_connector_status(services, card))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(serde_json::Value::Array(cards))
+}
+
+fn issue_card_with_connector_status(
+    services: &AppServices,
+    card: IssueCard,
+) -> Result<serde_json::Value> {
+    let issue_id = card.issue.id;
+    let mut card = serde_json::to_value(card)?;
+    if let Some(object) = card.as_object_mut() {
+        let connector = issue_mirror_status(services, issue_id, None).unwrap_or_else(|error| {
+            serde_json::json!({
+                "schema_version": "entrance.hive.issue_mirror_status.v1",
+                "current": false,
+                "publish_required": null,
+                "reason": "connector_status_unavailable",
+                "error": error.to_string(),
+                "issue_id": issue_id,
+                "publish_command": format!("entrance hive issue mirror-publish {} --compact", issue_id)
+            })
+        });
+        object.insert("connector".to_string(), connector);
+    }
+    Ok(card)
 }
 
 async fn handle_invoke(
@@ -326,6 +393,448 @@ async fn handle_invoke(
             Ok(serde_json::to_value(
                 state.services.hive.review(id, decision)?,
             )?)
+        }
+        "hive_loop_list" => Ok(serde_json::to_value(state.services.hive.loop_list()?)?),
+        "hive_loop_show" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_show requires `id`")?;
+            Ok(serde_json::to_value(state.services.hive.loop_report(id)?)?)
+        }
+        "hive_loop_trace" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_trace requires `id`")?;
+            Ok(serde_json::to_value(state.services.hive.loop_trace(id)?)?)
+        }
+        "hive_loop_evidence" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_evidence requires `id`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.loop_evidence(id)?,
+            )?)
+        }
+        "hive_loop_audit" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_audit requires `id`")?;
+            Ok(serde_json::to_value(state.services.hive.loop_audit(id)?)?)
+        }
+        "hive_loop_doctor" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_doctor requires `id`")?;
+            Ok(serde_json::to_value(state.services.hive.loop_doctor(id)?)?)
+        }
+        "hive_loop_policies" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_policies requires `id`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.loop_policies(id)?,
+            )?)
+        }
+        "hive_policy_registry" => Ok(serde_json::to_value(state.services.hive.policy_registry())?),
+        "hive_loop_create" => {
+            let string_list = |key: &str| {
+                args.get(key)
+                    .and_then(|value| value.as_array())
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            };
+            Ok(serde_json::to_value(
+                state.services.hive.loop_create(HiveLoopCreateRequest {
+                    title: args
+                        .get("title")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("Untitled loop")
+                        .to_string(),
+                    goal: args
+                        .get("goal")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("Run an Entrance loop")
+                        .to_string(),
+                    boundary: args
+                        .get("boundary")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    approach_space: string_list("approachSpace"),
+                    eval_space: string_list("evalSpace"),
+                    review_surface: args
+                        .get("reviewSurface")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("local-hive-panel")
+                        .to_string(),
+                    autonomy_level: args
+                        .get("autonomyLevel")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("run-approved-candidates")
+                        .to_string(),
+                    runtime: args
+                        .get("runtime")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("local")
+                        .to_string(),
+                })?,
+            )?)
+        }
+        "hive_loop_run" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_run requires `id`")?;
+            let hive = state.services.hive.clone();
+            let request = HiveLoopRunRequest {
+                loop_id: id,
+                runtime: args
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                decision: args
+                    .get("decision")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                worker_timeout_secs: args
+                    .get("workerTimeoutSecs")
+                    .or_else(|| args.get("worker_timeout_secs"))
+                    .and_then(|value| value.as_u64()),
+                worker_attempts: args
+                    .get("workerAttempts")
+                    .or_else(|| args.get("worker_attempts"))
+                    .and_then(|value| value.as_u64()),
+            };
+            tokio::task::spawn_blocking(move || Ok(serde_json::to_value(hive.loop_run(request)?)?))
+                .await
+                .context("hive_loop_run worker panicked")?
+        }
+        "hive_panel" => {
+            let cards = state.services.hive.panel()?;
+            issue_cards_with_connector_status(&state.services, cards)
+        }
+        "hive_connector_registry" => Ok(serde_json::to_value(
+            state.services.hive.connector_registry(),
+        )?),
+        "hive_connector_queue" => Ok(connector_queue_report(
+            &state.services,
+            args.get("provider")
+                .or_else(|| args.get("providerName"))
+                .or_else(|| args.get("provider_name"))
+                .and_then(|value| value.as_str()),
+        )?),
+        "hive_connector_publish_plan" => Ok(connector_publish_plan_report(
+            &state.services,
+            args.get("provider")
+                .or_else(|| args.get("providerName"))
+                .or_else(|| args.get("provider_name"))
+                .and_then(|value| value.as_str()),
+        )?),
+        "hive_connector_publish_execute" => {
+            let plan_id = args
+                .get("planId")
+                .or_else(|| args.get("plan_id"))
+                .and_then(|value| value.as_str())
+                .context("hive_connector_publish_execute requires `planId`")?;
+            Ok(execute_connector_publish_plan(
+                &state.services,
+                args.get("provider")
+                    .or_else(|| args.get("providerName"))
+                    .or_else(|| args.get("provider_name"))
+                    .and_then(|value| value.as_str()),
+                plan_id,
+            )?)
+        }
+        "hive_connector_roundtrip_plan" => Ok(connector_roundtrip_plan_report(
+            &state.services,
+            args.get("provider")
+                .or_else(|| args.get("providerName"))
+                .or_else(|| args.get("provider_name"))
+                .and_then(|value| value.as_str()),
+        )?),
+        "hive_connector_roundtrip_execute" => {
+            let plan_id = args
+                .get("planId")
+                .or_else(|| args.get("plan_id"))
+                .and_then(|value| value.as_str())
+                .context("hive_connector_roundtrip_execute requires `planId`")?;
+            Ok(execute_connector_roundtrip_plan(
+                &state.services,
+                args.get("provider")
+                    .or_else(|| args.get("providerName"))
+                    .or_else(|| args.get("provider_name"))
+                    .and_then(|value| value.as_str()),
+                plan_id,
+            )?)
+        }
+        "hive_issue_show" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_show requires `issueId`")?;
+            issue_card_with_connector_status(
+                &state.services,
+                state.services.hive.issue_report(issue_id)?,
+            )
+        }
+        "hive_issue_mirror_sync" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_sync requires `issueId`")?;
+            Ok(sync_issue_mirror_to_file(
+                &state.services,
+                issue_id,
+                args.get("outPath")
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+            )?)
+        }
+        "hive_issue_connector_admission" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_connector_admission requires `issueId`")?;
+            Ok(issue_connector_admission_preview(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+            )?)
+        }
+        "hive_issue_mirror_publish" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_publish requires `issueId`")?;
+            Ok(publish_issue_mirror_to_file(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+            )?)
+        }
+        "hive_issue_mirror_status" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_status requires `issueId`")?;
+            Ok(issue_mirror_status(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+            )?)
+        }
+        "hive_issue_mirror_verify" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_verify requires `issueId`")?;
+            Ok(verify_issue_mirror_file(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+            )?)
+        }
+        "hive_issue_mirror_audit" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_audit requires `issueId`")?;
+            Ok(audit_issue_mirror_file(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+            )?)
+        }
+        "hive_issue_mirror_readback" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_readback requires `issueId`")?;
+            Ok(readback_issue_mirror_file(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+                args.get("record")
+                    .or_else(|| args.get("recorded"))
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+            )?)
+        }
+        "hive_issue_mirror_admit" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_admit requires `issueId`")?;
+            Ok(admit_issue_mirror_file(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+                args.get("record")
+                    .or_else(|| args.get("recorded"))
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+            )?)
+        }
+        "hive_issue_mirror_roundtrip" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_mirror_roundtrip requires `issueId`")?;
+            Ok(roundtrip_issue_mirror_file(
+                &state.services,
+                issue_id,
+                args.get("path")
+                    .or_else(|| args.get("outPath"))
+                    .or_else(|| args.get("out_path"))
+                    .and_then(|value| value.as_str()),
+                args.get("record")
+                    .or_else(|| args.get("recorded"))
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(true),
+            )?)
+        }
+        "hive_issue_comment" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_comment requires `issueId`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.issue_comment(IssueCommentRequest {
+                    issue_id,
+                    author: args
+                        .get("author")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("human")
+                        .to_string(),
+                    body: args
+                        .get("body")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                })?,
+            )?)
+        }
+        "hive_issue_decide" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_decide requires `issueId`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.issue_decide(IssueDecisionRequest {
+                    issue_id,
+                    action: args
+                        .get("action")
+                        .and_then(|value| value.as_str())
+                        .context("hive_issue_decide requires `action`")?
+                        .to_string(),
+                    author: args
+                        .get("author")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("human")
+                        .to_string(),
+                    body: args
+                        .get("body")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned),
+                })?,
+            )?)
+        }
+        "hive_issue_run" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_run requires `issueId`")?;
+            let hive = state.services.hive.clone();
+            let request = IssueRunRequest {
+                issue_id,
+                runtime: args
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                decision: args
+                    .get("decision")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                worker_timeout_secs: args
+                    .get("workerTimeoutSecs")
+                    .or_else(|| args.get("worker_timeout_secs"))
+                    .and_then(|value| value.as_u64()),
+                worker_attempts: args
+                    .get("workerAttempts")
+                    .or_else(|| args.get("worker_attempts"))
+                    .and_then(|value| value.as_u64()),
+                retry: args
+                    .get("retry")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+                author: args
+                    .get("author")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("human")
+                    .to_string(),
+                body: args
+                    .get("body")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+            };
+            tokio::task::spawn_blocking(move || Ok(serde_json::to_value(hive.issue_run(request)?)?))
+                .await
+                .context("hive_issue_run worker panicked")?
         }
         "launcher_hotkey" => Ok(serde_json::json!(state.services.launcher.hotkey())),
         "launcher_refresh" => {

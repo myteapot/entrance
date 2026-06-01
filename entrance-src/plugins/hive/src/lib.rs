@@ -1,18 +1,30 @@
 mod dispatch;
 mod engine;
 mod http;
+mod loop_control;
 mod preset;
 mod review;
 
 use anyhow::Result;
 use entrance_core::{
-    Bus, HiveRun, HiveRunCreate, Plugin, PluginContext, Scheduler, Store, Supervision,
+    Bus, ConnectorsConfig, HiveRun, HiveRunCreate, Plugin, PluginContext, Scheduler, Store,
+    Supervision,
 };
 use serde::{Deserialize, Serialize};
 
 pub use dispatch::DispatchSummary;
 pub use engine::{EngineEvent, EngineReport};
 pub use http::{HiveCallback, HiveCallbackRequest};
+pub use loop_control::{
+    connector_retry_policy_for_provider, ConnectorAdmissionCheckSpec, ConnectorAdmissionPolicySpec,
+    ConnectorPolicyRegistry, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
+    ConnectorRegistryReport, ConnectorRetryPolicySpec, HiveLoopAuditCheck, HiveLoopAuditReport,
+    HiveLoopCreateRequest, HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceReport,
+    HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest, HiveLoopTraceReport, IssueAction,
+    IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport,
+    IssueRunRequest, PolicyGateSpec, PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE,
+    CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+};
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};
 
@@ -39,6 +51,7 @@ pub struct HivePlugin {
     scheduler: Scheduler,
     supervision: Supervision,
     preset: SoftwareEngPreset,
+    connectors: ConnectorsConfig,
 }
 
 impl HivePlugin {
@@ -49,6 +62,7 @@ impl HivePlugin {
             scheduler: ctx.scheduler(),
             supervision: ctx.supervision(),
             preset: SoftwareEngPreset,
+            connectors: ctx.kernel.config.connectors.clone(),
         }
     }
 
@@ -81,6 +95,74 @@ impl HivePlugin {
 
     pub fn review(&self, id: i64, decision: ReviewDecision) -> Result<ReviewRecord> {
         review::apply(&self.store, id, decision)
+    }
+
+    pub fn loop_create(&self, request: HiveLoopCreateRequest) -> Result<HiveLoopReport> {
+        loop_control::create(&self.store, request)
+    }
+
+    pub fn loop_run(&self, request: HiveLoopRunRequest) -> Result<HiveLoopReport> {
+        loop_control::run(&self.store, request)
+    }
+
+    pub fn loop_report(&self, id: i64) -> Result<HiveLoopReport> {
+        loop_control::report(&self.store, id)
+    }
+
+    pub fn loop_list(&self) -> Result<Vec<entrance_core::HiveLoopContract>> {
+        loop_control::list(&self.store)
+    }
+
+    pub fn policy_registry(&self) -> PolicyRegistryReport {
+        loop_control::policy_registry()
+    }
+
+    pub fn connector_registry(&self) -> ConnectorRegistryReport {
+        loop_control::connector_registry_with_config(&self.connectors)
+    }
+
+    pub fn loop_policies(&self, id: i64) -> Result<HiveLoopPolicyReport> {
+        loop_control::policies(&self.store, id)
+    }
+
+    pub fn loop_trace(&self, id: i64) -> Result<HiveLoopTraceReport> {
+        loop_control::trace(&self.store, id)
+    }
+
+    pub fn loop_evidence(&self, id: i64) -> Result<HiveLoopEvidenceReport> {
+        loop_control::evidence_report(&self.store, id)
+    }
+
+    pub fn loop_audit(&self, id: i64) -> Result<HiveLoopAuditReport> {
+        loop_control::audit(&self.store, id)
+    }
+
+    pub fn loop_doctor(&self, id: i64) -> Result<HiveLoopDoctorReport> {
+        loop_control::doctor(&self.store, id)
+    }
+
+    pub fn panel(&self) -> Result<Vec<IssueCard>> {
+        loop_control::panel(&self.store)
+    }
+
+    pub fn issue_report(&self, id: i64) -> Result<IssueCard> {
+        loop_control::issue(&self.store, id)
+    }
+
+    pub fn issue_mirror(&self, id: i64) -> Result<loop_control::IssueMirrorReport> {
+        loop_control::issue_mirror(&self.store, id)
+    }
+
+    pub fn issue_comment(&self, request: IssueCommentRequest) -> Result<IssueCard> {
+        loop_control::add_comment(&self.store, request)
+    }
+
+    pub fn issue_decide(&self, request: IssueDecisionRequest) -> Result<IssueCard> {
+        loop_control::decide_issue(&self.store, request)
+    }
+
+    pub fn issue_run(&self, request: IssueRunRequest) -> Result<HiveLoopReport> {
+        loop_control::run_issue(&self.store, request)
     }
 
     pub fn bootstrap_run(&self, row: HiveRunCreate) -> Result<i64> {
