@@ -22,12 +22,13 @@ Last updated: 2026-06-09
 - 本轮继续把 Linear status mapping 推进到配置驱动写入：`entrance.toml` 支持 `connectors.linear.status_mappings.<HiveStatus>.remote_state_id`，provider registry/remote contract/connector queue 会暴露 configured mapping，Linear GraphQL update 会写入 configured `stateId`，readback 会优先校验 `state.id` 再 fallback 到 state name/status marker。
 - 本轮继续把 issue 级 connector control 暴露到 agent 和 Panel：新增 `entrance.hive.issue_connector_control.v1` 摘要，MCP `entrance_issue_control` / `entrance://issues/{issue_id}/control` 现在携带 provider、publish/admission gate、remote target、remote write plan、当前 `status_mapping` 和 configured mappings；Panel connector strip 也显示当前 issue 的 status mapping chip。
 - 本轮继续把 external connector blocker 变成 operator decision surface：provider/target/write-plan/admission 阻塞会生成 `entrance.hive.connector_decision_surface.v1`，MCP issue control 和 connector queue 会暴露 primary action、blockers、issue actions、policy/review resource；Panel connector strip 显示 decision chip，selected issue 详情显示 Connector Decision block 和可点击 issue action。
+- 本轮继续把 connector queue 直接暴露到 MCP：新增 `entrance_connector_queue` tool、`entrance://connectors/queue` resource、`entrance://connectors/queue/{provider}` resource template/provider resource，并把 single issue control packet 指回全局 queue 与当前 provider queue。
 
 ## 还没做完
 
 - 把 `runtime_preflight.v1` 扩展成完整 capability preview：sandbox scope、connector readiness、artifact capture、人类偏好边界，而不仅是 runtime support/probe。
 - 把 Evidence Drilldown/Manifest 产品化：完整 transcript 展开、真实远端 receipt 归档、真实 artifact manifest 生成/内容校验、payload schema diff、更完整的 blocker decision workflow。
-- Productize MCP：真实客户端配置、协议兼容测试、verified actor identity、权限边界、远程 connector 绑定。
+- Productize MCP：真实客户端配置、协议兼容测试、verified actor identity、权限边界、远程 connector 绑定，以及 connector queue 在真实 MCP 客户端里的兼容性/可读性验证。
 - Productize Linear/GitHub connector：真实 token 验证、Linear workflow discovery/migration、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
 - Productize issue timeline：筛选/折叠、远端 issue comment 映射、inline decision 的操作后刷新状态、receipt drilldown 和更强的 blocked action provenance。
 - Productize issue transition policy：当前已经有 kernel registry/report snapshot/audit 绑定、execution-time transition admission receipt、Panel 操作后 selected issue control surface 刷新、系统化状态机矩阵测试、provider status mapping policy 和 Linear configured stateId mapping；还缺版本迁移、状态映射 discovery/migration 和更完整的 policy lifecycle。

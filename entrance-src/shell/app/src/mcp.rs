@@ -7,7 +7,10 @@ use entrance_hive::{
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::{app::AppServices, commands::hive::compact_issue_connector_control};
+use crate::{
+    app::AppServices,
+    commands::hive::{compact_issue_connector_control, connector_queue_report},
+};
 
 const MCP_LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_FALLBACK_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -26,6 +29,7 @@ const MCP_TOOL_NAMES: &[&str] = &[
     "entrance_issue_list",
     "entrance_issue_show",
     "entrance_issue_control",
+    "entrance_connector_queue",
     "entrance_review_queue",
     "entrance_issue_comment",
     "entrance_loop_create",
@@ -436,6 +440,20 @@ fn tool_specs() -> Vec<serde_json::Value> {
             }),
         ),
         tool_spec(
+            "entrance_connector_queue",
+            "List Entrance connector queue",
+            "Read the external issue/status/comment connector queue with publish requirements, remote write plans, status mappings, blockers, and operator decision surfaces.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Optional provider filter such as local-hive-panel, file, remote-fixture, github, or linear."
+                    }
+                }
+            }),
+        ),
+        tool_spec(
             "entrance_review_queue",
             "List Entrance review queue",
             "List Blocked and Needs Review issues with decision options, blockers, and evidence summaries.",
@@ -573,6 +591,7 @@ fn call_tool(
         Some("entrance_issue_list") => tool_issue_list(services, &args),
         Some("entrance_issue_show") => tool_issue_show(services, &args),
         Some("entrance_issue_control") => tool_issue_control(services, &args),
+        Some("entrance_connector_queue") => tool_connector_queue(services, &args),
         Some("entrance_review_queue") => tool_review_queue(services, &args),
         Some("entrance_issue_comment") => tool_issue_comment(services, &args),
         Some("entrance_loop_create") => tool_loop_create(services, &args),
@@ -628,6 +647,14 @@ fn tool_issue_control(
     Ok(issue_control_packet_for_services(services, &card))
 }
 
+fn tool_connector_queue(
+    services: &AppServices,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let provider = optional_string_arg(args, "provider");
+    connector_queue_report(services, provider.as_deref())
+}
+
 #[cfg(test)]
 fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
     issue_control_packet_with_connector(card, serde_json::Value::Null)
@@ -644,6 +671,11 @@ fn issue_control_packet_with_connector(
     card: &IssueCard,
     connector: serde_json::Value,
 ) -> serde_json::Value {
+    let connector_provider_queue = connector
+        .pointer("/provider")
+        .and_then(|value| value.as_str())
+        .filter(|provider| !provider.trim().is_empty())
+        .map(|provider| format!("entrance://connectors/queue/{provider}"));
     let trace = card.trace.as_ref();
     let doctor = card.doctor.as_ref();
     let recent_evidence = trace
@@ -740,6 +772,8 @@ fn issue_control_packet_with_connector(
             "runtime_preflight": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/runtime-preflight")),
             "worker_lifecycle": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
             "review_queue": "entrance://review-queue",
+            "connector_queue": "entrance://connectors/queue",
+            "connector_provider_queue": connector_provider_queue,
             "permissions": "entrance://policy/mcp-permissions",
             "actor_identity": "entrance://policy/actor-identity"
         }
@@ -1048,6 +1082,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "Blocked and Needs Review issue decision surface.",
         ),
         resource_spec(
+            "entrance://connectors/queue",
+            "Entrance connector queue",
+            "External issue/status/comment connector queue across providers.",
+        ),
+        resource_spec(
             "entrance://policy/registry",
             "Entrance policy registry",
             "Active loop, runtime, and connector policy registry.",
@@ -1068,6 +1107,13 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "SQLite schema contract and health report.",
         ),
     ];
+    for provider in services.hive.connector_registry().providers {
+        resources.push(resource_spec(
+            &format!("entrance://connectors/queue/{}", provider.name),
+            &format!("Connector queue: {}", provider.display_name),
+            "External issue/status/comment connector queue filtered to one provider.",
+        ));
+    }
     for card in services.hive.panel()? {
         resources.push(resource_spec(
             &format!("entrance://issues/{}", card.issue.id),
@@ -1135,6 +1181,12 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
 fn resource_templates() -> serde_json::Value {
     serde_json::json!({
         "resourceTemplates": [
+            {
+                "uriTemplate": "entrance://connectors/queue/{provider}",
+                "name": "Entrance connector queue by provider",
+                "description": "Read external issue/status/comment connector queue filtered to one provider.",
+                "mimeType": "application/json"
+            },
             {
                 "uriTemplate": "entrance://issues/{issue_id}",
                 "name": "Entrance issue by id",
@@ -1219,6 +1271,14 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
         }
         "entrance://issues" => tool_issue_list(services, &serde_json::json!({}))?,
         "entrance://review-queue" => review_queue(services, None)?,
+        "entrance://connectors/queue" => connector_queue_report(services, None)?,
+        value if value.starts_with("entrance://connectors/queue/") => {
+            let provider = value.trim_start_matches("entrance://connectors/queue/");
+            if provider.trim().is_empty() {
+                anyhow::bail!("invalid Entrance connector queue resource URI `{value}`");
+            }
+            connector_queue_report(services, Some(provider))?
+        }
         "entrance://policy/registry" => serde_json::to_value(services.hive.policy_registry())?,
         "entrance://policy/mcp-permissions" => mcp_permission_policy(),
         "entrance://policy/actor-identity" => mcp_actor_identity_policy(),
@@ -1494,6 +1554,20 @@ fn mcp_tool_permission(tool: &str) -> serde_json::Value {
                 "loop/trace/evidence/doctor",
                 "policy/action_permission",
                 "operator_confirmation_receipt",
+            ],
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        ),
+        "entrance_connector_queue" => (
+            "read",
+            "connector.queue",
+            vec![
+                "issue/status/comment",
+                "connector/queue",
+                "connector/registry",
+                "connector/decision_surface",
             ],
             Vec::new(),
             None,
@@ -1979,6 +2053,7 @@ mod tests {
 
         assert!(names.contains(&"entrance_issue_list"));
         assert!(names.contains(&"entrance_issue_control"));
+        assert!(names.contains(&"entrance_connector_queue"));
         assert!(names.contains(&"entrance_loop_create"));
         assert!(names.contains(&"entrance_issue_run"));
         assert!(names.contains(&"entrance_issue_retry"));
@@ -2219,6 +2294,18 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("state-blocked")
         );
+        assert_eq!(
+            packet
+                .pointer("/resources/connector_queue")
+                .and_then(|value| value.as_str()),
+            Some("entrance://connectors/queue")
+        );
+        assert_eq!(
+            packet
+                .pointer("/resources/connector_provider_queue")
+                .and_then(|value| value.as_str()),
+            Some("entrance://connectors/queue/linear")
+        );
     }
 
     #[test]
@@ -2232,6 +2319,7 @@ mod tests {
             .filter_map(|template| template.get("uriTemplate").and_then(|value| value.as_str()))
             .collect::<Vec<_>>();
 
+        assert!(uri_templates.contains(&"entrance://connectors/queue/{provider}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/control"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/transition-policy"));

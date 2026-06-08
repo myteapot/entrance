@@ -198,6 +198,11 @@ Entrance has reached a local MVP unit:
   action, blocker list, issue actions, and policy/review resources; MCP issue
   control and the connector queue expose it, while the Panel shows a decision
   chip plus a selected-issue Connector Decision block with clickable actions.
+- The connector queue is now directly exposed to MCP agents through
+  `entrance_connector_queue`, `entrance://connectors/queue`, and
+  `entrance://connectors/queue/{provider}`. Single issue control packets also
+  link back to the global connector queue and the current provider queue when a
+  provider is known.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -209,7 +214,8 @@ multi-agent runtime/compiler product.
 - Productize the MCP stdio surface: client config docs, stronger protocol
   tests, real auth/identity policy on top of the local tool-permission
   registry, verified actor identity mapping beyond self-reported author and
-  `initialize.clientInfo`, and compatibility checks against real MCP clients.
+  `initialize.clientInfo`, connector queue readability in real clients, and
+  compatibility checks against real MCP clients.
 - Add verified operator identity for local Panel/daemon decisions beyond the
   current `local-hive-panel` audit context.
 - Add live token-backed GitHub and Linear validation runs, including safe
