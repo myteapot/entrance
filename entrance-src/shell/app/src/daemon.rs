@@ -451,6 +451,15 @@ async fn handle_invoke(
                 state.services.hive.loop_worker_lifecycle(id)?,
             )?)
         }
+        "hive_loop_runtime_preflight" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_runtime_preflight requires `id`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.loop_runtime_preflight(id)?,
+            )?)
+        }
         "hive_loop_policies" => {
             let id = args
                 .get("id")

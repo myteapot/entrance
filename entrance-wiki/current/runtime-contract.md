@@ -86,6 +86,19 @@ If preflight is rejected, Hive creates a `kernel` stage, records
 `Blocked`, and does not spawn Explorer/Developer/Reviewer workers. Successful
 preflight records only packet/admission receipts; the agent stage/evidence
 ledger remains the three role stages.
+`entrance hive loop preflight <loop_id>` exposes this boundary as
+`entrance.hive.runtime_preflight.v1`: the runtime policy, supported runtime
+registry, route `kernel -> explorer`, expected `PREFLIGHT_PACKET`, runtime
+probe, current-round admission result, blocker, failure list, and copyable next
+actions. The report only treats a preflight packet from the current round as the
+current observation, so a retry into a new round is not polluted by an older
+blocked preflight.
+The same report is available to MCP clients as
+`entrance://loops/{loop_id}/runtime-preflight`; MCP issue control packets also
+include a compact runtime preflight summary with gate, route, state, blocker,
+and failure details. The local Panel selected-issue detail renders this report
+as a Runtime Preflight block before Worker Lifecycle, making the kernel gate
+visible before operator attention moves to workers.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as preflight-blocked verdicts. The `codex` runtime uses a read-only
 `codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and

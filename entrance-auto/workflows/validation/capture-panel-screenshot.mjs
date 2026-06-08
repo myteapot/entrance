@@ -388,7 +388,7 @@ async function main() {
 
   await waitForCondition(
     win,
-    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
+    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
     "Panel issue board",
   );
   await win.webContents.executeJavaScript(\`
@@ -419,6 +419,9 @@ async function main() {
     remote_fixture_issue_visible: text.includes('Entrance remote fixture demo'),
     connector_queue_visible: text.includes('Connector queue'),
     remote_fixture_provider_visible: text.includes('remote-fixture'),
+    runtime_preflight_visible: Boolean(document.querySelector('[data-testid^="runtime-preflight-detail-"]')),
+    runtime_preflight_gate_visible: text.includes('runtime_policy_ready'),
+    runtime_preflight_route_visible: text.includes('kernel -> explorer'),
     worker_lifecycle_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-detail-"]')),
     worker_lifecycle_explorer_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-role-"][data-testid$="-explorer"]')),
     worker_lifecycle_developer_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-role-"][data-testid$="-developer"]')),

@@ -33,6 +33,7 @@ const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
 const WORKER_LIFECYCLE_SCHEMA_VERSION: &str = "entrance.hive.worker_lifecycle.v1";
+const RUNTIME_PREFLIGHT_SCHEMA_VERSION: &str = "entrance.hive.runtime_preflight.v1";
 pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
@@ -598,6 +599,64 @@ pub struct HiveLoopWorkerLifecycleWorker {
     pub gate_count: Option<usize>,
     pub receipt_errors: Vec<String>,
     pub transcript_excerpt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimePreflightReport {
+    pub schema_version: String,
+    pub loop_id: i64,
+    pub issue_id: Option<i64>,
+    pub issue_status: Option<String>,
+    pub status: String,
+    pub active_phase: String,
+    pub current_round: i64,
+    pub runtime: String,
+    pub preflight_state: String,
+    pub summary: String,
+    pub policy: HiveLoopRuntimePreflightPolicy,
+    pub preview: HiveLoopRuntimePreflightPreview,
+    pub current: Option<HiveLoopRuntimePreflightObservation>,
+    pub failures: Vec<String>,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimePreflightPolicy {
+    pub schema_version: String,
+    pub gate: String,
+    pub object_kind: String,
+    pub route_from: String,
+    pub route_to: String,
+    pub required_receipts: Vec<String>,
+    pub supported_runtimes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimePreflightPreview {
+    pub runtime: String,
+    pub supported: bool,
+    pub probe_ok: bool,
+    pub blocker: Option<String>,
+    pub runtime_probe: serde_json::Value,
+    pub selected_policy: Option<RuntimePolicySpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimePreflightObservation {
+    pub packet_id: i64,
+    pub admission_id: Option<i64>,
+    pub round: i64,
+    pub result: Option<String>,
+    pub reason: Option<String>,
+    pub gate: Option<String>,
+    pub gate_passed: Option<bool>,
+    pub receipt_required: Vec<String>,
+    pub receipt_missing: Vec<String>,
+    pub runtime: Option<String>,
+    pub supported: Option<bool>,
+    pub probe_ok: Option<bool>,
+    pub blocker: Option<String>,
+    pub runtime_probe: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2161,6 +2220,42 @@ pub fn worker_lifecycle(store: &Store, loop_id: i64) -> Result<HiveLoopWorkerLif
     })
 }
 
+pub fn runtime_preflight(store: &Store, loop_id: i64) -> Result<HiveLoopRuntimePreflightReport> {
+    let contract = store
+        .get_hive_loop_contract(loop_id)?
+        .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
+    let issue = store.list_hive_issues_for_loop(loop_id)?.into_iter().next();
+    let issue_id = issue.as_ref().map(|issue| issue.id);
+    let issue_status = issue.as_ref().map(|issue| issue.status.clone());
+    let packets = store.list_hive_loop_packets(loop_id)?;
+    let admissions = store.list_hive_loop_admissions(loop_id)?;
+    let current = runtime_preflight_observation(&contract, &packets, &admissions);
+    let preview = runtime_preflight_preview(&contract.runtime);
+    let preflight_state = runtime_preflight_state(&contract, &preview, current.as_ref());
+    let failures = runtime_preflight_failures(&preview, current.as_ref());
+    let next_actions =
+        runtime_preflight_next_actions(preflight_state, contract.id, issue_id, &contract.runtime);
+    let summary = runtime_preflight_summary(&contract, issue_status.as_deref(), preflight_state);
+
+    Ok(HiveLoopRuntimePreflightReport {
+        schema_version: RUNTIME_PREFLIGHT_SCHEMA_VERSION.to_string(),
+        loop_id: contract.id,
+        issue_id,
+        issue_status,
+        status: contract.status,
+        active_phase: contract.active_phase,
+        current_round: contract.current_round,
+        runtime: contract.runtime,
+        preflight_state: preflight_state.to_string(),
+        summary,
+        policy: runtime_preflight_policy(),
+        preview,
+        current,
+        failures,
+        next_actions,
+    })
+}
+
 fn store_schema_audit_check(status: &StoreSchemaStatus) -> HiveLoopAuditCheck {
     let present_table_count = status.tables.iter().filter(|table| table.present).count();
     let present_index_count = status.indexes.iter().filter(|index| index.present).count();
@@ -2816,6 +2911,213 @@ fn worker_lifecycle_summary(
         current.expected_roles.len(),
         current.reviewer_invalid_rounds_used,
         REVIEWER_INVALID_ROUND_BUDGET
+    )
+}
+
+fn runtime_preflight_policy() -> HiveLoopRuntimePreflightPolicy {
+    let spec = gate_spec("runtime_policy_ready").expect("runtime preflight gate must exist");
+    HiveLoopRuntimePreflightPolicy {
+        schema_version: RUNTIME_PREFLIGHT_SCHEMA_VERSION.to_string(),
+        gate: spec.name.to_string(),
+        object_kind: spec
+            .expected_object_kind
+            .unwrap_or("PREFLIGHT_PACKET")
+            .to_string(),
+        route_from: "kernel".to_string(),
+        route_to: "explorer".to_string(),
+        required_receipts: spec
+            .required_receipts
+            .iter()
+            .map(|receipt| (*receipt).to_string())
+            .collect(),
+        supported_runtimes: runtime_policy_registry()
+            .supported
+            .into_iter()
+            .map(|runtime| runtime.name)
+            .collect(),
+    }
+}
+
+fn runtime_preflight_preview(runtime: &str) -> HiveLoopRuntimePreflightPreview {
+    let registry = runtime_policy_registry();
+    let selected_policy = runtime_policy_spec(&registry, runtime).cloned();
+    let runtime_probe = probe_runtime(runtime);
+    let probe_ok = runtime_probe
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let blocker = if selected_policy.is_none() {
+        Some("runtime.unsupported".to_string())
+    } else if !probe_ok {
+        Some("runtime.probe_failed".to_string())
+    } else {
+        None
+    };
+    HiveLoopRuntimePreflightPreview {
+        runtime: runtime.to_string(),
+        supported: selected_policy.is_some(),
+        probe_ok,
+        blocker,
+        runtime_probe,
+        selected_policy,
+    }
+}
+
+fn runtime_preflight_observation(
+    contract: &HiveLoopContract,
+    packets: &[HiveLoopPacket],
+    admissions: &[HiveLoopAdmission],
+) -> Option<HiveLoopRuntimePreflightObservation> {
+    let packet = packets
+        .iter()
+        .filter(|packet| {
+            packet.object_kind == "PREFLIGHT_PACKET"
+                && packet.writer_role == "kernel"
+                && packet.route_from == "kernel"
+                && packet.route_to == "explorer"
+                && packet.round == contract.current_round
+        })
+        .max_by_key(|packet| packet.id)?;
+    let admission = admissions
+        .iter()
+        .filter(|admission| admission.packet_id == packet.id)
+        .max_by_key(|admission| admission.id);
+    let body = packet_body(&packet.payload);
+    let receipt_required = packet_receipt_requirements(&packet.payload);
+    let receipt_missing = admission
+        .map(|admission| string_array_at(&admission.policy, "/receipt/missing"))
+        .unwrap_or_else(|| {
+            let (_required, missing) = receipt_requirement_status(&packet.payload);
+            missing
+        });
+
+    Some(HiveLoopRuntimePreflightObservation {
+        packet_id: packet.id,
+        admission_id: admission.map(|admission| admission.id),
+        round: packet.round,
+        result: admission.map(|admission| admission.result.clone()),
+        reason: admission.map(|admission| admission.reason.clone()),
+        gate: admission
+            .and_then(|admission| admission.policy.pointer("/gate/name"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        gate_passed: admission
+            .and_then(|admission| admission.policy.pointer("/gate/passed"))
+            .and_then(|value| value.as_bool()),
+        receipt_required,
+        receipt_missing,
+        runtime: body
+            .get("runtime")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        supported: body
+            .pointer("/runtime_policy/supported")
+            .and_then(|value| value.as_bool()),
+        probe_ok: body
+            .pointer("/runtime_probe/ok")
+            .and_then(|value| value.as_bool()),
+        blocker: body
+            .pointer("/runtime_policy/blocker")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        runtime_probe: body.get("runtime_probe").cloned(),
+    })
+}
+
+fn runtime_preflight_state(
+    contract: &HiveLoopContract,
+    preview: &HiveLoopRuntimePreflightPreview,
+    current: Option<&HiveLoopRuntimePreflightObservation>,
+) -> &'static str {
+    if current.is_some_and(|current| current.result.as_deref() == Some("rejected")) {
+        return "blocked";
+    }
+    if current.is_some_and(|current| current.result.as_deref() == Some("admitted")) {
+        return "admitted";
+    }
+    if contract.status == "todo" && preview.supported && preview.probe_ok {
+        return "ready";
+    }
+    if contract.status == "todo" {
+        return "blocked";
+    }
+    "pending"
+}
+
+fn runtime_preflight_failures(
+    preview: &HiveLoopRuntimePreflightPreview,
+    current: Option<&HiveLoopRuntimePreflightObservation>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if let Some(current) = current {
+        if current.result.as_deref() == Some("rejected") {
+            failures.push(
+                current
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "runtime preflight rejected".to_string()),
+            );
+        }
+    } else if let Some(blocker) = preview.blocker.as_ref() {
+        failures.push(blocker.clone());
+    }
+    if !preview.supported
+        && !failures
+            .iter()
+            .any(|failure| failure == "runtime.unsupported")
+    {
+        failures.push("runtime.unsupported".to_string());
+    }
+    if preview.supported
+        && !preview.probe_ok
+        && !failures
+            .iter()
+            .any(|failure| failure == "runtime.probe_failed")
+    {
+        failures.push("runtime.probe_failed".to_string());
+    }
+    failures
+}
+
+fn runtime_preflight_next_actions(
+    preflight_state: &str,
+    loop_id: i64,
+    issue_id: Option<i64>,
+    runtime: &str,
+) -> Vec<String> {
+    let mut actions = vec![format!("entrance hive loop preflight {loop_id}")];
+    match preflight_state {
+        "ready" => actions.push(pending_run_command(loop_id, issue_id, runtime)),
+        "blocked" => {
+            actions.push(format!("entrance hive loop audit {loop_id} --compact"));
+            if let Some(issue_id) = issue_id {
+                actions.push(retry_run_command(issue_id, runtime));
+            }
+        }
+        "admitted" => actions.push(format!("entrance hive loop trace {loop_id}")),
+        _ => {}
+    }
+    let mut deduped = Vec::new();
+    for action in actions {
+        if !deduped.contains(&action) {
+            deduped.push(action);
+        }
+    }
+    deduped
+}
+
+fn runtime_preflight_summary(
+    contract: &HiveLoopContract,
+    issue_status: Option<&str>,
+    preflight_state: &str,
+) -> String {
+    format!(
+        "Loop #{} runtime preflight is {} for `{}` at round {}; issue {}.",
+        contract.id,
+        preflight_state,
+        contract.runtime,
+        contract.current_round,
+        issue_status.unwrap_or("none")
     )
 }
 

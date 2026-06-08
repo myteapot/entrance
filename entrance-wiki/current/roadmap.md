@@ -15,6 +15,12 @@ Entrance has reached a local MVP unit:
   `runtime_policy_ready`. Unsupported or probe-failed runtimes are blocked
   before Explorer/Developer/Reviewer workers spawn, with `runtime_policy`
   audit detail and a linked `Blocked` issue instead of a fake worker failure.
+- Runtime preflight is now a first-class observable contract through
+  `entrance hive loop preflight <loop_id>`,
+  `entrance://loops/{loop_id}/runtime-preflight`, the MCP issue control
+  packet, and the Panel selected-issue Runtime Preflight block. It exposes the
+  active runtime policy, kernel `PREFLIGHT_PACKET` route, runtime probe,
+  current admission result, blocker, failures, and next actions.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
 - Worker lifecycle is now a first-class observable contract through
@@ -39,10 +45,11 @@ Entrance has reached a local MVP unit:
   client sends `initialize.clientInfo`, that self-reported client identity is
   copied into the receipt for audit context. `entrance_issue_control` and
   `entrance://issues/{issue_id}/control` now expose a single issue control
-  packet with status, action call templates, blockers, worker lifecycle summary,
-  recent evidence, operator events, confirmation receipts, and actor identity
-  context. The actor identity policy resource documents self-reported MCP
-  actors and local Panel audit actors with `verified=false`.
+  packet with status, action call templates, blockers, runtime preflight
+  summary, worker lifecycle summary, recent evidence, operator events,
+  confirmation receipts, and actor identity context. The actor identity policy
+  resource documents self-reported MCP actors and local Panel audit actors with
+  `verified=false`.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -72,6 +79,10 @@ Entrance has reached a local MVP unit:
   keep evidence are visible. The screenshot workflow also scrolls the selected
   issue Worker Lifecycle detail into view and asserts that Explorer,
   Developer, Reviewer, fallback budget, and lifecycle state are visible.
+- The Panel selected-issue detail now consumes the daemon
+  `hive_loop_runtime_preflight` report and renders Runtime Preflight state,
+  route, object kind, gate result, runtime policy/probe, blockers, failures,
+  and copyable next actions before worker lifecycle details.
 - The Panel selected-issue detail now consumes the daemon
   `hive_loop_worker_lifecycle` report and renders Worker Lifecycle state,
   expected role lanes, observed worker receipts, round chips, fallback budget,
@@ -116,13 +127,16 @@ multi-agent runtime/compiler product.
   versions, owner, required evidence, and migration behavior.
 - Extend the new runtime preflight admission into a fuller capability preview:
   sandbox scope, connector readiness, artifact/evidence manifest expectations,
-  and human preference boundaries before any agent worker is spawned.
+  and human preference boundaries before any agent worker is spawned. Current
+  `runtime_preflight.v1` is observable, but it still mostly previews runtime
+  support/probe rather than full execution capability.
 
 ### P1: Loop dashboard
 
-- Extend the current Panel Review Queue, issue board, and selected-issue Worker
-  Lifecycle detail into a real loop dashboard: round timeline, role lanes,
-  packet/admission/evidence/verdict grouping, and retry lineage.
+- Extend the current Panel Review Queue, issue board, selected-issue Runtime
+  Preflight block, and selected-issue Worker Lifecycle detail into a real loop
+  dashboard: round timeline, role lanes, packet/admission/evidence/verdict
+  grouping, and retry lineage.
 - Add focused evidence drill-down views so operators can inspect transcripts,
   failed checks, connector receipts, and human decisions without reading raw
   JSON first.

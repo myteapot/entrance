@@ -605,6 +605,56 @@ type IssueDoctorSummary = {
   worker_failures: string[];
 };
 
+type RuntimePreflightReport = {
+  schema_version: string;
+  loop_id: number;
+  issue_id: number | null;
+  issue_status: string | null;
+  status: string;
+  active_phase: string;
+  current_round: number;
+  runtime: string;
+  preflight_state: string;
+  summary: string;
+  policy: {
+    schema_version: string;
+    gate: string;
+    object_kind: string;
+    route_from: string;
+    route_to: string;
+    required_receipts: string[];
+    supported_runtimes: string[];
+  };
+  preview: {
+    runtime: string;
+    supported: boolean;
+    probe_ok: boolean;
+    blocker: string | null;
+    runtime_probe: Record<string, unknown>;
+    selected_policy: Record<string, unknown> | null;
+  };
+  current: RuntimePreflightObservation | null;
+  failures: string[];
+  next_actions: string[];
+};
+
+type RuntimePreflightObservation = {
+  packet_id: number;
+  admission_id: number | null;
+  round: number;
+  result: string | null;
+  reason: string | null;
+  gate: string | null;
+  gate_passed: boolean | null;
+  receipt_required: string[];
+  receipt_missing: string[];
+  runtime: string | null;
+  supported: boolean | null;
+  probe_ok: boolean | null;
+  blocker: string | null;
+  runtime_probe: Record<string, unknown> | null;
+};
+
 type WorkerLifecycleReport = {
   schema_version: string;
   loop_id: number;
@@ -981,6 +1031,28 @@ export default function App() {
     return cards.find((card) => card.issue.id === issueId) ?? cards[0];
   });
   const selectedIssueDoctor = createMemo(() => selectedIssueCard()?.doctor ?? null);
+  const selectedIssuePreflightKey = createMemo(() => {
+    const card = selectedIssueCard();
+    if (!card?.issue.loop_id) return null;
+    return [
+      card.issue.loop_id,
+      card.issue.updated_at,
+      card.trace?.current_round ?? 0,
+      card.trace?.admission_count ?? 0,
+      card.trace?.last_admission_passed ?? "pending",
+    ].join(":");
+  });
+  const [selectedRuntimePreflight] = createResource(selectedIssuePreflightKey, async (key) => {
+    if (!key) return null;
+    const loopId = Number.parseInt(key.split(":")[0], 10);
+    if (!Number.isFinite(loopId)) return null;
+    return bridge.invoke<RuntimePreflightReport>("hive_loop_runtime_preflight", { id: loopId });
+  });
+  const selectedIssueRuntimePreflight = createMemo(() => {
+    const preflight = selectedRuntimePreflight();
+    const loopId = selectedIssueCard()?.issue.loop_id;
+    return preflight && preflight.loop_id === loopId ? preflight : null;
+  });
   const selectedIssueLifecycleKey = createMemo(() => {
     const card = selectedIssueCard();
     if (!card?.issue.loop_id) return null;
@@ -2323,6 +2395,42 @@ export default function App() {
     return `runtime ${runtimeDurationLabel(doctor.counts.round_worker_duration_ms)}`;
   };
 
+  const runtimePreflightStateLabel = (state: string) =>
+    ({
+      admitted: "admitted",
+      ready: "ready",
+      blocked: "blocked",
+      pending: "pending",
+    })[state] ?? state;
+
+  const runtimePreflightTone = (state: string) =>
+    state === "admitted" || state === "ready"
+      ? "ok"
+      : state === "pending"
+        ? "pending"
+        : "warn";
+
+  const runtimePreflightBoolLabel = (label: string, value: boolean | null | undefined) => {
+    if (value === true) return `${label} ok`;
+    if (value === false) return `${label} blocked`;
+    return `${label} pending`;
+  };
+
+  const runtimePreflightGateLabel = (preflight: RuntimePreflightReport) => {
+    const gate = preflight.current?.gate ?? preflight.policy.gate;
+    const passed = preflight.current?.gate_passed;
+    if (passed === true) return `${gate} ok`;
+    if (passed === false) return `${gate} blocked`;
+    return `${gate} pending`;
+  };
+
+  const runtimePreflightProbeLabel = (preflight: RuntimePreflightReport) => {
+    const duration = preflight.preview.runtime_probe.duration_ms;
+    return typeof duration === "number"
+      ? `probe ${preflight.preview.probe_ok ? "ok" : "blocked"} ${runtimeDurationLabel(duration)}`
+      : `probe ${preflight.preview.probe_ok ? "ok" : "blocked"}`;
+  };
+
   const workerLifecycleStateLabel = (state: string) =>
     ({
       succeeded: "succeeded",
@@ -3115,6 +3223,141 @@ export default function App() {
                             </div>
                           )}
                         </Show>
+                        {card.issue.loop_id ? (
+                          <Show
+                            when={selectedIssueRuntimePreflight()}
+                            keyed
+                            fallback={
+                              <div
+                                class="worker-lifecycle runtime-preflight worker-lifecycle--pending"
+                                data-testid={`runtime-preflight-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Runtime Preflight</strong>
+                                  <span>
+                                    {selectedRuntimePreflight.loading ? "loading" : "pending"}
+                                  </span>
+                                </div>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">loop #{card.issue.loop_id}</span>
+                                  <span class="trace-pill">runtime_preflight.v1</span>
+                                </div>
+                              </div>
+                            }
+                          >
+                            {(preflight) => (
+                              <div
+                                class={`worker-lifecycle runtime-preflight worker-lifecycle--${runtimePreflightTone(
+                                  preflight.preflight_state,
+                                )}`}
+                                data-testid={`runtime-preflight-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Runtime Preflight</strong>
+                                  <span>{runtimePreflightStateLabel(preflight.preflight_state)}</span>
+                                </div>
+                                <p>{preflight.summary}</p>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">{schemaLabel(preflight.schema_version)}</span>
+                                  <span class="trace-pill">loop #{preflight.loop_id}</span>
+                                  <span class="trace-pill">round {preflight.current_round}</span>
+                                  <span class="trace-pill">{preflight.runtime}</span>
+                                  <span class="trace-pill">
+                                    {preflight.policy.route_from}
+                                    {" -> "}
+                                    {preflight.policy.route_to}
+                                  </span>
+                                  <span class="trace-pill">{preflight.policy.object_kind}</span>
+                                  <span
+                                    class={
+                                      preflight.current?.gate_passed === false
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {runtimePreflightGateLabel(preflight)}
+                                  </span>
+                                  <span
+                                    class={
+                                      preflight.preview.supported
+                                        ? "trace-pill"
+                                        : "trace-pill trace-pill--warn"
+                                    }
+                                  >
+                                    {runtimePreflightBoolLabel("policy", preflight.preview.supported)}
+                                  </span>
+                                  <span
+                                    class={
+                                      preflight.preview.probe_ok
+                                        ? "trace-pill"
+                                        : "trace-pill trace-pill--warn"
+                                    }
+                                  >
+                                    {runtimePreflightProbeLabel(preflight)}
+                                  </span>
+                                  {preflight.current?.result ? (
+                                    <span
+                                      class={
+                                        preflight.current.result === "rejected"
+                                          ? "trace-pill trace-pill--warn"
+                                          : "trace-pill"
+                                      }
+                                    >
+                                      {preflight.current.result}
+                                    </span>
+                                  ) : null}
+                                  {preflight.current?.receipt_missing.length ? (
+                                    <span class="trace-pill trace-pill--warn">
+                                      missing {preflight.current.receipt_missing.join(", ")}
+                                    </span>
+                                  ) : null}
+                                  {preflight.preview.blocker ? (
+                                    <span class="trace-pill trace-pill--warn">
+                                      {preflight.preview.blocker}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div class="worker-lifecycle-rounds">
+                                  {preflight.policy.supported_runtimes.map((runtime) => (
+                                    <span
+                                      class={
+                                        runtime === preflight.runtime
+                                          ? "trace-pill trace-pill--ok"
+                                          : "trace-pill"
+                                      }
+                                    >
+                                      {runtime}
+                                    </span>
+                                  ))}
+                                </div>
+                                {preflight.failures.length ? (
+                                  <div class="doctor-lines">
+                                    {preflight.failures.map((failure) => (
+                                      <span>{failure}</span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                {preflight.next_actions.length ? (
+                                  <div class="doctor-actions">
+                                    {preflight.next_actions.slice(0, 2).map((action, index) => (
+                                      <div class="doctor-action-row">
+                                        <code>{action}</code>
+                                        <button
+                                          type="button"
+                                          aria-label={`Copy runtime preflight action ${action}`}
+                                          data-testid={`runtime-preflight-action-copy-${card.issue.id}-${index}`}
+                                          onClick={() => void copyDoctorAction(action)}
+                                        >
+                                          Copy
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )}
+                          </Show>
+                        ) : null}
                         {card.issue.loop_id ? (
                           <Show
                             when={selectedIssueWorkerLifecycle()}

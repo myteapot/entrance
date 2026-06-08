@@ -20,14 +20,16 @@ pub use loop_control::{
     ConnectorPolicyRegistry, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
     ConnectorRegistryReport, ConnectorRetryPolicySpec, HiveLoopAuditCheck, HiveLoopAuditReport,
     HiveLoopCreateRequest, HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceReport,
-    HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest, HiveLoopTraceReport,
-    HiveLoopWorkerLifecyclePolicy, HiveLoopWorkerLifecycleReport, HiveLoopWorkerLifecycleRound,
-    HiveLoopWorkerLifecycleWorker, IssueAction, IssueCard, IssueCommentRequest,
-    IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport, IssueRunRequest,
-    OperatorConfirmationActor, OperatorConfirmationClient, OperatorConfirmationReceipt,
-    PolicyGateSpec, PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE,
-    CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND, OPERATOR_ACTION_CONFIRMATION_ARG,
-    OPERATOR_ACTION_POLICY_SCHEMA_VERSION, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+    HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest, HiveLoopRuntimePreflightObservation,
+    HiveLoopRuntimePreflightPolicy, HiveLoopRuntimePreflightPreview,
+    HiveLoopRuntimePreflightReport, HiveLoopTraceReport, HiveLoopWorkerLifecyclePolicy,
+    HiveLoopWorkerLifecycleReport, HiveLoopWorkerLifecycleRound, HiveLoopWorkerLifecycleWorker,
+    IssueAction, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueDoctorSummary,
+    IssueMirrorReport, IssueRunRequest, OperatorConfirmationActor, OperatorConfirmationClient,
+    OperatorConfirmationReceipt, PolicyGateSpec, PolicyRegistryReport,
+    CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+    OPERATOR_ACTION_CONFIRMATION_ARG, OPERATOR_ACTION_POLICY_SCHEMA_VERSION,
+    OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};
@@ -147,6 +149,10 @@ impl HivePlugin {
 
     pub fn loop_worker_lifecycle(&self, id: i64) -> Result<HiveLoopWorkerLifecycleReport> {
         loop_control::worker_lifecycle(&self.store, id)
+    }
+
+    pub fn loop_runtime_preflight(&self, id: i64) -> Result<HiveLoopRuntimePreflightReport> {
+        loop_control::runtime_preflight(&self.store, id)
     }
 
     pub fn panel(&self) -> Result<Vec<IssueCard>> {

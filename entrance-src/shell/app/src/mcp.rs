@@ -19,6 +19,8 @@ const MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION: &str =
 const MCP_ISSUE_CONTROL_SCHEMA_VERSION: &str = "entrance.mcp.issue_control.v1";
 const MCP_WORKER_LIFECYCLE_SUMMARY_SCHEMA_VERSION: &str =
     "entrance.mcp.worker_lifecycle_summary.v1";
+const MCP_RUNTIME_PREFLIGHT_SUMMARY_SCHEMA_VERSION: &str =
+    "entrance.mcp.runtime_preflight_summary.v1";
 const MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION: &str = "entrance.mcp.actor_identity_policy.v1";
 const MCP_TOOL_NAMES: &[&str] = &[
     "entrance_issue_list",
@@ -690,6 +692,7 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
             "missing_receipts": doctor.map(|doctor| doctor.missing_receipts.clone()).unwrap_or_default(),
             "worker_failures": doctor.map(|doctor| doctor.worker_failures.clone()).unwrap_or_default()
         },
+        "runtime_preflight": issue_runtime_preflight_summary(card),
         "worker_lifecycle": issue_worker_lifecycle_summary(card),
         "doctor": doctor.map(|doctor| serde_json::json!({
             "health": &doctor.health,
@@ -712,6 +715,7 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
         "resources": {
             "issue": format!("entrance://issues/{}", card.issue.id),
             "control": format!("entrance://issues/{}/control", card.issue.id),
+            "runtime_preflight": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/runtime-preflight")),
             "worker_lifecycle": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
             "review_queue": "entrance://review-queue",
             "permissions": "entrance://policy/mcp-permissions",
@@ -766,6 +770,44 @@ fn issue_worker_lifecycle_summary(card: &IssueCard) -> Option<serde_json::Value>
         "reviewer_invalid_round_budget": reviewer_invalid_round_budget,
         "reviewer_invalid_budget_exhausted": reviewer_invalid_budget_exhausted,
         "fallback_status": "Blocked"
+    }))
+}
+
+fn issue_runtime_preflight_summary(card: &IssueCard) -> Option<serde_json::Value> {
+    let trace = card.trace.as_ref()?;
+    let preflight_gate = trace.last_admission_gate.as_deref() == Some("runtime_policy_ready");
+    let state = if preflight_gate && trace.last_admission_passed == Some(false) {
+        "blocked"
+    } else if preflight_gate && trace.last_admission_passed == Some(true) {
+        "admitted"
+    } else if card.issue.status == "Todo" {
+        "pending"
+    } else {
+        "unknown"
+    };
+    let blocker = trace
+        .audit_failure_details
+        .iter()
+        .find(|detail| detail.starts_with("runtime_policy:"))
+        .cloned();
+
+    Some(serde_json::json!({
+        "schema_version": MCP_RUNTIME_PREFLIGHT_SUMMARY_SCHEMA_VERSION,
+        "resource": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/runtime-preflight")),
+        "loop_id": card.issue.loop_id,
+        "current_round": trace.current_round,
+        "state": state,
+        "gate": trace.last_admission_gate,
+        "gate_passed": trace.last_admission_passed,
+        "reason_code": trace.reason_code,
+        "failed_checks": trace.audit_failed_checks,
+        "audit_failure_details": trace.audit_failure_details,
+        "blocker": blocker,
+        "route": {
+            "from": "kernel",
+            "to": "explorer",
+            "object_kind": "PREFLIGHT_PACKET"
+        }
     }))
 }
 
@@ -1018,6 +1060,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
     }
     for contract in services.hive.loop_list()? {
         resources.push(resource_spec(
+            &format!("entrance://loops/{}/runtime-preflight", contract.id),
+            &format!("Loop #{} runtime preflight", contract.id),
+            "One loop runtime preflight report with runtime policy, probe, admission gate, blocker, and next actions.",
+        ));
+        resources.push(resource_spec(
             &format!("entrance://loops/{}/worker-lifecycle", contract.id),
             &format!("Loop #{} worker lifecycle", contract.id),
             "One loop worker lifecycle report with expected roles, observed workers, receipts, retries, and fallback budget.",
@@ -1039,6 +1086,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://issues/{issue_id}/control",
                 "name": "Entrance issue control by id",
                 "description": "Read one issue control packet with actions, blockers, receipts, and human decision boundaries.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://loops/{loop_id}/runtime-preflight",
+                "name": "Entrance loop runtime preflight by id",
+                "description": "Read runtime preflight with runtime policy, probe, admission gate, blocker, and next actions.",
                 "mimeType": "application/json"
             },
             {
@@ -1075,6 +1128,18 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
         "entrance://policy/mcp-permissions" => mcp_permission_policy(),
         "entrance://policy/actor-identity" => mcp_actor_identity_policy(),
         "entrance://schema/status" => serde_json::to_value(services.kernel.store.schema_status()?)?,
+        value
+            if value.starts_with("entrance://loops/") && value.ends_with("/runtime-preflight") =>
+        {
+            let loop_id = value
+                .trim_start_matches("entrance://loops/")
+                .trim_end_matches("/runtime-preflight")
+                .parse::<i64>()
+                .with_context(|| {
+                    format!("invalid Entrance loop runtime preflight resource URI `{value}`")
+                })?;
+            serde_json::to_value(services.hive.loop_runtime_preflight(loop_id)?)?
+        }
         value if value.starts_with("entrance://loops/") && value.ends_with("/worker-lifecycle") => {
             let loop_id = value
                 .trim_start_matches("entrance://loops/")
@@ -1885,17 +1950,26 @@ mod tests {
         );
         assert_eq!(
             packet
+                .pointer("/resources/runtime_preflight")
+                .and_then(|value| value.as_str()),
+            Some("entrance://loops/7/runtime-preflight")
+        );
+        assert_eq!(
+            packet
                 .pointer("/resources/worker_lifecycle")
                 .and_then(|value| value.as_str()),
             Some("entrance://loops/7/worker-lifecycle")
         );
+        assert!(packet
+            .get("runtime_preflight")
+            .is_some_and(|value| value.is_null()));
         assert!(packet
             .get("worker_lifecycle")
             .is_some_and(|value| value.is_null()));
     }
 
     #[test]
-    fn resource_templates_expose_worker_lifecycle() {
+    fn resource_templates_expose_loop_observability() {
         let templates = resource_templates();
         let uri_templates = templates
             .get("resourceTemplates")
@@ -1907,6 +1981,7 @@ mod tests {
 
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/control"));
+        assert!(uri_templates.contains(&"entrance://loops/{loop_id}/runtime-preflight"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/worker-lifecycle"));
     }
 
