@@ -715,6 +715,7 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
         "resources": {
             "issue": format!("entrance://issues/{}", card.issue.id),
             "control": format!("entrance://issues/{}/control", card.issue.id),
+            "transition_policy": format!("entrance://issues/{}/transition-policy", card.issue.id),
             "timeline": format!("entrance://issues/{}/timeline", card.issue.id),
             "loop_dashboard": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/dashboard")),
             "evidence_drilldown": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/evidence-drilldown")),
@@ -1062,6 +1063,14 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "One issue control packet with actions, blockers, receipts, and human decision boundaries.",
         ));
         resources.push(resource_spec(
+            &format!("entrance://issues/{}/transition-policy", card.issue.id),
+            &format!(
+                "Issue #{} transition policy: {}",
+                card.issue.id, card.issue.title
+            ),
+            "One issue status transition policy with allowed actions, blocked actions, confirmation requirements, and Reviewer fallback budget.",
+        ));
+        resources.push(resource_spec(
             &format!("entrance://issues/{}/timeline", card.issue.id),
             &format!("Issue #{} timeline: {}", card.issue.id, card.issue.title),
             "One issue activity timeline with comments, evidence, verdicts, operator decisions, decision receipts, blockers, linked resources, round groups, and human decision surface.",
@@ -1119,6 +1128,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://issues/{issue_id}/control",
                 "name": "Entrance issue control by id",
                 "description": "Read one issue control packet with actions, blockers, receipts, and human decision boundaries.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://issues/{issue_id}/transition-policy",
+                "name": "Entrance issue transition policy by id",
+                "description": "Read one issue status transition policy with allowed actions, blocked actions, confirmation requirements, and Reviewer fallback budget.",
                 "mimeType": "application/json"
             },
             {
@@ -1256,6 +1271,18 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
                     format!("invalid Entrance issue control resource URI `{value}`")
                 })?;
             issue_control_packet(&services.hive.issue_report(issue_id)?)
+        }
+        value
+            if value.starts_with("entrance://issues/") && value.ends_with("/transition-policy") =>
+        {
+            let issue_id = value
+                .trim_start_matches("entrance://issues/")
+                .trim_end_matches("/transition-policy")
+                .parse::<i64>()
+                .with_context(|| {
+                    format!("invalid Entrance issue transition policy resource URI `{value}`")
+                })?;
+            serde_json::to_value(services.hive.issue_transition_policy(issue_id)?)?
         }
         value if value.starts_with("entrance://issues/") && value.contains("/timeline/items/") => {
             let rest = value.trim_start_matches("entrance://issues/");
@@ -2079,6 +2106,12 @@ mod tests {
         );
         assert_eq!(
             packet
+                .pointer("/resources/transition_policy")
+                .and_then(|value| value.as_str()),
+            Some("entrance://issues/42/transition-policy")
+        );
+        assert_eq!(
+            packet
                 .pointer("/resources/runtime_preflight")
                 .and_then(|value| value.as_str()),
             Some("entrance://loops/7/runtime-preflight")
@@ -2116,6 +2149,7 @@ mod tests {
 
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/control"));
+        assert!(uri_templates.contains(&"entrance://issues/{issue_id}/transition-policy"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/timeline"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/timeline/items/{item_id}"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/dashboard"));

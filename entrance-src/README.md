@@ -111,6 +111,13 @@ payload, worker receipt, transcript excerpt, artifact/path entries, digest
 coverage, path verification state, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/evidence-manifest`, and the Panel selected issue
 renders it below Evidence Drilldown.
+`hive issue transition-policy <id>` exposes
+`entrance.hive.issue_transition_policy.v1`, an issue-level status transition
+contract with the current state class, allowed actions, blocked actions,
+confirmation requirements, Reviewer fallback budget, linked resources, and next
+actions; MCP exposes it as
+`entrance://issues/{issue_id}/transition-policy`, and the Panel selected issue
+renders it before Loop Dashboard.
 `hive issue timeline <id>` exposes `entrance.hive.issue_timeline.v1`, an
 issue-first activity feed with issue creation, typed comments, stage evidence,
 verdicts, operator decisions, blockers, linked resources, round groups, item
@@ -133,6 +140,9 @@ transcript-heavy report. Add `--compact` to `hive issue run`,
 `hive issue retry-run`, `hive issue show`,
 `hive issue comment`, or `hive issue decide` to print the compact issue card
 with recent comments, evidence, stages, round recovery, and next actions.
+Add `--compact` to `hive issue transition-policy` to print the short policy
+summary with allowed/blocked actions, confirmation contract, reviewer budget,
+and linked resources.
 Pending Doctor next actions prefer the issue-first compact command
 `hive issue run <id> --runtime <runtime> --compact` when a loop has a linked
 issue.
@@ -164,6 +174,10 @@ decision context without opening raw SQLite rows first.
 `hive loop evidence-manifest <id>` returns the manifest report for operators
 who need to audit evidence coverage, receipt/payload digests, artifact/path
 entries, and local path verification state.
+`hive issue transition-policy <id>` returns the issue status transition policy
+for operators or MCP clients that need to know which actions are allowed,
+which actions are blocked, which actions require confirmation receipts, and
+whether the Reviewer invalid-round fallback budget is exhausted.
 `hive issue timeline <id>` returns the issue activity feed for operators who
 need to read comments, evidence, verdicts, operator decisions, blockers, and
 linked loop resources in one chronological control-plane view, with round

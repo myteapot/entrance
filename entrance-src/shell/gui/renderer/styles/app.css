@@ -693,6 +693,11 @@
   gap: 6px;
 }
 
+.transition-policy-actions,
+.transition-policy-blocked {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
 .connector-strip {
   display: flex;
   flex-wrap: wrap;

@@ -235,6 +235,62 @@ type IssueAction = {
   policy_schema_version?: string | null;
 };
 
+type IssueTransitionPolicyReport = {
+  schema_version: string;
+  issue: IssueCard["issue"];
+  loop_id: number | null;
+  policy_owner: string;
+  policy_scope: string;
+  state_class: string;
+  human_decision_required: boolean;
+  summary: string;
+  allowed_actions: Array<{
+    action: IssueAction;
+    from_status: string;
+    to_status: string | null;
+    gate: string;
+    requires_human: boolean;
+    rationale: string;
+  }>;
+  blocked_actions: Array<{
+    action: string;
+    required_statuses: string[];
+    reason: string;
+    hint: string | null;
+  }>;
+  confirmation: {
+    required: boolean;
+    required_actions: string[];
+    confirmation_arg: string;
+    receipt_schema: string;
+    policy_schema_version: string;
+    policy_resource: string;
+    review_queue_resource: string;
+    actor_identity_resource: string;
+  };
+  reviewer_budget: {
+    current_round: number;
+    reviewer_invalid_rounds_used: number;
+    reviewer_invalid_round_budget: number;
+    reviewer_invalid_budget_exhausted: boolean;
+    fallback_status: string;
+    current_decision: string | null;
+    reason_code: string | null;
+  } | null;
+  resources: {
+    issue: string;
+    issue_control: string;
+    transition_policy: string;
+    issue_timeline: string;
+    loop_dashboard: string | null;
+    worker_lifecycle: string | null;
+    runtime_preflight: string | null;
+    review_queue: string;
+    policy_registry: string;
+  };
+  next_actions: string[];
+};
+
 type IssueConnectorStatus = {
   schema_version: string;
   current: boolean;
@@ -1519,6 +1575,30 @@ export default function App() {
     const timeline = selectedIssueTimeline();
     const issueId = selectedIssueCard()?.issue.id;
     return timeline && timeline.issue.id === issueId ? timeline : null;
+  });
+  const selectedIssueTransitionKey = createMemo(() => {
+    const card = selectedIssueCard();
+    if (!card) return null;
+    return [
+      card.issue.id,
+      card.issue.status,
+      card.issue.updated_at,
+      card.actions.length,
+      card.trace?.current_round ?? 0,
+      card.trace?.last_decision ?? "pending",
+      card.trace?.reason_code ?? "none",
+    ].join(":");
+  });
+  const [selectedTransitionPolicy] = createResource(selectedIssueTransitionKey, async (key) => {
+    if (!key) return null;
+    const issueId = Number.parseInt(key.split(":")[0], 10);
+    if (!Number.isFinite(issueId)) return null;
+    return bridge.invoke<IssueTransitionPolicyReport>("hive_issue_transition_policy", { issueId });
+  });
+  const selectedIssueTransitionPolicy = createMemo(() => {
+    const policy = selectedTransitionPolicy();
+    const issueId = selectedIssueCard()?.issue.id;
+    return policy && policy.issue.id === issueId ? policy : null;
   });
   const selectedIssueDashboardKey = createMemo(() => {
     const card = selectedIssueCard();
@@ -3007,6 +3087,34 @@ export default function App() {
   const loopDashboardVerdictLabel = (verdict: LoopDashboardRoundVerdict) =>
     `verdict ${verdict.decision}${verdict.reason_code ? ` ${verdict.reason_code}` : ""}`;
 
+  const transitionPolicyTone = (policy: IssueTransitionPolicyReport) =>
+    policy.state_class === "terminal"
+      ? "ok"
+      : policy.human_decision_required || policy.state_class === "needs_human"
+        ? "warn"
+        : "pending";
+
+  const transitionPolicyStateLabel = (state: string) =>
+    ({
+      runnable: "runnable",
+      running: "running",
+      needs_human: "needs human",
+      terminal: "terminal",
+      unknown: "unknown",
+    })[state] ?? state;
+
+  const transitionPolicyActionLabel = (
+    action: IssueTransitionPolicyReport["allowed_actions"][number],
+  ) =>
+    `${action.action.label} -> ${action.to_status ?? "unknown"}${action.requires_human ? " / human" : ""}`;
+
+  const transitionPolicyBudgetLabel = (policy: IssueTransitionPolicyReport) => {
+    const budget = policy.reviewer_budget;
+    if (!budget) return "reviewer budget none";
+    const exhausted = budget.reviewer_invalid_budget_exhausted ? " exhausted" : "";
+    return `reviewer ${budget.reviewer_invalid_rounds_used}/${budget.reviewer_invalid_round_budget}${exhausted}`;
+  };
+
   const evidenceDrilldownTone = (state: string) =>
     state === "complete" ? "ok" : state === "observing" ? "pending" : "warn";
 
@@ -3906,6 +4014,115 @@ export default function App() {
                           connectorRemoteDiagnostics(card.issue.id),
                           `connector-remote-attempts-detail-${card.issue.id}`,
                         )}
+                        <Show
+                          when={selectedIssueTransitionPolicy()}
+                          keyed
+                          fallback={
+                            <div
+                              class="worker-lifecycle transition-policy worker-lifecycle--pending"
+                              data-testid={`issue-transition-policy-detail-${card.issue.id}`}
+                            >
+                              <div class="stage-row-head">
+                                <strong>Transition Policy</strong>
+                                <span>{selectedTransitionPolicy.loading ? "loading" : "pending"}</span>
+                              </div>
+                              <div class="trace-strip">
+                                <span class="trace-pill">issue #{card.issue.id}</span>
+                                <span class="trace-pill">issue_transition_policy.v1</span>
+                              </div>
+                            </div>
+                          }
+                        >
+                          {(policy) => (
+                            <div
+                              class={`worker-lifecycle transition-policy worker-lifecycle--${transitionPolicyTone(
+                                policy,
+                              )}`}
+                              data-testid={`issue-transition-policy-detail-${card.issue.id}`}
+                            >
+                              <div class="stage-row-head">
+                                <strong>Transition Policy</strong>
+                                <span>{transitionPolicyStateLabel(policy.state_class)}</span>
+                              </div>
+                              <p>{policy.summary}</p>
+                              <div class="trace-strip">
+                                <span class="trace-pill">{schemaLabel(policy.schema_version)}</span>
+                                <span class="trace-pill">{policy.policy_owner}</span>
+                                <span class="trace-pill">{policy.policy_scope}</span>
+                                <span
+                                  class={
+                                    policy.human_decision_required
+                                      ? "trace-pill trace-pill--warn"
+                                      : "trace-pill"
+                                  }
+                                >
+                                  {policy.human_decision_required ? "human required" : "human clear"}
+                                </span>
+                                <span class="trace-pill">
+                                  allowed {policy.allowed_actions.length}
+                                </span>
+                                <span
+                                  class={
+                                    policy.blocked_actions.length
+                                      ? "trace-pill trace-pill--warn"
+                                      : "trace-pill"
+                                  }
+                                >
+                                  blocked {policy.blocked_actions.length}
+                                </span>
+                                <span
+                                  class={
+                                    policy.reviewer_budget?.reviewer_invalid_budget_exhausted
+                                      ? "trace-pill trace-pill--warn"
+                                      : "trace-pill"
+                                  }
+                                >
+                                  {transitionPolicyBudgetLabel(policy)}
+                                </span>
+                              </div>
+                              <div class="worker-lifecycle-roles transition-policy-actions">
+                                {policy.allowed_actions.slice(0, 4).map((choice) => (
+                                  <div
+                                    class={`worker-lifecycle-role worker-lifecycle-role--${
+                                      choice.requires_human ? "warn" : "pending"
+                                    }`}
+                                    data-testid={`issue-transition-policy-action-${card.issue.id}-${choice.action.action}`}
+                                  >
+                                    <div class="stage-row-head">
+                                      <strong>{transitionPolicyActionLabel(choice)}</strong>
+                                      <span>{choice.gate}</span>
+                                    </div>
+                                    <p>{choice.rationale}</p>
+                                    <div class="trace-strip">
+                                      <span class="trace-pill">{choice.from_status}</span>
+                                      <span class="trace-pill">{choice.action.source}</span>
+                                      {choice.action.confirmation_arg ? (
+                                        <span class="trace-pill">{choice.action.confirmation_arg}</span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              {policy.blocked_actions.length ? (
+                                <div class="worker-lifecycle-roles transition-policy-blocked">
+                                  {policy.blocked_actions.slice(0, 3).map((blocked) => (
+                                    <div
+                                      class="worker-lifecycle-role worker-lifecycle-role--warn"
+                                      data-testid={`issue-transition-policy-blocked-${card.issue.id}-${blocked.action}`}
+                                    >
+                                      <div class="stage-row-head">
+                                        <strong>{blocked.action}</strong>
+                                        <span>{blocked.required_statuses.join("/") || "none"}</span>
+                                      </div>
+                                      <p>{blocked.reason}</p>
+                                      {blocked.hint ? <code class="evidence-excerpt">{blocked.hint}</code> : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+                        </Show>
                         {card.issue.loop_id ? (
                           <Show
                             when={selectedIssueLoopDashboard()}

@@ -13,8 +13,8 @@ use entrance_hive::{
     ConnectorRetryPolicySpec, HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck,
     HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopReport, HiveLoopRunRequest, IssueAction,
     IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport, IssueRunRequest,
-    PolicyGateSpec, PolicyRegistryReport, ReviewDecision, CONNECTOR_MIRROR_RECEIPT_GATE,
-    CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+    IssueTransitionPolicyReport, PolicyGateSpec, PolicyRegistryReport, ReviewDecision,
+    CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
 };
 use reqwest::Method;
 use sha2::{Digest, Sha256};
@@ -80,7 +80,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive schema [--compact]\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop demo [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop evidence-drilldown <id>\n  entrance hive loop evidence-manifest <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop dashboard <id>\n  entrance hive loop preflight <id>\n  entrance hive loop worker-lifecycle <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector fixture-demo [--review-surface remote-fixture:<key>] [--no-record] [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue timeline <id>\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive schema [--compact]\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop demo [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop evidence-drilldown <id>\n  entrance hive loop evidence-manifest <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop dashboard <id>\n  entrance hive loop preflight <id>\n  entrance hive loop worker-lifecycle <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector fixture-demo [--review-surface remote-fixture:<key>] [--no-record] [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue transition-policy <id> [--compact]\n  entrance hive issue timeline <id>\n  entrance hive issue timeline-item <id> <item-id>\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -348,6 +348,14 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 print_json(&compact_issue_detail_with_connector_status(services, &card))
             } else {
                 print_json(&card)
+            }
+        }
+        [scope, action, id, rest @ ..] if scope == "issue" && action == "transition-policy" => {
+            let report = services.hive.issue_transition_policy(id.parse::<i64>()?)?;
+            if flag_present(rest, "--compact") {
+                print_json(&compact_issue_transition_policy(&report))
+            } else {
+                print_json(&report)
             }
         }
         [scope, action, id] if scope == "issue" && action == "timeline" => {
@@ -10648,7 +10656,49 @@ fn compact_issue_action(action: &IssueAction) -> serde_json::Value {
         "source": action.source,
         "input": action.input,
         "destructive": action.destructive,
-        "runtime": action.runtime
+        "runtime": action.runtime,
+        "confirmation_required": action.confirmation_required,
+        "confirmation_arg": action.confirmation_arg,
+        "receipt_schema": action.receipt_schema,
+        "policy_schema_version": action.policy_schema_version
+    })
+}
+
+fn compact_issue_transition_policy(report: &IssueTransitionPolicyReport) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": report.schema_version,
+        "issue_id": report.issue.id,
+        "loop_id": report.loop_id,
+        "status": report.issue.status,
+        "state_class": report.state_class,
+        "human_decision_required": report.human_decision_required,
+        "summary": report.summary,
+        "policy": {
+            "owner": report.policy_owner,
+            "scope": report.policy_scope
+        },
+        "allowed_actions": report.allowed_actions.iter().map(|action| serde_json::json!({
+            "action": action.action.action,
+            "label": action.action.label,
+            "from_status": action.from_status,
+            "to_status": action.to_status,
+            "gate": action.gate,
+            "requires_human": action.requires_human,
+            "command": action.action.command,
+            "confirmation_arg": action.action.confirmation_arg,
+            "receipt_schema": action.action.receipt_schema,
+            "policy_schema_version": action.action.policy_schema_version
+        })).collect::<Vec<_>>(),
+        "blocked_actions": report.blocked_actions.iter().map(|action| serde_json::json!({
+            "action": action.action,
+            "required_statuses": action.required_statuses,
+            "reason": action.reason,
+            "hint": action.hint
+        })).collect::<Vec<_>>(),
+        "confirmation": report.confirmation,
+        "reviewer_budget": report.reviewer_budget,
+        "resources": report.resources,
+        "next_actions": report.next_actions.iter().take(5).collect::<Vec<_>>()
     })
 }
 

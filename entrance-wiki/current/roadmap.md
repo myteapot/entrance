@@ -52,6 +52,13 @@ Entrance has reached a local MVP unit:
   with primary action, issue commands,
   operator confirmation receipt provenance, confirmation policy, and
   issue-control/review-queue resources.
+- Issue transition policy is now a first-class issue-level control-plane
+  contract through `entrance hive issue transition-policy <issue_id>`,
+  `entrance://issues/{issue_id}/transition-policy`, and the Panel
+  selected-issue Transition Policy block. It exposes the current state class,
+  allowed actions, blocked actions, confirmation receipt requirements, Reviewer
+  fallback budget, policy owner/scope, resources, and next actions in
+  `entrance.hive.issue_transition_policy.v1`.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
 - Worker lifecycle is now a first-class observable contract through
@@ -76,8 +83,8 @@ Entrance has reached a local MVP unit:
   client sends `initialize.clientInfo`, that self-reported client identity is
   copied into the receipt for audit context. `entrance_issue_control` and
   `entrance://issues/{issue_id}/control` now expose a single issue control
-  packet with status, action call templates, blockers, runtime preflight
-  summary, worker lifecycle summary, timeline resource, recent evidence, operator events,
+  packet with status, action call templates, blockers, transition policy
+  resource, runtime preflight summary, worker lifecycle summary, timeline resource, recent evidence, operator events,
   confirmation receipts, and actor identity context. The actor identity policy
   resource documents self-reported MCP actors and local Panel audit actors with
   `verified=false`.
@@ -129,6 +136,10 @@ Entrance has reached a local MVP unit:
   evidence, verdicts, operator decisions, blockers, linked ids, and copyable
   next actions.
 - The Panel selected-issue detail now consumes the daemon
+  `hive_issue_transition_policy` report and renders Transition Policy state,
+  allowed/blocked actions, confirmation requirements, Reviewer fallback budget,
+  and linked resources before loop internals.
+- The Panel selected-issue detail now consumes the daemon
   `hive_loop_runtime_preflight` report and renders Runtime Preflight state,
   route, object kind, gate result, runtime policy/probe, blockers, failures,
   and copyable next actions before worker lifecycle details.
@@ -174,6 +185,9 @@ multi-agent runtime/compiler product.
   schemas as first-class runtime objects.
 - Make policy registry changes explicit and auditable, including admission gate
   versions, owner, required evidence, and migration behavior.
+- Promote the current derived `issue_transition_policy.v1` report into a
+  runtime-owned status transition policy object with version migration, state
+  machine tests, owner metadata, and remote issue status mapping.
 - Extend the new runtime preflight admission into a fuller capability preview:
   sandbox scope, connector readiness, artifact capture expectations, and human
   preference boundaries before any agent worker is spawned. Current

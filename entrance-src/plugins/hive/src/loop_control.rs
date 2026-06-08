@@ -41,6 +41,7 @@ const EVIDENCE_DRILLDOWN_SCHEMA_VERSION: &str = "entrance.hive.evidence_drilldow
 const EVIDENCE_MANIFEST_SCHEMA_VERSION: &str = "entrance.hive.evidence_manifest.v1";
 const ISSUE_TIMELINE_SCHEMA_VERSION: &str = "entrance.hive.issue_timeline.v1";
 const ISSUE_TIMELINE_ITEM_SCHEMA_VERSION: &str = "entrance.hive.issue_timeline_item.v1";
+const ISSUE_TRANSITION_POLICY_SCHEMA_VERSION: &str = "entrance.hive.issue_transition_policy.v1";
 pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
@@ -1079,6 +1080,78 @@ pub struct IssueCard {
     pub actions: Vec<IssueAction>,
     pub trace: Option<IssueTraceSummary>,
     pub doctor: Option<IssueDoctorSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTransitionPolicyReport {
+    pub schema_version: String,
+    pub issue: HiveIssue,
+    pub loop_id: Option<i64>,
+    pub policy_owner: String,
+    pub policy_scope: String,
+    pub state_class: String,
+    pub human_decision_required: bool,
+    pub summary: String,
+    pub allowed_actions: Vec<IssueTransitionPolicyAction>,
+    pub blocked_actions: Vec<IssueTransitionPolicyBlockedAction>,
+    pub confirmation: IssueTransitionConfirmationPolicy,
+    pub reviewer_budget: Option<IssueTransitionReviewerBudget>,
+    pub resources: IssueTransitionPolicyResources,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTransitionPolicyAction {
+    pub action: IssueAction,
+    pub from_status: String,
+    pub to_status: Option<String>,
+    pub gate: String,
+    pub requires_human: bool,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTransitionPolicyBlockedAction {
+    pub action: String,
+    pub required_statuses: Vec<String>,
+    pub reason: String,
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTransitionConfirmationPolicy {
+    pub required: bool,
+    pub required_actions: Vec<String>,
+    pub confirmation_arg: String,
+    pub receipt_schema: String,
+    pub policy_schema_version: String,
+    pub policy_resource: String,
+    pub review_queue_resource: String,
+    pub actor_identity_resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTransitionReviewerBudget {
+    pub current_round: i64,
+    pub reviewer_invalid_rounds_used: i64,
+    pub reviewer_invalid_round_budget: i64,
+    pub reviewer_invalid_budget_exhausted: bool,
+    pub fallback_status: String,
+    pub current_decision: Option<String>,
+    pub reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTransitionPolicyResources {
+    pub issue: String,
+    pub issue_control: String,
+    pub transition_policy: String,
+    pub issue_timeline: String,
+    pub loop_dashboard: Option<String>,
+    pub worker_lifecycle: Option<String>,
+    pub runtime_preflight: Option<String>,
+    pub review_queue: String,
+    pub policy_registry: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7760,6 +7833,63 @@ pub fn issue(store: &Store, issue_id: i64) -> Result<IssueCard> {
     issue_card(store, issue_id)
 }
 
+pub fn issue_transition_policy(
+    store: &Store,
+    issue_id: i64,
+) -> Result<IssueTransitionPolicyReport> {
+    let card = issue_card(store, issue_id)?;
+    let lifecycle = card
+        .issue
+        .loop_id
+        .map(|loop_id| worker_lifecycle(store, loop_id))
+        .transpose()?;
+    let state_class = issue_transition_state_class(&card.issue).to_string();
+    let allowed_actions = card
+        .actions
+        .iter()
+        .map(|action| issue_transition_policy_action(&card.issue, action))
+        .collect::<Vec<_>>();
+    let blocked_actions = issue_transition_blocked_actions(&card.issue, &card.actions);
+    let confirmation = issue_transition_confirmation_policy(&card.actions);
+    let reviewer_budget = lifecycle
+        .as_ref()
+        .map(|lifecycle| issue_transition_reviewer_budget(lifecycle, card.trace.as_ref()));
+    let human_decision_required =
+        matches!(card.issue.status.as_str(), "Blocked" | "Needs Review") || confirmation.required;
+    let resources = issue_transition_policy_resources(&card.issue);
+    let summary = issue_transition_policy_summary(
+        &card.issue,
+        &state_class,
+        allowed_actions.len(),
+        blocked_actions.len(),
+        human_decision_required,
+        reviewer_budget.as_ref(),
+    );
+    let mut next_actions = vec![
+        format!("entrance hive issue transition-policy {issue_id}"),
+        format!("entrance hive issue show {issue_id} --compact"),
+        format!("entrance hive issue timeline {issue_id}"),
+    ];
+    next_actions.extend(card.actions.iter().map(|action| action.command.clone()));
+
+    Ok(IssueTransitionPolicyReport {
+        schema_version: ISSUE_TRANSITION_POLICY_SCHEMA_VERSION.to_string(),
+        issue: card.issue.clone(),
+        loop_id: card.issue.loop_id,
+        policy_owner: "hive-kernel".to_string(),
+        policy_scope: "issue.status.transition".to_string(),
+        state_class,
+        human_decision_required,
+        summary,
+        allowed_actions,
+        blocked_actions,
+        confirmation,
+        reviewer_budget,
+        resources,
+        next_actions,
+    })
+}
+
 pub fn issue_timeline(store: &Store, issue_id: i64) -> Result<IssueTimelineReport> {
     let card = issue_card(store, issue_id)?;
     let mut items = Vec::new();
@@ -8577,6 +8707,268 @@ fn issue_timeline_decision_summary(
             issue.status,
             primary_action.unwrap_or("comment")
         )
+    }
+}
+
+fn issue_transition_state_class(issue: &HiveIssue) -> &'static str {
+    match issue.status.as_str() {
+        "Todo" => "runnable",
+        "Doing" => "running",
+        "Blocked" | "Needs Review" => "needs_human",
+        "Done" | "Canceled" => "terminal",
+        _ => "unknown",
+    }
+}
+
+fn issue_transition_policy_action(
+    issue: &HiveIssue,
+    action: &IssueAction,
+) -> IssueTransitionPolicyAction {
+    IssueTransitionPolicyAction {
+        action: action.clone(),
+        from_status: issue.status.clone(),
+        to_status: issue_transition_action_to_status(issue, action),
+        gate: issue_transition_action_gate(action).to_string(),
+        requires_human: action.confirmation_required,
+        rationale: issue_transition_action_rationale(issue, action),
+    }
+}
+
+fn issue_transition_action_to_status(issue: &HiveIssue, action: &IssueAction) -> Option<String> {
+    match action.action.as_str() {
+        "run" => Some("runtime_verdict: Done | Blocked | Needs Review | Canceled".to_string()),
+        "comment" => Some(issue.status.clone()),
+        "retry" => Some("Todo, then runtime_verdict".to_string()),
+        "request-review" => Some("Needs Review".to_string()),
+        "cancel" => Some("Canceled".to_string()),
+        _ => None,
+    }
+}
+
+fn issue_transition_action_gate(action: &IssueAction) -> &'static str {
+    match action.action.as_str() {
+        "run" => "status_todo_and_loop_bound",
+        "comment" => "issue_exists",
+        "retry" => "human_confirmed_retry_boundary",
+        "request-review" => "human_confirmed_review_boundary",
+        "cancel" => "human_confirmed_cancel_boundary",
+        _ => "unknown",
+    }
+}
+
+fn issue_transition_action_rationale(issue: &HiveIssue, action: &IssueAction) -> String {
+    match action.action.as_str() {
+        "run" => format!(
+            "Issue #{} is Todo and loop-bound, so the kernel can run Explorer -> Developer -> Reviewer.",
+            issue.id
+        ),
+        "comment" => format!(
+            "Comments are ledger entries that preserve context without changing issue #{} status.",
+            issue.id
+        ),
+        "retry" => format!(
+            "Retry is a human-confirmed boundary that opens the next loop round for issue #{}.",
+            issue.id
+        ),
+        "request-review" => format!(
+            "Review moves blocked issue #{} to Needs Review for an explicit human decision.",
+            issue.id
+        ),
+        "cancel" => format!(
+            "Cancel is a human-confirmed terminal transition for issue #{}.",
+            issue.id
+        ),
+        _ => format!("Action `{}` is exposed by the issue action contract.", action.action),
+    }
+}
+
+fn issue_transition_blocked_actions(
+    issue: &HiveIssue,
+    actions: &[IssueAction],
+) -> Vec<IssueTransitionPolicyBlockedAction> {
+    let allowed = actions
+        .iter()
+        .map(|action| action.action.as_str())
+        .collect::<BTreeSet<_>>();
+    ["run", "comment", "retry", "request-review", "cancel"]
+        .into_iter()
+        .filter(|action| !allowed.contains(action))
+        .map(|action| issue_transition_blocked_action(issue, action))
+        .collect()
+}
+
+fn issue_transition_blocked_action(
+    issue: &HiveIssue,
+    action: &str,
+) -> IssueTransitionPolicyBlockedAction {
+    match action {
+        "run" => IssueTransitionPolicyBlockedAction {
+            action: action.to_string(),
+            required_statuses: vec!["Todo".to_string()],
+            reason: if issue.loop_id.is_some() {
+                format!(
+                    "`run` is only allowed from Todo; issue #{} is {}.",
+                    issue.id, issue.status
+                )
+            } else {
+                format!("`run` requires a loop-bound issue; issue #{} has no loop.", issue.id)
+            },
+            hint: matches!(issue.status.as_str(), "Blocked" | "Needs Review")
+                .then(|| format!("Use `entrance hive issue retry-run {} --body <note> --compact`.", issue.id)),
+        },
+        "comment" => IssueTransitionPolicyBlockedAction {
+            action: action.to_string(),
+            required_statuses: vec![
+                "Todo".to_string(),
+                "Doing".to_string(),
+                "Blocked".to_string(),
+                "Needs Review".to_string(),
+                "Done".to_string(),
+                "Canceled".to_string(),
+            ],
+            reason: format!("No comment action is exposed for issue #{}.", issue.id),
+            hint: Some(format!(
+                "Use `entrance hive issue comment {} --body <text> --compact` if this is unexpected.",
+                issue.id
+            )),
+        },
+        "retry" => IssueTransitionPolicyBlockedAction {
+            action: action.to_string(),
+            required_statuses: vec![
+                "Blocked".to_string(),
+                "Needs Review".to_string(),
+                "Canceled(retryable)".to_string(),
+            ],
+            reason: format!(
+                "`retry` is only exposed when issue #{} is waiting on a human recovery decision.",
+                issue.id
+            ),
+            hint: Some("Wait for a Blocked/Needs Review state or add a comment with context.".to_string()),
+        },
+        "request-review" => IssueTransitionPolicyBlockedAction {
+            action: action.to_string(),
+            required_statuses: vec!["Blocked".to_string()],
+            reason: format!(
+                "`request-review` is only exposed for Blocked issues; issue #{} is {}.",
+                issue.id, issue.status
+            ),
+            hint: Some("Blocked issues can be escalated to Needs Review.".to_string()),
+        },
+        "cancel" => IssueTransitionPolicyBlockedAction {
+            action: action.to_string(),
+            required_statuses: vec![
+                "Todo".to_string(),
+                "Blocked".to_string(),
+                "Needs Review".to_string(),
+            ],
+            reason: format!(
+                "`cancel` is not exposed for issue #{} in {}.",
+                issue.id, issue.status
+            ),
+            hint: matches!(issue.status.as_str(), "Done" | "Canceled")
+                .then(|| "Terminal issues are comment-only.".to_string()),
+        },
+        _ => IssueTransitionPolicyBlockedAction {
+            action: action.to_string(),
+            required_statuses: Vec::new(),
+            reason: format!("Unknown issue action `{action}`."),
+            hint: None,
+        },
+    }
+}
+
+fn issue_transition_confirmation_policy(
+    actions: &[IssueAction],
+) -> IssueTransitionConfirmationPolicy {
+    let mut required_actions = actions
+        .iter()
+        .filter(|action| action.confirmation_required)
+        .map(|action| action.action.clone())
+        .collect::<Vec<_>>();
+    required_actions.sort();
+    required_actions.dedup();
+    IssueTransitionConfirmationPolicy {
+        required: !required_actions.is_empty(),
+        required_actions,
+        confirmation_arg: OPERATOR_ACTION_CONFIRMATION_ARG.to_string(),
+        receipt_schema: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
+        policy_schema_version: OPERATOR_ACTION_POLICY_SCHEMA_VERSION.to_string(),
+        policy_resource: "entrance://policy/mcp-permissions".to_string(),
+        review_queue_resource: "entrance://review-queue".to_string(),
+        actor_identity_resource: "entrance://policy/actor-identity".to_string(),
+    }
+}
+
+fn issue_transition_reviewer_budget(
+    lifecycle: &HiveLoopWorkerLifecycleReport,
+    trace: Option<&IssueTraceSummary>,
+) -> IssueTransitionReviewerBudget {
+    IssueTransitionReviewerBudget {
+        current_round: lifecycle.current_round,
+        reviewer_invalid_rounds_used: lifecycle.current.reviewer_invalid_rounds_used,
+        reviewer_invalid_round_budget: lifecycle.policy.reviewer_invalid_round_budget,
+        reviewer_invalid_budget_exhausted: lifecycle.current.reviewer_invalid_budget_exhausted,
+        fallback_status: lifecycle.policy.fallback_status.clone(),
+        current_decision: lifecycle
+            .current
+            .decision
+            .clone()
+            .or_else(|| trace.and_then(|trace| trace.last_decision.clone())),
+        reason_code: trace.and_then(|trace| trace.reason_code.clone()),
+    }
+}
+
+fn issue_transition_policy_summary(
+    issue: &HiveIssue,
+    state_class: &str,
+    allowed_count: usize,
+    blocked_count: usize,
+    human_decision_required: bool,
+    reviewer_budget: Option<&IssueTransitionReviewerBudget>,
+) -> String {
+    let human = if human_decision_required {
+        "requires a human decision"
+    } else {
+        "does not require a human decision"
+    };
+    let budget = reviewer_budget
+        .map(|budget| {
+            format!(
+                " Reviewer invalid budget: {}/{} used; fallback {}{}.",
+                budget.reviewer_invalid_rounds_used,
+                budget.reviewer_invalid_round_budget,
+                budget.fallback_status,
+                if budget.reviewer_invalid_budget_exhausted {
+                    " exhausted"
+                } else {
+                    ""
+                }
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "Issue #{} is {} ({state_class}) and {human}; {} actions allowed, {} blocked.{budget}",
+        issue.id, issue.status, allowed_count, blocked_count
+    )
+}
+
+fn issue_transition_policy_resources(issue: &HiveIssue) -> IssueTransitionPolicyResources {
+    IssueTransitionPolicyResources {
+        issue: format!("entrance://issues/{}", issue.id),
+        issue_control: format!("entrance://issues/{}/control", issue.id),
+        transition_policy: format!("entrance://issues/{}/transition-policy", issue.id),
+        issue_timeline: format!("entrance://issues/{}/timeline", issue.id),
+        loop_dashboard: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/dashboard")),
+        worker_lifecycle: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
+        runtime_preflight: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/runtime-preflight")),
+        review_queue: "entrance://review-queue".to_string(),
+        policy_registry: "entrance://policy/registry".to_string(),
     }
 }
 
@@ -15198,6 +15590,48 @@ mod tests {
             .expect("blocked issue should expose comment action");
         assert!(!comment_action.confirmation_required);
         assert!(comment_action.receipt_schema.is_none());
+        let blocked_policy = issue_transition_policy(&store, issue_id)
+            .expect("blocked issue transition policy should resolve");
+        assert_eq!(
+            blocked_policy.schema_version,
+            ISSUE_TRANSITION_POLICY_SCHEMA_VERSION
+        );
+        assert_eq!(blocked_policy.state_class, "needs_human");
+        assert!(blocked_policy.human_decision_required);
+        assert_eq!(
+            blocked_policy
+                .allowed_actions
+                .iter()
+                .map(|action| action.action.action.as_str())
+                .collect::<Vec<_>>(),
+            vec!["comment", "retry", "request-review", "cancel"]
+        );
+        assert!(blocked_policy
+            .blocked_actions
+            .iter()
+            .any(|action| action.action == "run"
+                && action
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("retry-run"))));
+        assert!(blocked_policy.confirmation.required);
+        assert_eq!(
+            blocked_policy.confirmation.required_actions,
+            vec!["cancel", "request-review", "retry"]
+        );
+        let blocked_budget = blocked_policy
+            .reviewer_budget
+            .as_ref()
+            .expect("loop issue should expose reviewer budget");
+        assert_eq!(
+            blocked_budget.reviewer_invalid_round_budget,
+            REVIEWER_INVALID_ROUND_BUDGET
+        );
+        assert_eq!(blocked_budget.fallback_status, "Blocked");
+        assert_eq!(
+            blocked_policy.resources.transition_policy,
+            format!("entrance://issues/{issue_id}/transition-policy")
+        );
         let mut corrupt_actions = blocked.issues[0].actions.clone();
         corrupt_actions.retain(|action| action.action != "request-review");
         corrupt_actions[0].schema_version = "bad.schema".to_string();
@@ -15271,6 +15705,19 @@ mod tests {
         assert_eq!(review_card.issue.status, "Needs Review");
         assert_eq!(review_contract.status, "needs-review");
         assert_eq!(review_contract.active_phase, "human-review");
+        let review_policy = issue_transition_policy(&store, issue_id)
+            .expect("review issue transition policy should resolve");
+        assert_eq!(review_policy.state_class, "needs_human");
+        assert!(review_policy.human_decision_required);
+        assert!(review_policy
+            .allowed_actions
+            .iter()
+            .any(|action| action.action.action == "retry"
+                && action.gate == "human_confirmed_retry_boundary"));
+        assert!(review_policy
+            .blocked_actions
+            .iter()
+            .any(|action| action.action == "request-review"));
         assert_eq!(
             review_card
                 .actions
@@ -15500,6 +15947,18 @@ mod tests {
         assert_eq!(cancel_card.issue.status, "Canceled");
         assert_eq!(cancel_contract.status, "rejected");
         assert_eq!(cancel_contract.active_phase, "complete");
+        let cancel_policy = issue_transition_policy(&store, issue_id)
+            .expect("canceled issue transition policy should resolve");
+        assert_eq!(cancel_policy.state_class, "terminal");
+        assert!(!cancel_policy.human_decision_required);
+        assert_eq!(
+            cancel_policy
+                .allowed_actions
+                .iter()
+                .map(|action| action.action.action.as_str())
+                .collect::<Vec<_>>(),
+            vec!["comment"]
+        );
         assert_eq!(
             cancel_card
                 .trace

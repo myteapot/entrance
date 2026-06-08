@@ -682,6 +682,17 @@ async fn handle_invoke(
                 state.services.hive.issue_timeline_item(issue_id, item_id)?,
             )?)
         }
+        "hive_issue_transition_policy" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_transition_policy requires `issueId`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.issue_transition_policy(issue_id)?,
+            )?)
+        }
         "hive_issue_mirror_sync" => {
             let issue_id = args
                 .get("issueId")
