@@ -6,10 +6,13 @@ Last updated: 2026-06-01
 
 Entrance has reached a local MVP unit:
 
-- `Explorer -> Doer -> Evaluator` can run as a serial issue-bound loop.
+- `Explorer -> Developer -> Reviewer` can run as a serial issue-bound loop;
+  older `Doer/Evaluator` ledger rows remain compatibility data.
 - The default runtime can use real `codex` workers and records worker receipts.
 - SQLite/Hive stores loop contracts, packets, admissions, evidence, verdicts,
   comments, audit checks, and schema health.
+- Reviewer fallback has a first budget rule: if a candidate is still rejected at
+  or after 3 rounds, the issue moves to `Blocked` for human decision.
 - The built-in `local-hive-panel` is now the default in-process
   issue/status/comment surface. It reports current local issues without
   requiring an external mirror file.

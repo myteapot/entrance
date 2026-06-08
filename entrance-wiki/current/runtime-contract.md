@@ -29,7 +29,7 @@ cargo run -p entrance-app --bin entrance -- launcher list
 ```
 
 `hive loop demo` is the default MVP bootstrap path: it fills in a demo contract,
-runs the issue-first `Explorer -> Doer -> Evaluator` loop with `codex` by
+runs the issue-first `Explorer -> Developer -> Reviewer` loop with `codex` by
 default, and returns a compact outcome plus Panel startup hints when `--compact`
 is present. `hive loop start` is the custom one-command MVP path: it creates the
 linked issue, runs the issue-first loop once, and returns a compact
@@ -76,7 +76,7 @@ Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as blocked verdicts. The `codex` runtime uses a read-only
-`codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
+`codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and
 records stdout, stderr, and last-message transcript data in the stage evidence
 for that role. Trace, Doctor, and Panel card summaries aggregate current-round
 worker duration, timeouts, and retry exhaustion so slow codex runs are visible
@@ -89,14 +89,15 @@ Worker attempts default to 1, can be overridden with `--worker-attempts <n>` or
 plus the raw attempt receipts on codex workers.
 Loop audit includes a `stage_sequence` check that rejects duplicate role stages
 in one round and verifies terminal loops still have the expected current-round
-Explorer/Doer/Evaluator stages, a `stage_evidence` check that verifies each
+Explorer/Developer/Reviewer stages, while legacy Doer/Evaluator rows remain
+audit-compatible. The `stage_evidence` check verifies each
 expected stage has exactly one stage-bound evidence row with the expected kind,
 a `packet_sequence` check that rejects duplicate route packets in one round, a
 `worker_receipts` check that verifies worker receipts carry bounded timeout and
 attempt metadata plus the expected role, and a `runtime_policy` check that
 verifies the contract runtime and current-round worker receipt kind/mode/role
 values against the registry and packet writer.
-The `active_policy_registry` check verifies the canonical Explorer/Doer/Evaluator
+The `active_policy_registry` check verifies the canonical Explorer/Developer/Reviewer
 route and gate contract, including gate expected object kind and required
 receipts. The `admission_receipts` check verifies every packet has exactly one
 admission and that the stored admission receipt still binds to the packet row,
@@ -105,7 +106,7 @@ result, and final admitted/rejected result. The `verdict_packets` check verifies
 terminal rounds have exactly one verdict, then checks decision bindings,
 required score-vector metrics, gate booleans, human options, and reason-code
 evidence bindings. It also binds standard verdict evidence back to round
-evidence counts, runtime readiness, and the evaluator worker receipt, while
+evidence counts, runtime readiness, and the reviewer worker receipt, while
 admission-rejection verdicts bind back to the rejected admission, packet, and
 admission-rejection evidence row. The `issue_surface` check verifies linked
 issue status, typed comments, operator comment/decision evidence, and
@@ -113,8 +114,10 @@ evidence-to-comment author/action/body bindings so the control plane is
 auditable instead of only visible. Trace, Doctor, and Panel summaries expose
 both failed audit check names and extracted audit failure detail codes, so an
 operator can see the exact binding that broke without opening raw JSON first.
-For evaluator-path testing, `hive loop run` accepts
+For reviewer-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
+At or after round 3, `--decision reject` falls back to a `blocked` verdict and
+`Blocked` issue status because the automatic review budget is exhausted.
 Human decisions are available through `hive issue decide <id>
 <retry|request-review|cancel>` and are recorded as operator comments while
 also moving the linked loop contract state.

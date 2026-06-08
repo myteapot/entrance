@@ -557,7 +557,7 @@ fn loop_demo_request_from_flags(rest: &[String]) -> HiveLoopCreateRequest {
             .to_string(),
         goal: flag_value(rest, "--goal")
             .unwrap_or(
-                "Run the Entrance Explorer -> Doer -> Evaluator loop and expose it on the issue/status/comment panel.",
+                "Run the Entrance Explorer -> Developer -> Reviewer loop and expose it on the issue/status/comment panel.",
             )
             .to_string(),
         boundary: flag_value(rest, "--boundary")
@@ -569,14 +569,14 @@ fn loop_demo_request_from_flags(rest: &[String]) -> HiveLoopCreateRequest {
             flag_value(rest, "--approach"),
             &[
                 "Compile the natural-language goal into a typed candidate",
-                "Execute only the admitted candidate",
-                "Evaluate the evidence with keep/reject/block gates",
+                "Develop only the admitted candidate",
+                "Review the evidence with keep/reject/block gates",
             ],
         ),
         eval_space: csv_values_or_default(
             flag_value(rest, "--eval"),
             &[
-                "Explorer, Doer, and Evaluator each produce role receipts",
+                "Explorer, Developer, and Reviewer each produce role receipts",
                 "Admissions bind packets to policy gates",
                 "Panel shows issue status, comments, evidence, verdict, and recovery actions",
             ],
@@ -854,7 +854,7 @@ fn compact_loop_demo_context(services: &AppServices) -> serde_json::Value {
         "name": "Entrance local agent-loop MVP",
         "app_root": services.kernel.root.display().to_string(),
         "review_surface": "local-hive-panel",
-        "loop": "Explorer -> Doer -> Evaluator",
+        "loop": "Explorer -> Developer -> Reviewer",
         "surface": "issue/status/comment"
     })
 }
@@ -11395,7 +11395,7 @@ mod tests {
         assert_eq!(request.title, "Entrance MVP demo");
         assert_eq!(request.runtime, "codex");
         assert_eq!(request.review_surface, "local-hive-panel");
-        assert!(request.goal.contains("Explorer -> Doer -> Evaluator"));
+        assert!(request.goal.contains("Explorer -> Developer -> Reviewer"));
         assert_eq!(request.approach_space.len(), 3);
         assert_eq!(request.eval_space.len(), 3);
     }

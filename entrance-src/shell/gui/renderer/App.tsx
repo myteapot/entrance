@@ -1686,16 +1686,16 @@ export default function App() {
       const runArgs = demoRunArgs();
       const report = await bridge.invoke<{ contract?: HiveLoop; issues: IssueCard[] }>("hive_loop_create", {
         title: "Entrance MVP demo",
-        goal: "Run the Entrance Explorer -> Doer -> Evaluator loop and expose it on the issue/status/comment panel.",
+        goal: "Run the Entrance Explorer -> Developer -> Reviewer loop and expose it on the issue/status/comment panel.",
         boundary: "Use the local Hive SQLite ledger, typed receipts, compact CLI output, and the local Panel surface.",
         runtime: "codex",
         approachSpace: [
           "Compile the natural-language goal into a typed candidate",
-          "Execute only the admitted candidate",
-          "Evaluate the evidence with keep/reject/block gates",
+          "Develop only the admitted candidate",
+          "Review the evidence with keep/reject/block gates",
         ],
         evalSpace: [
-          "Explorer, Doer, and Evaluator each produce role receipts",
+          "Explorer, Developer, and Reviewer each produce role receipts",
           "Admissions bind packets to policy gates",
           "Panel shows issue status, comments, evidence, verdict, and recovery actions",
         ],

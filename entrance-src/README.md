@@ -74,7 +74,7 @@ Local agent-loop MVP:
 ```
 
 `hive loop demo` is the default MVP bootstrap path: it fills in a demo contract,
-runs `Explorer -> Doer -> Evaluator` with `codex` by default, then prints the
+runs `Explorer -> Developer -> Reviewer` with `codex` by default, then prints the
 compact loop outcome plus the daemon and dev-server commands needed to inspect
 the run in the local Panel. `hive loop start` is the custom one-command MVP path:
 it creates a linked issue loop, runs the same serial roles, then prints a compact
@@ -110,7 +110,7 @@ CLI and Panel surfaces can tie failed checks back to their policy owner and
 evidence contract. `hive loop policies <id>` shows the active policy rows loaded
 into a specific loop contract.
 `hive loop trace <id>` returns the compact round-aware health view, including
-the evaluator score vector and current-round worker duration/timeout totals,
+the reviewer score vector and current-round worker duration/timeout totals,
 without packet transcripts.
 `hive loop evidence <id>` returns the compact evidence ledger with stage role,
 admission result, worker receipt, packet envelope diagnostics, missing receipts,
@@ -122,7 +122,8 @@ verdict packets, and linked issue surface. The `store_schema` check gates loop
 health on the same table/column/index contract surfaced by `hive schema`, so
 doctor and issue cards fail closed when the local ledger structure drifts. The
 active policy check verifies the canonical
-Explorer/Doer/Evaluator route and gate contract. The stage sequence check
+Explorer/Developer/Reviewer route and gate contract. Legacy Doer/Evaluator
+ledgers remain audit-compatible. The stage sequence check
 rejects duplicate role stages in a loop round and verifies terminal loops still
 have the expected current-round stages. The stage evidence check verifies each
 expected stage has exactly one stage-bound evidence row with the expected kind.
@@ -133,7 +134,7 @@ verifies that every packet has exactly one admission and that the recorded
 packet, policy, gate spec, receipt requirements, missing receipts, gate result,
 and final admission result still bind to each other. The verdict check verifies
 one verdict per round for terminal loops plus decision bindings, score-vector
-metrics, gate booleans, human options, reason-code evidence bindings, evaluator
+metrics, gate booleans, human options, reason-code evidence bindings, reviewer
 worker bindings, evidence counts, runtime readiness, and admission-rejection
 evidence/admission/packet links. The
 issue surface check verifies issue status, typed comments, operator
@@ -250,14 +251,17 @@ admission check rows include the matched owner, severity, required evidence, and
 policy summary. Production drift handling, richer Linear state mapping,
 real-token coverage, and configurable/adaptive retry policy are still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
-`codex exec` worker for each `Explorer`, `Doer`, and `Evaluator` role and
+`codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in
 stage evidence, along with runtime duration for each worker and aggregated
 round duration in trace/doctor/card views. Codex workers must
 return an `{ "ok": true }` JSON receipt to be admitted.
 Unknown runtimes return a blocked verdict instead of being silently kept.
-The evaluator decision can be overridden for local simulation with
+The reviewer decision can be overridden for local simulation with
 `--decision keep|reject|needs-review|blocked`.
+At or after round 3, a reviewer `reject` falls back to `Blocked`, which keeps
+the issue actionable for a human operator instead of silently canceling an
+exhausted automatic attempt.
 Admission gates reject failed worker receipts, so a role worker with `ok=false`
 blocks at the compiler boundary instead of being treated as valid evidence.
 `hive loop run` is idempotent for non-`todo` contracts; use

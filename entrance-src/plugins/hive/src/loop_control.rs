@@ -304,7 +304,35 @@ struct LoopPolicySpec {
     gate: &'static str,
 }
 
+const CURRENT_LOOP_ROLES: &[&str] = &["explorer", "developer", "reviewer"];
+const LEGACY_LOOP_ROLES: &[&str] = &["explorer", "doer", "evaluator"];
+const REVIEWER_INVALID_ROUND_BUDGET: i64 = 3;
+
 const DEFAULT_LOOP_POLICIES: &[LoopPolicySpec] = &[
+    LoopPolicySpec {
+        object_kind: "EXPLORATION_PACKET",
+        writer_role: "explorer",
+        route_from: "explorer",
+        route_to: "developer",
+        gate: "candidate_receipts_present",
+    },
+    LoopPolicySpec {
+        object_kind: "EXECUTION_PACKET",
+        writer_role: "developer",
+        route_from: "developer",
+        route_to: "reviewer",
+        gate: "runtime_receipts_present",
+    },
+    LoopPolicySpec {
+        object_kind: "VERDICT_PACKET",
+        writer_role: "reviewer",
+        route_from: "reviewer",
+        route_to: "complete",
+        gate: "verdict_receipts_present",
+    },
+];
+
+const LEGACY_LOOP_POLICIES: &[LoopPolicySpec] = &[
     LoopPolicySpec {
         object_kind: "EXPLORATION_PACKET",
         writer_role: "explorer",
@@ -737,7 +765,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         store.update_hive_issue_status(
             issue_id,
             "Doing",
-            Some("Explorer, Doer, and Evaluator are running."),
+            Some("Explorer, Developer, and Reviewer are running."),
         )?;
         add_system_comment(
             store,
@@ -776,7 +804,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "role_worker": explorer_worker,
             "constraints": [
                 "keep work in SQLite/Hive",
-                "separate explorer, doer, evaluator stages",
+                "separate explorer, developer, reviewer stages",
                 "record issue/status/comment evidence"
             ]
         }),
@@ -787,13 +815,13 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "EXPLORATION_PACKET",
         "explorer",
         "explorer",
-        "doer",
+        "developer",
         serde_json::json!({
             "candidate": "Run a local MVP loop through Hive",
             "role_worker": explorer_worker,
             "constraints": [
                 "keep work in SQLite/Hive",
-                "separate explorer, doer, evaluator stages",
+                "separate explorer, developer, reviewer stages",
                 "record issue/status/comment evidence"
             ]
         }),
@@ -840,22 +868,22 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
     store.update_hive_loop_contract_state(
         contract.id,
         "running",
-        "doer",
+        "developer",
         contract.current_round,
     )?;
     let runtime_worker = run_role_worker(
         &runtime,
-        "doer",
+        "developer",
         &contract,
         &runtime_probe,
         worker_timeout_secs,
         worker_attempts,
     );
-    let doer_stage = insert_stage(
+    let developer_stage = insert_stage(
         store,
         &contract,
-        "doer",
-        "Doer executed the accepted MVP action and captured runtime evidence.",
+        "developer",
+        "Developer executed the accepted MVP action and captured runtime evidence.",
         serde_json::json!({
             "candidate": "local-loop-mvp",
             "runtime": runtime
@@ -867,13 +895,13 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "artifact": "hive-loop-ledger"
         }),
     )?;
-    let doer_admission = emit_and_admit(
+    let developer_admission = emit_and_admit(
         store,
         &contract,
         "EXECUTION_PACKET",
-        "doer",
-        "doer",
-        "evaluator",
+        "developer",
+        "developer",
+        "reviewer",
         serde_json::json!({
             "runtime": runtime,
             "runtime_probe": runtime_probe,
@@ -882,28 +910,28 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "artifact": "hive-loop-ledger"
         }),
     )?;
-    if doer_admission.result != "admitted" {
+    if developer_admission.result != "admitted" {
         return block_on_admission_rejection(
             store,
             &contract,
             issue_id,
-            "doer",
-            Some(doer_stage),
-            &doer_admission,
+            "developer",
+            Some(developer_stage),
+            &developer_admission,
         );
     }
-    let doer_evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+    let developer_evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
-        stage_id: Some(doer_stage),
+        stage_id: Some(developer_stage),
         round: contract.current_round,
         kind: "execution_packet".to_string(),
-        summary: format!("Doer ran `{runtime}` runtime worker."),
+        summary: format!("Developer ran `{runtime}` runtime worker."),
         path: None,
         payload: serde_json::json!({
             "runtime": runtime,
             "probe": runtime_probe,
             "worker": runtime_worker,
-            "admission": doer_admission.result
+            "admission": developer_admission.result
         }),
     })?;
     if let Some(issue_id) = issue_id {
@@ -912,11 +940,11 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             issue_id,
             contract.id,
             contract.current_round,
-            "doer",
+            "developer",
             "execution_packet",
-            doer_evidence_id,
-            "Doer admitted the execution packet.",
-            &doer_admission.result,
+            developer_evidence_id,
+            "Developer admitted the execution packet.",
+            &developer_admission.result,
             &runtime_worker,
         )?;
     }
@@ -924,13 +952,13 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
     store.update_hive_loop_contract_state(
         contract.id,
         "evaluating",
-        "evaluator",
+        "reviewer",
         contract.current_round,
     )?;
     let evidence = store.list_hive_loop_evidence(contract.id)?;
-    let evaluator_worker = run_role_worker(
+    let reviewer_worker = run_role_worker(
         &runtime,
-        "evaluator",
+        "reviewer",
         &contract,
         &runtime_probe,
         worker_timeout_secs,
@@ -942,7 +970,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         .unwrap_or(false)
         && worker_ok(&explorer_worker)
         && worker_ok(&runtime_worker)
-        && worker_ok(&evaluator_worker);
+        && worker_ok(&reviewer_worker);
     let runtime_failure = runtime_failure(&runtime_probe, &runtime_worker);
     let decision_override = parse_decision_override(request.decision.as_deref())?;
     let round_stage_evidence_count = evidence
@@ -955,11 +983,12 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         runtime_failure,
         &runtime,
         round_stage_evidence_count,
+        contract.current_round,
     );
-    let evaluator_stage = insert_stage(
+    let reviewer_stage = insert_stage(
         store,
         &contract,
-        "evaluator",
+        "reviewer",
         &typed_verdict.summary,
         serde_json::json!({
             "evidence_count": round_stage_evidence_count,
@@ -967,7 +996,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         }),
         serde_json::json!({
             "decision": typed_verdict.decision.as_str(),
-            "role_worker": evaluator_worker,
+            "role_worker": reviewer_worker,
             "gates": {
                 "three_stages_recorded": true,
                 "evidence_recorded": round_stage_evidence_count > 0,
@@ -975,28 +1004,28 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             }
         }),
     )?;
-    let evaluator_admission = emit_and_admit(
+    let reviewer_admission = emit_and_admit(
         store,
         &contract,
         "VERDICT_PACKET",
-        "evaluator",
-        "evaluator",
+        "reviewer",
+        "reviewer",
         "complete",
-        typed_verdict.packet_payload(&evaluator_worker),
+        typed_verdict.packet_payload(&reviewer_worker),
     )?;
-    if evaluator_admission.result != "admitted" {
+    if reviewer_admission.result != "admitted" {
         return block_on_admission_rejection(
             store,
             &contract,
             issue_id,
-            "evaluator",
-            Some(evaluator_stage),
-            &evaluator_admission,
+            "reviewer",
+            Some(reviewer_stage),
+            &reviewer_admission,
         );
     }
-    let evaluator_evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+    let reviewer_evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
-        stage_id: Some(evaluator_stage),
+        stage_id: Some(reviewer_stage),
         round: contract.current_round,
         kind: "verdict_packet".to_string(),
         summary: typed_verdict.summary.clone(),
@@ -1005,8 +1034,8 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             "decision": typed_verdict.decision.as_str(),
             "reason_code": typed_verdict.reason_code,
             "runtime_ready": typed_verdict.runtime_ready,
-            "worker": evaluator_worker,
-            "admission": evaluator_admission.result
+            "worker": reviewer_worker,
+            "admission": reviewer_admission.result
         }),
     })?;
     if let Some(issue_id) = issue_id {
@@ -1015,12 +1044,12 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
             issue_id,
             contract.id,
             contract.current_round,
-            "evaluator",
+            "reviewer",
             "verdict_packet",
-            evaluator_evidence_id,
-            "Evaluator admitted the verdict packet.",
-            &evaluator_admission.result,
-            &evaluator_worker,
+            reviewer_evidence_id,
+            "Reviewer admitted the verdict packet.",
+            &reviewer_admission.result,
+            &reviewer_worker,
         )?;
     }
     store.insert_hive_loop_verdict(HiveLoopVerdictCreate {
@@ -1029,7 +1058,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         decision: typed_verdict.decision.as_str().to_string(),
         summary: typed_verdict.summary.clone(),
         score: typed_verdict.score_payload(),
-        evidence: typed_verdict.evidence_payload(&runtime, &evaluator_worker),
+        evidence: typed_verdict.evidence_payload(&runtime, &reviewer_worker),
     })?;
 
     let final_status = typed_verdict.decision.contract_status();
@@ -1043,14 +1072,14 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
     if let Some(issue_id) = issue_id {
         store.update_hive_issue_status(issue_id, issue_status, Some(&typed_verdict.summary))?;
         let admission_summary = format!(
-            "{} Workers: explorer={}, doer={}, evaluator={}. Admissions: explorer={}, doer={}, evaluator={}.",
+            "{} Workers: explorer={}, developer={}, reviewer={}. Admissions: explorer={}, developer={}, reviewer={}.",
             typed_verdict.summary,
             runtime_worker_summary(&explorer_worker),
             runtime_worker_summary(&runtime_worker),
-            runtime_worker_summary(&evaluator_worker),
+            runtime_worker_summary(&reviewer_worker),
             explorer_admission.result,
-            doer_admission.result,
-            evaluator_admission.result
+            developer_admission.result,
+            reviewer_admission.result
         );
         add_system_comment(
             store,
@@ -1060,17 +1089,17 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
                 "loop_id": contract.id,
                 "decision": typed_verdict.decision.as_str(),
                 "reason_code": typed_verdict.reason_code,
-                "phase": "evaluator",
+                "phase": "reviewer",
                 "runtime_worker": runtime_worker,
                 "role_workers": {
                     "explorer": explorer_worker,
-                    "doer": runtime_worker,
-                    "evaluator": evaluator_worker
+                    "developer": runtime_worker,
+                    "reviewer": reviewer_worker
                 },
                 "admissions": {
                     "explorer": explorer_admission.result,
-                    "doer": doer_admission.result,
-                    "evaluator": evaluator_admission.result
+                    "developer": developer_admission.result,
+                    "reviewer": reviewer_admission.result
                 }
             }),
         )?;
@@ -2257,7 +2286,7 @@ fn stage_sequence_audit_errors(
         if stage.round < 1 || stage.round > contract.current_round {
             row_errors.push("stage.round");
         }
-        if !canonical_stage_roles().contains(&stage.role.as_str()) {
+        if !known_stage_roles().contains(&stage.role.as_str()) {
             row_errors.push("stage.role");
         }
         if stage.status != "done" {
@@ -2295,7 +2324,7 @@ fn stage_sequence_audit_errors(
     let admission_rejection_role =
         current_round_admission_rejection_role(contract, stages, evidence);
     let expected_roles =
-        expected_stage_roles_for_contract(contract, admission_rejection_role.as_deref());
+        expected_stage_roles_for_contract(contract, admission_rejection_role.as_deref(), stages);
     if !expected_roles.is_empty() {
         let missing_roles = expected_roles
             .iter()
@@ -2340,40 +2369,81 @@ fn stage_sequence_audit_errors(
     errors
 }
 
-fn canonical_stage_roles() -> [&'static str; 3] {
-    ["explorer", "doer", "evaluator"]
+fn canonical_stage_roles() -> &'static [&'static str] {
+    CURRENT_LOOP_ROLES
+}
+
+fn legacy_stage_roles() -> &'static [&'static str] {
+    LEGACY_LOOP_ROLES
+}
+
+fn known_stage_roles() -> &'static [&'static str] {
+    &["explorer", "developer", "reviewer", "doer", "evaluator"]
 }
 
 fn expected_stage_roles_for_contract(
     contract: &HiveLoopContract,
     admission_rejection_role: Option<&str>,
+    stages: &[HiveLoopStage],
 ) -> Vec<&'static str> {
+    let roles = stage_role_family_for_contract(contract, admission_rejection_role, stages);
     match contract.status.as_str() {
-        "kept" | "rejected" => canonical_stage_roles().to_vec(),
+        "kept" | "rejected" => roles.to_vec(),
         "needs-review"
             if contract.active_phase == "human-review" && admission_rejection_role.is_some() =>
         {
             expected_stage_roles_through(admission_rejection_role.unwrap_or_default())
         }
-        "needs-review" => canonical_stage_roles().to_vec(),
+        "needs-review" => roles.to_vec(),
         "blocked" => match contract.active_phase.as_str() {
             _ if admission_rejection_role.is_some() => {
                 expected_stage_roles_through(admission_rejection_role.unwrap_or_default())
             }
             "explorer" => vec!["explorer"],
+            "developer" => vec!["explorer", "developer"],
+            "reviewer" => canonical_stage_roles().to_vec(),
             "doer" => vec!["explorer", "doer"],
-            "evaluator" | "complete" | "human-review" => canonical_stage_roles().to_vec(),
+            "evaluator" => legacy_stage_roles().to_vec(),
+            "complete" | "human-review" => roles.to_vec(),
             _ => Vec::new(),
         },
         _ => Vec::new(),
     }
 }
 
+fn stage_role_family_for_contract(
+    contract: &HiveLoopContract,
+    admission_rejection_role: Option<&str>,
+    stages: &[HiveLoopStage],
+) -> &'static [&'static str] {
+    if matches!(
+        admission_rejection_role,
+        Some("developer") | Some("reviewer")
+    ) || matches!(contract.active_phase.as_str(), "developer" | "reviewer")
+        || stages
+            .iter()
+            .any(|stage| matches!(stage.role.as_str(), "developer" | "reviewer"))
+    {
+        return canonical_stage_roles();
+    }
+    if matches!(admission_rejection_role, Some("doer") | Some("evaluator"))
+        || matches!(contract.active_phase.as_str(), "doer" | "evaluator")
+        || stages
+            .iter()
+            .any(|stage| matches!(stage.role.as_str(), "doer" | "evaluator"))
+    {
+        return legacy_stage_roles();
+    }
+    canonical_stage_roles()
+}
+
 fn expected_stage_roles_through(role: &str) -> Vec<&'static str> {
     match role {
         "explorer" => vec!["explorer"],
+        "developer" => vec!["explorer", "developer"],
+        "reviewer" => canonical_stage_roles().to_vec(),
         "doer" => vec!["explorer", "doer"],
-        "evaluator" => canonical_stage_roles().to_vec(),
+        "evaluator" => legacy_stage_roles().to_vec(),
         _ => Vec::new(),
     }
 }
@@ -2488,7 +2558,7 @@ fn stage_evidence_audit_errors(
     }
 
     let expected_roles =
-        expected_stage_roles_for_contract(contract, admission_rejection_role.as_deref());
+        expected_stage_roles_for_contract(contract, admission_rejection_role.as_deref(), stages);
     for stage in stages.iter().filter(|stage| {
         stage.round == contract.current_round
             && expected_roles
@@ -2614,7 +2684,7 @@ fn expected_stage_evidence_kind(
         && contract.active_phase == stage.role
         && matches!(
             contract.active_phase.as_str(),
-            "explorer" | "doer" | "evaluator"
+            "explorer" | "developer" | "reviewer" | "doer" | "evaluator"
         )
     {
         return Some("admission_rejection");
@@ -2625,6 +2695,8 @@ fn expected_stage_evidence_kind(
 fn canonical_stage_evidence_kind(role: &str) -> Option<&'static str> {
     match role {
         "explorer" => Some("exploration_packet"),
+        "developer" => Some("execution_packet"),
+        "reviewer" => Some("verdict_packet"),
         "doer" => Some("execution_packet"),
         "evaluator" => Some("verdict_packet"),
         _ => None,
@@ -3266,16 +3338,17 @@ fn runtime_policy_spec<'a>(
 
 fn active_policy_audit_errors(active_policies: &[&HiveLoopPolicy]) -> Vec<serde_json::Value> {
     let mut errors = Vec::new();
-    if active_policies.len() != DEFAULT_LOOP_POLICIES.len() {
+    let expected_policies = expected_loop_policies_for_active(active_policies);
+    if active_policies.len() != expected_policies.len() {
         errors.push(serde_json::json!({
             "scope": "active_policy_set",
-            "expected": DEFAULT_LOOP_POLICIES.len(),
+            "expected": expected_policies.len(),
             "actual": active_policies.len(),
             "errors": ["active_policy_count"]
         }));
     }
 
-    for expected in DEFAULT_LOOP_POLICIES {
+    for expected in expected_policies {
         let matches = active_policies
             .iter()
             .filter(|policy| policy_matches_expected_route(policy, expected))
@@ -3337,7 +3410,7 @@ fn active_policy_audit_errors(active_policies: &[&HiveLoopPolicy]) -> Vec<serde_
             }
             None => policy_errors.push("gate.unknown".to_string()),
         }
-        if !DEFAULT_LOOP_POLICIES
+        if !expected_policies
             .iter()
             .any(|expected| policy_matches_expected_route(policy, expected))
         {
@@ -3358,6 +3431,32 @@ fn active_policy_audit_errors(active_policies: &[&HiveLoopPolicy]) -> Vec<serde_
     }
 
     errors
+}
+
+fn expected_loop_policies_for_active(
+    active_policies: &[&HiveLoopPolicy],
+) -> &'static [LoopPolicySpec] {
+    let legacy_match_count = LEGACY_LOOP_POLICIES
+        .iter()
+        .filter(|expected| {
+            active_policies
+                .iter()
+                .any(|policy| policy_matches_expected_route(policy, expected))
+        })
+        .count();
+    let current_match_count = DEFAULT_LOOP_POLICIES
+        .iter()
+        .filter(|expected| {
+            active_policies
+                .iter()
+                .any(|policy| policy_matches_expected_route(policy, expected))
+        })
+        .count();
+    if legacy_match_count > current_match_count {
+        LEGACY_LOOP_POLICIES
+    } else {
+        DEFAULT_LOOP_POLICIES
+    }
 }
 
 fn policy_matches_expected_route(policy: &HiveLoopPolicy, expected: &LoopPolicySpec) -> bool {
@@ -3644,24 +3743,28 @@ fn standard_verdict_binding_errors(
         _ => errors.push("evidence.runtime_ready".to_string()),
     }
 
-    let evaluator_packet = packets.iter().find(|packet| {
+    let reviewer_packet = packets.iter().find(|packet| {
         packet.round == verdict.round
             && packet.object_kind == "VERDICT_PACKET"
-            && packet.writer_role == "evaluator"
+            && matches!(packet.writer_role.as_str(), "reviewer" | "evaluator")
     });
-    let expected_worker = evaluator_packet.and_then(|packet| packet_role_worker(&packet.payload));
+    let expected_worker = reviewer_packet.and_then(|packet| packet_role_worker(&packet.payload));
     match (verdict.evidence.get("role_worker"), expected_worker) {
         (Some(actual), Some(expected)) if actual == expected => {}
         (Some(_), Some(_)) => errors.push("evidence.role_worker_binding".to_string()),
         _ => errors.push("evidence.role_worker".to_string()),
     }
-    if verdict
+    let source_reviewer = verdict
+        .evidence
+        .pointer("/source/reviewer")
+        .and_then(|value| value.as_str());
+    let source_evaluator = verdict
         .evidence
         .pointer("/source/evaluator")
-        .and_then(|value| value.as_str())
-        != Some("hive-loop-control")
+        .and_then(|value| value.as_str());
+    if source_reviewer != Some("hive-loop-control") && source_evaluator != Some("hive-loop-control")
     {
-        errors.push("evidence.source_evaluator".to_string());
+        errors.push("evidence.source_reviewer".to_string());
     }
 
     errors
@@ -3747,13 +3850,17 @@ fn admission_rejection_verdict_binding_errors(
             errors.push("evidence.admission_receipt_binding".to_string());
         }
     }
-    if verdict
+    let source_reviewer = verdict
+        .evidence
+        .pointer("/source/reviewer")
+        .and_then(|value| value.as_str());
+    let source_evaluator = verdict
         .evidence
         .pointer("/source/evaluator")
-        .and_then(|value| value.as_str())
-        != Some("hive-loop-control")
+        .and_then(|value| value.as_str());
+    if source_reviewer != Some("hive-loop-control") && source_evaluator != Some("hive-loop-control")
     {
-        errors.push("evidence.source_evaluator".to_string());
+        errors.push("evidence.source_reviewer".to_string());
     }
 
     errors
@@ -5872,6 +5979,8 @@ fn block_on_admission_rejection(
 fn stage_completeness_for_phase(phase: &str) -> f64 {
     match phase {
         "explorer" => 0.33,
+        "developer" => 0.66,
+        "reviewer" => 1.0,
         "doer" => 0.66,
         "evaluator" => 1.0,
         _ => 0.0,
@@ -5914,7 +6023,7 @@ fn admission_rejection_verdict_evidence_payload(
         "packet_id": admission.packet_id,
         "phase": phase,
         "source": {
-            "evaluator": "hive-loop-control",
+            "reviewer": "hive-loop-control",
             "admission_receipt": admission.policy.clone()
         }
     })
@@ -6065,7 +6174,7 @@ impl TypedVerdict {
     fn evidence_payload(
         &self,
         runtime: &str,
-        evaluator_worker: &serde_json::Value,
+        reviewer_worker: &serde_json::Value,
     ) -> serde_json::Value {
         serde_json::json!({
             "schema_version": VERDICT_SCHEMA_VERSION,
@@ -6074,21 +6183,21 @@ impl TypedVerdict {
             "evidence_count": self.evidence_count + 1,
             "runtime": runtime,
             "runtime_ready": self.runtime_ready,
-            "role_worker": evaluator_worker,
+            "role_worker": reviewer_worker,
             "source": {
-                "evaluator": "hive-loop-control",
+                "reviewer": "hive-loop-control",
                 "round_evidence_before_verdict": self.evidence_count
             }
         })
     }
 
-    fn packet_payload(&self, evaluator_worker: &serde_json::Value) -> serde_json::Value {
+    fn packet_payload(&self, reviewer_worker: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({
             "decision": self.decision.as_str(),
             "summary": self.summary,
             "reason_code": self.reason_code,
             "score": self.score_payload(),
-            "role_worker": evaluator_worker
+            "role_worker": reviewer_worker
         })
     }
 }
@@ -6101,7 +6210,7 @@ fn parse_decision_override(value: Option<&str>) -> Result<Option<VerdictDecision
             "needs-review" => Ok(VerdictDecision::NeedsReview),
             "blocked" => Ok(VerdictDecision::Blocked),
             other => anyhow::bail!(
-                "unsupported evaluator decision `{other}`; expected keep, reject, needs-review, or blocked"
+                "unsupported reviewer decision `{other}`; expected keep, reject, needs-review, or blocked"
             ),
         })
         .transpose()
@@ -6113,6 +6222,7 @@ fn build_verdict(
     runtime_failure: Option<RuntimeFailure>,
     runtime: &str,
     evidence_count: usize,
+    round: i64,
 ) -> TypedVerdict {
     if !runtime_ready {
         let reason_code = runtime_failure
@@ -6122,10 +6232,23 @@ fn build_verdict(
             decision: VerdictDecision::Blocked,
             reason_code,
             summary: format!(
-                "Evaluator blocked the candidate: `{runtime}` {}.",
+                "Reviewer blocked the candidate: `{runtime}` {}.",
                 runtime_failure
                     .unwrap_or(RuntimeFailure::Worker)
                     .summary_fragment()
+            ),
+            runtime_ready,
+            evidence_count,
+        };
+    }
+
+    if decision_override == Some(VerdictDecision::Reject) && round >= REVIEWER_INVALID_ROUND_BUDGET
+    {
+        return TypedVerdict {
+            decision: VerdictDecision::Blocked,
+            reason_code: "review_budget_exhausted",
+            summary: format!(
+                "Reviewer blocked the issue: candidate was still invalid after {REVIEWER_INVALID_ROUND_BUDGET} review rounds."
             ),
             runtime_ready,
             evidence_count,
@@ -6136,28 +6259,28 @@ fn build_verdict(
         VerdictDecision::Keep => TypedVerdict {
             decision: VerdictDecision::Keep,
             reason_code: "all_gates_passed",
-            summary: "Evaluator kept the candidate: all MVP gates passed.".to_string(),
+            summary: "Reviewer kept the candidate: all MVP gates passed.".to_string(),
             runtime_ready,
             evidence_count,
         },
         VerdictDecision::Reject => TypedVerdict {
             decision: VerdictDecision::Reject,
             reason_code: "quality_gate_failed",
-            summary: "Evaluator rejected the candidate: quality gate failed.".to_string(),
+            summary: "Reviewer rejected the candidate: quality gate failed.".to_string(),
             runtime_ready,
             evidence_count,
         },
         VerdictDecision::NeedsReview => TypedVerdict {
             decision: VerdictDecision::NeedsReview,
             reason_code: "human_review_required",
-            summary: "Evaluator requested human review for this candidate.".to_string(),
+            summary: "Reviewer requested human review for this candidate.".to_string(),
             runtime_ready,
             evidence_count,
         },
         VerdictDecision::Blocked => TypedVerdict {
             decision: VerdictDecision::Blocked,
             reason_code: "operator_blocked",
-            summary: "Evaluator blocked the candidate by operator decision.".to_string(),
+            summary: "Reviewer blocked the candidate by operator decision.".to_string(),
             runtime_ready,
             evidence_count,
         },
@@ -6448,14 +6571,14 @@ fn gate_spec(gate: &str) -> Option<GateSpec> {
         }),
         "runtime_receipts_present" => Some(GateSpec {
             name: "runtime_receipts_present",
-            description: "Doer packets must carry runtime probe, runtime worker, artifact, and role worker receipts.",
+            description: "Developer packets must carry runtime probe, runtime worker, artifact, and role worker receipts.",
             expected_object_kind: Some("EXECUTION_PACKET"),
             required_receipts: &["runtime_probe", "runtime_worker", "artifact", "role_worker"],
             check: GateCheck::ReceiptRequirementsSatisfied,
         }),
         "verdict_receipts_present" => Some(GateSpec {
             name: "verdict_receipts_present",
-            description: "Evaluator packets must carry decision, summary, score, and role worker receipts.",
+            description: "Reviewer packets must carry decision, summary, score, and role worker receipts.",
             expected_object_kind: Some("VERDICT_PACKET"),
             required_receipts: &["decision", "summary", "score", "role_worker"],
             check: GateCheck::ReceiptRequirementsSatisfied,
@@ -6476,7 +6599,7 @@ fn gate_spec(gate: &str) -> Option<GateSpec> {
         }),
         "decision_present" => Some(GateSpec {
             name: "decision_present",
-            description: "Packet body must include an allowed evaluator decision.",
+            description: "Packet body must include an allowed reviewer decision.",
             expected_object_kind: None,
             required_receipts: &["decision"],
             check: GateCheck::DecisionPresent,
@@ -6894,6 +7017,8 @@ fn run_role_worker(
 fn role_worker_action(role: &str) -> &'static str {
     match role {
         "explorer" => "compile-candidate",
+        "developer" => "implement-admitted-candidate",
+        "reviewer" => "review-evidence-and-verdict-envelope",
         "doer" => "record-local-loop-ledger",
         "evaluator" => "check-gates-and-verdict-envelope",
         _ => "unknown-role-action",
@@ -7096,6 +7221,12 @@ fn codex_worker_prompt(contract: &HiveLoopContract, role: &str) -> String {
         "explorer" => {
             "compile the goal into a bounded candidate and confirm the constraints are explicit"
         }
+        "developer" => {
+            "validate that you received the admitted development packet and confirm the implementation path is bounded"
+        }
+        "reviewer" => {
+            "inspect the evidence and gate contract, then confirm the verdict envelope can be reviewed"
+        }
         "doer" => {
             "validate that you received the accepted execution packet and confirm it can be executed"
         }
@@ -7107,7 +7238,7 @@ fn codex_worker_prompt(contract: &HiveLoopContract, role: &str) -> String {
     format!(
         r#"Entrance Hive {role_name} worker packet.
 
-You are the {role_name} role inside a constrained Explorer -> Doer -> Evaluator loop.
+You are the {role_name} role inside a constrained Explorer -> Developer -> Reviewer loop.
 Rules:
 - Do not modify files.
 - Do not make network calls.
@@ -7969,7 +8100,7 @@ mod tests {
                 .payload
                 .pointer("/body/role_worker/role")
                 .and_then(|value| value.as_str()),
-            Some("evaluator")
+            Some("reviewer")
         );
         assert_eq!(report.admissions.len(), 3);
         assert!(report
@@ -8063,7 +8194,7 @@ mod tests {
                 .payload
                 .pointer("/worker/receipt/action")
                 .and_then(|value| value.as_str()),
-            Some("record-local-loop-ledger")
+            Some("implement-admitted-candidate")
         );
         assert_eq!(
             execution_evidence
@@ -8118,7 +8249,7 @@ mod tests {
         assert!(trace
             .last_gate_description
             .as_deref()
-            .is_some_and(|description| description.contains("Evaluator packets")));
+            .is_some_and(|description| description.contains("Reviewer packets")));
         assert_eq!(trace.last_admission_passed, Some(true));
         assert_eq!(trace.last_decision.as_deref(), Some("keep"));
         assert_eq!(trace.score_vector.len(), 4);
@@ -8142,8 +8273,8 @@ mod tests {
             .evidence
             .iter()
             .find(|evidence| evidence.kind == "execution_packet")
-            .expect("doer evidence summary should exist");
-        assert_eq!(doer_evidence.stage_role.as_deref(), Some("doer"));
+            .expect("developer evidence summary should exist");
+        assert_eq!(doer_evidence.stage_role.as_deref(), Some("developer"));
         assert_eq!(doer_evidence.admission_result.as_deref(), Some("admitted"));
         assert_eq!(doer_evidence.worker_kind.as_deref(), Some("local"));
         assert_eq!(doer_evidence.worker_ok, Some(true));
@@ -8154,12 +8285,12 @@ mod tests {
         assert_eq!(doer_evidence.worker_retry_exhausted, None);
         assert_eq!(
             doer_evidence.worker_action.as_deref(),
-            Some("record-local-loop-ledger")
+            Some("implement-admitted-candidate")
         );
         assert!(doer_evidence
             .worker_evidence_summary
             .as_deref()
-            .is_some_and(|summary| summary.contains("Local doer worker")));
+            .is_some_and(|summary| summary.contains("Local developer worker")));
         assert_eq!(doer_evidence.worker_gate_count, Some(3));
         assert!(doer_evidence.worker_receipt_errors.is_empty());
         let mut receipt_error_trace = trace.clone();
@@ -8167,7 +8298,7 @@ mod tests {
             .evidence
             .iter_mut()
             .find(|evidence| evidence.kind == "execution_packet")
-            .expect("doer evidence summary should exist")
+            .expect("developer evidence summary should exist")
             .worker_receipt_errors = vec!["action".to_string()];
         assert!(doctor_worker_failures(&receipt_error_trace)
             .iter()
@@ -8179,20 +8310,20 @@ mod tests {
         assert!(doer_evidence
             .transcript_excerpt
             .as_deref()
-            .is_some_and(|excerpt| excerpt.contains("Local doer worker")));
+            .is_some_and(|excerpt| excerpt.contains("Local developer worker")));
         assert_eq!(
             trace
                 .stages
                 .iter()
                 .map(|stage| stage.role.as_str())
                 .collect::<Vec<_>>(),
-            vec!["explorer", "doer", "evaluator"]
+            vec!["explorer", "developer", "reviewer"]
         );
         let doer_trace = trace
             .stages
             .iter()
-            .find(|stage| stage.role == "doer")
-            .expect("doer stage trace should exist");
+            .find(|stage| stage.role == "developer")
+            .expect("developer stage trace should exist");
         assert_eq!(
             doer_trace.evidence_kind.as_deref(),
             Some("execution_packet")
@@ -8244,7 +8375,7 @@ mod tests {
                     .get("stage_role")
                     .and_then(|value| value.as_str()))
                 .collect::<Vec<_>>(),
-            vec!["explorer", "doer", "evaluator"]
+            vec!["explorer", "developer", "reviewer"]
         );
         assert_eq!(
             report.issues[0]
@@ -8266,7 +8397,7 @@ mod tests {
                     == Some("exploration_packet")
         }));
         assert!(report.issues[0].comments.iter().any(|comment| {
-            comment.body == "Doer admitted the execution packet."
+            comment.body == "Developer admitted the execution packet."
                 && comment
                     .payload
                     .get("evidence_kind")
@@ -8274,7 +8405,7 @@ mod tests {
                     == Some("execution_packet")
         }));
         assert!(report.issues[0].comments.iter().any(|comment| {
-            comment.body == "Evaluator admitted the verdict packet."
+            comment.body == "Reviewer admitted the verdict packet."
                 && comment
                     .payload
                     .get("evidence_kind")
@@ -8322,7 +8453,7 @@ mod tests {
             .expect("loop evidence report should resolve");
         assert_eq!(evidence_report.evidence.len(), 3);
         assert!(evidence_report.evidence.iter().any(|evidence| {
-            evidence.stage_role.as_deref() == Some("evaluator")
+            evidence.stage_role.as_deref() == Some("reviewer")
                 && evidence.kind == "verdict_packet"
                 && evidence.worker_ok == Some(true)
         }));
@@ -8819,9 +8950,9 @@ mod tests {
             &store,
             &created.contract,
             "EXECUTION_PACKET",
-            "doer",
-            "doer",
-            "evaluator",
+            "developer",
+            "developer",
+            "reviewer",
             serde_json::json!({
                 "runtime_probe": {
                     "ok": true,
@@ -8894,7 +9025,7 @@ mod tests {
         });
         let runtime_worker = run_role_worker(
             "local",
-            "doer",
+            "developer",
             &created.contract,
             &runtime_probe,
             DEFAULT_WORKER_TIMEOUT_SECS,
@@ -8911,9 +9042,9 @@ mod tests {
             &store,
             &created.contract,
             "EXECUTION_PACKET",
-            "doer",
-            "doer",
-            "evaluator",
+            "developer",
+            "developer",
+            "reviewer",
             serde_json::json!({
                 "runtime_probe": runtime_probe,
                 "runtime_worker": runtime_worker,
@@ -9359,6 +9490,55 @@ mod tests {
             vec!["comment", "retry", "cancel"]
         );
 
+        let exhausted = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Exhausted review loop".to_string(),
+                goal: "Block after repeated invalid reviews".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        store
+            .update_hive_loop_contract_state(
+                exhausted.contract.id,
+                "todo",
+                "explorer",
+                REVIEWER_INVALID_ROUND_BUDGET,
+            )
+            .expect("test should move loop to budget round");
+        let exhausted_report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: exhausted.contract.id,
+                runtime: Some("local".to_string()),
+                decision: Some("reject".to_string()),
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("exhausted reject loop should run");
+
+        assert_eq!(exhausted_report.contract.status, "blocked");
+        assert_eq!(exhausted_report.contract.current_round, 3);
+        assert_eq!(exhausted_report.verdicts[0].decision, "blocked");
+        assert_eq!(exhausted_report.issues[0].issue.status, "Blocked");
+        assert_eq!(
+            exhausted_report.verdicts[0]
+                .score
+                .get("reason_code")
+                .and_then(|value| value.as_str()),
+            Some("review_budget_exhausted")
+        );
+        assert!(exhausted_report.verdicts[0]
+            .summary
+            .contains("still invalid after 3 review rounds"));
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -9684,8 +9864,8 @@ mod tests {
         let doer_stage = report
             .stages
             .iter()
-            .find(|stage| stage.role == "doer")
-            .expect("doer stage should exist");
+            .find(|stage| stage.role == "developer")
+            .expect("developer stage should exist");
         store
             .insert_hive_loop_evidence(HiveLoopEvidenceCreate {
                 loop_id: report.contract.id,
@@ -9700,15 +9880,15 @@ mod tests {
                         "ok": true,
                         "kind": "codex",
                         "mode": "codex-exec",
-                        "role": "doer",
+                        "role": "developer",
                         "timeout_secs": 60,
                         "attempt_count": 1,
                         "max_attempts": 1,
                         "receipt_ok": true,
                         "receipt": {
                             "ok": true,
-                            "role": "doer",
-                            "action": "record-local-loop-ledger",
+                            "role": "developer",
+                            "action": "implement-admitted-candidate",
                             "evidence_summary": "codex evidence drifted",
                             "gates": { "packet_received": true }
                         }
@@ -9868,8 +10048,8 @@ mod tests {
         let doer_stage = report
             .stages
             .iter()
-            .find(|stage| stage.role == "doer")
-            .expect("doer stage should exist");
+            .find(|stage| stage.role == "developer")
+            .expect("developer stage should exist");
         store
             .insert_hive_loop_stage(HiveLoopStageCreate {
                 loop_id: doer_stage.loop_id,
@@ -10078,7 +10258,7 @@ mod tests {
         .expect("admission rejection should still return a report");
 
         assert_eq!(report.contract.status, "blocked");
-        assert_eq!(report.contract.active_phase, "doer");
+        assert_eq!(report.contract.active_phase, "developer");
         assert_eq!(report.issues[0].issue.status, "Blocked");
         assert_eq!(report.verdicts.len(), 1);
         assert_eq!(report.verdicts[0].decision, "blocked");
@@ -10152,7 +10332,7 @@ mod tests {
             .iter()
             .find(|evidence| evidence.kind == "admission_rejection")
             .expect("admission rejection evidence should be summarized");
-        assert_eq!(blocked_evidence.blocked_phase.as_deref(), Some("doer"));
+        assert_eq!(blocked_evidence.blocked_phase.as_deref(), Some("developer"));
         assert!(blocked_evidence
             .operator_options
             .iter()
@@ -10164,7 +10344,9 @@ mod tests {
             .expect("issue should exist")
             .comments
             .iter()
-            .any(|comment| comment.body.contains("Compiler admission blocked at doer")));
+            .any(|comment| comment
+                .body
+                .contains("Compiler admission blocked at developer")));
         let blocked_trace = report.issues[0]
             .trace
             .as_ref()
@@ -11103,25 +11285,25 @@ mod tests {
             .evidence
             .iter()
             .find(|row| row.kind == "execution_packet")
-            .expect("doer evidence should exist");
+            .expect("developer evidence should exist");
         let doer_worker = doer_evidence
             .payload
             .get("worker")
             .cloned()
-            .expect("doer evidence should carry a worker receipt");
+            .expect("developer evidence should carry a worker receipt");
 
         store
             .insert_hive_comment(HiveCommentCreate {
                 issue_id,
                 author: "hive".to_string(),
-                body: "Doer admitted the execution packet.".to_string(),
+                body: "Developer admitted the execution packet.".to_string(),
                 payload: serde_json::json!({
                     "schema_version": SYSTEM_COMMENT_SCHEMA_VERSION,
                     "source": "hive",
                     "loop_id": created.contract.id,
                     "round": 1,
-                    "phase": "doer",
-                    "stage_role": "doer",
+                    "phase": "developer",
+                    "stage_role": "developer",
                     "evidence_kind": "verdict_packet",
                     "evidence_id": doer_evidence.id,
                     "admission": "admitted",
