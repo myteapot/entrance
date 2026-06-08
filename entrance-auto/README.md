@@ -24,3 +24,11 @@ artifacts for the Entrance workspace.
 
 If a workflow needs an ignored file, document how to recreate or provide it in
 the workflow Markdown.
+
+## Validation Workflows
+
+- `workflows/validation/run-local-mvp-demo.sh` runs the local
+  `Explorer -> Developer -> Reviewer` MVP loop plus the `remote-fixture:`
+  external issue/status/comment dry-run from a clean app root. Use
+  `--full-gates` to include Rust, frontend, formatting, and diff checks before
+  generating the demo report.

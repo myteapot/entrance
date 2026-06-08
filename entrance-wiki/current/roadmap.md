@@ -48,6 +48,10 @@ Entrance has reached a local MVP unit:
   and ends with the connector surface current. The Panel path has been validated
   through the local HTTP daemon bridge with a real Browser click from a clean
   temporary app root.
+- `entrance-auto/workflows/validation/run-local-mvp-demo.sh --full-gates` now
+  runs the local MVP loop, the `remote-fixture:` external dry-run, full Rust and
+  frontend gates, formatting checks, diff checks, and a machine-readable report
+  from a clean app root.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -110,8 +114,8 @@ multi-agent runtime/compiler product.
 
 ### P2: Release and validation workflow
 
-- Create a reproducible demo script that runs local MVP, external fixture
-  roundtrip, Panel browser validation, and full gates from a clean app root.
+- Extend the reproducible demo workflow with Panel Browser screenshot capture
+  and screenshot metadata, while keeping CLI validation deterministic.
 - Keep representative golden fixtures for compact CLI outputs and Panel-visible
   connector states.
 - Add release notes and operator docs that clearly separate local MVP, external
@@ -121,9 +125,7 @@ multi-agent runtime/compiler product.
 
 Run one larger convergence loop on productionizing external issue surfaces:
 
-1. Add a reproducible release/demo script that runs local MVP plus the
-   `remote-fixture:` dry-run from a clean app root.
-2. Capture representative Browser screenshots and golden outputs for the
+1. Capture representative Browser screenshots and golden outputs for the
    already-working Panel fixture action.
-3. Then choose between live token-backed GitHub/Linear validation or worker
+2. Then choose between live token-backed GitHub/Linear validation or worker
    lifecycle hardening.
