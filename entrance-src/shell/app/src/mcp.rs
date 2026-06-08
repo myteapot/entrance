@@ -282,7 +282,7 @@ fn prompt_blocker_decision(
     let issue_id = integer_arg(args, "issue_id")?;
     let issue_resource = issue_prompt_resource(services, issue_id)?;
     let text = format!(
-        "You are preparing a human decision for Entrance issue #{issue_id}. Read entrance://review-queue and the attached issue resource, then do not choose for the human.\n\nPresent:\nA. retry with the smallest changed assumption or boundary;\nB. request-review when preference, scope, or external data is needed;\nC. cancel when the candidate is no longer valuable.\n\nInclude the current status, Reviewer decision/reason, failed gates, missing receipts, evidence links, and the exact Entrance tool call to execute only after the human chooses."
+        "You are preparing a human decision for Entrance issue #{issue_id}. Read entrance://review-queue, entrance://policy/mcp-permissions, and the attached issue resource, then do not choose for the human.\n\nPresent:\nA. retry with the smallest changed assumption or boundary;\nB. request-review when preference, scope, or external data is needed;\nC. cancel when the candidate is no longer valuable.\n\nInclude the current status, Reviewer decision/reason, failed gates, missing receipts, evidence links, and the exact Entrance tool call to execute only after the human chooses. Add human_confirmed=true only after the human has chosen that option."
     );
     Ok(prompt_result(
         "Prepare human retry/review/cancel options for a blocked Entrance issue.",
@@ -417,34 +417,42 @@ fn tool_specs() -> Vec<serde_json::Value> {
         tool_spec(
             "entrance_issue_retry",
             "Retry an Entrance issue",
-            "Record a retry decision, advance the loop round, and run the issue again.",
+            "Record a human-confirmed retry decision, advance the loop round, and run the issue again.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "issue_id": { "type": "integer" },
                     "body": { "type": "string" },
+                    "human_confirmed": {
+                        "type": "boolean",
+                        "description": "Must be true because retry is a human decision boundary."
+                    },
                     "author": { "type": "string", "description": "Optional author label. Defaults to mcp-agent." },
                     "runtime": { "type": "string" },
                     "decision": { "type": "string", "enum": ["keep", "reject", "needs-review", "blocked"] },
                     "worker_timeout_secs": { "type": "integer" },
                     "worker_attempts": { "type": "integer" }
                 },
-                "required": ["issue_id", "body"]
+                "required": ["issue_id", "body", "human_confirmed"]
             }),
         ),
         tool_spec(
             "entrance_issue_decide",
             "Decide an Entrance issue",
-            "Move an issue through a human decision action: retry, request-review, or cancel.",
+            "Move an issue through a human-confirmed decision action: retry, request-review, or cancel.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "issue_id": { "type": "integer" },
                     "action": { "type": "string", "enum": ["retry", "request-review", "cancel"] },
                     "body": { "type": "string" },
+                    "human_confirmed": {
+                        "type": "boolean",
+                        "description": "Must be true because retry/review/cancel are human decision boundaries."
+                    },
                     "author": { "type": "string", "description": "Optional author label. Defaults to mcp-agent." }
                 },
-                "required": ["issue_id", "action"]
+                "required": ["issue_id", "action", "human_confirmed"]
             }),
         ),
     ]
@@ -574,6 +582,7 @@ fn tool_issue_run(
 ) -> Result<serde_json::Value> {
     let issue_id = integer_arg(args, "issue_id")?;
     let body = if retry {
+        ensure_human_confirmed(args, "retry")?;
         Some(string_arg(args, "body")?)
     } else {
         optional_string_arg(args, "body")
@@ -602,6 +611,7 @@ fn tool_issue_decide(
 ) -> Result<serde_json::Value> {
     let issue_id = integer_arg(args, "issue_id")?;
     let action = string_arg(args, "action")?;
+    ensure_human_confirmed(args, &action)?;
     let card = services.hive.issue_decide(IssueDecisionRequest {
         issue_id,
         action,
@@ -635,6 +645,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "entrance://policy/registry",
             "Entrance policy registry",
             "Active loop, runtime, and connector policy registry.",
+        ),
+        resource_spec(
+            "entrance://policy/mcp-permissions",
+            "Entrance MCP permissions",
+            "MCP tool permission and human confirmation policy.",
         ),
         resource_spec(
             "entrance://schema/status",
@@ -686,6 +701,7 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
         "entrance://issues" => tool_issue_list(services, &serde_json::json!({}))?,
         "entrance://review-queue" => review_queue(services, None)?,
         "entrance://policy/registry" => serde_json::to_value(services.hive.policy_registry())?,
+        "entrance://policy/mcp-permissions" => mcp_permission_policy(),
         "entrance://schema/status" => serde_json::to_value(services.kernel.store.schema_status()?)?,
         value if value.starts_with("entrance://issues/") => {
             let issue_id = value
@@ -759,6 +775,7 @@ fn review_queue_item(card: &IssueCard) -> serde_json::Value {
         "current_round": trace.map(|trace| trace.current_round),
         "human_options": trace.map(|trace| trace.human_options.clone()).unwrap_or_default(),
         "actions": &card.actions,
+        "mcp_policy": mcp_issue_policy(&card.actions),
         "blockers": {
             "failed_checks": doctor.map(|doctor| doctor.failed_checks.clone()).unwrap_or_default(),
             "audit_failure_details": doctor.map(|doctor| doctor.audit_failure_details.clone()).unwrap_or_default(),
@@ -773,6 +790,81 @@ fn review_queue_item(card: &IssueCard) -> serde_json::Value {
         "latest_comment": latest_comment,
         "recent_evidence": recent_evidence
     })
+}
+
+fn mcp_issue_policy(actions: &[entrance_hive::IssueAction]) -> serde_json::Value {
+    let human_confirmed_actions = actions
+        .iter()
+        .filter(|action| mcp_action_requires_human_confirmation(&action.action))
+        .map(|action| action.action.as_str())
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schema_version": "entrance.mcp.issue_permission_policy.v1",
+        "human_confirmed_actions": human_confirmed_actions,
+        "confirmation_arg": "human_confirmed",
+        "policy_resource": "entrance://policy/mcp-permissions"
+    })
+}
+
+fn mcp_permission_policy() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "entrance.mcp.permission_policy.v1",
+        "default_actor": "mcp-agent",
+        "read_only_tools": [
+            "entrance_issue_list",
+            "entrance_issue_show",
+            "entrance_review_queue"
+        ],
+        "write_tools": [
+            "entrance_issue_comment",
+            "entrance_loop_create",
+            "entrance_issue_run"
+        ],
+        "human_decision_tools": [
+            "entrance_issue_retry",
+            "entrance_issue_decide"
+        ],
+        "requires_human_confirmation": [
+            {
+                "tool": "entrance_issue_retry",
+                "actions": ["retry"],
+                "argument": "human_confirmed",
+                "value": true,
+                "reason": "Retry advances a blocked/rejected issue into a new loop round."
+            },
+            {
+                "tool": "entrance_issue_decide",
+                "actions": ["retry", "request-review", "cancel"],
+                "argument": "human_confirmed",
+                "value": true,
+                "reason": "Retry, review, and cancel are human decision boundaries."
+            }
+        ],
+        "blocked_boundary": {
+            "statuses": ["Blocked", "Needs Review"],
+            "resource": "entrance://review-queue",
+            "prompt": "entrance_blocker_decision"
+        }
+    })
+}
+
+fn mcp_action_requires_human_confirmation(action: &str) -> bool {
+    matches!(action, "retry" | "request-review" | "cancel")
+}
+
+fn ensure_human_confirmed(args: &serde_json::Value, action: &str) -> Result<()> {
+    if args
+        .get("human_confirmed")
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "MCP action `{action}` requires human_confirmed=true; read entrance://review-queue or prompt entrance_blocker_decision before executing human decisions"
+    )
 }
 
 fn tool_result(is_error: bool, text: String, structured: serde_json::Value) -> serde_json::Value {
@@ -863,8 +955,8 @@ fn optional_string_array_arg(args: &serde_json::Value, name: &str) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::{
-        initialize_result, prompt_loop_contract, prompt_specs, tool_specs,
-        MCP_FALLBACK_PROTOCOL_VERSION,
+        ensure_human_confirmed, initialize_result, mcp_permission_policy, prompt_loop_contract,
+        prompt_specs, tool_specs, MCP_FALLBACK_PROTOCOL_VERSION,
     };
 
     #[test]
@@ -914,6 +1006,64 @@ mod tests {
         assert!(names.contains(&"entrance_review_queue"));
         assert!(names.contains(&"entrance_issue_comment"));
         assert!(names.contains(&"entrance_issue_decide"));
+    }
+
+    #[test]
+    fn human_decision_tools_expose_confirmation_policy() {
+        let tools = tool_specs();
+        let retry_tool = tools
+            .iter()
+            .find(|tool| {
+                tool.get("name").and_then(|value| value.as_str()) == Some("entrance_issue_retry")
+            })
+            .expect("retry tool should exist");
+        let decide_tool = tools
+            .iter()
+            .find(|tool| {
+                tool.get("name").and_then(|value| value.as_str()) == Some("entrance_issue_decide")
+            })
+            .expect("decide tool should exist");
+
+        assert_eq!(
+            retry_tool.pointer("/inputSchema/properties/human_confirmed/type"),
+            Some(&serde_json::json!("boolean"))
+        );
+        assert_eq!(
+            decide_tool.pointer("/inputSchema/properties/human_confirmed/type"),
+            Some(&serde_json::json!("boolean"))
+        );
+        assert_eq!(
+            ensure_human_confirmed(&serde_json::json!({}), "retry")
+                .expect_err("missing confirmation should fail")
+                .to_string(),
+            "MCP action `retry` requires human_confirmed=true; read entrance://review-queue or prompt entrance_blocker_decision before executing human decisions"
+        );
+        assert!(
+            ensure_human_confirmed(&serde_json::json!({ "human_confirmed": true }), "retry")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn permission_policy_names_human_decision_tools() {
+        let policy = mcp_permission_policy();
+        let human_tools = policy
+            .get("human_decision_tools")
+            .and_then(|value| value.as_array())
+            .expect("policy should list human decision tools");
+
+        assert!(human_tools
+            .iter()
+            .any(|value| value.as_str() == Some("entrance_issue_retry")));
+        assert!(human_tools
+            .iter()
+            .any(|value| value.as_str() == Some("entrance_issue_decide")));
+        assert_eq!(
+            policy
+                .pointer("/blocked_boundary/resource")
+                .and_then(|value| value.as_str()),
+            Some("entrance://review-queue")
+        );
     }
 
     #[test]

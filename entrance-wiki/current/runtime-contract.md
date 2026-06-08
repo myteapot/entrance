@@ -296,6 +296,7 @@ Resources:
 - `entrance://review-queue`
 - `entrance://issues/{issue_id}`
 - `entrance://policy/registry`
+- `entrance://policy/mcp-permissions`
 - `entrance://schema/status`
 
 Prompts:
@@ -315,6 +316,10 @@ used by the CLI and Panel, including Developer/Reviewer verdicts and the
 `entrance_review_queue` and `entrance://review-queue` expose only `Blocked` and
 `Needs Review` issues, with reviewer decision, reason code, human options,
 actions, blockers, latest comment, and recent evidence summaries.
+`entrance_issue_retry` and `entrance_issue_decide` require
+`human_confirmed=true`; without it the MCP tool result is an error. The
+permission boundary is documented at `entrance://policy/mcp-permissions` and is
+also included in review queue item policy metadata.
 The Electron Panel mirrors that same decision surface as a Review Queue band
 above the status board, using the existing issue actions for retry, review,
 cancel, comment, detail focus, and evidence focus.

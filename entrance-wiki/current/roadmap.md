@@ -19,7 +19,9 @@ Entrance has reached a local MVP unit:
 - `entrance mcp stdio` now exposes the local Hive issue/status/comment kernel
   as a minimal MCP tool/resource/prompt surface for creating, running, retrying,
   commenting on, reading, prompting issue-bound loops, and listing the
-  `Blocked`/`Needs Review` review queue.
+  `Blocked`/`Needs Review` review queue. MCP retry/review/cancel calls now
+  require `human_confirmed=true` and expose the permission policy through
+  `entrance://policy/mcp-permissions`.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -33,7 +35,7 @@ multi-agent runtime/compiler product.
 ### P0: External issue surfaces
 
 - Productize the MCP stdio surface: client config docs, stronger protocol
-  tests, clearer auth/permission policy, and compatibility checks against real
+  tests, richer auth/permission policy, and compatibility checks against real
   MCP clients.
 - Make `file:` and `remote-fixture:` connector roundtrips the default external
   dry-run demo path, with one clear CLI command and one clear Panel action.
