@@ -706,6 +706,15 @@ pub struct OperatorConfirmationReceipt {
     pub action: String,
     pub author: String,
     pub marker: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<OperatorConfirmationClient>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorConfirmationClient {
+    pub name: String,
+    pub version: Option<String>,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4415,6 +4424,33 @@ fn operator_confirmation_receipt_audit_errors(
     {
         errors.push("comment.confirmation_receipt.marker".to_string());
     }
+    if let Some(client) = receipt.get("client") {
+        if !client.is_object() {
+            errors.push("comment.confirmation_receipt.client".to_string());
+        } else {
+            if client
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                errors.push("comment.confirmation_receipt.client.name".to_string());
+            }
+            if client
+                .get("source")
+                .and_then(|value| value.as_str())
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                errors.push("comment.confirmation_receipt.client.source".to_string());
+            }
+            if client
+                .get("version")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                errors.push("comment.confirmation_receipt.client.version".to_string());
+            }
+        }
+    }
     errors
 }
 
@@ -4972,6 +5008,21 @@ fn ensure_operator_confirmation_receipt(
     }
     if receipt.marker.trim().is_empty() {
         anyhow::bail!("operator confirmation receipt marker is required");
+    }
+    if let Some(client) = receipt.client.as_ref() {
+        if client.name.trim().is_empty() {
+            anyhow::bail!("operator confirmation receipt client name is required");
+        }
+        if client.source.trim().is_empty() {
+            anyhow::bail!("operator confirmation receipt client source is required");
+        }
+        if client
+            .version
+            .as_ref()
+            .is_some_and(|version| version.trim().is_empty())
+        {
+            anyhow::bail!("operator confirmation receipt client version cannot be empty");
+        }
     }
     Ok(())
 }
@@ -10616,6 +10667,7 @@ mod tests {
             action: "request-review".to_string(),
             author: "human".to_string(),
             marker: "MCP confirmation: human_confirmed=true; action=request-review; author=human; policy=entrance.mcp.permission_policy.v1".to_string(),
+            client: None,
         };
         let review_card = decide_issue(
             &store,
@@ -11622,6 +11674,7 @@ mod tests {
             action: "cancel".to_string(),
             author: "human".to_string(),
             marker: "MCP confirmation: human_confirmed=true; action=cancel; author=human; policy=entrance.mcp.permission_policy.v1".to_string(),
+            client: None,
         };
         let cancel_card = decide_issue(
             &store,

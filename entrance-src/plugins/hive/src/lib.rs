@@ -22,8 +22,8 @@ pub use loop_control::{
     HiveLoopCreateRequest, HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceReport,
     HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest, HiveLoopTraceReport, IssueAction,
     IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport,
-    IssueRunRequest, OperatorConfirmationReceipt, PolicyGateSpec, PolicyRegistryReport,
-    CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+    IssueRunRequest, OperatorConfirmationClient, OperatorConfirmationReceipt, PolicyGateSpec,
+    PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
     OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};

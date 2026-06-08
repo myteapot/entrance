@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use entrance_hive::{
     HiveLoopCreateRequest, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueRunRequest,
-    OperatorConfirmationReceipt, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+    OperatorConfirmationClient, OperatorConfirmationReceipt,
+    OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -61,17 +62,29 @@ enum RequestOutcome {
     Notification,
 }
 
+#[derive(Debug, Default, Clone)]
+struct McpSession {
+    client: Option<McpClientIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct McpClientIdentity {
+    name: String,
+    version: Option<String>,
+}
+
 pub async fn run_stdio(services: AppServices) -> Result<()> {
     let mut stdout = tokio::io::stdout();
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
+    let mut session = McpSession::default();
 
     while let Some(line) = reader.next_line().await? {
         if line.trim().is_empty() {
             continue;
         }
 
-        if let Some(response) = handle_message(&services, &line) {
+        if let Some(response) = handle_message(&services, &mut session, &line) {
             stdout
                 .write_all(format!("{}\n", serde_json::to_string(&response)?).as_bytes())
                 .await?;
@@ -82,7 +95,11 @@ pub async fn run_stdio(services: AppServices) -> Result<()> {
     Ok(())
 }
 
-fn handle_message(services: &AppServices, line: &str) -> Option<JsonRpcResponse> {
+fn handle_message(
+    services: &AppServices,
+    session: &mut McpSession,
+    line: &str,
+) -> Option<JsonRpcResponse> {
     let parsed = serde_json::from_str::<JsonRpcRequest>(line);
     let request = match parsed {
         Ok(request) => request,
@@ -106,7 +123,7 @@ fn handle_message(services: &AppServices, line: &str) -> Option<JsonRpcResponse>
         ));
     }
 
-    match handle_request(services, request) {
+    match handle_request(services, session, request) {
         Ok(RequestOutcome::Result(result)) => id.map(|id| success_response(id, result)),
         Ok(RequestOutcome::Error(error)) => Some(error_response(
             id.unwrap_or(serde_json::Value::Null),
@@ -124,15 +141,26 @@ fn handle_message(services: &AppServices, line: &str) -> Option<JsonRpcResponse>
     }
 }
 
-fn handle_request(services: &AppServices, request: JsonRpcRequest) -> Result<RequestOutcome> {
+fn handle_request(
+    services: &AppServices,
+    session: &mut McpSession,
+    request: JsonRpcRequest,
+) -> Result<RequestOutcome> {
     match request.method.as_str() {
-        "initialize" => Ok(RequestOutcome::Result(initialize_result(&request.params))),
+        "initialize" => {
+            session.client = mcp_client_identity(&request.params);
+            Ok(RequestOutcome::Result(initialize_result(&request.params)))
+        }
         "notifications/initialized" => Ok(RequestOutcome::Notification),
         "ping" => Ok(RequestOutcome::Result(serde_json::json!({}))),
         "tools/list" => Ok(RequestOutcome::Result(serde_json::json!({
             "tools": tool_specs()
         }))),
-        "tools/call" => Ok(RequestOutcome::Result(call_tool(services, &request.params))),
+        "tools/call" => Ok(RequestOutcome::Result(call_tool(
+            services,
+            session,
+            &request.params,
+        ))),
         "prompts/list" => Ok(RequestOutcome::Result(serde_json::json!({
             "prompts": prompt_specs()
         }))),
@@ -185,6 +213,27 @@ fn initialize_result(params: &serde_json::Value) -> serde_json::Value {
             "version": env!("CARGO_PKG_VERSION")
         },
         "instructions": "Entrance exposes a Linear-like local issue/status/comment kernel. Start from prompts to preserve the loop contract, use tools to create/comment/run/retry/decide issues, and read resources for status, evidence, blockers, and verdicts."
+    })
+}
+
+fn mcp_client_identity(params: &serde_json::Value) -> Option<McpClientIdentity> {
+    let info = params
+        .get("clientInfo")
+        .or_else(|| params.get("client_info"))?;
+    let name = info
+        .get("name")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let version = info
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    Some(McpClientIdentity {
+        name: name.to_string(),
+        version,
     })
 }
 
@@ -490,7 +539,11 @@ fn tool_spec(
     })
 }
 
-fn call_tool(services: &AppServices, params: &serde_json::Value) -> serde_json::Value {
+fn call_tool(
+    services: &AppServices,
+    session: &McpSession,
+    params: &serde_json::Value,
+) -> serde_json::Value {
     let name = params.get("name").and_then(|value| value.as_str());
     let args = params
         .get("arguments")
@@ -502,9 +555,9 @@ fn call_tool(services: &AppServices, params: &serde_json::Value) -> serde_json::
         Some("entrance_review_queue") => tool_review_queue(services, &args),
         Some("entrance_issue_comment") => tool_issue_comment(services, &args),
         Some("entrance_loop_create") => tool_loop_create(services, &args),
-        Some("entrance_issue_run") => tool_issue_run(services, &args, false),
-        Some("entrance_issue_retry") => tool_issue_run(services, &args, true),
-        Some("entrance_issue_decide") => tool_issue_decide(services, &args),
+        Some("entrance_issue_run") => tool_issue_run(services, session, &args, false),
+        Some("entrance_issue_retry") => tool_issue_run(services, session, &args, true),
+        Some("entrance_issue_decide") => tool_issue_decide(services, session, &args),
         Some(other) => Err(anyhow::anyhow!("unknown tool `{other}`")),
         None => Err(anyhow::anyhow!("tools/call requires params.name")),
     };
@@ -595,21 +648,22 @@ fn tool_loop_create(services: &AppServices, args: &serde_json::Value) -> Result<
 
 fn tool_issue_run(
     services: &AppServices,
+    session: &McpSession,
     args: &serde_json::Value,
     retry: bool,
 ) -> Result<serde_json::Value> {
     let issue_id = integer_arg(args, "issue_id")?;
     let author = mcp_author(args);
-    let confirmation_receipt = if retry {
-        Some(mcp_human_confirmation_receipt("retry", &author))
-    } else {
-        None
-    };
     let body = if retry {
         ensure_human_confirmed(args, "retry")?;
         append_human_confirmation_note(Some(string_arg(args, "body")?), "retry", &author)
     } else {
         optional_string_arg(args, "body")
+    };
+    let confirmation_receipt = if retry {
+        Some(mcp_human_confirmation_receipt("retry", &author, session))
+    } else {
+        None
     };
     let report = services.hive.issue_run(IssueRunRequest {
         issue_id,
@@ -632,6 +686,7 @@ fn tool_issue_run(
 
 fn tool_issue_decide(
     services: &AppServices,
+    session: &McpSession,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let issue_id = integer_arg(args, "issue_id")?;
@@ -639,7 +694,7 @@ fn tool_issue_decide(
     ensure_human_confirmed(args, &action)?;
     let author = mcp_author(args);
     let body = append_human_confirmation_note(optional_string_arg(args, "body"), &action, &author);
-    let confirmation_receipt = Some(mcp_human_confirmation_receipt(&action, &author));
+    let confirmation_receipt = Some(mcp_human_confirmation_receipt(&action, &author, session));
     let card = services.hive.issue_decide(IssueDecisionRequest {
         issue_id,
         action,
@@ -853,7 +908,12 @@ fn mcp_issue_policy(actions: &[entrance_hive::IssueAction]) -> serde_json::Value
                 "loop_evidence.payload.operator.comment_body"
             ],
             "marker_prefix": "MCP confirmation:",
-            "policy_schema_version": MCP_PERMISSION_POLICY_SCHEMA_VERSION
+            "policy_schema_version": MCP_PERMISSION_POLICY_SCHEMA_VERSION,
+            "client_identity": {
+                "source": "initialize.clientInfo",
+                "fields": ["name", "version"],
+                "required": false
+            }
         },
         "policy_resource": "entrance://policy/mcp-permissions"
     })
@@ -1085,6 +1145,11 @@ fn mcp_permission_policy() -> serde_json::Value {
                 "issue_comment.body",
                 "loop_evidence.payload.operator.comment_body"
             ],
+            "client_identity": {
+                "source": "initialize.clientInfo",
+                "fields": ["name", "version"],
+                "required": false
+            },
             "source": "issue/status/comment",
             "marker_prefix": "MCP confirmation:",
             "note_template": format!("MCP confirmation: human_confirmed=true; action=<action>; author=<author>; policy={MCP_PERMISSION_POLICY_SCHEMA_VERSION}")
@@ -1134,7 +1199,11 @@ fn append_human_confirmation_note(
     })
 }
 
-fn mcp_human_confirmation_receipt(action: &str, author: &str) -> OperatorConfirmationReceipt {
+fn mcp_human_confirmation_receipt(
+    action: &str,
+    author: &str,
+    session: &McpSession,
+) -> OperatorConfirmationReceipt {
     OperatorConfirmationReceipt {
         schema_version: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
         source: "mcp".to_string(),
@@ -1144,6 +1213,14 @@ fn mcp_human_confirmation_receipt(action: &str, author: &str) -> OperatorConfirm
         action: action.to_string(),
         author: author.to_string(),
         marker: mcp_confirmation_marker(action, author),
+        client: session
+            .client
+            .as_ref()
+            .map(|client| OperatorConfirmationClient {
+                name: client.name.clone(),
+                version: client.version.clone(),
+                source: "initialize.clientInfo".to_string(),
+            }),
     }
 }
 
@@ -1242,9 +1319,10 @@ fn optional_string_array_arg(args: &serde_json::Value, name: &str) -> Vec<String
 mod tests {
     use super::{
         append_human_confirmation_note, ensure_human_confirmed, initialize_result,
-        mcp_human_confirmation_receipt, mcp_permission_policy, prompt_loop_contract, prompt_specs,
-        tool_specs, MCP_FALLBACK_PROTOCOL_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
-        MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_SCHEMA_VERSION,
+        mcp_client_identity, mcp_human_confirmation_receipt, mcp_permission_policy,
+        prompt_loop_contract, prompt_specs, tool_specs, McpSession, MCP_FALLBACK_PROTOCOL_VERSION,
+        MCP_PERMISSION_POLICY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION,
+        MCP_TOOL_PERMISSION_SCHEMA_VERSION,
     };
 
     #[test]
@@ -1384,7 +1462,15 @@ mod tests {
             )
         );
 
-        let receipt = mcp_human_confirmation_receipt("retry", "human-a");
+        let session = McpSession {
+            client: mcp_client_identity(&serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-test-client",
+                    "version": "0.1.0"
+                }
+            })),
+        };
+        let receipt = mcp_human_confirmation_receipt("retry", "human-a", &session);
         assert_eq!(
             receipt.schema_version.as_str(),
             entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION
@@ -1402,6 +1488,28 @@ mod tests {
             receipt.marker.as_str(),
             "MCP confirmation: human_confirmed=true; action=retry; author=human-a; policy=entrance.mcp.permission_policy.v1"
         );
+        let client = receipt
+            .client
+            .as_ref()
+            .expect("clientInfo should be copied into receipt");
+        assert_eq!(client.name, "codex-test-client");
+        assert_eq!(client.version.as_deref(), Some("0.1.0"));
+        assert_eq!(client.source, "initialize.clientInfo");
+    }
+
+    #[test]
+    fn client_identity_reads_initialize_client_info() {
+        let identity = mcp_client_identity(&serde_json::json!({
+            "clientInfo": { "name": "Codex Desktop", "version": "2.3.4" }
+        }))
+        .expect("client info should parse");
+        assert_eq!(identity.name, "Codex Desktop");
+        assert_eq!(identity.version.as_deref(), Some("2.3.4"));
+
+        assert!(mcp_client_identity(&serde_json::json!({
+            "clientInfo": { "name": "   " }
+        }))
+        .is_none());
     }
 
     #[test]
@@ -1454,6 +1562,12 @@ mod tests {
                 .pointer("/confirmation_receipt/schema_version")
                 .and_then(|value| value.as_str()),
             Some(entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            policy
+                .pointer("/confirmation_receipt/client_identity/source")
+                .and_then(|value| value.as_str()),
+            Some("initialize.clientInfo")
         );
         assert!(policy
             .pointer("/confirmation_receipt/note_template")

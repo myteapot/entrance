@@ -337,9 +337,12 @@ operator decision note and passes a typed
 persists the readable note as both the issue comment body and the linked
 `operator_decision` evidence payload, and persists the typed receipt at both
 `issue_comment.payload.confirmation_receipt` and
-`loop_evidence.payload.operator.confirmation_receipt`. The issue-surface audit
-checks the receipt schema and binds the comment/evidence receipt copies
-together.
+`loop_evidence.payload.operator.confirmation_receipt`. If `initialize` provided
+`clientInfo.name` and optional `clientInfo.version`, the MCP stdio session also
+copies that self-reported client identity into the receipt at
+`confirmation_receipt.client`. This is audit context, not a strong
+authentication guarantee. The issue-surface audit checks the receipt schema and
+binds the comment/evidence receipt copies together.
 The Electron Panel mirrors that same decision surface as a Review Queue band
 above the status board, using the existing issue actions for retry, review,
 cancel, comment, detail focus, and evidence focus.

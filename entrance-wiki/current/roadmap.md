@@ -25,7 +25,9 @@ Entrance has reached a local MVP unit:
   now share a per-tool `entrance.mcp.tool_permission.v1` registry; confirmed MCP
   human decisions also write an action/author/policy marker into the operator
   decision note and a typed `entrance.hive.operator_confirmation_receipt.v1`
-  receipt into the operator decision comment/evidence payload.
+  receipt into the operator decision comment/evidence payload. If the MCP
+  client sends `initialize.clientInfo`, that self-reported client identity is
+  copied into the receipt for audit context.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -40,8 +42,8 @@ multi-agent runtime/compiler product.
 
 - Productize the MCP stdio surface: client config docs, stronger protocol
   tests, real auth/identity policy on top of the local tool-permission
-  registry, actor identity mapping, and compatibility checks against real MCP
-  clients.
+  registry, verified actor identity mapping beyond self-reported
+  `initialize.clientInfo`, and compatibility checks against real MCP clients.
 - Make `file:` and `remote-fixture:` connector roundtrips the default external
   dry-run demo path, with one clear CLI command and one clear Panel action.
 - Add live token-backed GitHub and Linear validation runs, including safe
