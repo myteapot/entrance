@@ -9,7 +9,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::{
     app::AppServices,
-    commands::hive::{compact_issue_connector_control, connector_queue_report},
+    commands::hive::{
+        compact_issue_connector_control, connector_publish_plan_report, connector_queue_report,
+        connector_roundtrip_plan_report, execute_connector_publish_plan_with_confirmation,
+        execute_connector_roundtrip_plan_with_confirmation,
+    },
 };
 
 const MCP_LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -30,6 +34,10 @@ const MCP_TOOL_NAMES: &[&str] = &[
     "entrance_issue_show",
     "entrance_issue_control",
     "entrance_connector_queue",
+    "entrance_connector_publish_plan",
+    "entrance_connector_publish_execute",
+    "entrance_connector_roundtrip_plan",
+    "entrance_connector_roundtrip_execute",
     "entrance_review_queue",
     "entrance_issue_comment",
     "entrance_loop_create",
@@ -454,6 +462,88 @@ fn tool_specs() -> Vec<serde_json::Value> {
             }),
         ),
         tool_spec(
+            "entrance_connector_publish_plan",
+            "Read connector publish plan",
+            "Read the digest-bound connector publish plan for all providers or one provider before executing any external issue/status/comment write.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Optional provider filter such as local-hive-panel, file, remote-fixture, github, or linear."
+                    }
+                }
+            }),
+        ),
+        tool_spec(
+            "entrance_connector_publish_execute",
+            "Execute connector publish plan",
+            "Execute a digest-bound connector publish plan after human confirmation; refuses stale plan ids and non-executable plans.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "plan_id": {
+                        "type": "string",
+                        "description": "The current plan_id from entrance_connector_publish_plan or entrance://connectors/publish-plan."
+                    },
+                    "provider": {
+                        "type": "string",
+                        "description": "Optional provider filter; must match the plan that produced plan_id."
+                    },
+                    "human_confirmed": {
+                        "type": "boolean",
+                        "description": "Must be true because connector writes are a human decision boundary."
+                    },
+                    "author": {
+                        "type": "string",
+                        "description": "Optional author label. Defaults to mcp-agent."
+                    }
+                },
+                "required": ["plan_id", "human_confirmed"]
+            }),
+        ),
+        tool_spec(
+            "entrance_connector_roundtrip_plan",
+            "Read connector roundtrip plan",
+            "Read the digest-bound connector publish/readback/admission roundtrip plan for all providers or one provider.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Optional provider filter such as local-hive-panel, file, remote-fixture, github, or linear."
+                    }
+                }
+            }),
+        ),
+        tool_spec(
+            "entrance_connector_roundtrip_execute",
+            "Execute connector roundtrip plan",
+            "Execute a digest-bound connector roundtrip plan after human confirmation; refuses stale plan ids and non-executable plans.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "plan_id": {
+                        "type": "string",
+                        "description": "The current plan_id from entrance_connector_roundtrip_plan or entrance://connectors/roundtrip-plan."
+                    },
+                    "provider": {
+                        "type": "string",
+                        "description": "Optional provider filter; must match the plan that produced plan_id."
+                    },
+                    "human_confirmed": {
+                        "type": "boolean",
+                        "description": "Must be true because connector roundtrips can write comments/evidence and external mirrors."
+                    },
+                    "author": {
+                        "type": "string",
+                        "description": "Optional author label. Defaults to mcp-agent."
+                    }
+                },
+                "required": ["plan_id", "human_confirmed"]
+            }),
+        ),
+        tool_spec(
             "entrance_review_queue",
             "List Entrance review queue",
             "List Blocked and Needs Review issues with decision options, blockers, and evidence summaries.",
@@ -592,6 +682,14 @@ fn call_tool(
         Some("entrance_issue_show") => tool_issue_show(services, &args),
         Some("entrance_issue_control") => tool_issue_control(services, &args),
         Some("entrance_connector_queue") => tool_connector_queue(services, &args),
+        Some("entrance_connector_publish_plan") => tool_connector_publish_plan(services, &args),
+        Some("entrance_connector_publish_execute") => {
+            tool_connector_publish_execute(services, session, &args)
+        }
+        Some("entrance_connector_roundtrip_plan") => tool_connector_roundtrip_plan(services, &args),
+        Some("entrance_connector_roundtrip_execute") => {
+            tool_connector_roundtrip_execute(services, session, &args)
+        }
         Some("entrance_review_queue") => tool_review_queue(services, &args),
         Some("entrance_issue_comment") => tool_issue_comment(services, &args),
         Some("entrance_loop_create") => tool_loop_create(services, &args),
@@ -655,6 +753,64 @@ fn tool_connector_queue(
     connector_queue_report(services, provider.as_deref())
 }
 
+fn tool_connector_publish_plan(
+    services: &AppServices,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let provider = optional_string_arg(args, "provider");
+    connector_publish_plan_report(services, provider.as_deref())
+}
+
+fn tool_connector_publish_execute(
+    services: &AppServices,
+    session: &McpSession,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let plan_id = string_arg(args, "plan_id")?;
+    ensure_connector_execute_confirmed(args, "connector_publish_execute")?;
+    let author = mcp_author(args);
+    let provider = optional_string_arg(args, "provider");
+    execute_connector_publish_plan_with_confirmation(
+        services,
+        provider.as_deref(),
+        &plan_id,
+        Some(mcp_human_confirmation_receipt(
+            "connector_publish_execute",
+            &author,
+            session,
+        )),
+    )
+}
+
+fn tool_connector_roundtrip_plan(
+    services: &AppServices,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let provider = optional_string_arg(args, "provider");
+    connector_roundtrip_plan_report(services, provider.as_deref())
+}
+
+fn tool_connector_roundtrip_execute(
+    services: &AppServices,
+    session: &McpSession,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let plan_id = string_arg(args, "plan_id")?;
+    ensure_connector_execute_confirmed(args, "connector_roundtrip_execute")?;
+    let author = mcp_author(args);
+    let provider = optional_string_arg(args, "provider");
+    execute_connector_roundtrip_plan_with_confirmation(
+        services,
+        provider.as_deref(),
+        &plan_id,
+        Some(mcp_human_confirmation_receipt(
+            "connector_roundtrip_execute",
+            &author,
+            session,
+        )),
+    )
+}
+
 #[cfg(test)]
 fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
     issue_control_packet_with_connector(card, serde_json::Value::Null)
@@ -671,11 +827,20 @@ fn issue_control_packet_with_connector(
     card: &IssueCard,
     connector: serde_json::Value,
 ) -> serde_json::Value {
-    let connector_provider_queue = connector
+    let connector_provider = connector
         .pointer("/provider")
         .and_then(|value| value.as_str())
         .filter(|provider| !provider.trim().is_empty())
+        .map(ToOwned::to_owned);
+    let connector_provider_queue = connector_provider
+        .as_ref()
         .map(|provider| format!("entrance://connectors/queue/{provider}"));
+    let connector_provider_publish_plan = connector_provider
+        .as_ref()
+        .map(|provider| format!("entrance://connectors/publish-plan/{provider}"));
+    let connector_provider_roundtrip_plan = connector_provider
+        .as_ref()
+        .map(|provider| format!("entrance://connectors/roundtrip-plan/{provider}"));
     let trace = card.trace.as_ref();
     let doctor = card.doctor.as_ref();
     let recent_evidence = trace
@@ -774,6 +939,10 @@ fn issue_control_packet_with_connector(
             "review_queue": "entrance://review-queue",
             "connector_queue": "entrance://connectors/queue",
             "connector_provider_queue": connector_provider_queue,
+            "connector_publish_plan": "entrance://connectors/publish-plan",
+            "connector_provider_publish_plan": connector_provider_publish_plan,
+            "connector_roundtrip_plan": "entrance://connectors/roundtrip-plan",
+            "connector_provider_roundtrip_plan": connector_provider_roundtrip_plan,
             "permissions": "entrance://policy/mcp-permissions",
             "actor_identity": "entrance://policy/actor-identity"
         }
@@ -1087,6 +1256,16 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "External issue/status/comment connector queue across providers.",
         ),
         resource_spec(
+            "entrance://connectors/publish-plan",
+            "Entrance connector publish plan",
+            "Digest-bound external issue/status/comment publish plan across providers.",
+        ),
+        resource_spec(
+            "entrance://connectors/roundtrip-plan",
+            "Entrance connector roundtrip plan",
+            "Digest-bound external issue/status/comment publish, readback, and admission plan across providers.",
+        ),
+        resource_spec(
             "entrance://policy/registry",
             "Entrance policy registry",
             "Active loop, runtime, and connector policy registry.",
@@ -1112,6 +1291,16 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             &format!("entrance://connectors/queue/{}", provider.name),
             &format!("Connector queue: {}", provider.display_name),
             "External issue/status/comment connector queue filtered to one provider.",
+        ));
+        resources.push(resource_spec(
+            &format!("entrance://connectors/publish-plan/{}", provider.name),
+            &format!("Connector publish plan: {}", provider.display_name),
+            "Digest-bound connector publish plan filtered to one provider.",
+        ));
+        resources.push(resource_spec(
+            &format!("entrance://connectors/roundtrip-plan/{}", provider.name),
+            &format!("Connector roundtrip plan: {}", provider.display_name),
+            "Digest-bound connector roundtrip plan filtered to one provider.",
         ));
     }
     for card in services.hive.panel()? {
@@ -1185,6 +1374,18 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://connectors/queue/{provider}",
                 "name": "Entrance connector queue by provider",
                 "description": "Read external issue/status/comment connector queue filtered to one provider.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://connectors/publish-plan/{provider}",
+                "name": "Entrance connector publish plan by provider",
+                "description": "Read digest-bound connector publish plan filtered to one provider.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://connectors/roundtrip-plan/{provider}",
+                "name": "Entrance connector roundtrip plan by provider",
+                "description": "Read digest-bound connector roundtrip plan filtered to one provider.",
                 "mimeType": "application/json"
             },
             {
@@ -1278,6 +1479,22 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
                 anyhow::bail!("invalid Entrance connector queue resource URI `{value}`");
             }
             connector_queue_report(services, Some(provider))?
+        }
+        "entrance://connectors/publish-plan" => connector_publish_plan_report(services, None)?,
+        value if value.starts_with("entrance://connectors/publish-plan/") => {
+            let provider = value.trim_start_matches("entrance://connectors/publish-plan/");
+            if provider.trim().is_empty() {
+                anyhow::bail!("invalid Entrance connector publish plan resource URI `{value}`");
+            }
+            connector_publish_plan_report(services, Some(provider))?
+        }
+        "entrance://connectors/roundtrip-plan" => connector_roundtrip_plan_report(services, None)?,
+        value if value.starts_with("entrance://connectors/roundtrip-plan/") => {
+            let provider = value.trim_start_matches("entrance://connectors/roundtrip-plan/");
+            if provider.trim().is_empty() {
+                anyhow::bail!("invalid Entrance connector roundtrip plan resource URI `{value}`");
+            }
+            connector_roundtrip_plan_report(services, Some(provider))?
         }
         "entrance://policy/registry" => serde_json::to_value(services.hive.policy_registry())?,
         "entrance://policy/mcp-permissions" => mcp_permission_policy(),
@@ -1574,6 +1791,62 @@ fn mcp_tool_permission(tool: &str) -> serde_json::Value {
             None,
             Vec::new(),
         ),
+        "entrance_connector_publish_plan" => (
+            "read",
+            "connector.publish_plan",
+            vec![
+                "connector/queue",
+                "connector/publish_plan",
+                "connector/registry",
+            ],
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        ),
+        "entrance_connector_publish_execute" => (
+            "human_decision",
+            "connector.publish_execute",
+            vec!["connector/queue", "connector/publish_plan"],
+            vec![
+                "issue_comment",
+                "loop_evidence",
+                "operator_confirmation_receipt",
+                "connector_mirror",
+            ],
+            Some("author"),
+            Some(vec!["connector_publish_execute"]),
+            Vec::new(),
+        ),
+        "entrance_connector_roundtrip_plan" => (
+            "read",
+            "connector.roundtrip_plan",
+            vec![
+                "connector/queue",
+                "connector/roundtrip_plan",
+                "connector/registry",
+            ],
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        ),
+        "entrance_connector_roundtrip_execute" => (
+            "human_decision",
+            "connector.roundtrip_execute",
+            vec!["connector/queue", "connector/roundtrip_plan"],
+            vec![
+                "issue_comment",
+                "loop_evidence",
+                "operator_confirmation_receipt",
+                "connector_mirror",
+                "connector_readback",
+                "connector_admission",
+            ],
+            Some("author"),
+            Some(vec!["connector_roundtrip_execute"]),
+            Vec::new(),
+        ),
         "entrance_review_queue" => (
             "read",
             "review_queue.list",
@@ -1855,6 +2128,20 @@ fn ensure_human_confirmed(args: &serde_json::Value, action: &str) -> Result<()> 
     )
 }
 
+fn ensure_connector_execute_confirmed(args: &serde_json::Value, action: &str) -> Result<()> {
+    if args
+        .get("human_confirmed")
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "MCP action `{action}` requires human_confirmed=true; read entrance://connectors/queue and the current connector plan resource before executing connector writes"
+    )
+}
+
 fn mcp_author(args: &serde_json::Value) -> String {
     optional_string_arg(args, "author").unwrap_or_else(|| "mcp-agent".to_string())
 }
@@ -2000,13 +2287,13 @@ fn optional_string_array_arg(args: &serde_json::Value, name: &str) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::{
-        append_human_confirmation_note, ensure_human_confirmed, initialize_result,
-        issue_control_packet, issue_control_packet_with_connector, mcp_client_identity,
-        mcp_human_confirmation_receipt, mcp_permission_policy, prompt_loop_contract, prompt_specs,
-        resource_templates, tool_specs, McpSession, MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION,
-        MCP_FALLBACK_PROTOCOL_VERSION, MCP_ISSUE_CONTROL_SCHEMA_VERSION,
-        MCP_PERMISSION_POLICY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION,
-        MCP_TOOL_PERMISSION_SCHEMA_VERSION,
+        append_human_confirmation_note, ensure_connector_execute_confirmed, ensure_human_confirmed,
+        initialize_result, issue_control_packet, issue_control_packet_with_connector,
+        mcp_client_identity, mcp_human_confirmation_receipt, mcp_permission_policy,
+        prompt_loop_contract, prompt_specs, resource_templates, tool_specs, McpSession,
+        MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION, MCP_FALLBACK_PROTOCOL_VERSION,
+        MCP_ISSUE_CONTROL_SCHEMA_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
+        MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_SCHEMA_VERSION,
     };
     use entrance_core::{HiveComment, HiveIssue};
     use entrance_hive::{IssueAction, IssueCard};
@@ -2054,6 +2341,10 @@ mod tests {
         assert!(names.contains(&"entrance_issue_list"));
         assert!(names.contains(&"entrance_issue_control"));
         assert!(names.contains(&"entrance_connector_queue"));
+        assert!(names.contains(&"entrance_connector_publish_plan"));
+        assert!(names.contains(&"entrance_connector_publish_execute"));
+        assert!(names.contains(&"entrance_connector_roundtrip_plan"));
+        assert!(names.contains(&"entrance_connector_roundtrip_execute"));
         assert!(names.contains(&"entrance_loop_create"));
         assert!(names.contains(&"entrance_issue_run"));
         assert!(names.contains(&"entrance_issue_retry"));
@@ -2306,6 +2597,30 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("entrance://connectors/queue/linear")
         );
+        assert_eq!(
+            packet
+                .pointer("/resources/connector_publish_plan")
+                .and_then(|value| value.as_str()),
+            Some("entrance://connectors/publish-plan")
+        );
+        assert_eq!(
+            packet
+                .pointer("/resources/connector_provider_publish_plan")
+                .and_then(|value| value.as_str()),
+            Some("entrance://connectors/publish-plan/linear")
+        );
+        assert_eq!(
+            packet
+                .pointer("/resources/connector_roundtrip_plan")
+                .and_then(|value| value.as_str()),
+            Some("entrance://connectors/roundtrip-plan")
+        );
+        assert_eq!(
+            packet
+                .pointer("/resources/connector_provider_roundtrip_plan")
+                .and_then(|value| value.as_str()),
+            Some("entrance://connectors/roundtrip-plan/linear")
+        );
     }
 
     #[test]
@@ -2320,6 +2635,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(uri_templates.contains(&"entrance://connectors/queue/{provider}"));
+        assert!(uri_templates.contains(&"entrance://connectors/publish-plan/{provider}"));
+        assert!(uri_templates.contains(&"entrance://connectors/roundtrip-plan/{provider}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/control"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/transition-policy"));
@@ -2346,6 +2663,20 @@ mod tests {
                 tool.get("name").and_then(|value| value.as_str()) == Some("entrance_issue_decide")
             })
             .expect("decide tool should exist");
+        let publish_execute_tool = tools
+            .iter()
+            .find(|tool| {
+                tool.get("name").and_then(|value| value.as_str())
+                    == Some("entrance_connector_publish_execute")
+            })
+            .expect("connector publish execute tool should exist");
+        let roundtrip_execute_tool = tools
+            .iter()
+            .find(|tool| {
+                tool.get("name").and_then(|value| value.as_str())
+                    == Some("entrance_connector_roundtrip_execute")
+            })
+            .expect("connector roundtrip execute tool should exist");
 
         assert_eq!(
             retry_tool.pointer("/inputSchema/properties/human_confirmed/type"),
@@ -2356,7 +2687,25 @@ mod tests {
             Some(&serde_json::json!("boolean"))
         );
         assert_eq!(
+            publish_execute_tool.pointer("/inputSchema/properties/human_confirmed/type"),
+            Some(&serde_json::json!("boolean"))
+        );
+        assert_eq!(
+            publish_execute_tool.pointer("/inputSchema/required/0"),
+            Some(&serde_json::json!("plan_id"))
+        );
+        assert_eq!(
+            roundtrip_execute_tool.pointer("/inputSchema/properties/human_confirmed/type"),
+            Some(&serde_json::json!("boolean"))
+        );
+        assert_eq!(
             retry_tool
+                .pointer("/annotations/entrance_permission/access")
+                .and_then(|value| value.as_str()),
+            Some("human_decision")
+        );
+        assert_eq!(
+            publish_execute_tool
                 .pointer("/annotations/entrance_permission/access")
                 .and_then(|value| value.as_str()),
             Some("human_decision")
@@ -2368,6 +2717,12 @@ mod tests {
             Some(entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION)
         );
         assert_eq!(
+            publish_execute_tool
+                .pointer("/annotations/entrance_permission/confirmation/actions/0")
+                .and_then(|value| value.as_str()),
+            Some("connector_publish_execute")
+        );
+        assert_eq!(
             ensure_human_confirmed(&serde_json::json!({}), "retry")
                 .expect_err("missing confirmation should fail")
                 .to_string(),
@@ -2377,6 +2732,17 @@ mod tests {
             ensure_human_confirmed(&serde_json::json!({ "human_confirmed": true }), "retry")
                 .is_ok()
         );
+        assert_eq!(
+            ensure_connector_execute_confirmed(&serde_json::json!({}), "connector_publish_execute")
+                .expect_err("missing connector confirmation should fail")
+                .to_string(),
+            "MCP action `connector_publish_execute` requires human_confirmed=true; read entrance://connectors/queue and the current connector plan resource before executing connector writes"
+        );
+        assert!(ensure_connector_execute_confirmed(
+            &serde_json::json!({ "human_confirmed": true }),
+            "connector_publish_execute"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2482,6 +2848,12 @@ mod tests {
         assert!(human_tools
             .iter()
             .any(|value| value.as_str() == Some("entrance_issue_decide")));
+        assert!(human_tools
+            .iter()
+            .any(|value| value.as_str() == Some("entrance_connector_publish_execute")));
+        assert!(human_tools
+            .iter()
+            .any(|value| value.as_str() == Some("entrance_connector_roundtrip_execute")));
         assert!(tool_permissions.iter().any(|permission| {
             permission.get("tool").and_then(|value| value.as_str()) == Some("entrance_issue_decide")
                 && permission.get("access").and_then(|value| value.as_str())
@@ -2490,6 +2862,16 @@ mod tests {
                     .pointer("/confirmation/receipt_schema")
                     .and_then(|value| value.as_str())
                     == Some(entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION)
+        }));
+        assert!(tool_permissions.iter().any(|permission| {
+            permission.get("tool").and_then(|value| value.as_str())
+                == Some("entrance_connector_publish_execute")
+                && permission.get("access").and_then(|value| value.as_str())
+                    == Some("human_decision")
+                && permission
+                    .pointer("/confirmation/actions/0")
+                    .and_then(|value| value.as_str())
+                    == Some("connector_publish_execute")
         }));
         assert_eq!(
             policy

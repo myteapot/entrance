@@ -7194,6 +7194,20 @@ pub(crate) fn execute_connector_publish_plan(
     provider_filter: Option<&str>,
     expected_plan_id: &str,
 ) -> Result<serde_json::Value> {
+    execute_connector_publish_plan_with_confirmation(
+        services,
+        provider_filter,
+        expected_plan_id,
+        None,
+    )
+}
+
+pub(crate) fn execute_connector_publish_plan_with_confirmation(
+    services: &AppServices,
+    provider_filter: Option<&str>,
+    expected_plan_id: &str,
+    confirmation_receipt: Option<OperatorConfirmationReceipt>,
+) -> Result<serde_json::Value> {
     let plan = connector_publish_plan_report(services, provider_filter)?;
     let current_plan_id = plan
         .pointer("/plan_id")
@@ -7236,8 +7250,13 @@ pub(crate) fn execute_connector_publish_plan(
         .into_iter()
         .filter_map(|issue| issue.pointer("/id").and_then(|value| value.as_i64()))
         .collect::<Vec<_>>();
-    let recorded =
-        record_connector_publish_execute_issues(services, &plan, &plan_issues, &current_plan_id)?;
+    let recorded = record_connector_publish_execute_issues(
+        services,
+        &plan,
+        &plan_issues,
+        &current_plan_id,
+        confirmation_receipt.as_ref(),
+    )?;
     let mut published = Vec::new();
     for issue_id in &issue_ids {
         published.push(publish_issue_mirror_to_file(services, *issue_id, None)?);
@@ -7252,6 +7271,7 @@ pub(crate) fn execute_connector_publish_plan(
         "issue_count": issue_ids.len(),
         "issue_ids": issue_ids,
         "recorded": recorded,
+        "operator_confirmation_receipt": confirmation_receipt,
         "published": published,
         "after": {
             "publish_required_count": after_queue.pointer("/publish_required_count").and_then(|value| value.as_u64()),
@@ -7278,6 +7298,20 @@ pub(crate) fn execute_connector_roundtrip_plan(
     services: &AppServices,
     provider_filter: Option<&str>,
     expected_plan_id: &str,
+) -> Result<serde_json::Value> {
+    execute_connector_roundtrip_plan_with_confirmation(
+        services,
+        provider_filter,
+        expected_plan_id,
+        None,
+    )
+}
+
+pub(crate) fn execute_connector_roundtrip_plan_with_confirmation(
+    services: &AppServices,
+    provider_filter: Option<&str>,
+    expected_plan_id: &str,
+    confirmation_receipt: Option<OperatorConfirmationReceipt>,
 ) -> Result<serde_json::Value> {
     let plan = connector_roundtrip_plan_report(services, provider_filter)?;
     let current_plan_id = plan
@@ -7320,8 +7354,13 @@ pub(crate) fn execute_connector_roundtrip_plan(
         .iter()
         .filter_map(|issue| issue.pointer("/id").and_then(|value| value.as_i64()))
         .collect::<Vec<_>>();
-    let recorded =
-        record_connector_roundtrip_execute_issues(services, &plan, &plan_issues, &current_plan_id)?;
+    let recorded = record_connector_roundtrip_execute_issues(
+        services,
+        &plan,
+        &plan_issues,
+        &current_plan_id,
+        confirmation_receipt.as_ref(),
+    )?;
     let mut roundtrips = Vec::new();
     for issue_id in &issue_ids {
         roundtrips.push(roundtrip_issue_mirror_file(
@@ -7348,6 +7387,7 @@ pub(crate) fn execute_connector_roundtrip_plan(
         "completed_count": completed_count,
         "issue_ids": issue_ids,
         "recorded": recorded,
+        "operator_confirmation_receipt": confirmation_receipt,
         "roundtrips": roundtrips,
         "after": {
             "publish_required_count": after_queue.pointer("/publish_required_count").and_then(|value| value.as_u64()),
@@ -7367,11 +7407,18 @@ fn record_connector_publish_execute_issues(
     plan: &serde_json::Value,
     plan_issues: &[serde_json::Value],
     plan_id: &str,
+    confirmation_receipt: Option<&OperatorConfirmationReceipt>,
 ) -> Result<Vec<serde_json::Value>> {
     plan_issues
         .iter()
         .map(|issue_plan| {
-            record_connector_publish_execute_issue(services, plan, issue_plan, plan_id)
+            record_connector_publish_execute_issue(
+                services,
+                plan,
+                issue_plan,
+                plan_id,
+                confirmation_receipt,
+            )
         })
         .collect()
 }
@@ -7381,6 +7428,7 @@ fn record_connector_publish_execute_issue(
     plan: &serde_json::Value,
     issue_plan: &serde_json::Value,
     plan_id: &str,
+    confirmation_receipt: Option<&OperatorConfirmationReceipt>,
 ) -> Result<serde_json::Value> {
     let issue_id = issue_plan
         .pointer("/id")
@@ -7420,17 +7468,24 @@ fn record_connector_publish_execute_issue(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let operator_author = confirmation_receipt
+        .map(|receipt| receipt.author.as_str())
+        .unwrap_or("hive");
+    let body = confirmation_receipt
+        .map(|receipt| format!("{body}\n\n{}", receipt.marker))
+        .unwrap_or(body);
     let comment_id = services
         .kernel
         .store
         .insert_hive_comment(HiveCommentCreate {
             issue_id,
-            author: "hive".to_string(),
+            author: operator_author.to_string(),
             body: body.clone(),
             payload: serde_json::json!({
                 "schema_version": SYSTEM_COMMENT_SCHEMA_VERSION,
                 "source": "hive",
                 "action": "connector_publish_execute",
+                "confirmation_receipt": confirmation_receipt,
                 "loop_id": loop_id,
                 "round": round,
                 "status": issue.status.as_str(),
@@ -7476,9 +7531,10 @@ fn record_connector_publish_execute_issue(
                         "round": round
                     },
                     "operator": {
-                        "author": "hive",
+                        "author": operator_author,
                         "action": "connector_publish_execute",
-                        "comment_body": body
+                        "comment_body": body,
+                        "confirmation_receipt": confirmation_receipt
                     },
                     "connector": {
                         "provider": issue_plan.pointer("/provider").cloned().unwrap_or(serde_json::Value::Null),
@@ -7507,6 +7563,7 @@ fn record_connector_publish_execute_issue(
         "comment_id": comment_id,
         "evidence_id": evidence_id,
         "comment_body": body,
+        "operator_confirmation_receipt": confirmation_receipt,
         "plan_id": plan_id
     }))
 }
@@ -7516,11 +7573,18 @@ fn record_connector_roundtrip_execute_issues(
     plan: &serde_json::Value,
     plan_issues: &[serde_json::Value],
     plan_id: &str,
+    confirmation_receipt: Option<&OperatorConfirmationReceipt>,
 ) -> Result<Vec<serde_json::Value>> {
     plan_issues
         .iter()
         .map(|issue_plan| {
-            record_connector_roundtrip_execute_issue(services, plan, issue_plan, plan_id)
+            record_connector_roundtrip_execute_issue(
+                services,
+                plan,
+                issue_plan,
+                plan_id,
+                confirmation_receipt,
+            )
         })
         .collect()
 }
@@ -7530,6 +7594,7 @@ fn record_connector_roundtrip_execute_issue(
     plan: &serde_json::Value,
     issue_plan: &serde_json::Value,
     plan_id: &str,
+    confirmation_receipt: Option<&OperatorConfirmationReceipt>,
 ) -> Result<serde_json::Value> {
     let issue_id = issue_plan
         .pointer("/id")
@@ -7570,17 +7635,24 @@ fn record_connector_roundtrip_execute_issue(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let operator_author = confirmation_receipt
+        .map(|receipt| receipt.author.as_str())
+        .unwrap_or("hive");
+    let body = confirmation_receipt
+        .map(|receipt| format!("{body}\n\n{}", receipt.marker))
+        .unwrap_or(body);
     let comment_id = services
         .kernel
         .store
         .insert_hive_comment(HiveCommentCreate {
             issue_id,
-            author: "hive".to_string(),
+            author: operator_author.to_string(),
             body: body.clone(),
             payload: serde_json::json!({
                 "schema_version": SYSTEM_COMMENT_SCHEMA_VERSION,
                 "source": "hive",
                 "action": "connector_roundtrip_execute",
+                "confirmation_receipt": confirmation_receipt,
                 "loop_id": loop_id,
                 "round": round,
                 "status": issue.status.as_str(),
@@ -7626,9 +7698,10 @@ fn record_connector_roundtrip_execute_issue(
                         "round": round
                     },
                     "operator": {
-                        "author": "hive",
+                        "author": operator_author,
                         "action": "connector_roundtrip_execute",
-                        "comment_body": body
+                        "comment_body": body,
+                        "confirmation_receipt": confirmation_receipt
                     },
                     "connector": {
                         "provider": issue_plan.pointer("/provider").cloned().unwrap_or(serde_json::Value::Null),
@@ -7657,6 +7730,7 @@ fn record_connector_roundtrip_execute_issue(
         "comment_id": comment_id,
         "evidence_id": evidence_id,
         "comment_body": body,
+        "operator_confirmation_receipt": confirmation_receipt,
         "plan_id": plan_id
     }))
 }
