@@ -968,6 +968,8 @@ type IssueTimelineReport = {
     blocker_count: number;
     receipt_issue_count: number;
   };
+  rounds: IssueTimelineRoundGroup[];
+  human_decision: IssueTimelineHumanDecision;
   items: IssueTimelineItem[];
   resources: {
     issue: string;
@@ -981,6 +983,40 @@ type IssueTimelineReport = {
     review_queue: string;
   };
   next_actions: string[];
+};
+
+type IssueTimelineRoundGroup = {
+  round: number | null;
+  label: string;
+  state: string;
+  item_ids: string[];
+  item_count: number;
+  comment_count: number;
+  evidence_count: number;
+  verdict_count: number;
+  operator_event_count: number;
+  blocker_count: number;
+  first_timestamp: string | null;
+  last_timestamp: string | null;
+  phases: string[];
+  decisions: string[];
+};
+
+type IssueTimelineHumanDecision = {
+  required: boolean;
+  issue_status: string | null;
+  primary_action: string | null;
+  actions: Array<{
+    issue_action: IssueAction;
+    recommended: boolean;
+    operator_option: string | null;
+    reason: string;
+  }>;
+  policy_resource: string;
+  review_queue_resource: string;
+  issue_control_resource: string;
+  confirmation_arg: string;
+  summary: string;
 };
 
 type IssueTimelineItem = {
@@ -2999,6 +3035,29 @@ export default function App() {
   const issueTimelineCountsLabel = (timeline: IssueTimelineReport) =>
     `items ${timeline.counts.item_count} / comments ${timeline.counts.comment_count} / evidence ${timeline.counts.evidence_count} / verdicts ${timeline.counts.verdict_count}`;
 
+  const issueTimelineRoundTone = (round: IssueTimelineRoundGroup) =>
+    round.blocker_count || round.state === "blocked" || round.state === "needs_human"
+      ? "warn"
+      : round.state === "observing"
+        ? "pending"
+        : "ok";
+
+  const issueTimelineRoundCountsLabel = (round: IssueTimelineRoundGroup) =>
+    `comments ${round.comment_count} / evidence ${round.evidence_count} / verdicts ${round.verdict_count}`;
+
+  const issueTimelineRoundMeta = (round: IssueTimelineRoundGroup) =>
+    [
+      round.label,
+      round.state,
+      round.phases.length ? round.phases.join("/") : null,
+      round.decisions.length ? `decision ${round.decisions.join("/")}` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+  const issueTimelineDecisionLabel = (decision: IssueTimelineHumanDecision) =>
+    `decision ${decision.primary_action ?? "comment"}`;
+
   const issueTimelineItemTone = (item: IssueTimelineItem) =>
     item.blocker || item.status === "blocked" || item.status === "failed" ? "warn" : "ok";
 
@@ -4385,6 +4444,7 @@ export default function App() {
                                   <span class="trace-pill">loop #{timeline.loop_id}</span>
                                 ) : null}
                                 <span class="trace-pill">{issueTimelineCountsLabel(timeline)}</span>
+                                <span class="trace-pill">rounds {timeline.rounds.length}</span>
                                 <span
                                   class={
                                     timeline.counts.blocker_count || timeline.counts.receipt_issue_count
@@ -4395,7 +4455,86 @@ export default function App() {
                                   blockers {timeline.counts.blocker_count}
                                 </span>
                                 <span class="trace-pill">operator {timeline.counts.operator_event_count}</span>
+                                <span
+                                  class={
+                                    timeline.human_decision.required
+                                      ? "trace-pill trace-pill--warn"
+                                      : "trace-pill"
+                                  }
+                                >
+                                  {issueTimelineDecisionLabel(timeline.human_decision)}
+                                </span>
                               </div>
+                              {timeline.rounds.length ? (
+                                <div class="worker-lifecycle-roles issue-timeline-rounds">
+                                  {timeline.rounds.slice(-4).map((round) => (
+                                    <div
+                                      class={`worker-lifecycle-role worker-lifecycle-role--${issueTimelineRoundTone(
+                                        round,
+                                      )}`}
+                                      data-testid={`issue-timeline-round-${card.issue.id}-${round.round ?? "issue"}`}
+                                    >
+                                      <div class="stage-row-head">
+                                        <strong>{round.label}</strong>
+                                        <span>{round.state}</span>
+                                      </div>
+                                      <p>{issueTimelineRoundCountsLabel(round)}</p>
+                                      <div class="trace-strip">
+                                        <span class="trace-pill">items {round.item_count}</span>
+                                        <span
+                                          class={
+                                            round.blocker_count
+                                              ? "trace-pill trace-pill--warn"
+                                              : "trace-pill"
+                                          }
+                                        >
+                                          blockers {round.blocker_count}
+                                        </span>
+                                        <span class="trace-pill">operator {round.operator_event_count}</span>
+                                        <span class="trace-pill">{issueTimelineRoundMeta(round)}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                              {timeline.human_decision.required ? (
+                                <div
+                                  class="doctor-lines evidence-blocker-surfaces issue-timeline-decision"
+                                  data-testid={`issue-timeline-decision-${card.issue.id}`}
+                                >
+                                  <div class="evidence-blocker-surface">
+                                    <span>{timeline.human_decision.summary}</span>
+                                    <div class="trace-strip">
+                                      <span class="trace-pill trace-pill--warn">
+                                        {issueTimelineDecisionLabel(timeline.human_decision)}
+                                      </span>
+                                      <span class="trace-pill">
+                                        actions {timeline.human_decision.actions.length}
+                                      </span>
+                                      {timeline.human_decision.issue_status ? (
+                                        <span class="trace-pill">
+                                          {timeline.human_decision.issue_status}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <div class="record-actions evidence-blocker-actions">
+                                      {timeline.human_decision.actions.slice(0, 4).map((choice) => (
+                                        <button
+                                          type="button"
+                                          aria-label={`${choice.issue_action.label} issue timeline decision`}
+                                          data-testid={`issue-timeline-action-${card.issue.id}-${choice.issue_action.action}`}
+                                          disabled={issueOptionDisabled(card, choice.issue_action)}
+                                          title={choice.reason}
+                                          onClick={() => runIssueAction(card, choice.issue_action)}
+                                          {...issueActionButtonAttrs(choice.issue_action)}
+                                        >
+                                          {issueDecisionButtonLabel(card, choice.issue_action)}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : null}
                               <div class="worker-lifecycle-roles issue-timeline-items">
                                 {timeline.items.slice(-8).map((item) => (
                                   <div

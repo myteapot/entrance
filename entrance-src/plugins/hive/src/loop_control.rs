@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -1088,6 +1088,8 @@ pub struct IssueTimelineReport {
     pub timeline_state: String,
     pub summary: String,
     pub counts: IssueTimelineCounts,
+    pub rounds: Vec<IssueTimelineRoundGroup>,
+    pub human_decision: IssueTimelineHumanDecision,
     pub items: Vec<IssueTimelineItem>,
     pub resources: IssueTimelineResources,
     pub next_actions: Vec<String>,
@@ -1102,6 +1104,45 @@ pub struct IssueTimelineCounts {
     pub operator_event_count: usize,
     pub blocker_count: usize,
     pub receipt_issue_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineRoundGroup {
+    pub round: Option<i64>,
+    pub label: String,
+    pub state: String,
+    pub item_ids: Vec<String>,
+    pub item_count: usize,
+    pub comment_count: usize,
+    pub evidence_count: usize,
+    pub verdict_count: usize,
+    pub operator_event_count: usize,
+    pub blocker_count: usize,
+    pub first_timestamp: Option<String>,
+    pub last_timestamp: Option<String>,
+    pub phases: Vec<String>,
+    pub decisions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineHumanDecision {
+    pub required: bool,
+    pub issue_status: Option<String>,
+    pub primary_action: Option<String>,
+    pub actions: Vec<IssueTimelineDecisionAction>,
+    pub policy_resource: String,
+    pub review_queue_resource: String,
+    pub issue_control_resource: String,
+    pub confirmation_arg: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineDecisionAction {
+    pub issue_action: IssueAction,
+    pub recommended: bool,
+    pub operator_option: Option<String>,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7712,8 +7753,10 @@ pub fn issue_timeline(store: &Store, issue_id: i64) -> Result<IssueTimelineRepor
         item.sequence = index + 1;
     }
     let counts = issue_timeline_counts(&items);
+    let rounds = issue_timeline_round_groups(&items);
     let timeline_state = issue_timeline_state(&card.issue);
-    let summary = issue_timeline_summary(&card.issue, &timeline_state, &counts);
+    let summary = issue_timeline_summary(&card.issue, &timeline_state, &counts, &rounds);
+    let human_decision = issue_timeline_human_decision(&card, &items);
     let next_actions = issue_timeline_next_actions(&card);
     Ok(IssueTimelineReport {
         schema_version: ISSUE_TIMELINE_SCHEMA_VERSION.to_string(),
@@ -7722,6 +7765,8 @@ pub fn issue_timeline(store: &Store, issue_id: i64) -> Result<IssueTimelineRepor
         timeline_state,
         summary,
         counts,
+        rounds,
+        human_decision,
         items,
         resources: issue_timeline_resources(&card.issue),
         next_actions,
@@ -7994,6 +8039,94 @@ fn issue_timeline_counts(items: &[IssueTimelineItem]) -> IssueTimelineCounts {
     }
 }
 
+fn issue_timeline_round_groups(items: &[IssueTimelineItem]) -> Vec<IssueTimelineRoundGroup> {
+    let mut grouped: BTreeMap<Option<i64>, Vec<&IssueTimelineItem>> = BTreeMap::new();
+    for item in items {
+        grouped.entry(item.round).or_default().push(item);
+    }
+    grouped
+        .into_iter()
+        .map(|(round, group_items)| {
+            let comment_count = group_items
+                .iter()
+                .filter(|item| item.source == "comment")
+                .count();
+            let evidence_count = group_items
+                .iter()
+                .filter(|item| item.source == "evidence")
+                .count();
+            let verdict_count = group_items
+                .iter()
+                .filter(|item| item.source == "verdict")
+                .count();
+            let operator_event_count = group_items
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item.event_kind.as_str(),
+                        "operator_comment" | "operator_decision"
+                    ) || item.actor == "human"
+                        || item.actor == "operator"
+                })
+                .count();
+            let blocker_count = group_items
+                .iter()
+                .filter(|item| item.blocker.is_some())
+                .count();
+            let phases = group_items
+                .iter()
+                .filter_map(|item| item.phase.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let decisions = group_items
+                .iter()
+                .filter_map(|item| item.decision.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            IssueTimelineRoundGroup {
+                round,
+                label: round
+                    .map(|round| format!("round {round}"))
+                    .unwrap_or_else(|| "issue".to_string()),
+                state: issue_timeline_round_state(blocker_count, &decisions, verdict_count),
+                item_ids: group_items.iter().map(|item| item.id.clone()).collect(),
+                item_count: group_items.len(),
+                comment_count,
+                evidence_count,
+                verdict_count,
+                operator_event_count,
+                blocker_count,
+                first_timestamp: group_items.first().map(|item| item.timestamp.clone()),
+                last_timestamp: group_items.last().map(|item| item.timestamp.clone()),
+                phases,
+                decisions,
+            }
+        })
+        .collect()
+}
+
+fn issue_timeline_round_state(
+    blocker_count: usize,
+    decisions: &[String],
+    verdict_count: usize,
+) -> String {
+    if blocker_count > 0 || decisions.iter().any(|decision| decision == "blocked") {
+        "blocked".to_string()
+    } else if decisions.iter().any(|decision| decision == "needs-review") {
+        "needs_human".to_string()
+    } else if decisions.iter().any(|decision| decision == "keep") {
+        "kept".to_string()
+    } else if decisions.iter().any(|decision| decision == "reject") {
+        "rejected".to_string()
+    } else if verdict_count > 0 {
+        "reviewed".to_string()
+    } else {
+        "observing".to_string()
+    }
+}
+
 fn issue_timeline_state(issue: &HiveIssue) -> String {
     match issue.status.as_str() {
         "Blocked" | "Needs Review" => "needs_human".to_string(),
@@ -8004,16 +8137,159 @@ fn issue_timeline_state(issue: &HiveIssue) -> String {
     }
 }
 
-fn issue_timeline_summary(issue: &HiveIssue, state: &str, counts: &IssueTimelineCounts) -> String {
+fn issue_timeline_summary(
+    issue: &HiveIssue,
+    state: &str,
+    counts: &IssueTimelineCounts,
+    rounds: &[IssueTimelineRoundGroup],
+) -> String {
     format!(
-        "Issue #{} timeline is {state}: {} items, {} comments, {} evidence rows, {} verdicts, {} operator events.",
+        "Issue #{} timeline is {state}: {} items, {} round groups, {} comments, {} evidence rows, {} verdicts, {} operator events.",
         issue.id,
         counts.item_count,
+        rounds.len(),
         counts.comment_count,
         counts.evidence_count,
         counts.verdict_count,
         counts.operator_event_count
     )
+}
+
+fn issue_timeline_human_decision(
+    card: &IssueCard,
+    items: &[IssueTimelineItem],
+) -> IssueTimelineHumanDecision {
+    let issue_status = Some(card.issue.status.clone());
+    let required = matches!(card.issue.status.as_str(), "Blocked" | "Needs Review");
+    let operator_options = card
+        .trace
+        .as_ref()
+        .map(|trace| trace.human_options.clone())
+        .unwrap_or_else(|| {
+            card.actions
+                .iter()
+                .map(|action| action.action.clone())
+                .collect::<Vec<_>>()
+        });
+    let reason = issue_timeline_decision_reason(card, items);
+    let normalized_options = normalized_blocker_options(&operator_options);
+    let allowed_actions = if normalized_options.is_empty() {
+        card.actions
+            .iter()
+            .map(|action| action.action.clone())
+            .collect::<BTreeSet<_>>()
+    } else {
+        normalized_options
+            .iter()
+            .filter(|option| card.actions.iter().any(|action| action.action == **option))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+    };
+    let selected_actions = if allowed_actions.is_empty() {
+        card.actions.clone()
+    } else {
+        card.actions
+            .iter()
+            .filter(|action| allowed_actions.contains(&action.action))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let mut actions = selected_actions
+        .into_iter()
+        .map(|action| {
+            let operator_option = operator_option_for_action(&operator_options, &action.action);
+            IssueTimelineDecisionAction {
+                recommended: action.action == "retry"
+                    || (required && action.action == "request-review")
+                    || operator_option.is_some(),
+                reason: issue_timeline_decision_action_reason(&card.issue, &reason, &action),
+                issue_action: action,
+                operator_option,
+            }
+        })
+        .collect::<Vec<_>>();
+    actions.sort_by_key(|action| evidence_decision_action_priority(&action.issue_action));
+    let primary_action = actions
+        .iter()
+        .find(|action| action.recommended && action.issue_action.action != "comment")
+        .or_else(|| actions.iter().find(|action| action.recommended))
+        .or_else(|| actions.first())
+        .map(|action| action.issue_action.action.clone());
+    IssueTimelineHumanDecision {
+        required,
+        issue_status,
+        primary_action: primary_action.clone(),
+        actions,
+        policy_resource: "entrance://policy/mcp-permissions".to_string(),
+        review_queue_resource: "entrance://review-queue".to_string(),
+        issue_control_resource: format!("entrance://issues/{}/control", card.issue.id),
+        confirmation_arg: OPERATOR_ACTION_CONFIRMATION_ARG.to_string(),
+        summary: issue_timeline_decision_summary(
+            &card.issue,
+            required,
+            primary_action.as_deref(),
+            &reason,
+        ),
+    }
+}
+
+fn issue_timeline_decision_reason(card: &IssueCard, items: &[IssueTimelineItem]) -> String {
+    items
+        .iter()
+        .rev()
+        .find_map(|item| item.blocker.clone())
+        .or_else(|| {
+            items
+                .iter()
+                .rev()
+                .find(|item| item.decision.as_deref() == Some("blocked"))
+                .map(|item| item.summary.clone())
+        })
+        .or_else(|| card.issue.summary.clone())
+        .unwrap_or_else(|| format!("Issue #{} status is {}.", card.issue.id, card.issue.status))
+}
+
+fn issue_timeline_decision_action_reason(
+    issue: &HiveIssue,
+    reason: &str,
+    action: &IssueAction,
+) -> String {
+    match action.action.as_str() {
+        "retry" => format!("Retry issue #{} after addressing: {reason}", issue.id),
+        "request-review" => format!(
+            "Ask a human reviewer to resolve issue #{}: {reason}",
+            issue.id
+        ),
+        "cancel" => format!(
+            "Cancel issue #{} if this blocker makes the goal invalid: {reason}",
+            issue.id
+        ),
+        "comment" => format!("Add context to issue #{}: {reason}", issue.id),
+        _ => format!("Apply `{}` to issue #{}: {reason}", action.action, issue.id),
+    }
+}
+
+fn issue_timeline_decision_summary(
+    issue: &HiveIssue,
+    required: bool,
+    primary_action: Option<&str>,
+    reason: &str,
+) -> String {
+    if required {
+        format!(
+            "Issue #{} is {} and requires a human decision; primary action is {}. Reason: {reason}",
+            issue.id,
+            issue.status,
+            primary_action.unwrap_or("comment")
+        )
+    } else {
+        format!(
+            "Issue #{} is {} and does not require a blocking human decision; primary action is {}.",
+            issue.id,
+            issue.status,
+            primary_action.unwrap_or("comment")
+        )
+    }
 }
 
 fn issue_timeline_resources(issue: &HiveIssue) -> IssueTimelineResources {
@@ -12134,6 +12410,28 @@ mod tests {
         assert_eq!(issue_timeline.counts.evidence_count, 3);
         assert_eq!(issue_timeline.counts.verdict_count, 1);
         assert_eq!(issue_timeline.counts.blocker_count, 0);
+        assert!(!issue_timeline.human_decision.required);
+        assert_eq!(
+            issue_timeline.human_decision.issue_status.as_deref(),
+            Some("Done")
+        );
+        assert_eq!(
+            issue_timeline.human_decision.primary_action.as_deref(),
+            Some("comment")
+        );
+        let issue_round = issue_timeline
+            .rounds
+            .iter()
+            .find(|round| round.round == Some(1))
+            .expect("round 1 timeline group should exist");
+        assert_eq!(issue_round.evidence_count, 3);
+        assert_eq!(issue_round.verdict_count, 1);
+        assert!(issue_round.comment_count >= 3);
+        assert!(issue_round.phases.iter().any(|phase| phase == "developer"));
+        assert!(issue_round
+            .decisions
+            .iter()
+            .any(|decision| decision == "keep"));
         assert_eq!(
             issue_timeline.resources.issue_timeline,
             format!("entrance://issues/{}/timeline", report.issues[0].issue.id)
@@ -13347,6 +13645,35 @@ mod tests {
             .any(|action| action.issue_action.action == "request-review"
                 && action.operator_option.as_deref() == Some("request-human-review")
                 && action.issue_action.confirmation_required));
+        let blocked_timeline = super::issue_timeline(&store, report.issues[0].issue.id)
+            .expect("blocked issue timeline should resolve");
+        assert_eq!(blocked_timeline.timeline_state, "needs_human");
+        assert!(blocked_timeline.human_decision.required);
+        assert_eq!(
+            blocked_timeline.human_decision.issue_status.as_deref(),
+            Some("Blocked")
+        );
+        assert_eq!(
+            blocked_timeline.human_decision.primary_action.as_deref(),
+            Some("retry")
+        );
+        assert!(blocked_timeline
+            .human_decision
+            .actions
+            .iter()
+            .any(|action| action.issue_action.action == "retry"
+                && action.issue_action.command.contains("issue retry-run")
+                && action.recommended));
+        assert!(blocked_timeline
+            .human_decision
+            .actions
+            .iter()
+            .any(|action| action.issue_action.action == "request-review"
+                && action.issue_action.confirmation_required));
+        assert!(blocked_timeline
+            .rounds
+            .iter()
+            .any(|round| round.round == Some(1) && round.blocker_count > 0));
         let doctor_report =
             super::doctor(&store, created.contract.id).expect("blocked doctor should resolve");
         assert_eq!(doctor_report.health, "blocked");
@@ -13600,6 +13927,28 @@ mod tests {
             .actions
             .iter()
             .any(|action| action.issue_action.action == "request-review"));
+        let exhausted_timeline = super::issue_timeline(&store, exhausted_report.issues[0].issue.id)
+            .expect("exhausted issue timeline should resolve");
+        assert_eq!(exhausted_timeline.timeline_state, "needs_human");
+        assert!(exhausted_timeline.human_decision.required);
+        assert_eq!(
+            exhausted_timeline.human_decision.primary_action.as_deref(),
+            Some("retry")
+        );
+        assert!(exhausted_timeline
+            .human_decision
+            .summary
+            .contains("requires a human decision"));
+        let exhausted_round = exhausted_timeline
+            .rounds
+            .iter()
+            .find(|round| round.round == Some(REVIEWER_INVALID_ROUND_BUDGET))
+            .expect("budget-exhausted round should exist in timeline");
+        assert_eq!(exhausted_round.verdict_count, 1);
+        assert!(exhausted_round
+            .decisions
+            .iter()
+            .any(|decision| decision == "blocked"));
 
         let _ = fs::remove_dir_all(root);
     }

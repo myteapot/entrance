@@ -459,6 +459,9 @@ async function main() {
     issue_timeline_comment_visible: detailText.includes('stage_comment') && detailText.includes('comment #'),
     issue_timeline_evidence_visible: detailText.includes('execution_packet') && detailText.includes('evidence #'),
     issue_timeline_verdict_visible: detailText.includes('Verdict #') && detailText.includes('decision keep'),
+    issue_timeline_round_visible: Boolean(detailQuery('[data-testid^="issue-timeline-round-"]')),
+    issue_timeline_round_group_visible: detailText.includes('round 1') && detailText.includes('comments') && detailText.includes('verdicts 1'),
+    issue_timeline_decision_chip_visible: detailText.includes('decision comment'),
     issue_timeline_in_view: (() => {
       const timeline = detailQuery('[data-testid^="issue-timeline-detail-"]');
       if (!timeline) return false;

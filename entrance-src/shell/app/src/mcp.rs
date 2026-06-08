@@ -1064,7 +1064,7 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
         resources.push(resource_spec(
             &format!("entrance://issues/{}/timeline", card.issue.id),
             &format!("Issue #{} timeline: {}", card.issue.id, card.issue.title),
-            "One issue activity timeline with comments, evidence, verdicts, operator decisions, blockers, and linked resources.",
+            "One issue activity timeline with comments, evidence, verdicts, operator decisions, blockers, linked resources, round groups, and human decision surface.",
         ));
     }
     for contract in services.hive.loop_list()? {
@@ -1115,7 +1115,7 @@ fn resource_templates() -> serde_json::Value {
             {
                 "uriTemplate": "entrance://issues/{issue_id}/timeline",
                 "name": "Entrance issue timeline by id",
-                "description": "Read one issue activity timeline with comments, evidence, verdicts, operator decisions, blockers, and linked resources.",
+                "description": "Read one issue activity timeline with comments, evidence, verdicts, operator decisions, blockers, linked resources, round groups, and human decision surface.",
                 "mimeType": "application/json"
             },
             {
