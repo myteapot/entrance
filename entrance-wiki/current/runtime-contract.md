@@ -278,6 +278,14 @@ Supported methods:
 - `resources/read`
 - `resources/templates/list`
 
+Every entry returned by `tools/list` includes
+`annotations.entrance_permission` with schema
+`entrance.mcp.tool_permission.v1`. The same per-tool permission records are
+exposed as `tool_permission_registry` in `entrance://policy/mcp-permissions`,
+with derived `read_only_tools`, `write_tools`, `human_decision_tools`, and
+`requires_human_confirmation` lists. This keeps tool discovery and policy
+inspection on the same registry instead of maintaining separate lists.
+
 Issue tools:
 
 - `entrance_issue_list`
@@ -319,7 +327,9 @@ actions, blockers, latest comment, and recent evidence summaries.
 `entrance_issue_retry` and `entrance_issue_decide` require
 `human_confirmed=true`; without it the MCP tool result is an error. The
 permission boundary is documented at `entrance://policy/mcp-permissions` and is
-also included in review queue item policy metadata. When a confirmed MCP
+also included in review queue item policy metadata. Review queue items include
+`mcp_policy.action_tool_permissions`, so each visible issue action points to the
+MCP tool and permission record that would execute it. When a confirmed MCP
 retry/review/cancel call is accepted, the MCP layer appends an
 `MCP confirmation:` marker with action, author, and policy schema to the
 operator decision note and passes a typed

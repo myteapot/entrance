@@ -30,8 +30,10 @@ External GUI and automation callers should use `entrance daemon` over stdio or
 `entrance mcp stdio`, which is implemented inside the same `shell/app` binary
 and exposes the local Hive issue/status/comment kernel as tools, resources, and
 prompt contracts, including a `Blocked`/`Needs Review` review queue and MCP
-human-confirmation policy for retry/review/cancel decisions. Confirmed MCP
-human decisions are recorded back into the Hive operator decision
+human-confirmation policy for retry/review/cancel decisions. The MCP surface
+also exposes a local per-tool permission registry through both `tools/list`
+annotations and the policy resource. Confirmed MCP human decisions are recorded
+back into the Hive operator decision
 comment/evidence payload as typed confirmation receipts, with a readable policy
 marker still present in the note. There is still no
 separate `shell/mcp/` package or remote MCP service in the active V2 shape.

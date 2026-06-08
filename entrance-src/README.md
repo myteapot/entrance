@@ -334,7 +334,7 @@ Rust · Electron · SolidJS · SQLite · TOML
 
 ## 当前阶段 / Status
 
-**V2 Microkernel Preview** — CLI、daemon bridge、MCP stdio surface 和 Electron GUI 共用同一套 Rust runtime。`entrance mcp stdio` 已经暴露最小 issue/status/comment tool/resource/prompt 面，并包含 `Blocked` / `Needs Review` review queue、MCP human-confirmation policy，以及写入 operator decision comment/evidence payload 的 typed confirmation receipt；Electron Panel 也有同名 Review Queue band，适合本地试跑 Hive loop；daemon stdio/http 仍是 GUI 和自动化调用的主桥接协议。
+**V2 Microkernel Preview** — CLI、daemon bridge、MCP stdio surface 和 Electron GUI 共用同一套 Rust runtime。`entrance mcp stdio` 已经暴露最小 issue/status/comment tool/resource/prompt 面，并包含 `Blocked` / `Needs Review` review queue、per-tool MCP permission registry、MCP human-confirmation policy，以及写入 operator decision comment/evidence payload 的 typed confirmation receipt；Electron Panel 也有同名 Review Queue band，适合本地试跑 Hive loop；daemon stdio/http 仍是 GUI 和自动化调用的主桥接协议。
 
 ---
 

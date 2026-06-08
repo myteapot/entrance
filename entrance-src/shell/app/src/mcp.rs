@@ -12,6 +12,19 @@ const MCP_LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_FALLBACK_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SCHEMA_VERSION: &str = "entrance.mcp.v1";
 const MCP_PERMISSION_POLICY_SCHEMA_VERSION: &str = "entrance.mcp.permission_policy.v1";
+const MCP_TOOL_PERMISSION_SCHEMA_VERSION: &str = "entrance.mcp.tool_permission.v1";
+const MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION: &str =
+    "entrance.mcp.tool_permission_registry.v1";
+const MCP_TOOL_NAMES: &[&str] = &[
+    "entrance_issue_list",
+    "entrance_issue_show",
+    "entrance_review_queue",
+    "entrance_issue_comment",
+    "entrance_loop_create",
+    "entrance_issue_run",
+    "entrance_issue_retry",
+    "entrance_issue_decide",
+];
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -470,7 +483,10 @@ fn tool_spec(
         "name": name,
         "title": title,
         "description": description,
-        "inputSchema": input_schema
+        "inputSchema": input_schema,
+        "annotations": {
+            "entrance_permission": mcp_tool_permission(name)
+        }
     })
 }
 
@@ -811,10 +827,22 @@ fn mcp_issue_policy(actions: &[entrance_hive::IssueAction]) -> serde_json::Value
         .filter(|action| mcp_action_requires_human_confirmation(&action.action))
         .map(|action| action.action.as_str())
         .collect::<Vec<_>>();
+    let action_tool_permissions = actions
+        .iter()
+        .filter_map(|action| {
+            let tool = mcp_tool_for_issue_action(&action.action)?;
+            Some(serde_json::json!({
+                "action": &action.action,
+                "tool": tool,
+                "permission": mcp_tool_permission(tool)
+            }))
+        })
+        .collect::<Vec<_>>();
 
     serde_json::json!({
         "schema_version": "entrance.mcp.issue_permission_policy.v1",
         "human_confirmed_actions": human_confirmed_actions,
+        "action_tool_permissions": action_tool_permissions,
         "confirmation_arg": "human_confirmed",
         "confirmation_receipt": {
             "schema_version": OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
@@ -831,40 +859,224 @@ fn mcp_issue_policy(actions: &[entrance_hive::IssueAction]) -> serde_json::Value
     })
 }
 
+fn mcp_tool_permissions() -> Vec<serde_json::Value> {
+    MCP_TOOL_NAMES
+        .iter()
+        .map(|tool| mcp_tool_permission(tool))
+        .collect()
+}
+
+fn mcp_tool_permission(tool: &str) -> serde_json::Value {
+    let (access, operation, reads, writes, actor_arg, confirmation, boundary) = match tool {
+        "entrance_issue_list" => (
+            "read",
+            "issue.list",
+            vec!["issue/status/comment"],
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        ),
+        "entrance_issue_show" => (
+            "read",
+            "issue.show",
+            vec!["issue/status/comment", "loop/trace/evidence/doctor"],
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        ),
+        "entrance_review_queue" => (
+            "read",
+            "review_queue.list",
+            vec!["blocked_issue/status/comment/evidence/options"],
+            Vec::new(),
+            None,
+            None,
+            vec!["Blocked", "Needs Review"],
+        ),
+        "entrance_issue_comment" => (
+            "write",
+            "issue.comment",
+            vec!["issue/status"],
+            vec!["issue_comment", "operator_comment_evidence"],
+            Some("author"),
+            None,
+            Vec::new(),
+        ),
+        "entrance_loop_create" => (
+            "write",
+            "loop.create",
+            Vec::new(),
+            vec!["loop_contract", "issue", "system_comment", "policies"],
+            None,
+            None,
+            Vec::new(),
+        ),
+        "entrance_issue_run" => (
+            "write",
+            "issue.run",
+            vec!["issue/status", "loop_contract", "runtime_policy"],
+            vec![
+                "stages",
+                "packets",
+                "admissions",
+                "evidence",
+                "verdicts",
+                "comments",
+            ],
+            None,
+            None,
+            vec!["Todo"],
+        ),
+        "entrance_issue_retry" => (
+            "human_decision",
+            "issue.retry_run",
+            vec![
+                "blocked_issue/status/comment/evidence/options",
+                "runtime_policy",
+            ],
+            vec![
+                "operator_decision_comment",
+                "operator_confirmation_receipt",
+                "operator_decision_evidence",
+                "stages",
+                "packets",
+                "admissions",
+                "evidence",
+                "verdicts",
+            ],
+            Some("author"),
+            Some(vec!["retry"]),
+            vec!["Blocked", "Needs Review"],
+        ),
+        "entrance_issue_decide" => (
+            "human_decision",
+            "issue.decide",
+            vec!["blocked_issue/status/comment/evidence/options"],
+            vec![
+                "operator_decision_comment",
+                "operator_confirmation_receipt",
+                "operator_decision_evidence",
+            ],
+            Some("author"),
+            Some(vec!["retry", "request-review", "cancel"]),
+            vec!["Blocked", "Needs Review"],
+        ),
+        _ => (
+            "unknown",
+            "unknown",
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        ),
+    };
+
+    let mut permission = serde_json::json!({
+        "schema_version": MCP_TOOL_PERMISSION_SCHEMA_VERSION,
+        "tool": tool,
+        "access": access,
+        "operation": operation,
+        "reads": reads,
+        "writes": writes,
+        "policy_resource": "entrance://policy/mcp-permissions"
+    });
+    if let Some(actor_arg) = actor_arg {
+        permission["actor_arg"] = serde_json::json!(actor_arg);
+        permission["default_actor"] = serde_json::json!("mcp-agent");
+    }
+    if !boundary.is_empty() {
+        permission["status_boundary"] = serde_json::json!(boundary);
+    }
+    if let Some(actions) = confirmation {
+        permission["confirmation"] = serde_json::json!({
+            "required": true,
+            "actions": actions,
+            "argument": "human_confirmed",
+            "value": true,
+            "receipt_schema": OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+            "receipt_source": "mcp"
+        });
+    } else {
+        permission["confirmation"] = serde_json::json!({
+            "required": false
+        });
+    }
+    permission
+}
+
+fn mcp_tools_by_access(permissions: &[serde_json::Value], access: &str) -> Vec<String> {
+    permissions
+        .iter()
+        .filter(|permission| {
+            permission.get("access").and_then(|value| value.as_str()) == Some(access)
+        })
+        .filter_map(|permission| {
+            permission
+                .get("tool")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .collect()
+}
+
+fn mcp_human_confirmation_requirements(
+    permissions: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    permissions
+        .iter()
+        .filter(|permission| {
+            permission
+                .pointer("/confirmation/required")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        })
+        .map(|permission| {
+            serde_json::json!({
+                "tool": permission.get("tool").cloned().unwrap_or_default(),
+                "actions": permission.pointer("/confirmation/actions").cloned().unwrap_or_default(),
+                "argument": permission.pointer("/confirmation/argument").cloned().unwrap_or_default(),
+                "value": permission.pointer("/confirmation/value").cloned().unwrap_or_default(),
+                "receipt_schema": permission.pointer("/confirmation/receipt_schema").cloned().unwrap_or_default(),
+                "reason": match permission.get("tool").and_then(|value| value.as_str()) {
+                    Some("entrance_issue_retry") => "Retry advances a blocked/rejected issue into a new loop round.",
+                    Some("entrance_issue_decide") => "Retry, review, and cancel are human decision boundaries.",
+                    _ => "Human confirmation is required for this MCP tool."
+                }
+            })
+        })
+        .collect()
+}
+
+fn mcp_tool_for_issue_action(action: &str) -> Option<&'static str> {
+    match action {
+        "run" => Some("entrance_issue_run"),
+        "comment" => Some("entrance_issue_comment"),
+        "retry" => Some("entrance_issue_retry"),
+        "request-review" | "cancel" => Some("entrance_issue_decide"),
+        _ => None,
+    }
+}
+
 fn mcp_permission_policy() -> serde_json::Value {
+    let tool_permissions = mcp_tool_permissions();
+    let read_only_tools = mcp_tools_by_access(&tool_permissions, "read");
+    let write_tools = mcp_tools_by_access(&tool_permissions, "write");
+    let human_decision_tools = mcp_tools_by_access(&tool_permissions, "human_decision");
+    let requires_human_confirmation = mcp_human_confirmation_requirements(&tool_permissions);
     serde_json::json!({
         "schema_version": MCP_PERMISSION_POLICY_SCHEMA_VERSION,
         "default_actor": "mcp-agent",
-        "read_only_tools": [
-            "entrance_issue_list",
-            "entrance_issue_show",
-            "entrance_review_queue"
-        ],
-        "write_tools": [
-            "entrance_issue_comment",
-            "entrance_loop_create",
-            "entrance_issue_run"
-        ],
-        "human_decision_tools": [
-            "entrance_issue_retry",
-            "entrance_issue_decide"
-        ],
-        "requires_human_confirmation": [
-            {
-                "tool": "entrance_issue_retry",
-                "actions": ["retry"],
-                "argument": "human_confirmed",
-                "value": true,
-                "reason": "Retry advances a blocked/rejected issue into a new loop round."
-            },
-            {
-                "tool": "entrance_issue_decide",
-                "actions": ["retry", "request-review", "cancel"],
-                "argument": "human_confirmed",
-                "value": true,
-                "reason": "Retry, review, and cancel are human decision boundaries."
-            }
-        ],
+        "tool_permission_registry": {
+            "schema_version": MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION,
+            "tools": tool_permissions
+        },
+        "read_only_tools": read_only_tools,
+        "write_tools": write_tools,
+        "human_decision_tools": human_decision_tools,
+        "requires_human_confirmation": requires_human_confirmation,
         "confirmation_receipt": {
             "schema_version": OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
             "recorded_as": [
@@ -1032,6 +1244,7 @@ mod tests {
         append_human_confirmation_note, ensure_human_confirmed, initialize_result,
         mcp_human_confirmation_receipt, mcp_permission_policy, prompt_loop_contract, prompt_specs,
         tool_specs, MCP_FALLBACK_PROTOCOL_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
+        MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_SCHEMA_VERSION,
     };
 
     #[test]
@@ -1081,6 +1294,23 @@ mod tests {
         assert!(names.contains(&"entrance_review_queue"));
         assert!(names.contains(&"entrance_issue_comment"));
         assert!(names.contains(&"entrance_issue_decide"));
+
+        for tool in tools {
+            let name = tool
+                .get("name")
+                .and_then(|value| value.as_str())
+                .expect("tool should have a name");
+            assert_eq!(
+                tool.pointer("/annotations/entrance_permission/schema_version")
+                    .and_then(|value| value.as_str()),
+                Some(MCP_TOOL_PERMISSION_SCHEMA_VERSION)
+            );
+            assert_eq!(
+                tool.pointer("/annotations/entrance_permission/tool")
+                    .and_then(|value| value.as_str()),
+                Some(name)
+            );
+        }
     }
 
     #[test]
@@ -1106,6 +1336,18 @@ mod tests {
         assert_eq!(
             decide_tool.pointer("/inputSchema/properties/human_confirmed/type"),
             Some(&serde_json::json!("boolean"))
+        );
+        assert_eq!(
+            retry_tool
+                .pointer("/annotations/entrance_permission/access")
+                .and_then(|value| value.as_str()),
+            Some("human_decision")
+        );
+        assert_eq!(
+            retry_tool
+                .pointer("/annotations/entrance_permission/confirmation/receipt_schema")
+                .and_then(|value| value.as_str()),
+            Some(entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION)
         );
         assert_eq!(
             ensure_human_confirmed(&serde_json::json!({}), "retry")
@@ -1165,10 +1407,20 @@ mod tests {
     #[test]
     fn permission_policy_names_human_decision_tools() {
         let policy = mcp_permission_policy();
+        assert_eq!(
+            policy
+                .pointer("/tool_permission_registry/schema_version")
+                .and_then(|value| value.as_str()),
+            Some(MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION)
+        );
         let human_tools = policy
             .get("human_decision_tools")
             .and_then(|value| value.as_array())
             .expect("policy should list human decision tools");
+        let tool_permissions = policy
+            .pointer("/tool_permission_registry/tools")
+            .and_then(|value| value.as_array())
+            .expect("policy should expose per-tool permissions");
 
         assert!(human_tools
             .iter()
@@ -1176,6 +1428,15 @@ mod tests {
         assert!(human_tools
             .iter()
             .any(|value| value.as_str() == Some("entrance_issue_decide")));
+        assert!(tool_permissions.iter().any(|permission| {
+            permission.get("tool").and_then(|value| value.as_str()) == Some("entrance_issue_decide")
+                && permission.get("access").and_then(|value| value.as_str())
+                    == Some("human_decision")
+                && permission
+                    .pointer("/confirmation/receipt_schema")
+                    .and_then(|value| value.as_str())
+                    == Some(entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION)
+        }));
         assert_eq!(
             policy
                 .pointer("/blocked_boundary/resource")
