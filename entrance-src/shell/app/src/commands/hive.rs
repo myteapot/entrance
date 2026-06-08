@@ -434,6 +434,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 action: decision.to_string(),
                 author: flag_value(rest, "--author").unwrap_or("human").to_string(),
                 body: flag_value(rest, "--body").map(ToOwned::to_owned),
+                confirmation_receipt: None,
             })?;
             if flag_present(rest, "--compact") {
                 print_json(&compact_issue_detail_with_connector_status(services, &card))
@@ -458,6 +459,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                 retry: action == "retry-run",
                 author: flag_value(rest, "--author").unwrap_or("human").to_string(),
                 body: flag_value(rest, "--body").map(ToOwned::to_owned),
+                confirmation_receipt: None,
             })?;
             if flag_present(rest, "--compact") {
                 let card = services.hive.issue_report(issue_id)?;
@@ -516,6 +518,7 @@ fn run_issue_bound_loop(
         retry: false,
         author: flag_value(rest, "--author").unwrap_or("human").to_string(),
         body: flag_value(rest, "--body").map(ToOwned::to_owned),
+        confirmation_receipt: None,
     })?;
     let card = services.hive.issue_report(issue_id)?;
     let detail = compact_issue_detail_with_connector_status(services, &card);

@@ -32,5 +32,6 @@ and exposes the local Hive issue/status/comment kernel as tools, resources, and
 prompt contracts, including a `Blocked`/`Needs Review` review queue and MCP
 human-confirmation policy for retry/review/cancel decisions. Confirmed MCP
 human decisions are recorded back into the Hive operator decision
-comment/evidence note with a policy marker. There is still no
+comment/evidence payload as typed confirmation receipts, with a readable policy
+marker still present in the note. There is still no
 separate `shell/mcp/` package or remote MCP service in the active V2 shape.

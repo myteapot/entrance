@@ -22,8 +22,9 @@ Entrance has reached a local MVP unit:
   `Blocked`/`Needs Review` review queue. MCP retry/review/cancel calls now
   require `human_confirmed=true` and expose the permission policy through
   `entrance://policy/mcp-permissions`; confirmed MCP human decisions also write
-  an action/author/policy marker into the operator decision comment/evidence
-  note.
+  an action/author/policy marker into the operator decision note and a typed
+  `entrance.hive.operator_confirmation_receipt.v1` receipt into the operator
+  decision comment/evidence payload.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the

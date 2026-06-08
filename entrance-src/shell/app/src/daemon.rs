@@ -793,6 +793,7 @@ async fn handle_invoke(
                         .get("body")
                         .and_then(|value| value.as_str())
                         .map(ToOwned::to_owned),
+                    confirmation_receipt: None,
                 })?,
             )?)
         }
@@ -834,6 +835,7 @@ async fn handle_invoke(
                     .get("body")
                     .and_then(|value| value.as_str())
                     .map(ToOwned::to_owned),
+                confirmation_receipt: None,
             };
             tokio::task::spawn_blocking(move || Ok(serde_json::to_value(hive.issue_run(request)?)?))
                 .await

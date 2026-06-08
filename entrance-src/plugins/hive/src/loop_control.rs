@@ -22,6 +22,8 @@ const VERDICT_SCHEMA_VERSION: &str = "entrance.hive.verdict.v1";
 const WORKER_RECEIPT_SCHEMA_VERSION: &str = "entrance.hive.worker_receipt.v1";
 const OPERATOR_DECISION_SCHEMA_VERSION: &str = "entrance.hive.operator_decision.v1";
 const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1";
+pub const OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION: &str =
+    "entrance.hive.operator_confirmation_receipt.v1";
 const ISSUE_ACTION_SCHEMA_VERSION: &str = "entrance.hive.issue_action.v1";
 const ISSUE_MIRROR_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror.v1";
 const CONNECTOR_REGISTRY_SCHEMA_VERSION: &str = "entrance.hive.connector_registry.v1";
@@ -678,6 +680,7 @@ pub struct IssueDecisionRequest {
     pub action: String,
     pub author: String,
     pub body: Option<String>,
+    pub confirmation_receipt: Option<OperatorConfirmationReceipt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -690,6 +693,19 @@ pub struct IssueRunRequest {
     pub retry: bool,
     pub author: String,
     pub body: Option<String>,
+    pub confirmation_receipt: Option<OperatorConfirmationReceipt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorConfirmationReceipt {
+    pub schema_version: String,
+    pub source: String,
+    pub policy_schema_version: String,
+    pub confirmation_arg: String,
+    pub human_confirmed: bool,
+    pub action: String,
+    pub author: String,
+    pub marker: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4216,13 +4232,20 @@ fn issue_comment_audit_error(
             }
         }
         Some(OPERATOR_DECISION_SCHEMA_VERSION) => {
-            if comment
+            let action = comment
                 .payload
                 .get("action")
                 .and_then(|value| value.as_str())
-                .is_none()
-            {
+                .map(ToOwned::to_owned);
+            if action.is_none() {
                 errors.push("comment.payload.action".to_string());
+            }
+            if let Some(receipt) = comment.payload.get("confirmation_receipt") {
+                errors.extend(operator_confirmation_receipt_audit_errors(
+                    receipt,
+                    action.as_deref(),
+                    &comment.author,
+                ));
             }
             if !evidence.iter().any(|row| {
                 row.kind == "operator_decision"
@@ -4335,6 +4358,63 @@ fn system_comment_audit_errors(
         }
     }
 
+    errors
+}
+
+fn operator_confirmation_receipt_audit_errors(
+    receipt: &serde_json::Value,
+    action: Option<&str>,
+    author: &str,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if receipt
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        != Some(OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION)
+    {
+        errors.push("comment.confirmation_receipt.schema_version".to_string());
+    }
+    if receipt
+        .get("source")
+        .and_then(|value| value.as_str())
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        errors.push("comment.confirmation_receipt.source".to_string());
+    }
+    if receipt
+        .get("policy_schema_version")
+        .and_then(|value| value.as_str())
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        errors.push("comment.confirmation_receipt.policy_schema_version".to_string());
+    }
+    if receipt
+        .get("confirmation_arg")
+        .and_then(|value| value.as_str())
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        errors.push("comment.confirmation_receipt.confirmation_arg".to_string());
+    }
+    if receipt
+        .get("human_confirmed")
+        .and_then(|value| value.as_bool())
+        != Some(true)
+    {
+        errors.push("comment.confirmation_receipt.human_confirmed".to_string());
+    }
+    if receipt.get("action").and_then(|value| value.as_str()) != action {
+        errors.push("comment.confirmation_receipt.action".to_string());
+    }
+    if receipt.get("author").and_then(|value| value.as_str()) != Some(author) {
+        errors.push("comment.confirmation_receipt.author".to_string());
+    }
+    if receipt
+        .get("marker")
+        .and_then(|value| value.as_str())
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        errors.push("comment.confirmation_receipt.marker".to_string());
+    }
     errors
 }
 
@@ -4463,6 +4543,11 @@ fn operator_evidence_audit_error(
                 .and_then(|value| value.as_str());
             if evidence_action != comment_action {
                 errors.push("evidence.action_binding".to_string());
+            }
+            if comment.payload.get("confirmation_receipt")
+                != row.payload.pointer("/operator/confirmation_receipt")
+            {
+                errors.push("evidence.confirmation_receipt_binding".to_string());
             }
             if comment
                 .payload
@@ -4657,6 +4742,14 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
     ensure_issue_decision_allowed(store, &issue, action)?;
     let author = default_text(request.author, "human");
     let note = request.body.as_deref().unwrap_or_default().trim();
+    if let Some(receipt) = request.confirmation_receipt.as_ref() {
+        ensure_operator_confirmation_receipt(receipt, action, &author)?;
+    }
+    let confirmation_receipt = request
+        .confirmation_receipt
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
     let mut next_round = None;
 
     if let Some(loop_id) = issue.loop_id {
@@ -4682,18 +4775,22 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
     let comment_body = action.comment_body(next_round, note);
 
     store.update_hive_issue_status(issue.id, action.issue_status(), Some(&issue_summary))?;
+    let mut comment_payload = serde_json::json!({
+        "schema_version": OPERATOR_DECISION_SCHEMA_VERSION,
+        "source": "operator",
+        "action": action.as_str(),
+        "loop_id": issue.loop_id,
+        "next_round": next_round,
+        "note": note
+    });
+    if let Some(receipt) = confirmation_receipt.as_ref() {
+        comment_payload["confirmation_receipt"] = receipt.clone();
+    }
     let comment_id = store.insert_hive_comment(HiveCommentCreate {
         issue_id: issue.id,
         author: author.clone(),
         body: comment_body.clone(),
-        payload: serde_json::json!({
-            "schema_version": OPERATOR_DECISION_SCHEMA_VERSION,
-            "source": "operator",
-            "action": action.as_str(),
-            "loop_id": issue.loop_id,
-            "next_round": next_round,
-            "note": note
-        }),
+        payload: comment_payload,
     })?;
     record_operator_decision_evidence(
         store,
@@ -4705,6 +4802,7 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
         next_round,
         &issue_summary,
         &comment_body,
+        confirmation_receipt.as_ref(),
     )?;
 
     issue_card(store, issue.id)
@@ -4726,6 +4824,7 @@ pub fn run_issue(store: &Store, request: IssueRunRequest) -> Result<HiveLoopRepo
                 action: "retry".to_string(),
                 author: default_text(request.author, "human"),
                 body: request.body.clone(),
+                confirmation_receipt: request.confirmation_receipt.clone(),
             },
         )?;
     } else if issue.status != "Todo" {
@@ -4784,6 +4883,7 @@ fn record_operator_decision_evidence(
     next_round: Option<i64>,
     summary: &str,
     comment_body: &str,
+    confirmation_receipt: Option<&serde_json::Value>,
 ) -> Result<()> {
     let Some(loop_id) = issue.loop_id else {
         return Ok(());
@@ -4796,6 +4896,32 @@ fn record_operator_decision_evidence(
             .unwrap_or(1),
     };
 
+    let mut payload = serde_json::json!({
+        "schema_version": OPERATOR_DECISION_SCHEMA_VERSION,
+        "source": "issue/status/comment",
+        "issue": {
+            "id": issue.id,
+            "comment_id": comment_id,
+            "from_status": issue.status,
+            "to_status": action.issue_status()
+        },
+        "loop": {
+            "id": loop_id,
+            "next_status": action.contract_status(),
+            "next_phase": action.contract_phase(),
+            "round": round
+        },
+        "operator": {
+            "author": author,
+            "action": action.as_str(),
+            "note": note,
+            "comment_body": comment_body
+        }
+    });
+    if let Some(receipt) = confirmation_receipt {
+        payload["operator"]["confirmation_receipt"] = receipt.clone();
+    }
+
     store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id,
         stage_id: None,
@@ -4803,29 +4929,50 @@ fn record_operator_decision_evidence(
         kind: "operator_decision".to_string(),
         summary: summary.to_string(),
         path: None,
-        payload: serde_json::json!({
-            "schema_version": OPERATOR_DECISION_SCHEMA_VERSION,
-            "source": "issue/status/comment",
-            "issue": {
-                "id": issue.id,
-                "comment_id": comment_id,
-                "from_status": issue.status,
-                "to_status": action.issue_status()
-            },
-            "loop": {
-                "id": loop_id,
-                "next_status": action.contract_status(),
-                "next_phase": action.contract_phase(),
-                "round": round
-            },
-            "operator": {
-                "author": author,
-                "action": action.as_str(),
-                "note": note,
-                "comment_body": comment_body
-            }
-        }),
+        payload,
     })?;
+    Ok(())
+}
+
+fn ensure_operator_confirmation_receipt(
+    receipt: &OperatorConfirmationReceipt,
+    action: IssueDecisionAction,
+    author: &str,
+) -> Result<()> {
+    if receipt.schema_version != OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION {
+        anyhow::bail!(
+            "operator confirmation receipt schema `{}` is not supported",
+            receipt.schema_version
+        );
+    }
+    if receipt.source.trim().is_empty() {
+        anyhow::bail!("operator confirmation receipt source is required");
+    }
+    if receipt.policy_schema_version.trim().is_empty() {
+        anyhow::bail!("operator confirmation receipt policy schema is required");
+    }
+    if receipt.confirmation_arg.trim().is_empty() {
+        anyhow::bail!("operator confirmation receipt confirmation_arg is required");
+    }
+    if !receipt.human_confirmed {
+        anyhow::bail!("operator confirmation receipt requires human_confirmed=true");
+    }
+    if receipt.action != action.as_str() {
+        anyhow::bail!(
+            "operator confirmation receipt action `{}` does not match decision `{}`",
+            receipt.action,
+            action.as_str()
+        );
+    }
+    if receipt.author != author {
+        anyhow::bail!(
+            "operator confirmation receipt author `{}` does not match decision author `{author}`",
+            receipt.author
+        );
+    }
+    if receipt.marker.trim().is_empty() {
+        anyhow::bail!("operator confirmation receipt marker is required");
+    }
     Ok(())
 }
 
@@ -10460,6 +10607,16 @@ mod tests {
         assert!(action_error_fields.contains(&"action.source"));
         assert!(action_error_fields.contains(&"action.destructive"));
 
+        let review_receipt = OperatorConfirmationReceipt {
+            schema_version: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
+            source: "mcp".to_string(),
+            policy_schema_version: "entrance.mcp.permission_policy.v1".to_string(),
+            confirmation_arg: "human_confirmed".to_string(),
+            human_confirmed: true,
+            action: "request-review".to_string(),
+            author: "human".to_string(),
+            marker: "MCP confirmation: human_confirmed=true; action=request-review; author=human; policy=entrance.mcp.permission_policy.v1".to_string(),
+        };
         let review_card = decide_issue(
             &store,
             IssueDecisionRequest {
@@ -10467,6 +10624,7 @@ mod tests {
                 action: "request-review".to_string(),
                 author: "human".to_string(),
                 body: Some("Need policy owner".to_string()),
+                confirmation_receipt: Some(review_receipt.clone()),
             },
         )
         .expect("issue should move to review");
@@ -10520,6 +10678,8 @@ mod tests {
                     .get("action")
                     .and_then(|value| value.as_str())
                     == Some("request-review")
+                && comment.payload.get("confirmation_receipt")
+                    == Some(&serde_json::to_value(&review_receipt).expect("receipt should encode"))
         }));
         let review_evidence = store
             .list_hive_loop_evidence(created.contract.id)
@@ -10536,6 +10696,8 @@ mod tests {
                     .pointer("/operator/action")
                     .and_then(|value| value.as_str())
                     == Some("request-review")
+                && evidence.payload.pointer("/operator/confirmation_receipt")
+                    == Some(&serde_json::to_value(&review_receipt).expect("receipt should encode"))
         }));
         let review_trace = review_card
             .trace
@@ -10594,6 +10756,7 @@ mod tests {
                 action: "retry".to_string(),
                 author: "human".to_string(),
                 body: None,
+                confirmation_receipt: None,
             },
         )
         .expect("issue should retry");
@@ -10651,6 +10814,7 @@ mod tests {
                 action: "cancel".to_string(),
                 author: "human".to_string(),
                 body: None,
+                confirmation_receipt: None,
             },
         )
         .expect("issue should cancel");
@@ -10726,6 +10890,7 @@ mod tests {
                 action: "retry".to_string(),
                 author: "human".to_string(),
                 body: None,
+                confirmation_receipt: None,
             },
         );
         assert!(retry_after_cancel
@@ -10773,6 +10938,7 @@ mod tests {
                 retry: false,
                 author: "human".to_string(),
                 body: None,
+                confirmation_receipt: None,
             },
         )
         .expect("todo issue should run");
@@ -10816,6 +10982,7 @@ mod tests {
                 retry: false,
                 author: "human".to_string(),
                 body: None,
+                confirmation_receipt: None,
             },
         );
         assert!(blocked_run
@@ -10834,6 +11001,7 @@ mod tests {
                 retry: true,
                 author: "human".to_string(),
                 body: Some("Retry with local runtime".to_string()),
+                confirmation_receipt: None,
             },
         )
         .expect("retry-run should record decision and execute");
@@ -11445,6 +11613,16 @@ mod tests {
             })
             .expect("drifted operator comment binding evidence should insert");
 
+        let cancel_receipt = OperatorConfirmationReceipt {
+            schema_version: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
+            source: "mcp".to_string(),
+            policy_schema_version: "entrance.mcp.permission_policy.v1".to_string(),
+            confirmation_arg: "human_confirmed".to_string(),
+            human_confirmed: true,
+            action: "cancel".to_string(),
+            author: "human".to_string(),
+            marker: "MCP confirmation: human_confirmed=true; action=cancel; author=human; policy=entrance.mcp.permission_policy.v1".to_string(),
+        };
         let cancel_card = decide_issue(
             &store,
             IssueDecisionRequest {
@@ -11452,6 +11630,7 @@ mod tests {
                 action: "cancel".to_string(),
                 author: "human".to_string(),
                 body: Some("No longer needed".to_string()),
+                confirmation_receipt: Some(cancel_receipt),
             },
         )
         .expect("todo issue should cancel");
@@ -11586,6 +11765,12 @@ mod tests {
             .and_then(|value| value.as_array())
             .is_some_and(|fields| fields
                 .iter()
+                .any(|field| field.as_str() == Some("evidence.confirmation_receipt_binding")))));
+        assert!(errors.iter().any(|error| error
+            .pointer("/errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|fields| fields
+                .iter()
                 .any(|field| field.as_str() == Some("evidence.loop_id_binding"))
                 && fields
                     .iter()
@@ -11611,6 +11796,13 @@ mod tests {
             .audit_failure_details
             .iter()
             .any(|detail| detail == "issue_surface:operator_evidence:evidence.action_binding"));
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| {
+                detail == "issue_surface:operator_evidence:evidence.confirmation_receipt_binding"
+            }));
         assert!(trace_report
             .trace
             .audit_failure_details

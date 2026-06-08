@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use entrance_hive::{
     HiveLoopCreateRequest, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueRunRequest,
+    OperatorConfirmationReceipt, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -583,6 +584,11 @@ fn tool_issue_run(
 ) -> Result<serde_json::Value> {
     let issue_id = integer_arg(args, "issue_id")?;
     let author = mcp_author(args);
+    let confirmation_receipt = if retry {
+        Some(mcp_human_confirmation_receipt("retry", &author))
+    } else {
+        None
+    };
     let body = if retry {
         ensure_human_confirmed(args, "retry")?;
         append_human_confirmation_note(Some(string_arg(args, "body")?), "retry", &author)
@@ -598,6 +604,7 @@ fn tool_issue_run(
         retry,
         author,
         body,
+        confirmation_receipt,
     })?;
     Ok(serde_json::json!({
         "schema_version": if retry { "entrance.mcp.issue_retry.v1" } else { "entrance.mcp.issue_run.v1" },
@@ -616,11 +623,13 @@ fn tool_issue_decide(
     ensure_human_confirmed(args, &action)?;
     let author = mcp_author(args);
     let body = append_human_confirmation_note(optional_string_arg(args, "body"), &action, &author);
+    let confirmation_receipt = Some(mcp_human_confirmation_receipt(&action, &author));
     let card = services.hive.issue_decide(IssueDecisionRequest {
         issue_id,
         action,
         author,
         body,
+        confirmation_receipt,
     })?;
     Ok(serde_json::json!({
         "schema_version": "entrance.mcp.issue_decide.v1",
@@ -808,7 +817,13 @@ fn mcp_issue_policy(actions: &[entrance_hive::IssueAction]) -> serde_json::Value
         "human_confirmed_actions": human_confirmed_actions,
         "confirmation_arg": "human_confirmed",
         "confirmation_receipt": {
-            "recorded_as": ["issue_comment.body", "loop_evidence.payload.operator.comment_body"],
+            "schema_version": OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+            "recorded_as": [
+                "issue_comment.payload.confirmation_receipt",
+                "loop_evidence.payload.operator.confirmation_receipt",
+                "issue_comment.body",
+                "loop_evidence.payload.operator.comment_body"
+            ],
             "marker_prefix": "MCP confirmation:",
             "policy_schema_version": MCP_PERMISSION_POLICY_SCHEMA_VERSION
         },
@@ -851,7 +866,13 @@ fn mcp_permission_policy() -> serde_json::Value {
             }
         ],
         "confirmation_receipt": {
-            "recorded_as": ["issue_comment.body", "loop_evidence.payload.operator.comment_body"],
+            "schema_version": OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+            "recorded_as": [
+                "issue_comment.payload.confirmation_receipt",
+                "loop_evidence.payload.operator.confirmation_receipt",
+                "issue_comment.body",
+                "loop_evidence.payload.operator.comment_body"
+            ],
             "source": "issue/status/comment",
             "marker_prefix": "MCP confirmation:",
             "note_template": format!("MCP confirmation: human_confirmed=true; action=<action>; author=<author>; policy={MCP_PERMISSION_POLICY_SCHEMA_VERSION}")
@@ -891,9 +912,7 @@ fn append_human_confirmation_note(
     action: &str,
     author: &str,
 ) -> Option<String> {
-    let marker = format!(
-        "MCP confirmation: human_confirmed=true; action={action}; author={author}; policy={MCP_PERMISSION_POLICY_SCHEMA_VERSION}"
-    );
+    let marker = mcp_confirmation_marker(action, author);
     let body = body
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -901,6 +920,25 @@ fn append_human_confirmation_note(
         Some(body) => format!("{body}\n\n{marker}"),
         None => marker,
     })
+}
+
+fn mcp_human_confirmation_receipt(action: &str, author: &str) -> OperatorConfirmationReceipt {
+    OperatorConfirmationReceipt {
+        schema_version: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
+        source: "mcp".to_string(),
+        policy_schema_version: MCP_PERMISSION_POLICY_SCHEMA_VERSION.to_string(),
+        confirmation_arg: "human_confirmed".to_string(),
+        human_confirmed: true,
+        action: action.to_string(),
+        author: author.to_string(),
+        marker: mcp_confirmation_marker(action, author),
+    }
+}
+
+fn mcp_confirmation_marker(action: &str, author: &str) -> String {
+    format!(
+        "MCP confirmation: human_confirmed=true; action={action}; author={author}; policy={MCP_PERMISSION_POLICY_SCHEMA_VERSION}"
+    )
 }
 
 fn tool_result(is_error: bool, text: String, structured: serde_json::Value) -> serde_json::Value {
@@ -992,8 +1030,8 @@ fn optional_string_array_arg(args: &serde_json::Value, name: &str) -> Vec<String
 mod tests {
     use super::{
         append_human_confirmation_note, ensure_human_confirmed, initialize_result,
-        mcp_permission_policy, prompt_loop_contract, prompt_specs, tool_specs,
-        MCP_FALLBACK_PROTOCOL_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
+        mcp_human_confirmation_receipt, mcp_permission_policy, prompt_loop_contract, prompt_specs,
+        tool_specs, MCP_FALLBACK_PROTOCOL_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
     };
 
     #[test]
@@ -1103,6 +1141,25 @@ mod tests {
                 "MCP confirmation: human_confirmed=true; action=cancel; author=mcp-agent; policy={MCP_PERMISSION_POLICY_SCHEMA_VERSION}"
             )
         );
+
+        let receipt = mcp_human_confirmation_receipt("retry", "human-a");
+        assert_eq!(
+            receipt.schema_version.as_str(),
+            entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION
+        );
+        assert_eq!(receipt.source.as_str(), "mcp");
+        assert_eq!(
+            receipt.policy_schema_version.as_str(),
+            MCP_PERMISSION_POLICY_SCHEMA_VERSION
+        );
+        assert_eq!(receipt.confirmation_arg.as_str(), "human_confirmed");
+        assert!(receipt.human_confirmed);
+        assert_eq!(receipt.action.as_str(), "retry");
+        assert_eq!(receipt.author.as_str(), "human-a");
+        assert_eq!(
+            receipt.marker.as_str(),
+            "MCP confirmation: human_confirmed=true; action=retry; author=human-a; policy=entrance.mcp.permission_policy.v1"
+        );
     }
 
     #[test]
@@ -1130,6 +1187,12 @@ mod tests {
                 .pointer("/confirmation_receipt/source")
                 .and_then(|value| value.as_str()),
             Some("issue/status/comment")
+        );
+        assert_eq!(
+            policy
+                .pointer("/confirmation_receipt/schema_version")
+                .and_then(|value| value.as_str()),
+            Some(entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION)
         );
         assert!(policy
             .pointer("/confirmation_receipt/note_template")
