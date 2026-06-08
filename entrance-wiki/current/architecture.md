@@ -44,5 +44,9 @@ marker still present in the note and optional `initialize.clientInfo` copied as
 self-reported client identity plus non-verified actor context. The daemon bridge
 used by the Electron Panel now records Panel retry/review/cancel decisions with
 the same typed confirmation receipt schema using `source=panel`; this is local
-audit context, not verified operator authentication. There is still no
-separate `shell/mcp/` package or remote MCP service in the active V2 shape.
+audit context, not verified operator authentication. The same daemon bridge also
+exposes the `remote-fixture:` external issue surface demo used by the Panel
+`Run Fixture` action: it creates a fixture-target issue, runs the connector
+publish/readback/admission/final-readback path, and records connector evidence
+back into Hive. There is still no separate `shell/mcp/` package or remote MCP
+service in the active V2 shape.

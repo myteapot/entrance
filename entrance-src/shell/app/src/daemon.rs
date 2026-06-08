@@ -22,11 +22,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::{
     app::AppServices,
     commands::hive::{
-        admit_issue_mirror_file, audit_issue_mirror_file, connector_publish_plan_report,
-        connector_queue_report, connector_roundtrip_plan_report, execute_connector_publish_plan,
-        execute_connector_roundtrip_plan, issue_connector_admission_preview, issue_mirror_status,
-        publish_issue_mirror_to_file, readback_issue_mirror_file, roundtrip_issue_mirror_file,
-        sync_issue_mirror_to_file, verify_issue_mirror_file,
+        admit_issue_mirror_file, audit_issue_mirror_file, connector_fixture_demo_report,
+        connector_publish_plan_report, connector_queue_report, connector_roundtrip_plan_report,
+        execute_connector_publish_plan, execute_connector_roundtrip_plan,
+        issue_connector_admission_preview, issue_mirror_status, publish_issue_mirror_to_file,
+        readback_issue_mirror_file, roundtrip_issue_mirror_file, sync_issue_mirror_to_file,
+        verify_issue_mirror_file,
     },
 };
 
@@ -535,6 +536,16 @@ async fn handle_invoke(
         }
         "hive_connector_registry" => Ok(serde_json::to_value(
             state.services.hive.connector_registry(),
+        )?),
+        "hive_connector_fixture_demo" => Ok(connector_fixture_demo_report(
+            &state.services,
+            args.get("reviewSurface")
+                .or_else(|| args.get("review_surface"))
+                .and_then(|value| value.as_str()),
+            args.get("record")
+                .or_else(|| args.get("recorded"))
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true),
         )?),
         "hive_connector_queue" => Ok(connector_queue_report(
             &state.services,

@@ -1,6 +1,6 @@
 # Entrance Roadmap
 
-Last updated: 2026-06-08
+Last updated: 2026-06-09
 
 ## Current Stop Point
 
@@ -40,6 +40,14 @@ Entrance has reached a local MVP unit:
   Retry/review/cancel issue actions now carry a typed operator confirmation
   contract, and Panel daemon decisions write `source=panel` confirmation
   receipts into the operator decision comment/evidence ledger.
+- `hive connector fixture-demo --compact` and the Panel `Run Fixture` action
+  now create a `remote-fixture:ENTRANCE-DEMO` issue and run the full external
+  issue/status/comment dry-run roundtrip. The path writes the file-backed remote
+  fixture mirror, validates the remote write receipt and readback contract,
+  records connector readback/admission evidence, republishes those observations,
+  and ends with the connector surface current. The Panel path has been validated
+  through the local HTTP daemon bridge with a real Browser click from a clean
+  temporary app root.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -54,8 +62,6 @@ multi-agent runtime/compiler product.
   `initialize.clientInfo`, and compatibility checks against real MCP clients.
 - Add verified operator identity for local Panel/daemon decisions beyond the
   current `local-hive-panel` audit context.
-- Make `file:` and `remote-fixture:` connector roundtrips the default external
-  dry-run demo path, with one clear CLI command and one clear Panel action.
 - Add live token-backed GitHub and Linear validation runs, including safe
   credential checks, idempotent comment updates, readback verification, error
   handling, rate-limit behavior, and redacted receipts.
@@ -113,10 +119,11 @@ multi-agent runtime/compiler product.
 
 ## Next Recommended Loop
 
-Run one larger convergence loop on external issue surfaces:
+Run one larger convergence loop on productionizing external issue surfaces:
 
-1. Make `remote-fixture:` the default non-local connector demo.
-2. Add a Panel action that runs external fixture roundtrip and shows readback.
-3. Validate with CLI, Browser, and full gates.
-4. Then decide whether to spend the next loop on real GitHub/Linear credentials
-   or worker lifecycle hardening.
+1. Add a reproducible release/demo script that runs local MVP plus the
+   `remote-fixture:` dry-run from a clean app root.
+2. Capture representative Browser screenshots and golden outputs for the
+   already-working Panel fixture action.
+3. Then choose between live token-backed GitHub/Linear validation or worker
+   lifecycle hardening.

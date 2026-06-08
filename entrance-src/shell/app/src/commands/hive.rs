@@ -49,6 +49,9 @@ const CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION: &str =
     "entrance.hive.connector_remote_write_execute.v1";
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
+const CONNECTOR_FIXTURE_DEMO_SCHEMA_VERSION: &str = "entrance.hive.connector_fixture_demo.v1";
+const CONNECTOR_FIXTURE_DEMO_PROVIDER: &str = "remote-fixture";
+const CONNECTOR_FIXTURE_DEMO_REVIEW_SURFACE: &str = "remote-fixture:ENTRANCE-DEMO";
 const ISSUE_CONNECTOR_ADMISSION_OBJECT_KIND: &str = "ISSUE_CONNECTOR_ADMISSION";
 const POLICY_SCHEMA_VERSION: &str = "entrance.hive.policy.v1";
 const LOOP_DEMO_COMPACT_SCHEMA_VERSION: &str = "entrance.hive.loop_demo.compact.v1";
@@ -77,7 +80,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive schema [--compact]\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop demo [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive schema [--compact]\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop demo [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector fixture-demo [--review-surface remote-fixture:<key>] [--no-record] [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -197,6 +200,14 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             } else {
                 print_json(&report)
             }
+        }
+        [scope, action, rest @ ..] if scope == "connector" && action == "fixture-demo" => {
+            let report = connector_fixture_demo_report(
+                services,
+                flag_value(rest, "--review-surface"),
+                !flag_present(rest, "--no-record"),
+            )?;
+            print_json(&report)
         }
         [scope, action, rest @ ..] if scope == "connector" && action == "queue" => print_json(
             &connector_queue_report(services, flag_value(rest, "--provider"))?,
@@ -530,6 +541,106 @@ fn run_issue_bound_loop(
         card,
         detail,
     })
+}
+
+pub(crate) fn connector_fixture_demo_report(
+    services: &AppServices,
+    review_surface: Option<&str>,
+    record: bool,
+) -> Result<serde_json::Value> {
+    let review_surface = review_surface
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(CONNECTOR_FIXTURE_DEMO_REVIEW_SURFACE);
+    if !(review_surface.starts_with("remote-fixture:") || review_surface.starts_with("fixture:")) {
+        bail!(
+            "connector fixture demo review surface must start with `remote-fixture:` or `fixture:`"
+        );
+    }
+
+    let created = services
+        .hive
+        .loop_create(connector_fixture_demo_request(review_surface))?;
+    let loop_id = created.contract.id;
+    let issue_id = created
+        .issues
+        .first()
+        .map(|card| card.issue.id)
+        .with_context(|| {
+            format!("connector fixture demo created loop `{loop_id}` without a linked issue")
+        })?;
+    let roundtrip = roundtrip_issue_mirror_file(services, issue_id, None, record)?;
+    let card = services.hive.issue_report(issue_id)?;
+    let issue = compact_issue_detail_with_connector_status(services, &card);
+    let queue = connector_queue_report(services, Some(CONNECTOR_FIXTURE_DEMO_PROVIDER))?;
+    let completed = roundtrip
+        .pointer("/completed")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let stage_count = roundtrip
+        .pointer("/stage_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let passed_stage_count = roundtrip
+        .pointer("/passed_stage_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+
+    Ok(serde_json::json!({
+        "schema_version": CONNECTOR_FIXTURE_DEMO_SCHEMA_VERSION,
+        "provider": CONNECTOR_FIXTURE_DEMO_PROVIDER,
+        "review_surface": review_surface,
+        "record_observations": record,
+        "completed": completed,
+        "result": if completed { "completed" } else { "blocked" },
+        "loop": {
+            "id": loop_id,
+            "title": created.contract.title,
+            "status": created.contract.status,
+            "runtime": created.contract.runtime,
+            "review_surface": created.contract.review_surface
+        },
+        "issue_id": issue_id,
+        "issue": issue.pointer("/issue").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "connector": issue.pointer("/connector").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "roundtrip": roundtrip,
+        "summary": {
+            "stage_count": stage_count,
+            "passed_stage_count": passed_stage_count,
+            "failed_stages": roundtrip.pointer("/failed_stages").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "recorded_evidence_ids": roundtrip.pointer("/recorded_evidence_ids").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "remote_object_kind": roundtrip.pointer("/remote/object_kind").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "final_readback_passed": roundtrip.pointer("/remote/final_readback_passed").cloned().unwrap_or_else(|| serde_json::json!(null))
+        },
+        "queue": queue,
+        "commands": {
+            "repeat": "entrance hive connector fixture-demo --compact",
+            "issue_roundtrip": format!("entrance hive issue mirror-roundtrip {issue_id} --compact"),
+            "issue_show": format!("entrance hive issue show {issue_id} --compact"),
+            "fixture_queue": format!("entrance hive connector queue --provider {CONNECTOR_FIXTURE_DEMO_PROVIDER} --compact")
+        }
+    }))
+}
+
+fn connector_fixture_demo_request(review_surface: &str) -> HiveLoopCreateRequest {
+    HiveLoopCreateRequest {
+        title: "Entrance remote fixture demo".to_string(),
+        goal: "Validate the external issue/status/comment control surface through the remote-fixture connector.".to_string(),
+        boundary: "Use the local SQLite ledger and file-backed remote fixture only; do not contact third-party APIs.".to_string(),
+        approach_space: vec![
+            "Create an issue with a remote-fixture review surface".to_string(),
+            "Publish the typed issue mirror to the fixture surface".to_string(),
+            "Read back, admit, and republish recorded observations".to_string(),
+        ],
+        eval_space: vec![
+            "Remote fixture write receipt is recorded".to_string(),
+            "Remote fixture readback passes after recorded observations".to_string(),
+            "Connector admission evidence is written back to the issue ledger".to_string(),
+        ],
+        review_surface: review_surface.to_string(),
+        autonomy_level: "run-approved-candidates".to_string(),
+        runtime: "local".to_string(),
+    }
 }
 
 fn loop_create_request_from_flags(rest: &[String]) -> HiveLoopCreateRequest {
@@ -10568,17 +10679,19 @@ mod tests {
         compact_linear_issue_mirror_readback, compact_local_panel_issue_mirror_publish,
         compact_local_panel_issue_mirror_readback, compact_loop_audit, compact_loop_start_summary,
         compact_store_schema_status, connector_admission_check_failed,
-        connector_admission_preview_checks, connector_github_remote_comment_body,
-        connector_issue_writer_blockers, connector_linear_remote_comment_body,
-        connector_remote_issue_body, connector_remote_issue_idempotency_key,
-        connector_remote_target, connector_remote_write_issue_from_mirror,
-        connector_remote_write_plan, connector_remote_write_receipt_from_execution,
-        connector_write_receipt, connector_writer_blockers, default_issue_mirror_path,
+        connector_admission_preview_checks, connector_fixture_demo_request,
+        connector_github_remote_comment_body, connector_issue_writer_blockers,
+        connector_linear_remote_comment_body, connector_remote_issue_body,
+        connector_remote_issue_idempotency_key, connector_remote_target,
+        connector_remote_write_issue_from_mirror, connector_remote_write_plan,
+        connector_remote_write_receipt_from_execution, connector_write_receipt,
+        connector_writer_blockers, default_issue_mirror_path,
         default_issue_mirror_path_for_provider, digest_bytes, execute_github_remote_readback,
         execute_github_remote_write_plan, execute_linear_remote_write_plan, flag_present,
         flag_value, issue_mirror_roundtrip_stage, issue_mirror_sync_receipt,
         issue_mirror_sync_receipt_for_provider, loop_demo_request_from_flags, mirror_payload,
-        mirror_receipt_path, MirrorFileDigest, CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION,
+        mirror_receipt_path, MirrorFileDigest, CONNECTOR_FIXTURE_DEMO_REVIEW_SURFACE,
+        CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION,
         CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION, ISSUE_MIRROR_READBACK_SCHEMA_VERSION,
     };
     use entrance_core::{
@@ -10818,6 +10931,22 @@ mod tests {
             storage: "test".to_string(),
             notes: "test provider".to_string(),
         }
+    }
+
+    #[test]
+    fn connector_fixture_demo_request_targets_remote_fixture_surface() {
+        let request = connector_fixture_demo_request(CONNECTOR_FIXTURE_DEMO_REVIEW_SURFACE);
+
+        assert_eq!(request.review_surface, "remote-fixture:ENTRANCE-DEMO");
+        assert_eq!(request.runtime, "local");
+        assert!(request.boundary.contains("file-backed remote fixture"));
+        assert!(request
+            .goal
+            .contains("external issue/status/comment control surface"));
+        assert!(request
+            .eval_space
+            .iter()
+            .any(|item| item.contains("Remote fixture readback passes")));
     }
 
     fn spawn_github_readback_server(

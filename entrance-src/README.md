@@ -182,7 +182,10 @@ built-in
 fixture: it emits
 `entrance.hive.connector_remote_write_receipt.v1` and verifies
 `entrance.hive.connector_remote_readback.v1` without touching a third-party
-service. Remote issue providers also expose
+service. `hive connector fixture-demo --compact` creates a
+`remote-fixture:ENTRANCE-DEMO` loop issue and runs the full publish ->
+readback -> admission -> final-readback path as the default external dry-run
+demo; the Electron Panel exposes the same path through `Run Fixture`. Remote issue providers also expose
 `entrance.hive.connector_remote_contract.v1`, which defines the remote issue
 object kind, write receipt schema, readback schema, idempotency key parts, auth
 env, and required pre/post-write checks before a real writer is allowed to run.
@@ -334,7 +337,7 @@ Rust · Electron · SolidJS · SQLite · TOML
 
 ## 当前阶段 / Status
 
-**V2 Microkernel Preview** — CLI、daemon bridge、MCP stdio surface 和 Electron GUI 共用同一套 Rust runtime。`entrance mcp stdio` 已经暴露最小 issue/status/comment tool/resource/prompt 面，并包含 `Blocked` / `Needs Review` review queue、单 issue control packet、per-tool MCP permission registry、actor identity audit policy、MCP human-confirmation policy，以及写入 operator decision comment/evidence payload 的 typed confirmation receipt；receipt 会记录 `initialize.clientInfo` 作为自报 client identity，并记录 non-verified actor context。Electron Panel 也有同名 Review Queue band，Panel retry/review/cancel 决策会写入 `source=panel` 的 typed confirmation receipt；daemon stdio/http 仍是 GUI 和自动化调用的主桥接协议。
+**V2 Microkernel Preview** — CLI、daemon bridge、MCP stdio surface 和 Electron GUI 共用同一套 Rust runtime。`entrance mcp stdio` 已经暴露最小 issue/status/comment tool/resource/prompt 面，并包含 `Blocked` / `Needs Review` review queue、单 issue control packet、per-tool MCP permission registry、actor identity audit policy、MCP human-confirmation policy，以及写入 operator decision comment/evidence payload 的 typed confirmation receipt；receipt 会记录 `initialize.clientInfo` 作为自报 client identity，并记录 non-verified actor context。Electron Panel 也有同名 Review Queue band，Panel retry/review/cancel 决策会写入 `source=panel` 的 typed confirmation receipt；Panel `Run Fixture` 和 CLI `hive connector fixture-demo --compact` 现在提供默认 `remote-fixture:` 外部 issue surface dry-run。daemon stdio/http 仍是 GUI 和自动化调用的主桥接协议。
 
 ---
 

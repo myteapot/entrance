@@ -20,6 +20,7 @@ cargo run -p entrance-app --bin entrance -- hive issue show 1
 cargo run -p entrance-app --bin entrance -- hive connector registry --compact
 cargo run -p entrance-app --bin entrance -- hive connector queue --compact
 cargo run -p entrance-app --bin entrance -- hive connector queue --provider linear --compact
+cargo run -p entrance-app --bin entrance -- hive connector fixture-demo --compact
 cargo run -p entrance-app --bin entrance -- hive connector publish-plan --compact
 cargo run -p entrance-app --bin entrance -- hive connector publish-execute --plan-id <sha256> --compact
 cargo run -p entrance-app --bin entrance -- hive issue connector-admission 1 --compact
@@ -176,7 +177,14 @@ active
 `remote-fixture:` provider is a file-backed remote issue API fixture that writes
 `entrance.hive.connector_remote_write_receipt.v1` and verifies
 `entrance.hive.connector_remote_readback.v1` without contacting a third-party
-service. Remote GitHub/Linear providers remain visible with adapter blockers
+service. `hive connector fixture-demo --compact` is the default non-local
+external-surface dry-run: it creates a `remote-fixture:ENTRANCE-DEMO` loop issue,
+runs publish -> readback -> admission -> final readback, records
+`connector_readback` and `connector_admission` evidence, and returns an
+`entrance.hive.connector_fixture_demo.v1` report with issue, connector, queue,
+and roundtrip summaries. The Panel `Run Fixture` button calls the same daemon
+path, selects the created issue, and refreshes the connector queue/detail view.
+Remote GitHub/Linear providers remain visible with adapter blockers
 until configured, and active providers expose an
 `entrance.hive.connector_remote_contract.v1` that specifies remote object kind,
 write receipt schema, readback schema, idempotency key parts, auth env, and

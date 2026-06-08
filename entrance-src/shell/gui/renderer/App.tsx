@@ -737,6 +737,25 @@ type IssueMirrorRoundtripReport = {
     object_kind?: string | null;
   };
 };
+type ConnectorFixtureDemoReport = {
+  schema_version: string;
+  provider: string;
+  review_surface: string;
+  completed: boolean;
+  result: string;
+  issue_id: number;
+  loop?: {
+    id?: number | null;
+  };
+  summary?: {
+    stage_count?: number | null;
+    passed_stage_count?: number | null;
+    failed_stages?: string[];
+    recorded_evidence_ids?: number[];
+    remote_object_kind?: string | null;
+    final_readback_passed?: boolean | null;
+  };
+};
 type CommentPill = {
   label: string;
   evidenceId?: number;
@@ -835,6 +854,7 @@ export default function App() {
   const [pendingLoopActions, setPendingLoopActions] = createSignal<Record<number, string>>({});
   const [pendingIssueActions, setPendingIssueActions] = createSignal<Record<number, string>>({});
   const [pendingDemoAction, setPendingDemoAction] = createSignal<string | null>(null);
+  const [pendingFixtureAction, setPendingFixtureAction] = createSignal<string | null>(null);
   const [drawerTitle, setDrawerTitle] = createSignal("");
   const [drawerBody, setDrawerBody] = createSignal("");
   const [banner, setBanner] = createSignal<string>("");
@@ -1728,6 +1748,40 @@ export default function App() {
     }
   };
 
+  const runConnectorFixtureDemo = async () => {
+    if (pendingFixtureAction()) return;
+    setView("panel");
+    setPendingFixtureAction("Running Fixture");
+    setConnectorPublishPlan(null);
+    setConnectorRoundtripPlan(null);
+    setBanner("Running remote fixture roundtrip.");
+    try {
+      const report = await bridge.invoke<ConnectorFixtureDemoReport>(
+        "hive_connector_fixture_demo",
+        { record: true },
+      );
+      setSelectedIssueId(report.issue_id);
+      const evidenceLabel = report.summary?.recorded_evidence_ids?.length
+        ? `; E#${report.summary.recorded_evidence_ids.join(", E#")}`
+        : "";
+      const stageLabel = `${report.summary?.passed_stage_count ?? 0}/${report.summary?.stage_count ?? 0} stages`;
+      const remoteLabel = report.summary?.remote_object_kind
+        ? ` ${report.summary.remote_object_kind}`
+        : "";
+      setBanner(
+        report.completed
+          ? `Remote fixture roundtrip complete${remoteLabel}: ${stageLabel}${evidenceLabel}`
+          : `Remote fixture roundtrip blocked: ${stageLabel}${evidenceLabel}`,
+      );
+      await refetchLoopSurfaces();
+      revealIssueDetail();
+    } catch (error) {
+      setBanner(`Remote fixture demo failed: ${actionErrorMessage(error)}`);
+    } finally {
+      setPendingFixtureAction(null);
+    }
+  };
+
   const runHiveLoop = async (loop: HiveLoop) => {
     if (loopPendingLabel(loop.id)) return;
     setPendingLoop(loop.id, "Running");
@@ -2413,6 +2467,7 @@ export default function App() {
     connectorRoundtripAction() === "Planning" ? "Planning" : "Plan RT";
   const connectorRoundtripExecuteLabel = () =>
     connectorRoundtripAction() === "Executing" ? "Running" : "Run RT";
+  const connectorFixtureDemoLabel = () => pendingFixtureAction() ?? "Run Fixture";
 
   const compactAuditFailureDetail = (detail: string) => {
     const parts = detail.split(":").filter(Boolean);
@@ -2758,6 +2813,15 @@ export default function App() {
                     >
                       {pendingDemoAction() ?? "Run Demo"}
                     </button>
+                    <button
+                      type="button"
+                      data-testid="panel-run-fixture-demo"
+                      disabled={Boolean(pendingFixtureAction())}
+                      title="entrance hive connector fixture-demo --compact"
+                      onClick={() => void runConnectorFixtureDemo()}
+                    >
+                      {connectorFixtureDemoLabel()}
+                    </button>
                     <button type="button" onClick={() => void createHiveLoop()}>
                       Create Loop
                     </button>
@@ -2784,6 +2848,15 @@ export default function App() {
                           onClick={() => void startDemoLoop()}
                         >
                           {pendingDemoAction() ?? "Run Demo"}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="issue-detail-run-fixture-demo"
+                          disabled={Boolean(pendingFixtureAction())}
+                          title="entrance hive connector fixture-demo --compact"
+                          onClick={() => void runConnectorFixtureDemo()}
+                        >
+                          {connectorFixtureDemoLabel()}
                         </button>
                       </div>
                     }
@@ -3365,6 +3438,16 @@ export default function App() {
                   </button>
                   <button
                     type="button"
+                    aria-label="Run remote fixture connector demo"
+                    data-testid="connector-fixture-demo-run"
+                    disabled={Boolean(pendingFixtureAction())}
+                    title="entrance hive connector fixture-demo --compact"
+                    onClick={() => void runConnectorFixtureDemo()}
+                  >
+                    {connectorFixtureDemoLabel()}
+                  </button>
+                  <button
+                    type="button"
                     aria-label="Execute connector queue roundtrip plan"
                     data-testid="connector-roundtrip-queue-execute"
                     disabled={
@@ -3793,14 +3876,25 @@ export default function App() {
                           <li class="record-card issue-card issue-card--empty">
                             <span>No issues</span>
                             {statusName === "Todo" && !(issueCards() ?? []).length ? (
-                              <button
-                                type="button"
-                                data-testid="issue-empty-run-demo"
-                                disabled={Boolean(pendingDemoAction())}
-                                onClick={() => void startDemoLoop()}
-                              >
-                                {pendingDemoAction() ?? "Run Demo"}
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  data-testid="issue-empty-run-demo"
+                                  disabled={Boolean(pendingDemoAction())}
+                                  onClick={() => void startDemoLoop()}
+                                >
+                                  {pendingDemoAction() ?? "Run Demo"}
+                                </button>
+                                <button
+                                  type="button"
+                                  data-testid="issue-empty-run-fixture-demo"
+                                  disabled={Boolean(pendingFixtureAction())}
+                                  title="entrance hive connector fixture-demo --compact"
+                                  onClick={() => void runConnectorFixtureDemo()}
+                                >
+                                  {connectorFixtureDemoLabel()}
+                                </button>
+                              </>
                             ) : null}
                           </li>
                         )}
