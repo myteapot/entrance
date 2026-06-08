@@ -776,12 +776,28 @@ type EvidenceDrilldownReport = {
   evidence_count: number;
   items: EvidenceDrilldownItem[];
   blockers: Array<{
-    evidence_id: number;
+    evidence_id: number | null;
+    scope: string;
     round: number;
     kind: string;
     phase: string | null;
     reason: string;
     operator_options: string[];
+    decision_surface: {
+      required: boolean;
+      issue_status: string | null;
+      primary_action: string | null;
+      actions: Array<{
+        issue_action: IssueAction;
+        recommended: boolean;
+        operator_option: string | null;
+        reason: string;
+      }>;
+      policy_resource: string;
+      review_queue_resource: string;
+      confirmation_arg: string;
+      summary: string;
+    };
   }>;
   human_decision: {
     required: boolean;
@@ -3870,11 +3886,52 @@ export default function App() {
                                   </span>
                                 </div>
                                 {drilldown.blockers.length ? (
-                                  <div class="doctor-lines">
+                                  <div class="doctor-lines evidence-blocker-surfaces">
                                     {drilldown.blockers.slice(0, 3).map((blocker) => (
-                                      <span>
-                                        blocker #{blocker.evidence_id} {blocker.reason}
-                                      </span>
+                                      <div
+                                        class="evidence-blocker-surface"
+                                        data-testid={`evidence-blocker-decision-${card.issue.id}-${blocker.evidence_id ?? "loop"}`}
+                                      >
+                                        <span>
+                                          blocker {blocker.evidence_id ? `#${blocker.evidence_id}` : blocker.scope} {blocker.reason}
+                                        </span>
+                                        <div class="trace-strip">
+                                          <span
+                                            class={
+                                              blocker.decision_surface.required
+                                                ? "trace-pill trace-pill--warn"
+                                                : "trace-pill"
+                                            }
+                                          >
+                                            decision {blocker.decision_surface.primary_action ?? "comment"}
+                                          </span>
+                                          <span class="trace-pill">
+                                            actions {blocker.decision_surface.actions.length}
+                                          </span>
+                                          {blocker.decision_surface.issue_status ? (
+                                            <span class="trace-pill">
+                                              {blocker.decision_surface.issue_status}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                        {blocker.decision_surface.actions.length ? (
+                                          <div class="record-actions evidence-blocker-actions">
+                                            {blocker.decision_surface.actions.slice(0, 4).map((choice) => (
+                                              <button
+                                                type="button"
+                                                aria-label={`${choice.issue_action.label} blocker ${blocker.evidence_id ?? "loop"}`}
+                                                data-testid={`evidence-blocker-action-${card.issue.id}-${blocker.evidence_id ?? "loop"}-${choice.issue_action.action}`}
+                                                disabled={issueOptionDisabled(card, choice.issue_action)}
+                                                title={choice.reason}
+                                                onClick={() => runIssueAction(card, choice.issue_action)}
+                                                {...issueActionButtonAttrs(choice.issue_action)}
+                                              >
+                                                {issueDecisionButtonLabel(card, choice.issue_action)}
+                                              </button>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                      </div>
                                     ))}
                                   </div>
                                 ) : null}

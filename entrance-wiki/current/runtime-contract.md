@@ -112,12 +112,14 @@ Preflight, and Worker Lifecycle blocks.
 `entrance.hive.evidence_drilldown.v1`: a focused evidence report with worker
 receipts, receipt gates, transcript/payload excerpts, remote connector receipt
 summaries, artifact/path hints, payload key diffs relative to the previous
-evidence row, blockers, human decision actions, resources, and next actions.
+evidence row, evidence/loop-level blockers, blocker-bound decision surfaces,
+resources, and next actions.
 MCP clients can read it through
 `entrance://loops/{loop_id}/evidence-drilldown`, and the Panel selected-issue
 detail renders the same report below Loop Dashboard. Full transcript expansion,
 durable remote receipt archives, artifact manifest collection/verification,
-payload schema diffing, and blocker decision workflows remain future work.
+payload schema diffing, and richer blocker decision workflows remain future
+work.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as preflight-blocked verdicts. The `codex` runtime uses a read-only
 `codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and
@@ -403,7 +405,7 @@ full `entrance.hive.loop_dashboard.v1` report gives agents one loop-level
 control view before they inspect lower-level resources; the full
 `entrance.hive.evidence_drilldown.v1` report exposes worker receipts,
 transcript/payload excerpts, remote receipt summaries, artifact/path hints,
-payload key diffs, blockers, and human decision actions; the full
+payload key diffs, blockers, and blocker-bound decision surfaces; the full
 `entrance.hive.worker_lifecycle.v1` report lists expected roles, observed
 workers, receipt status, timeout/attempt metadata, retry exhaustion, and the
 Reviewer invalid-budget fallback. `entrance://policy/actor-identity` documents

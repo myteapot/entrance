@@ -100,8 +100,8 @@ above Evidence Drilldown, Runtime Preflight, and Worker Lifecycle.
 `hive loop evidence-drilldown <id>` exposes
 `entrance.hive.evidence_drilldown.v1`, a focused evidence control-plane view
 with worker receipts, transcript/payload excerpts, remote connector receipt
-summaries, artifact/path hints, payload key diffs, blockers, human decision
-actions, and next actions; MCP exposes it as
+summaries, artifact/path hints, payload key diffs, blockers, blocker-bound
+decision surfaces, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/evidence-drilldown`, and the Panel selected issue
 renders it below Loop Dashboard.
 `hive loop preflight <id>` exposes the same boundary as
@@ -142,8 +142,8 @@ admission result, worker receipt, packet envelope diagnostics, missing receipts,
 operator options, and short transcript excerpts.
 `hive loop evidence-drilldown <id>` returns the richer drilldown report for
 operators who need to inspect receipt contents, payload changes, connector
-readback summaries, artifact hints, and blocker decision context without
-opening raw SQLite rows first.
+readback summaries, artifact hints, and blocker-bound retry/review/cancel
+decision context without opening raw SQLite rows first.
 `hive loop audit <id>` returns a compiler-style audit over the SQLite ledger
 schema, loop contract, active policies, runtime policy, stage sequence, stage
 evidence, typed packets, packet sequence, admission receipts, worker receipts,

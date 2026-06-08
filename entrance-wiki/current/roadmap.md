@@ -33,7 +33,9 @@ Entrance has reached a local MVP unit:
   `entrance://loops/{loop_id}/evidence-drilldown`, and the Panel selected-issue
   Evidence Drilldown block. It exposes worker receipts, transcript/payload
   excerpts, remote receipt summaries, artifact/path hints, payload key diffs,
-  blockers, human decision actions, and next actions.
+  blockers, blocker-bound decision surfaces, and next actions. Evidence-level
+  blockers and Reviewer budget fallback loop-level blockers both carry primary
+  action, issue command, confirmation policy, and review queue/policy resource.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
 - Worker lifecycle is now a first-class observable contract through

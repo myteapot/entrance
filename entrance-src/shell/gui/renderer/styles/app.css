@@ -645,6 +645,24 @@
   overflow-wrap: anywhere;
 }
 
+.evidence-blocker-surfaces {
+  display: grid;
+  gap: 8px;
+}
+
+.evidence-blocker-surface {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(255, 193, 7, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 193, 7, 0.06);
+}
+
+.evidence-blocker-actions {
+  margin-top: 0;
+}
+
 .worker-lifecycle-role {
   display: grid;
   gap: 7px;

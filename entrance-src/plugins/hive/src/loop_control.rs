@@ -569,12 +569,34 @@ pub struct HiveLoopEvidencePayloadDiff {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopEvidenceBlocker {
-    pub evidence_id: i64,
+    pub evidence_id: Option<i64>,
+    pub scope: String,
     pub round: i64,
     pub kind: String,
     pub phase: Option<String>,
     pub reason: String,
     pub operator_options: Vec<String>,
+    pub decision_surface: HiveLoopEvidenceDecisionSurface,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceDecisionSurface {
+    pub required: bool,
+    pub issue_status: Option<String>,
+    pub primary_action: Option<String>,
+    pub actions: Vec<HiveLoopEvidenceDecisionAction>,
+    pub policy_resource: String,
+    pub review_queue_resource: String,
+    pub confirmation_arg: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceDecisionAction {
+    pub issue_action: IssueAction,
+    pub recommended: bool,
+    pub operator_option: Option<String>,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2209,7 +2231,7 @@ pub fn evidence_drilldown(store: &Store, loop_id: i64) -> Result<HiveLoopEvidenc
         ));
         previous_payload = Some(row);
     }
-    let blockers = evidence_drilldown_blockers(&items);
+    let blockers = evidence_drilldown_blockers(&contract, issue.as_ref(), &items, &actions);
     let human_decision = evidence_drilldown_human_decision(issue.as_ref(), &items, &actions);
     let next_actions = evidence_drilldown_next_actions(loop_id, issue.as_ref(), &actions);
     let summary =
@@ -2537,24 +2559,221 @@ fn evidence_item_blocker(row: &HiveLoopEvidence, summary: &IssueEvidenceSummary)
 }
 
 fn evidence_drilldown_blockers(
+    contract: &HiveLoopContract,
+    issue: Option<&HiveIssue>,
     items: &[HiveLoopEvidenceDrilldownItem],
+    actions: &[IssueAction],
 ) -> Vec<HiveLoopEvidenceBlocker> {
-    items
+    let mut blockers = items
         .iter()
         .filter_map(|item| {
-            item.blocker.as_ref().map(|reason| HiveLoopEvidenceBlocker {
-                evidence_id: item.id,
-                round: item.round,
-                kind: item.kind.clone(),
-                phase: item
-                    .blocked_phase
-                    .clone()
-                    .or_else(|| item.stage_role.clone()),
-                reason: reason.clone(),
-                operator_options: item.operator_options.clone(),
+            item.blocker.as_ref().map(|reason| {
+                let operator_options = item.operator_options.clone();
+                HiveLoopEvidenceBlocker {
+                    evidence_id: Some(item.id),
+                    scope: "evidence".to_string(),
+                    round: item.round,
+                    kind: item.kind.clone(),
+                    phase: item
+                        .blocked_phase
+                        .clone()
+                        .or_else(|| item.stage_role.clone()),
+                    reason: reason.clone(),
+                    decision_surface: evidence_blocker_decision_surface(
+                        issue,
+                        actions,
+                        &operator_options,
+                        Some(item.id),
+                        reason,
+                    ),
+                    operator_options,
+                }
             })
         })
+        .collect::<Vec<_>>();
+
+    if blockers.is_empty()
+        && issue
+            .map(|issue| matches!(issue.status.as_str(), "Blocked" | "Needs Review"))
+            .unwrap_or_default()
+    {
+        let reason = evidence_loop_blocker_reason(contract, issue);
+        let operator_options = actions
+            .iter()
+            .map(|action| action.action.clone())
+            .collect::<Vec<_>>();
+        blockers.push(HiveLoopEvidenceBlocker {
+            evidence_id: None,
+            scope: "loop".to_string(),
+            round: contract.current_round,
+            kind: "loop_state".to_string(),
+            phase: Some(evidence_loop_blocker_phase(contract)),
+            reason: reason.clone(),
+            decision_surface: evidence_blocker_decision_surface(
+                issue,
+                actions,
+                &operator_options,
+                None,
+                &reason,
+            ),
+            operator_options,
+        });
+    }
+    blockers
+}
+
+fn evidence_loop_blocker_reason(contract: &HiveLoopContract, issue: Option<&HiveIssue>) -> String {
+    if contract.status == "blocked"
+        && contract.current_round >= REVIEWER_INVALID_ROUND_BUDGET
+        && matches!(contract.active_phase.as_str(), "reviewer" | "complete")
+    {
+        return format!(
+            "Reviewer invalid budget exhausted after {} round(s).",
+            REVIEWER_INVALID_ROUND_BUDGET
+        );
+    }
+    issue
+        .and_then(|issue| issue.summary.clone())
+        .unwrap_or_else(|| format!("Loop status is {}.", contract.status))
+}
+
+fn evidence_loop_blocker_phase(contract: &HiveLoopContract) -> String {
+    if contract.status == "blocked"
+        && contract.current_round >= REVIEWER_INVALID_ROUND_BUDGET
+        && matches!(contract.active_phase.as_str(), "reviewer" | "complete")
+    {
+        "reviewer".to_string()
+    } else {
+        contract.active_phase.clone()
+    }
+}
+
+fn evidence_blocker_decision_surface(
+    issue: Option<&HiveIssue>,
+    actions: &[IssueAction],
+    operator_options: &[String],
+    evidence_id: Option<i64>,
+    reason: &str,
+) -> HiveLoopEvidenceDecisionSurface {
+    let issue_status = issue.map(|issue| issue.status.clone());
+    let normalized_options = normalized_blocker_options(operator_options);
+    let allowed_actions = if normalized_options.is_empty() {
+        actions
+            .iter()
+            .map(|action| action.action.clone())
+            .collect::<BTreeSet<_>>()
+    } else {
+        normalized_options
+            .iter()
+            .filter(|option| actions.iter().any(|action| action.action == **option))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+    };
+    let selected_actions = if allowed_actions.is_empty() {
+        actions.to_vec()
+    } else {
+        actions
+            .iter()
+            .filter(|action| allowed_actions.contains(&action.action))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let mut decision_actions = selected_actions
+        .into_iter()
+        .map(|action| {
+            let operator_option = operator_option_for_action(operator_options, &action.action);
+            HiveLoopEvidenceDecisionAction {
+                recommended: action.action == "retry" || operator_option.is_some(),
+                reason: evidence_decision_action_reason(evidence_id, reason, &action),
+                issue_action: action,
+                operator_option,
+            }
+        })
+        .collect::<Vec<_>>();
+    decision_actions.sort_by_key(|action| evidence_decision_action_priority(&action.issue_action));
+    let primary_action = decision_actions
+        .iter()
+        .find(|action| action.recommended)
+        .or_else(|| decision_actions.first())
+        .map(|action| action.issue_action.action.clone());
+    let required = issue_status
+        .as_deref()
+        .is_some_and(|status| matches!(status, "Blocked" | "Needs Review"));
+    HiveLoopEvidenceDecisionSurface {
+        required,
+        issue_status,
+        primary_action,
+        actions: decision_actions,
+        policy_resource: "entrance://policy/mcp-permissions".to_string(),
+        review_queue_resource: "entrance://review-queue".to_string(),
+        confirmation_arg: OPERATOR_ACTION_CONFIRMATION_ARG.to_string(),
+        summary: evidence_decision_surface_summary(evidence_id, reason),
+    }
+}
+
+fn normalized_blocker_options(values: &[String]) -> BTreeSet<String> {
+    values
+        .iter()
+        .filter_map(|value| match value.as_str() {
+            "retry" => Some("retry"),
+            "request-review" | "request-human-review" | "human-review" => Some("request-review"),
+            "cancel" => Some("cancel"),
+            "comment" | "fix-policy" | "fix-policy-then-retry" => Some("comment"),
+            _ => None,
+        })
+        .map(ToOwned::to_owned)
         .collect()
+}
+
+fn operator_option_for_action(values: &[String], action: &str) -> Option<String> {
+    values
+        .iter()
+        .find(|value| match (value.as_str(), action) {
+            ("retry", "retry") => true,
+            ("request-review" | "request-human-review" | "human-review", "request-review") => true,
+            ("cancel", "cancel") => true,
+            ("comment" | "fix-policy" | "fix-policy-then-retry", "comment") => true,
+            _ => false,
+        })
+        .cloned()
+}
+
+fn evidence_decision_action_reason(
+    evidence_id: Option<i64>,
+    reason: &str,
+    action: &IssueAction,
+) -> String {
+    let scope = evidence_id
+        .map(|id| format!("evidence #{id}"))
+        .unwrap_or_else(|| "loop blocker".to_string());
+    match action.action.as_str() {
+        "retry" => format!("Retry after changing the assumption or fix for {scope}: {reason}"),
+        "request-review" => {
+            format!(
+                "Ask a human reviewer to decide preference, scope, or policy for {scope}: {reason}"
+            )
+        }
+        "cancel" => format!("Cancel if {scope} makes the candidate no longer valuable: {reason}"),
+        "comment" => format!("Add context or policy fix notes for {scope}: {reason}"),
+        _ => format!("Apply `{}` to {scope}: {reason}", action.action),
+    }
+}
+
+fn evidence_decision_action_priority(action: &IssueAction) -> usize {
+    match action.action.as_str() {
+        "retry" => 0,
+        "request-review" => 1,
+        "comment" => 2,
+        "cancel" => 3,
+        _ => 4,
+    }
+}
+
+fn evidence_decision_surface_summary(evidence_id: Option<i64>, reason: &str) -> String {
+    match evidence_id {
+        Some(id) => format!("Decision surface for blocker on evidence #{id}: {reason}"),
+        None => format!("Decision surface for loop-level blocker: {reason}"),
+    }
 }
 
 fn evidence_drilldown_human_decision(
@@ -12084,6 +12303,41 @@ mod tests {
             .operator_options
             .iter()
             .any(|option| option == "request-human-review"));
+        let drilldown = super::evidence_drilldown(&store, created.contract.id)
+            .expect("blocked evidence drilldown should resolve");
+        assert_eq!(drilldown.drilldown_state, "needs_human");
+        assert_eq!(drilldown.blockers.len(), 1);
+        let blocker = drilldown
+            .blockers
+            .first()
+            .expect("blocked evidence should produce a blocker");
+        assert_eq!(blocker.scope, "evidence");
+        assert_eq!(blocker.evidence_id, Some(blocked_evidence.id));
+        assert_eq!(blocker.phase.as_deref(), Some("kernel"));
+        assert!(blocker.reason.contains("runtime_policy_ready failed"));
+        assert!(blocker.decision_surface.required);
+        assert_eq!(
+            blocker.decision_surface.issue_status.as_deref(),
+            Some("Blocked")
+        );
+        assert_eq!(
+            blocker.decision_surface.primary_action.as_deref(),
+            Some("retry")
+        );
+        assert!(blocker
+            .decision_surface
+            .actions
+            .iter()
+            .any(|action| action.issue_action.action == "retry"
+                && action.issue_action.command.contains("issue retry-run")
+                && action.recommended));
+        assert!(blocker
+            .decision_surface
+            .actions
+            .iter()
+            .any(|action| action.issue_action.action == "request-review"
+                && action.operator_option.as_deref() == Some("request-human-review")
+                && action.issue_action.confirmation_required));
         let doctor_report =
             super::doctor(&store, created.contract.id).expect("blocked doctor should resolve");
         assert_eq!(doctor_report.health, "blocked");
@@ -12314,6 +12568,29 @@ mod tests {
             .observed_roles
             .iter()
             .any(|role| role == "reviewer"));
+        let exhausted_drilldown = super::evidence_drilldown(&store, exhausted.contract.id)
+            .expect("exhausted evidence drilldown should resolve");
+        assert_eq!(exhausted_drilldown.drilldown_state, "needs_human");
+        assert_eq!(exhausted_drilldown.issue_status.as_deref(), Some("Blocked"));
+        let loop_blocker = exhausted_drilldown
+            .blockers
+            .iter()
+            .find(|blocker| blocker.scope == "loop")
+            .expect("review budget fallback should create a loop-level blocker");
+        assert_eq!(loop_blocker.evidence_id, None);
+        assert_eq!(loop_blocker.phase.as_deref(), Some("reviewer"));
+        assert!(loop_blocker
+            .reason
+            .contains("Reviewer invalid budget exhausted"));
+        assert_eq!(
+            loop_blocker.decision_surface.primary_action.as_deref(),
+            Some("retry")
+        );
+        assert!(loop_blocker
+            .decision_surface
+            .actions
+            .iter()
+            .any(|action| action.issue_action.action == "request-review"));
 
         let _ = fs::remove_dir_all(root);
     }
