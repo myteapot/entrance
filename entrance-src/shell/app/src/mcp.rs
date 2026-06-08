@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use entrance_hive::{
-    HiveLoopCreateRequest, IssueCommentRequest, IssueDecisionRequest, IssueRunRequest,
+    HiveLoopCreateRequest, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueRunRequest,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -282,7 +282,7 @@ fn prompt_blocker_decision(
     let issue_id = integer_arg(args, "issue_id")?;
     let issue_resource = issue_prompt_resource(services, issue_id)?;
     let text = format!(
-        "You are preparing a human decision for Entrance issue #{issue_id}. Read the attached issue resource and do not choose for the human.\n\nPresent:\nA. retry with the smallest changed assumption or boundary;\nB. request-review when preference, scope, or external data is needed;\nC. cancel when the candidate is no longer valuable.\n\nInclude the current status, Reviewer decision/reason, failed gates, missing receipts, evidence links, and the exact Entrance tool call to execute only after the human chooses."
+        "You are preparing a human decision for Entrance issue #{issue_id}. Read entrance://review-queue and the attached issue resource, then do not choose for the human.\n\nPresent:\nA. retry with the smallest changed assumption or boundary;\nB. request-review when preference, scope, or external data is needed;\nC. cancel when the candidate is no longer valuable.\n\nInclude the current status, Reviewer decision/reason, failed gates, missing receipts, evidence links, and the exact Entrance tool call to execute only after the human chooses."
     );
     Ok(prompt_result(
         "Prepare human retry/review/cancel options for a blocked Entrance issue.",
@@ -349,6 +349,21 @@ fn tool_specs() -> Vec<serde_json::Value> {
                     "issue_id": { "type": "integer", "description": "Issue id." }
                 },
                 "required": ["issue_id"]
+            }),
+        ),
+        tool_spec(
+            "entrance_review_queue",
+            "List Entrance review queue",
+            "List Blocked and Needs Review issues with decision options, blockers, and evidence summaries.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["Blocked", "Needs Review"],
+                        "description": "Optional queue status filter."
+                    }
+                }
             }),
         ),
         tool_spec(
@@ -458,6 +473,7 @@ fn call_tool(services: &AppServices, params: &serde_json::Value) -> serde_json::
     let result = match name {
         Some("entrance_issue_list") => tool_issue_list(services, &args),
         Some("entrance_issue_show") => tool_issue_show(services, &args),
+        Some("entrance_review_queue") => tool_review_queue(services, &args),
         Some("entrance_issue_comment") => tool_issue_comment(services, &args),
         Some("entrance_loop_create") => tool_loop_create(services, &args),
         Some("entrance_issue_run") => tool_issue_run(services, &args, false),
@@ -501,6 +517,14 @@ fn tool_issue_show(services: &AppServices, args: &serde_json::Value) -> Result<s
         "schema_version": "entrance.mcp.issue_show.v1",
         "issue": services.hive.issue_report(issue_id)?
     }))
+}
+
+fn tool_review_queue(
+    services: &AppServices,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let status = args.get("status").and_then(|value| value.as_str());
+    review_queue(services, status)
 }
 
 fn tool_issue_comment(
@@ -603,6 +627,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "All local issue/status/comment cards.",
         ),
         resource_spec(
+            "entrance://review-queue",
+            "Entrance review queue",
+            "Blocked and Needs Review issue decision surface.",
+        ),
+        resource_spec(
             "entrance://policy/registry",
             "Entrance policy registry",
             "Active loop, runtime, and connector policy registry.",
@@ -655,6 +684,7 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
             serde_json::to_value(services.kernel.store.app_status(&services.kernel.root)?)?
         }
         "entrance://issues" => tool_issue_list(services, &serde_json::json!({}))?,
+        "entrance://review-queue" => review_queue(services, None)?,
         "entrance://policy/registry" => serde_json::to_value(services.hive.policy_registry())?,
         "entrance://schema/status" => serde_json::to_value(services.kernel.store.schema_status()?)?,
         value if value.starts_with("entrance://issues/") => {
@@ -675,6 +705,74 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
             }
         ]
     }))
+}
+
+fn review_queue(services: &AppServices, status: Option<&str>) -> Result<serde_json::Value> {
+    if !matches!(status, None | Some("Blocked") | Some("Needs Review")) {
+        anyhow::bail!("review queue status must be Blocked or Needs Review");
+    }
+
+    let items = services
+        .hive
+        .panel()?
+        .into_iter()
+        .filter(|card| {
+            matches!(card.issue.status.as_str(), "Blocked" | "Needs Review")
+                && status.is_none_or(|status| card.issue.status == status)
+        })
+        .map(|card| review_queue_item(&card))
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "schema_version": "entrance.mcp.review_queue.v1",
+        "count": items.len(),
+        "statuses": ["Blocked", "Needs Review"],
+        "items": items
+    }))
+}
+
+fn review_queue_item(card: &IssueCard) -> serde_json::Value {
+    let latest_comment = card.comments.last();
+    let trace = card.trace.as_ref();
+    let doctor = card.doctor.as_ref();
+    let recent_evidence = trace
+        .map(|trace| {
+            trace
+                .evidence
+                .iter()
+                .rev()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "schema_version": "entrance.mcp.review_queue_item.v1",
+        "issue": &card.issue,
+        "status": &card.issue.status,
+        "decision": trace.and_then(|trace| trace.last_decision.as_deref()),
+        "reason_code": trace.and_then(|trace| trace.reason_code.as_deref()),
+        "current_round": trace.map(|trace| trace.current_round),
+        "human_options": trace.map(|trace| trace.human_options.clone()).unwrap_or_default(),
+        "actions": &card.actions,
+        "blockers": {
+            "failed_checks": doctor.map(|doctor| doctor.failed_checks.clone()).unwrap_or_default(),
+            "audit_failure_details": doctor.map(|doctor| doctor.audit_failure_details.clone()).unwrap_or_default(),
+            "missing_receipts": doctor.map(|doctor| doctor.missing_receipts.clone()).unwrap_or_default(),
+            "worker_failures": doctor.map(|doctor| doctor.worker_failures.clone()).unwrap_or_default()
+        },
+        "doctor": doctor.map(|doctor| serde_json::json!({
+            "health": &doctor.health,
+            "summary": &doctor.summary,
+            "next_actions": &doctor.next_actions
+        })),
+        "latest_comment": latest_comment,
+        "recent_evidence": recent_evidence
+    })
 }
 
 fn tool_result(is_error: bool, text: String, structured: serde_json::Value) -> serde_json::Value {
@@ -813,6 +911,7 @@ mod tests {
         assert!(names.contains(&"entrance_loop_create"));
         assert!(names.contains(&"entrance_issue_run"));
         assert!(names.contains(&"entrance_issue_retry"));
+        assert!(names.contains(&"entrance_review_queue"));
         assert!(names.contains(&"entrance_issue_comment"));
         assert!(names.contains(&"entrance_issue_decide"));
     }

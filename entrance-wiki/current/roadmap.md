@@ -18,7 +18,8 @@ Entrance has reached a local MVP unit:
   requiring an external mirror file.
 - `entrance mcp stdio` now exposes the local Hive issue/status/comment kernel
   as a minimal MCP tool/resource/prompt surface for creating, running, retrying,
-  commenting on, reading, and prompting issue-bound loops.
+  commenting on, reading, prompting issue-bound loops, and listing the
+  `Blocked`/`Needs Review` review queue.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options.
 

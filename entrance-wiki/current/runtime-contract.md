@@ -282,6 +282,7 @@ Issue tools:
 
 - `entrance_issue_list`
 - `entrance_issue_show`
+- `entrance_review_queue`
 - `entrance_issue_comment`
 - `entrance_loop_create`
 - `entrance_issue_run`
@@ -292,6 +293,7 @@ Resources:
 
 - `entrance://status`
 - `entrance://issues`
+- `entrance://review-queue`
 - `entrance://issues/{issue_id}`
 - `entrance://policy/registry`
 - `entrance://schema/status`
@@ -310,6 +312,9 @@ Prompts:
 `entrance_issue_retry` advance the linked loop through the same Hive runtime
 used by the CLI and Panel, including Developer/Reviewer verdicts and the
 3-round reviewer-invalid fallback to `Blocked`.
+`entrance_review_queue` and `entrance://review-queue` expose only `Blocked` and
+`Needs Review` issues, with reviewer decision, reason code, human options,
+actions, blockers, latest comment, and recent evidence summaries.
 
 ## Config And Data
 
