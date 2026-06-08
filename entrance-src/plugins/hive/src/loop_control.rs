@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -35,6 +35,7 @@ const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
 const WORKER_LIFECYCLE_SCHEMA_VERSION: &str = "entrance.hive.worker_lifecycle.v1";
 const RUNTIME_PREFLIGHT_SCHEMA_VERSION: &str = "entrance.hive.runtime_preflight.v1";
 const LOOP_DASHBOARD_SCHEMA_VERSION: &str = "entrance.hive.loop_dashboard.v1";
+const EVIDENCE_DRILLDOWN_SCHEMA_VERSION: &str = "entrance.hive.evidence_drilldown.v1";
 pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
@@ -450,6 +451,152 @@ pub struct HiveLoopEvidenceReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceDrilldownReport {
+    pub schema_version: String,
+    pub loop_id: i64,
+    pub issue_id: Option<i64>,
+    pub issue_status: Option<String>,
+    pub status: String,
+    pub active_phase: String,
+    pub current_round: i64,
+    pub runtime: String,
+    pub drilldown_state: String,
+    pub summary: String,
+    pub evidence_count: usize,
+    pub items: Vec<HiveLoopEvidenceDrilldownItem>,
+    pub blockers: Vec<HiveLoopEvidenceBlocker>,
+    pub human_decision: HiveLoopEvidenceHumanDecision,
+    pub resources: HiveLoopEvidenceDrilldownResources,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceDrilldownItem {
+    pub id: i64,
+    pub round: i64,
+    pub stage_role: Option<String>,
+    pub kind: String,
+    pub summary: String,
+    pub created_at: String,
+    pub path: Option<String>,
+    pub schema_version: Option<String>,
+    pub admission_result: Option<String>,
+    pub blocked_phase: Option<String>,
+    pub blocker: Option<String>,
+    pub operator_options: Vec<String>,
+    pub worker: Option<HiveLoopEvidenceWorkerDrilldown>,
+    pub receipt: Option<HiveLoopEvidenceReceiptDrilldown>,
+    pub remote_receipt: Option<HiveLoopEvidenceRemoteReceipt>,
+    pub artifacts: Vec<HiveLoopEvidenceArtifact>,
+    pub payload: HiveLoopEvidencePayloadInspection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceWorkerDrilldown {
+    pub kind: Option<String>,
+    pub mode: Option<String>,
+    pub ok: Option<bool>,
+    pub receipt_ok: Option<bool>,
+    pub timed_out: Option<bool>,
+    pub status: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub timeout_secs: Option<u64>,
+    pub attempt_count: Option<u64>,
+    pub max_attempts: Option<u64>,
+    pub retry_exhausted: Option<bool>,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub action: Option<String>,
+    pub evidence_summary: Option<String>,
+    pub gate_count: Option<usize>,
+    pub receipt_errors: Vec<String>,
+    pub transcript_excerpt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceReceiptDrilldown {
+    pub schema_version: Option<String>,
+    pub role: Option<String>,
+    pub action: Option<String>,
+    pub ok: Option<bool>,
+    pub evidence_summary: Option<String>,
+    pub gates: Vec<HiveLoopEvidenceReceiptGate>,
+    pub raw_excerpt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceReceiptGate {
+    pub name: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceRemoteReceipt {
+    pub provider: Option<String>,
+    pub review_surface: Option<String>,
+    pub external_key: Option<String>,
+    pub object_kind: Option<String>,
+    pub path: Option<String>,
+    pub plan_id: Option<String>,
+    pub readback_schema_version: Option<String>,
+    pub readback_passed: Option<bool>,
+    pub checks: Vec<String>,
+    pub raw_excerpt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceArtifact {
+    pub kind: String,
+    pub path: Option<String>,
+    pub summary: Option<String>,
+    pub manifest: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidencePayloadInspection {
+    pub top_level_keys: Vec<String>,
+    pub excerpt: String,
+    pub diff_from_previous: HiveLoopEvidencePayloadDiff,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidencePayloadDiff {
+    pub relative_to_evidence_id: Option<i64>,
+    pub added_keys: Vec<String>,
+    pub removed_keys: Vec<String>,
+    pub changed_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceBlocker {
+    pub evidence_id: i64,
+    pub round: i64,
+    pub kind: String,
+    pub phase: Option<String>,
+    pub reason: String,
+    pub operator_options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceHumanDecision {
+    pub required: bool,
+    pub issue_status: Option<String>,
+    pub options: Vec<String>,
+    pub actions: Vec<IssueAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceDrilldownResources {
+    pub evidence_drilldown: String,
+    pub loop_dashboard: String,
+    pub worker_lifecycle: String,
+    pub runtime_preflight: String,
+    pub issue: Option<String>,
+    pub issue_control: Option<String>,
+    pub review_queue: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopAuditReport {
     pub schema_version: String,
     pub loop_id: i64,
@@ -821,6 +968,7 @@ pub struct HiveLoopDashboardComment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopDashboardResources {
     pub loop_dashboard: String,
+    pub evidence_drilldown: String,
     pub runtime_preflight: String,
     pub worker_lifecycle: String,
     pub issue: Option<String>,
@@ -2037,6 +2185,474 @@ pub fn evidence_report(store: &Store, loop_id: i64) -> Result<HiveLoopEvidenceRe
     })
 }
 
+pub fn evidence_drilldown(store: &Store, loop_id: i64) -> Result<HiveLoopEvidenceDrilldownReport> {
+    let contract = store
+        .get_hive_loop_contract(loop_id)?
+        .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
+    let issue = store.list_hive_issues_for_loop(loop_id)?.into_iter().next();
+    let actions = issue
+        .as_ref()
+        .map(|issue| issue_card_from_issue(store, issue.clone()).map(|card| card.actions))
+        .transpose()?
+        .unwrap_or_default();
+    let stages = store.list_hive_loop_stages(loop_id)?;
+    let stage_roles = stage_role_map(&stages);
+    let evidence_rows = store.list_hive_loop_evidence(loop_id)?;
+    let mut previous_payload: Option<&HiveLoopEvidence> = None;
+    let mut items = Vec::new();
+    for row in &evidence_rows {
+        let summary = issue_evidence_summary(row, &stage_roles);
+        items.push(evidence_drilldown_item(
+            row,
+            &summary,
+            previous_payload.map(|previous| (previous.id, &previous.payload)),
+        ));
+        previous_payload = Some(row);
+    }
+    let blockers = evidence_drilldown_blockers(&items);
+    let human_decision = evidence_drilldown_human_decision(issue.as_ref(), &items, &actions);
+    let next_actions = evidence_drilldown_next_actions(loop_id, issue.as_ref(), &actions);
+    let summary =
+        evidence_drilldown_summary(&contract, issue.as_ref(), items.len(), blockers.len());
+    let drilldown_state = evidence_drilldown_state(&contract, blockers.len(), &human_decision);
+    Ok(HiveLoopEvidenceDrilldownReport {
+        schema_version: EVIDENCE_DRILLDOWN_SCHEMA_VERSION.to_string(),
+        loop_id,
+        issue_id: issue.as_ref().map(|issue| issue.id),
+        issue_status: issue.as_ref().map(|issue| issue.status.clone()),
+        status: contract.status.clone(),
+        active_phase: contract.active_phase.clone(),
+        current_round: contract.current_round,
+        runtime: contract.runtime.clone(),
+        drilldown_state,
+        summary,
+        evidence_count: items.len(),
+        items,
+        blockers,
+        human_decision,
+        resources: HiveLoopEvidenceDrilldownResources {
+            evidence_drilldown: format!("entrance://loops/{loop_id}/evidence-drilldown"),
+            loop_dashboard: format!("entrance://loops/{loop_id}/dashboard"),
+            worker_lifecycle: format!("entrance://loops/{loop_id}/worker-lifecycle"),
+            runtime_preflight: format!("entrance://loops/{loop_id}/runtime-preflight"),
+            issue: issue
+                .as_ref()
+                .map(|issue| format!("entrance://issues/{}", issue.id)),
+            issue_control: issue
+                .as_ref()
+                .map(|issue| format!("entrance://issues/{}/control", issue.id)),
+            review_queue: "entrance://review-queue".to_string(),
+        },
+        next_actions,
+    })
+}
+
+fn evidence_drilldown_item(
+    row: &HiveLoopEvidence,
+    summary: &IssueEvidenceSummary,
+    previous_payload: Option<(i64, &serde_json::Value)>,
+) -> HiveLoopEvidenceDrilldownItem {
+    let blocker = evidence_item_blocker(row, summary);
+    HiveLoopEvidenceDrilldownItem {
+        id: row.id,
+        round: row.round,
+        stage_role: summary.stage_role.clone(),
+        kind: row.kind.clone(),
+        summary: row.summary.clone(),
+        created_at: row.created_at.clone(),
+        path: row.path.clone(),
+        schema_version: summary.schema_version.clone(),
+        admission_result: summary.admission_result.clone(),
+        blocked_phase: summary.blocked_phase.clone(),
+        blocker,
+        operator_options: summary.operator_options.clone(),
+        worker: evidence_worker_drilldown(summary),
+        receipt: evidence_receipt_drilldown(&row.payload),
+        remote_receipt: evidence_remote_receipt(&row.payload, row.path.as_deref()),
+        artifacts: evidence_artifacts(row),
+        payload: evidence_payload_inspection(&row.payload, previous_payload),
+    }
+}
+
+fn evidence_worker_drilldown(
+    summary: &IssueEvidenceSummary,
+) -> Option<HiveLoopEvidenceWorkerDrilldown> {
+    let has_worker = summary.worker_kind.is_some()
+        || summary.worker_mode.is_some()
+        || summary.worker_ok.is_some()
+        || summary.worker_receipt_ok.is_some()
+        || summary.worker_command.is_some()
+        || summary.worker_evidence_summary.is_some()
+        || !summary.worker_receipt_errors.is_empty()
+        || summary.transcript_excerpt.is_some();
+    if !has_worker {
+        return None;
+    }
+    Some(HiveLoopEvidenceWorkerDrilldown {
+        kind: summary.worker_kind.clone(),
+        mode: summary.worker_mode.clone(),
+        ok: summary.worker_ok,
+        receipt_ok: summary.worker_receipt_ok,
+        timed_out: summary.worker_timed_out,
+        status: summary.worker_status,
+        duration_ms: summary.worker_duration_ms,
+        timeout_secs: summary.worker_timeout_secs,
+        attempt_count: summary.worker_attempt_count,
+        max_attempts: summary.worker_max_attempts,
+        retry_exhausted: summary.worker_retry_exhausted,
+        command: summary.worker_command.clone(),
+        cwd: summary.worker_cwd.clone(),
+        action: summary.worker_action.clone(),
+        evidence_summary: summary.worker_evidence_summary.clone(),
+        gate_count: summary.worker_gate_count,
+        receipt_errors: summary.worker_receipt_errors.clone(),
+        transcript_excerpt: summary.transcript_excerpt.clone(),
+    })
+}
+
+fn evidence_receipt_drilldown(
+    payload: &serde_json::Value,
+) -> Option<HiveLoopEvidenceReceiptDrilldown> {
+    let worker = payload.get("worker")?;
+    let receipt = worker_structured_receipt(worker)?;
+    let gates = receipt
+        .get("gates")
+        .and_then(|value| value.as_object())
+        .map(|gates| {
+            gates
+                .iter()
+                .map(|(name, value)| HiveLoopEvidenceReceiptGate {
+                    name: name.clone(),
+                    value: value.clone(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Some(HiveLoopEvidenceReceiptDrilldown {
+        schema_version: schema_version(&receipt),
+        role: string_at(&receipt, "/role"),
+        action: string_at(&receipt, "/action"),
+        ok: receipt.get("ok").and_then(|value| value.as_bool()),
+        evidence_summary: string_at(&receipt, "/evidence_summary"),
+        gates,
+        raw_excerpt: Some(json_excerpt(&receipt, 520)),
+    })
+}
+
+fn evidence_remote_receipt(
+    payload: &serde_json::Value,
+    row_path: Option<&str>,
+) -> Option<HiveLoopEvidenceRemoteReceipt> {
+    let has_remote = payload.get("connector").is_some()
+        || payload.get("remote").is_some()
+        || payload.get("remote_readback").is_some()
+        || payload.get("readback").is_some()
+        || payload.get("plan").is_some();
+    if !has_remote {
+        return None;
+    }
+    let raw = payload
+        .get("remote_readback")
+        .or_else(|| payload.get("remote"))
+        .or_else(|| payload.get("connector"))
+        .or_else(|| payload.get("plan"))
+        .unwrap_or(payload);
+    let checks = payload
+        .pointer("/remote_readback/checks")
+        .or_else(|| payload.pointer("/readback/checks"))
+        .or_else(|| payload.pointer("/checks"))
+        .and_then(|value| value.as_array())
+        .map(|checks| {
+            checks
+                .iter()
+                .filter_map(|check| {
+                    check
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .or_else(|| check.as_str())
+                        .map(ToOwned::to_owned)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Some(HiveLoopEvidenceRemoteReceipt {
+        provider: string_at(payload, "/connector/provider")
+            .or_else(|| string_at(payload, "/provider")),
+        review_surface: string_at(payload, "/connector/review_surface")
+            .or_else(|| string_at(payload, "/review_surface")),
+        external_key: string_at(payload, "/connector/external_key")
+            .or_else(|| string_at(payload, "/external_key")),
+        object_kind: string_at(payload, "/remote/object_kind")
+            .or_else(|| string_at(payload, "/remote_readback/object_kind"))
+            .or_else(|| string_at(payload, "/remote_readback/object/kind"))
+            .or_else(|| string_at(payload, "/object_kind")),
+        path: string_at(payload, "/connector/path")
+            .or_else(|| string_at(payload, "/plan/issue/path"))
+            .or_else(|| row_path.map(ToOwned::to_owned)),
+        plan_id: string_at(payload, "/plan/plan_id").or_else(|| string_at(payload, "/plan_id")),
+        readback_schema_version: string_at(payload, "/remote_readback/schema_version")
+            .or_else(|| string_at(payload, "/readback/schema_version")),
+        readback_passed: payload
+            .pointer("/remote_readback/passed")
+            .or_else(|| payload.pointer("/readback/passed"))
+            .or_else(|| payload.pointer("/remote/final_readback_passed"))
+            .or_else(|| payload.pointer("/passed"))
+            .and_then(|value| value.as_bool()),
+        checks,
+        raw_excerpt: Some(json_excerpt(raw, 520)),
+    })
+}
+
+fn evidence_artifacts(row: &HiveLoopEvidence) -> Vec<HiveLoopEvidenceArtifact> {
+    let mut artifacts = Vec::new();
+    if let Some(path) = row.path.as_ref() {
+        artifacts.push(HiveLoopEvidenceArtifact {
+            kind: "path".to_string(),
+            path: Some(path.clone()),
+            summary: Some(row.summary.clone()),
+            manifest: None,
+        });
+    }
+    for pointer in ["/artifact", "/artifact_manifest", "/manifest"] {
+        if let Some(value) = row.payload.pointer(pointer) {
+            artifacts.push(HiveLoopEvidenceArtifact {
+                kind: pointer.trim_start_matches('/').to_string(),
+                path: value
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                summary: value
+                    .get("summary")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                manifest: Some(value.clone()),
+            });
+        }
+    }
+    if let Some(values) = row
+        .payload
+        .pointer("/artifacts")
+        .and_then(|value| value.as_array())
+    {
+        for value in values {
+            artifacts.push(HiveLoopEvidenceArtifact {
+                kind: "artifact".to_string(),
+                path: value
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                summary: value
+                    .get("summary")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                manifest: Some(value.clone()),
+            });
+        }
+    }
+    artifacts
+}
+
+fn evidence_payload_inspection(
+    payload: &serde_json::Value,
+    previous_payload: Option<(i64, &serde_json::Value)>,
+) -> HiveLoopEvidencePayloadInspection {
+    let keys = top_level_keys(payload);
+    HiveLoopEvidencePayloadInspection {
+        top_level_keys: keys,
+        excerpt: json_excerpt(payload, 720),
+        diff_from_previous: evidence_payload_diff(payload, previous_payload),
+    }
+}
+
+fn evidence_payload_diff(
+    payload: &serde_json::Value,
+    previous_payload: Option<(i64, &serde_json::Value)>,
+) -> HiveLoopEvidencePayloadDiff {
+    let Some((previous_id, previous)) = previous_payload else {
+        return HiveLoopEvidencePayloadDiff {
+            relative_to_evidence_id: None,
+            added_keys: Vec::new(),
+            removed_keys: Vec::new(),
+            changed_keys: top_level_keys(payload),
+        };
+    };
+    let current_keys = top_level_keys(payload).into_iter().collect::<BTreeSet<_>>();
+    let previous_keys = top_level_keys(previous)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let added_keys = current_keys
+        .difference(&previous_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed_keys = previous_keys
+        .difference(&current_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+    let changed_keys = current_keys
+        .intersection(&previous_keys)
+        .filter(|key| payload.get(key.as_str()) != previous.get(key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    HiveLoopEvidencePayloadDiff {
+        relative_to_evidence_id: Some(previous_id),
+        added_keys,
+        removed_keys,
+        changed_keys,
+    }
+}
+
+fn top_level_keys(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_object()
+        .map(|object| object.keys().cloned().collect::<BTreeSet<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+fn evidence_item_blocker(row: &HiveLoopEvidence, summary: &IssueEvidenceSummary) -> Option<String> {
+    string_at(&row.payload, "/reason")
+        .or_else(|| string_at(&row.payload, "/blocker"))
+        .or_else(|| string_at(&row.payload, "/connector/blocker"))
+        .or_else(|| {
+            (!summary.missing_receipts.is_empty())
+                .then(|| format!("missing receipts: {}", summary.missing_receipts.join(", ")))
+        })
+        .or_else(|| {
+            (!summary.packet_envelope_errors.is_empty()).then(|| {
+                format!(
+                    "packet envelope errors: {}",
+                    summary.packet_envelope_errors.join(", ")
+                )
+            })
+        })
+        .or_else(|| {
+            (!summary.worker_receipt_errors.is_empty()).then(|| {
+                format!(
+                    "worker receipt errors: {}",
+                    summary.worker_receipt_errors.join(", ")
+                )
+            })
+        })
+}
+
+fn evidence_drilldown_blockers(
+    items: &[HiveLoopEvidenceDrilldownItem],
+) -> Vec<HiveLoopEvidenceBlocker> {
+    items
+        .iter()
+        .filter_map(|item| {
+            item.blocker.as_ref().map(|reason| HiveLoopEvidenceBlocker {
+                evidence_id: item.id,
+                round: item.round,
+                kind: item.kind.clone(),
+                phase: item
+                    .blocked_phase
+                    .clone()
+                    .or_else(|| item.stage_role.clone()),
+                reason: reason.clone(),
+                operator_options: item.operator_options.clone(),
+            })
+        })
+        .collect()
+}
+
+fn evidence_drilldown_human_decision(
+    issue: Option<&HiveIssue>,
+    items: &[HiveLoopEvidenceDrilldownItem],
+    actions: &[IssueAction],
+) -> HiveLoopEvidenceHumanDecision {
+    let issue_status = issue.map(|issue| issue.status.clone());
+    let evidence_options = items
+        .iter()
+        .rev()
+        .find(|item| !item.operator_options.is_empty())
+        .map(|item| item.operator_options.clone())
+        .unwrap_or_default();
+    let options = if evidence_options.is_empty() {
+        actions
+            .iter()
+            .map(|action| action.action.clone())
+            .collect::<Vec<_>>()
+    } else {
+        evidence_options
+    };
+    let required = issue_status
+        .as_deref()
+        .is_some_and(|status| matches!(status, "Blocked" | "Needs Review"))
+        || actions.iter().any(|action| action.confirmation_required);
+    HiveLoopEvidenceHumanDecision {
+        required,
+        issue_status,
+        options,
+        actions: actions.to_vec(),
+    }
+}
+
+fn evidence_drilldown_next_actions(
+    loop_id: i64,
+    issue: Option<&HiveIssue>,
+    actions: &[IssueAction],
+) -> Vec<String> {
+    let mut next = vec![
+        format!("entrance hive loop evidence-drilldown {loop_id}"),
+        format!("entrance hive loop dashboard {loop_id}"),
+        format!("entrance hive loop evidence {loop_id}"),
+        format!("entrance hive loop worker-lifecycle {loop_id}"),
+    ];
+    if issue
+        .map(|issue| matches!(issue.status.as_str(), "Blocked" | "Needs Review"))
+        .unwrap_or_default()
+    {
+        next.extend(actions.iter().map(|action| action.command.clone()));
+    }
+    next
+}
+
+fn evidence_drilldown_summary(
+    contract: &HiveLoopContract,
+    issue: Option<&HiveIssue>,
+    evidence_count: usize,
+    blocker_count: usize,
+) -> String {
+    let issue_label = issue
+        .map(|issue| format!("issue {} {}", issue.id, issue.status))
+        .unwrap_or_else(|| "no issue".to_string());
+    if blocker_count > 0 {
+        format!(
+            "Loop #{} evidence drilldown has {evidence_count} evidence item(s), {blocker_count} blocker(s), {issue_label}.",
+            contract.id
+        )
+    } else {
+        format!(
+            "Loop #{} evidence drilldown has {evidence_count} evidence item(s), no blockers, {issue_label}.",
+            contract.id
+        )
+    }
+}
+
+fn evidence_drilldown_state(
+    contract: &HiveLoopContract,
+    blocker_count: usize,
+    human_decision: &HiveLoopEvidenceHumanDecision,
+) -> String {
+    if human_decision.required {
+        "needs_human".to_string()
+    } else if blocker_count > 0 || matches!(contract.status.as_str(), "blocked" | "needs-review") {
+        "blocked".to_string()
+    } else if contract.status == "kept" {
+        "complete".to_string()
+    } else {
+        "observing".to_string()
+    }
+}
+
+fn json_excerpt(value: &serde_json::Value, max_chars: usize) -> String {
+    serde_json::to_string(value)
+        .map(|text| truncate_text(&text, max_chars))
+        .unwrap_or_else(|_| "<json unavailable>".to_string())
+}
+
 pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
     let contract = store
         .get_hive_loop_contract(loop_id)?
@@ -2522,6 +3138,7 @@ pub fn dashboard(store: &Store, loop_id: i64) -> Result<HiveLoopDashboardReport>
         latest_comment,
         resources: HiveLoopDashboardResources {
             loop_dashboard: format!("entrance://loops/{loop_id}/dashboard"),
+            evidence_drilldown: format!("entrance://loops/{loop_id}/evidence-drilldown"),
             runtime_preflight: format!("entrance://loops/{loop_id}/runtime-preflight"),
             worker_lifecycle: format!("entrance://loops/{loop_id}/worker-lifecycle"),
             issue: issue_card
@@ -10401,6 +11018,60 @@ mod tests {
                 && evidence.kind == "verdict_packet"
                 && evidence.worker_ok == Some(true)
         }));
+        let evidence_drilldown = super::evidence_drilldown(&store, created.contract.id)
+            .expect("loop evidence drilldown should resolve");
+        assert_eq!(
+            evidence_drilldown.schema_version,
+            EVIDENCE_DRILLDOWN_SCHEMA_VERSION
+        );
+        assert_eq!(evidence_drilldown.drilldown_state, "complete");
+        assert_eq!(evidence_drilldown.evidence_count, 3);
+        assert!(evidence_drilldown.blockers.is_empty());
+        assert!(!evidence_drilldown.human_decision.required);
+        assert_eq!(
+            evidence_drilldown.resources.evidence_drilldown,
+            format!(
+                "entrance://loops/{}/evidence-drilldown",
+                created.contract.id
+            )
+        );
+        let developer_drilldown = evidence_drilldown
+            .items
+            .iter()
+            .find(|item| item.stage_role.as_deref() == Some("developer"))
+            .expect("developer evidence drilldown should exist");
+        assert_eq!(developer_drilldown.kind, "execution_packet");
+        assert_eq!(
+            developer_drilldown
+                .worker
+                .as_ref()
+                .and_then(|worker| worker.kind.as_deref()),
+            Some("local")
+        );
+        assert_eq!(
+            developer_drilldown
+                .receipt
+                .as_ref()
+                .and_then(|receipt| receipt.role.as_deref()),
+            Some("developer")
+        );
+        assert!(developer_drilldown
+            .payload
+            .top_level_keys
+            .iter()
+            .any(|key| key == "worker"));
+        assert!(developer_drilldown
+            .payload
+            .diff_from_previous
+            .relative_to_evidence_id
+            .is_some());
+        assert!(evidence_drilldown.next_actions.iter().any(|action| {
+            action
+                == &format!(
+                    "entrance hive loop evidence-drilldown {}",
+                    created.contract.id
+                )
+        }));
         let audit_report =
             super::audit(&store, created.contract.id).expect("loop audit should resolve");
         assert_eq!(audit_report.schema_version, AUDIT_SCHEMA_VERSION);
@@ -10540,6 +11211,13 @@ mod tests {
         assert_eq!(
             dashboard_report.resources.loop_dashboard,
             format!("entrance://loops/{}/dashboard", created.contract.id)
+        );
+        assert_eq!(
+            dashboard_report.resources.evidence_drilldown,
+            format!(
+                "entrance://loops/{}/evidence-drilldown",
+                created.contract.id
+            )
         );
         assert_eq!(dashboard_report.rounds.len(), 1);
         let dashboard_round = dashboard_report

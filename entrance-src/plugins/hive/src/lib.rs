@@ -24,17 +24,21 @@ pub use loop_control::{
     HiveLoopDashboardReport, HiveLoopDashboardResources, HiveLoopDashboardReviewer,
     HiveLoopDashboardRound, HiveLoopDashboardRoundAdmission, HiveLoopDashboardRoundEvidence,
     HiveLoopDashboardRoundGroups, HiveLoopDashboardRoundPacket, HiveLoopDashboardRoundVerdict,
-    HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport,
-    HiveLoopReport, HiveLoopRunRequest, HiveLoopRuntimePreflightObservation,
-    HiveLoopRuntimePreflightPolicy, HiveLoopRuntimePreflightPreview,
-    HiveLoopRuntimePreflightReport, HiveLoopTraceReport, HiveLoopWorkerLifecyclePolicy,
-    HiveLoopWorkerLifecycleReport, HiveLoopWorkerLifecycleRound, HiveLoopWorkerLifecycleWorker,
-    IssueAction, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueDoctorSummary,
-    IssueMirrorReport, IssueRunRequest, OperatorConfirmationActor, OperatorConfirmationClient,
-    OperatorConfirmationReceipt, PolicyGateSpec, PolicyRegistryReport,
-    CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
-    OPERATOR_ACTION_CONFIRMATION_ARG, OPERATOR_ACTION_POLICY_SCHEMA_VERSION,
-    OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+    HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceArtifact, HiveLoopEvidenceBlocker,
+    HiveLoopEvidenceDrilldownItem, HiveLoopEvidenceDrilldownReport,
+    HiveLoopEvidenceDrilldownResources, HiveLoopEvidenceHumanDecision, HiveLoopEvidencePayloadDiff,
+    HiveLoopEvidencePayloadInspection, HiveLoopEvidenceReceiptDrilldown,
+    HiveLoopEvidenceReceiptGate, HiveLoopEvidenceRemoteReceipt, HiveLoopEvidenceReport,
+    HiveLoopEvidenceWorkerDrilldown, HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest,
+    HiveLoopRuntimePreflightObservation, HiveLoopRuntimePreflightPolicy,
+    HiveLoopRuntimePreflightPreview, HiveLoopRuntimePreflightReport, HiveLoopTraceReport,
+    HiveLoopWorkerLifecyclePolicy, HiveLoopWorkerLifecycleReport, HiveLoopWorkerLifecycleRound,
+    HiveLoopWorkerLifecycleWorker, IssueAction, IssueCard, IssueCommentRequest,
+    IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport, IssueRunRequest,
+    OperatorConfirmationActor, OperatorConfirmationClient, OperatorConfirmationReceipt,
+    PolicyGateSpec, PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE,
+    CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND, OPERATOR_ACTION_CONFIRMATION_ARG,
+    OPERATOR_ACTION_POLICY_SCHEMA_VERSION, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};
@@ -142,6 +146,10 @@ impl HivePlugin {
 
     pub fn loop_evidence(&self, id: i64) -> Result<HiveLoopEvidenceReport> {
         loop_control::evidence_report(&self.store, id)
+    }
+
+    pub fn loop_evidence_drilldown(&self, id: i64) -> Result<HiveLoopEvidenceDrilldownReport> {
+        loop_control::evidence_drilldown(&self.store, id)
     }
 
     pub fn loop_audit(&self, id: i64) -> Result<HiveLoopAuditReport> {

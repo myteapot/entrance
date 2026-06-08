@@ -28,6 +28,12 @@ Entrance has reached a local MVP unit:
   Explorer/Developer/Reviewer lanes, reviewer budget, human decision actions,
   health, blockers, round packet/admission/evidence/verdict grouping, retry
   lineage, and next actions in one report.
+- Evidence drilldown is now a first-class focused evidence contract through
+  `entrance hive loop evidence-drilldown <loop_id>`,
+  `entrance://loops/{loop_id}/evidence-drilldown`, and the Panel selected-issue
+  Evidence Drilldown block. It exposes worker receipts, transcript/payload
+  excerpts, remote receipt summaries, artifact/path hints, payload key diffs,
+  blockers, human decision actions, and next actions.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
 - Worker lifecycle is now a first-class observable contract through
@@ -84,13 +90,18 @@ Entrance has reached a local MVP unit:
   screenshot metadata proving that the local MVP issue, `remote-fixture:` issue,
   connector queue, `Run Fixture` actions, `Todo`/`Done` columns, and reviewer
   keep evidence are visible. The screenshot workflow also asserts that the
-  selected issue Loop Dashboard, round grouping, Runtime Preflight, Worker
-  Lifecycle, Developer/Reviewer lanes, fallback budget, and lifecycle state are
-  visible.
+  selected issue Loop Dashboard, round grouping, Evidence Drilldown, Runtime
+  Preflight, Worker Lifecycle, Developer/Reviewer lanes, fallback budget,
+  receipt detail, payload diff, and lifecycle state are visible.
 - The Panel selected-issue detail now consumes the daemon `hive_loop_dashboard`
   report and renders Loop Dashboard state, kernel gate, role lanes, reviewer
   budget, human decision status, round grouping, retry lineage, blockers, and
   copyable next actions.
+- The Panel selected-issue detail now consumes the daemon
+  `hive_loop_evidence_drilldown` report and renders worker receipts,
+  transcript/payload excerpts, remote receipt summaries, artifact/path hints,
+  payload key diffs, blockers, human decision status, and copyable next
+  actions.
 - The Panel selected-issue detail now consumes the daemon
   `hive_loop_runtime_preflight` report and renders Runtime Preflight state,
   route, object kind, gate result, runtime policy/probe, blockers, failures,
@@ -145,12 +156,10 @@ multi-agent runtime/compiler product.
 
 ### P1: Loop dashboard
 
-- Extend the current selected-issue Loop Dashboard from round grouping into a
-  focused evidence drilldown: transcript excerpts, remote receipts, artifact
-  manifests, raw payload diff, and blocker decision surface.
-- Add focused evidence drill-down views so operators can inspect transcripts,
-  failed checks, connector receipts, and human decisions without reading raw
-  JSON first.
+- Productize the current Evidence Drilldown beyond the minimum report:
+  full transcript expansion, durable remote receipt archives, artifact manifest
+  collection/verification, payload schema diffing, and blocker decision
+  workflow.
 - Reduce repeated status chips and make the primary next action obvious for
   `Todo`, `Running`, `Blocked`, `Needs Review`, and `Done` issues.
 

@@ -9,11 +9,12 @@ Last updated: 2026-06-09
 - 本轮新增 runtime preflight 一等观察面：CLI `hive loop preflight <id>`、daemon `hive_loop_runtime_preflight`、MCP `entrance://loops/{loop_id}/runtime-preflight`、MCP issue control packet summary、Panel selected issue 的 Runtime Preflight block。
 - 本轮继续新增 loop dashboard 最小切片：CLI `hive loop dashboard <id>`、daemon `hive_loop_dashboard`、MCP `entrance://loops/{loop_id}/dashboard`、Panel selected issue 的 Loop Dashboard block，用一份 contract 汇总 issue state、kernel gate、Developer/Reviewer worker lane、Reviewer budget、human decision actions、health 和 next actions。
 - 本轮继续把 Loop Dashboard 推进到 round drilldown：每轮展示 packet/admission/evidence/verdict grouping、retry lineage、blocker、worker/receipt counts。
+- 本轮继续新增 evidence drilldown 最小切片：CLI `hive loop evidence-drilldown <id>`、daemon `hive_loop_evidence_drilldown`、MCP `entrance://loops/{loop_id}/evidence-drilldown`、Panel selected issue 的 Evidence Drilldown block，展示 worker receipt、transcript/payload excerpt、remote receipt 摘要、artifact/path hint、payload key diff、blocker 和 human decision actions。
 
 ## 还没做完
 
 - 把 `runtime_preflight.v1` 扩展成完整 capability preview：sandbox scope、connector readiness、artifact/evidence manifest、人类偏好边界，而不仅是 runtime support/probe。
-- 把 Loop Dashboard 从 round grouping 推进成完整 evidence drilldown：transcript、remote receipt、artifact manifest、raw payload diff、blocker decision surface。
+- 把 Evidence Drilldown 产品化：完整 transcript 展开、真实远端 receipt 归档、artifact manifest 收集/校验、payload schema diff、blocker decision workflow。
 - Productize MCP：真实客户端配置、协议兼容测试、verified actor identity、权限边界、远程 connector 绑定。
 - Productize Linear/GitHub connector：真实 token 验证、状态映射、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
 - Hardening workers：sandbox、环境脱敏、heartbeat、resume/cancel/replacement、timeout recovery、跨进程 durable failure attribution。
@@ -22,4 +23,4 @@ Last updated: 2026-06-09
 
 ## 下一轮建议
 
-优先做 Loop Dashboard 的 evidence drilldown 切片：点开某一轮后展示 transcript excerpt、remote receipt、artifact manifest 和 blocker 对应的人类决策入口。
+优先把 Evidence Drilldown 接到真实 agent/connector 产物：artifact manifest 生成与校验、完整 transcript 展开、blocker decision workflow。

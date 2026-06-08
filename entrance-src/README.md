@@ -57,10 +57,12 @@ Local agent-loop MVP:
 .\entrance.exe hive loop show 1
 .\entrance.exe hive loop trace 1
 .\entrance.exe hive loop evidence 1
+.\entrance.exe hive loop evidence-drilldown 1
 .\entrance.exe hive loop audit 1
 .\entrance.exe hive loop doctor 1
 .\entrance.exe hive loop dashboard 1
 .\entrance.exe hive loop preflight 1
+.\entrance.exe hive loop worker-lifecycle 1
 .\entrance.exe hive loop policies 1
 .\entrance.exe hive schema --compact
 .\entrance.exe hive policy registry
@@ -94,7 +96,14 @@ loop control-plane view with issue state, kernel preflight, Explorer/Developer/
 Reviewer lanes, reviewer budget, human decision actions, health, round
 packet/admission/evidence/verdict grouping, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/dashboard`, and the Panel selected issue renders it
-above Runtime Preflight and Worker Lifecycle.
+above Evidence Drilldown, Runtime Preflight, and Worker Lifecycle.
+`hive loop evidence-drilldown <id>` exposes
+`entrance.hive.evidence_drilldown.v1`, a focused evidence control-plane view
+with worker receipts, transcript/payload excerpts, remote connector receipt
+summaries, artifact/path hints, payload key diffs, blockers, human decision
+actions, and next actions; MCP exposes it as
+`entrance://loops/{loop_id}/evidence-drilldown`, and the Panel selected issue
+renders it below Loop Dashboard.
 `hive loop preflight <id>` exposes the same boundary as
 `entrance.hive.runtime_preflight.v1`, including policy, probe, current
 admission, blocker, failures, and next actions; MCP exposes it as
@@ -131,6 +140,10 @@ without packet transcripts.
 `hive loop evidence <id>` returns the compact evidence ledger with stage role,
 admission result, worker receipt, packet envelope diagnostics, missing receipts,
 operator options, and short transcript excerpts.
+`hive loop evidence-drilldown <id>` returns the richer drilldown report for
+operators who need to inspect receipt contents, payload changes, connector
+readback summaries, artifact hints, and blocker decision context without
+opening raw SQLite rows first.
 `hive loop audit <id>` returns a compiler-style audit over the SQLite ledger
 schema, loop contract, active policies, runtime policy, stage sequence, stage
 evidence, typed packets, packet sequence, admission receipts, worker receipts,

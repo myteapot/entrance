@@ -388,7 +388,7 @@ async function main() {
 
   await waitForCondition(
     win,
-    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(document.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
+    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(document.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(document.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
     "Panel issue board",
   );
   await win.webContents.executeJavaScript(\`
@@ -403,15 +403,15 @@ async function main() {
   \`);
   await waitForCondition(
     win,
-    "(() => { const detail = document.querySelector('.panel--detail'); const text = detail ? (detail.textContent || '') : ''; return Boolean(detail) && text.includes('Entrance MVP demo') && text.includes('Reviewer kept the candidate') && text.includes('packets 4 / admissions 4 / evidence 3 / verdicts 1') && Boolean(detail.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(detail.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(detail.querySelector('[data-testid^=worker-lifecycle-detail-]')); })()",
+    "(() => { const detail = document.querySelector('.panel--detail'); const text = detail ? (detail.textContent || '') : ''; return Boolean(detail) && text.includes('Entrance MVP demo') && text.includes('Reviewer kept the candidate') && text.includes('packets 4 / admissions 4 / evidence 3 / verdicts 1') && text.includes('evidence_drilldown.v1') && Boolean(detail.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(detail.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(detail.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(detail.querySelector('[data-testid^=worker-lifecycle-detail-]')); })()",
     "local MVP issue detail",
   );
   await win.webContents.executeJavaScript(\`
   (() => {
     const detail = document.querySelector('.panel--detail');
-    const lifecycle = detail ? detail.querySelector('[data-testid^="worker-lifecycle-detail-"]') : null;
-    if (!lifecycle) return false;
-    lifecycle.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const drilldown = detail ? detail.querySelector('[data-testid^="evidence-drilldown-detail-"]') : null;
+    if (!drilldown) return false;
+    drilldown.scrollIntoView({ block: 'center', inline: 'nearest' });
     return true;
   })()
   \`);
@@ -445,6 +445,16 @@ async function main() {
     loop_dashboard_budget_visible: detailText.includes('review budget 0/3'),
     loop_dashboard_round_visible: Boolean(detailQuery('[data-testid^="loop-dashboard-round-"]')),
     loop_dashboard_round_groups_visible: detailText.includes('packets 4 / admissions 4 / evidence 3 / verdicts 1') && detailText.includes('packet kernel kernel->explorer PREFLIGHT_PACKET admitted') && detailText.includes('verdict keep all_gates_passed'),
+    evidence_drilldown_visible: Boolean(detailQuery('[data-testid^="evidence-drilldown-detail-"]')),
+    evidence_drilldown_item_visible: Boolean(detailQuery('[data-testid^="evidence-drilldown-item-"]')),
+    evidence_drilldown_receipt_visible: detailText.includes('receipt developer implement-admitted-candidate gates'),
+    evidence_drilldown_payload_visible: detailText.includes('payload +') && detailText.includes('worker'),
+    evidence_drilldown_in_view: (() => {
+      const drilldown = detailQuery('[data-testid^="evidence-drilldown-detail-"]');
+      if (!drilldown) return false;
+      const rect = drilldown.getBoundingClientRect();
+      return rect.bottom > 0 && rect.top < innerHeight;
+    })(),
     runtime_preflight_visible: Boolean(detailQuery('[data-testid^="runtime-preflight-detail-"]')),
     runtime_preflight_gate_visible: detailText.includes('runtime_policy_ready'),
     runtime_preflight_route_visible: detailText.includes('kernel -> explorer'),
@@ -453,12 +463,6 @@ async function main() {
     worker_lifecycle_developer_visible: Boolean(detailQuery('[data-testid^="worker-lifecycle-role-"][data-testid$="-developer"]')),
     worker_lifecycle_reviewer_visible: Boolean(detailQuery('[data-testid^="worker-lifecycle-role-"][data-testid$="-reviewer"]')),
     worker_lifecycle_budget_visible: detailText.includes('review budget 0/3'),
-    worker_lifecycle_in_view: (() => {
-      const lifecycle = detailQuery('[data-testid^="worker-lifecycle-detail-"]');
-      if (!lifecycle) return false;
-      const rect = lifecycle.getBoundingClientRect();
-      return rect.bottom > 0 && rect.top < innerHeight;
-    })(),
     todo_column_visible: text.includes('Todo'),
     done_column_visible: text.includes('Done'),
     reviewer_keep_visible: detailText.includes('Reviewer kept the candidate'),

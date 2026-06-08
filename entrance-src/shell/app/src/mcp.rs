@@ -716,6 +716,7 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
             "issue": format!("entrance://issues/{}", card.issue.id),
             "control": format!("entrance://issues/{}/control", card.issue.id),
             "loop_dashboard": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/dashboard")),
+            "evidence_drilldown": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/evidence-drilldown")),
             "runtime_preflight": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/runtime-preflight")),
             "worker_lifecycle": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
             "review_queue": "entrance://review-queue",
@@ -1066,6 +1067,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "One loop dashboard report with issue state, kernel preflight, agents, reviewer verdict, human decision surface, blockers, and next actions.",
         ));
         resources.push(resource_spec(
+            &format!("entrance://loops/{}/evidence-drilldown", contract.id),
+            &format!("Loop #{} evidence drilldown", contract.id),
+            "One loop evidence drilldown report with worker receipts, transcript excerpts, remote connector receipts, artifacts, payload diffs, blockers, and human decision surface.",
+        ));
+        resources.push(resource_spec(
             &format!("entrance://loops/{}/runtime-preflight", contract.id),
             &format!("Loop #{} runtime preflight", contract.id),
             "One loop runtime preflight report with runtime policy, probe, admission gate, blocker, and next actions.",
@@ -1098,6 +1104,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://loops/{loop_id}/dashboard",
                 "name": "Entrance loop dashboard by id",
                 "description": "Read loop dashboard with issue state, kernel preflight, agents, reviewer verdict, human decision surface, blockers, and next actions.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://loops/{loop_id}/evidence-drilldown",
+                "name": "Entrance loop evidence drilldown by id",
+                "description": "Read evidence drilldown with worker receipts, transcript excerpts, remote connector receipts, artifacts, payload diffs, blockers, and human decision surface.",
                 "mimeType": "application/json"
             },
             {
@@ -1149,6 +1161,18 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
                     format!("invalid Entrance loop dashboard resource URI `{value}`")
                 })?;
             serde_json::to_value(services.hive.loop_dashboard(loop_id)?)?
+        }
+        value
+            if value.starts_with("entrance://loops/") && value.ends_with("/evidence-drilldown") =>
+        {
+            let loop_id = value
+                .trim_start_matches("entrance://loops/")
+                .trim_end_matches("/evidence-drilldown")
+                .parse::<i64>()
+                .with_context(|| {
+                    format!("invalid Entrance loop evidence drilldown resource URI `{value}`")
+                })?;
+            serde_json::to_value(services.hive.loop_evidence_drilldown(loop_id)?)?
         }
         value
             if value.starts_with("entrance://loops/") && value.ends_with("/runtime-preflight") =>

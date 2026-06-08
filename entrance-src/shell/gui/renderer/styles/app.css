@@ -626,6 +626,25 @@
   gap: 8px;
 }
 
+.evidence-drilldown-items {
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.evidence-excerpt {
+  display: block;
+  max-height: 96px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.16);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .worker-lifecycle-role {
   display: grid;
   gap: 7px;

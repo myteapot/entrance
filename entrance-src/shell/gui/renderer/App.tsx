@@ -664,6 +664,7 @@ type LoopDashboardReport = {
   } | null;
   resources: {
     loop_dashboard: string;
+    evidence_drilldown: string;
     runtime_preflight: string;
     worker_lifecycle: string;
     issue: string | null;
@@ -759,6 +760,117 @@ type LoopDashboardAgent = {
   timed_out: boolean | null;
   retry_exhausted: boolean | null;
   summary: string | null;
+};
+
+type EvidenceDrilldownReport = {
+  schema_version: string;
+  loop_id: number;
+  issue_id: number | null;
+  issue_status: string | null;
+  status: string;
+  active_phase: string;
+  current_round: number;
+  runtime: string;
+  drilldown_state: string;
+  summary: string;
+  evidence_count: number;
+  items: EvidenceDrilldownItem[];
+  blockers: Array<{
+    evidence_id: number;
+    round: number;
+    kind: string;
+    phase: string | null;
+    reason: string;
+    operator_options: string[];
+  }>;
+  human_decision: {
+    required: boolean;
+    issue_status: string | null;
+    options: string[];
+    actions: IssueAction[];
+  };
+  resources: {
+    evidence_drilldown: string;
+    loop_dashboard: string;
+    worker_lifecycle: string;
+    runtime_preflight: string;
+    issue: string | null;
+    issue_control: string | null;
+    review_queue: string;
+  };
+  next_actions: string[];
+};
+
+type EvidenceDrilldownItem = {
+  id: number;
+  round: number;
+  stage_role: string | null;
+  kind: string;
+  summary: string;
+  created_at: string;
+  path: string | null;
+  schema_version: string | null;
+  admission_result: string | null;
+  blocked_phase: string | null;
+  blocker: string | null;
+  operator_options: string[];
+  worker: {
+    kind: string | null;
+    mode: string | null;
+    ok: boolean | null;
+    receipt_ok: boolean | null;
+    timed_out: boolean | null;
+    status: number | null;
+    duration_ms: number | null;
+    timeout_secs: number | null;
+    attempt_count: number | null;
+    max_attempts: number | null;
+    retry_exhausted: boolean | null;
+    command: string | null;
+    cwd: string | null;
+    action: string | null;
+    evidence_summary: string | null;
+    gate_count: number | null;
+    receipt_errors: string[];
+    transcript_excerpt: string | null;
+  } | null;
+  receipt: {
+    schema_version: string | null;
+    role: string | null;
+    action: string | null;
+    ok: boolean | null;
+    evidence_summary: string | null;
+    gates: Array<{ name: string; value: unknown }>;
+    raw_excerpt: string | null;
+  } | null;
+  remote_receipt: {
+    provider: string | null;
+    review_surface: string | null;
+    external_key: string | null;
+    object_kind: string | null;
+    path: string | null;
+    plan_id: string | null;
+    readback_schema_version: string | null;
+    readback_passed: boolean | null;
+    checks: string[];
+    raw_excerpt: string | null;
+  } | null;
+  artifacts: Array<{
+    kind: string;
+    path: string | null;
+    summary: string | null;
+    manifest: unknown;
+  }>;
+  payload: {
+    top_level_keys: string[];
+    excerpt: string;
+    diff_from_previous: {
+      relative_to_evidence_id: number | null;
+      added_keys: string[];
+      removed_keys: string[];
+      changed_keys: string[];
+    };
+  };
 };
 
 type RuntimePreflightReport = {
@@ -1209,6 +1321,29 @@ export default function App() {
     const dashboard = selectedLoopDashboard();
     const loopId = selectedIssueCard()?.issue.loop_id;
     return dashboard && dashboard.loop_id === loopId ? dashboard : null;
+  });
+  const selectedIssueEvidenceKey = createMemo(() => {
+    const card = selectedIssueCard();
+    if (!card?.issue.loop_id) return null;
+    return [
+      card.issue.loop_id,
+      card.issue.updated_at,
+      card.trace?.current_round ?? 0,
+      card.trace?.evidence_count ?? 0,
+      card.trace?.round_evidence_count ?? 0,
+      card.trace?.last_operator_event?.id ?? 0,
+    ].join(":");
+  });
+  const [selectedEvidenceDrilldown] = createResource(selectedIssueEvidenceKey, async (key) => {
+    if (!key) return null;
+    const loopId = Number.parseInt(key.split(":")[0], 10);
+    if (!Number.isFinite(loopId)) return null;
+    return bridge.invoke<EvidenceDrilldownReport>("hive_loop_evidence_drilldown", { id: loopId });
+  });
+  const selectedIssueEvidenceDrilldown = createMemo(() => {
+    const drilldown = selectedEvidenceDrilldown();
+    const loopId = selectedIssueCard()?.issue.loop_id;
+    return drilldown && drilldown.loop_id === loopId ? drilldown : null;
   });
   const selectedIssuePreflightKey = createMemo(() => {
     const card = selectedIssueCard();
@@ -2640,6 +2775,56 @@ export default function App() {
   const loopDashboardVerdictLabel = (verdict: LoopDashboardRoundVerdict) =>
     `verdict ${verdict.decision}${verdict.reason_code ? ` ${verdict.reason_code}` : ""}`;
 
+  const evidenceDrilldownTone = (state: string) =>
+    state === "complete" ? "ok" : state === "observing" ? "pending" : "warn";
+
+  const evidenceDrilldownStateLabel = (state: string) =>
+    ({
+      complete: "complete",
+      observing: "observing",
+      blocked: "blocked",
+      needs_human: "needs human",
+    })[state] ?? state;
+
+  const evidenceItemTone = (item: EvidenceDrilldownItem) =>
+    item.blocker || item.admission_result === "rejected" || item.worker?.ok === false
+      ? "warn"
+      : "ok";
+
+  const evidenceItemLabel = (item: EvidenceDrilldownItem) =>
+    `#${item.id} r${item.round} ${item.stage_role ?? "kernel"} ${item.kind}`;
+
+  const evidenceDrilldownWorkerLabel = (item: EvidenceDrilldownItem) => {
+    const worker = item.worker;
+    if (!worker) return "worker none";
+    const state = worker.ok === true ? "ok" : worker.ok === false ? "fail" : "pending";
+    return `${worker.kind ?? "worker"} ${state}${worker.receipt_ok === false ? " receipt fail" : ""}`;
+  };
+
+  const evidenceReceiptLabel = (item: EvidenceDrilldownItem) => {
+    const receipt = item.receipt;
+    if (!receipt) return "receipt none";
+    return `receipt ${receipt.role ?? "unknown"} ${receipt.action ?? "unknown"} gates ${receipt.gates.length}`;
+  };
+
+  const evidenceRemoteLabel = (item: EvidenceDrilldownItem) => {
+    const remote = item.remote_receipt;
+    if (!remote) return null;
+    const passed = remote.readback_passed == null ? "readback" : remote.readback_passed ? "readback ok" : "readback fail";
+    return `${remote.provider ?? "remote"} ${passed}`;
+  };
+
+  const evidenceArtifactLabel = (item: EvidenceDrilldownItem) =>
+    item.artifacts.length
+      ? `artifacts ${item.artifacts.length}${item.artifacts[0]?.path ? ` ${item.artifacts[0].path}` : ""}`
+      : "artifacts none";
+
+  const evidencePayloadDiffLabel = (item: EvidenceDrilldownItem) => {
+    const diff = item.payload.diff_from_previous;
+    if (diff.relative_to_evidence_id == null) return "payload baseline";
+    return `payload +${diff.added_keys.length} -${diff.removed_keys.length} ~${diff.changed_keys.length}`;
+  };
+
   const runtimePreflightStateLabel = (state: string) =>
     ({
       admitted: "admitted",
@@ -3613,6 +3798,161 @@ export default function App() {
                                           type="button"
                                           aria-label={`Copy loop dashboard action ${action}`}
                                           data-testid={`loop-dashboard-action-copy-${card.issue.id}-${index}`}
+                                          onClick={() => void copyDoctorAction(action)}
+                                        >
+                                          Copy
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )}
+                          </Show>
+                        ) : null}
+                        {card.issue.loop_id ? (
+                          <Show
+                            when={selectedIssueEvidenceDrilldown()}
+                            keyed
+                            fallback={
+                              <div
+                                class="worker-lifecycle evidence-drilldown worker-lifecycle--pending"
+                                data-testid={`evidence-drilldown-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Evidence Drilldown</strong>
+                                  <span>
+                                    {selectedEvidenceDrilldown.loading ? "loading" : "pending"}
+                                  </span>
+                                </div>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">loop #{card.issue.loop_id}</span>
+                                  <span class="trace-pill">evidence_drilldown.v1</span>
+                                </div>
+                              </div>
+                            }
+                          >
+                            {(drilldown) => (
+                              <div
+                                class={`worker-lifecycle evidence-drilldown worker-lifecycle--${evidenceDrilldownTone(
+                                  drilldown.drilldown_state,
+                                )}`}
+                                data-testid={`evidence-drilldown-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Evidence Drilldown</strong>
+                                  <span>{evidenceDrilldownStateLabel(drilldown.drilldown_state)}</span>
+                                </div>
+                                <p>{drilldown.summary}</p>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">{schemaLabel(drilldown.schema_version)}</span>
+                                  <span class="trace-pill">loop #{drilldown.loop_id}</span>
+                                  <span class="trace-pill">round {drilldown.current_round}</span>
+                                  <span class="trace-pill">{drilldown.runtime}</span>
+                                  <span class="trace-pill">evidence {drilldown.evidence_count}</span>
+                                  <span
+                                    class={
+                                      drilldown.blockers.length
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    blockers {drilldown.blockers.length}
+                                  </span>
+                                  <span
+                                    class={
+                                      drilldown.human_decision.required
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    human {drilldown.human_decision.options.length}
+                                  </span>
+                                </div>
+                                {drilldown.blockers.length ? (
+                                  <div class="doctor-lines">
+                                    {drilldown.blockers.slice(0, 3).map((blocker) => (
+                                      <span>
+                                        blocker #{blocker.evidence_id} {blocker.reason}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                <div class="worker-lifecycle-roles evidence-drilldown-items">
+                                  {drilldown.items.slice(0, 6).map((item) => (
+                                    <div
+                                      class={`worker-lifecycle-role worker-lifecycle-role--${evidenceItemTone(
+                                        item,
+                                      )}`}
+                                      data-testid={`evidence-drilldown-item-${card.issue.id}-${item.id}`}
+                                    >
+                                      <div class="stage-row-head">
+                                        <strong>{evidenceItemLabel(item)}</strong>
+                                        <span>{item.admission_result ?? "recorded"}</span>
+                                      </div>
+                                      <p>{item.summary}</p>
+                                      <div class="trace-strip">
+                                        <span
+                                          class={
+                                            item.worker?.ok === false
+                                              ? "trace-pill trace-pill--warn"
+                                              : "trace-pill"
+                                          }
+                                        >
+                                          {evidenceDrilldownWorkerLabel(item)}
+                                        </span>
+                                        <span
+                                          class={
+                                            item.receipt?.ok === false
+                                              ? "trace-pill trace-pill--warn"
+                                              : "trace-pill"
+                                          }
+                                        >
+                                          {evidenceReceiptLabel(item)}
+                                        </span>
+                                        <Show when={evidenceRemoteLabel(item)}>
+                                          {(label) => (
+                                            <span
+                                              class={
+                                                item.remote_receipt?.readback_passed === false
+                                                  ? "trace-pill trace-pill--warn"
+                                                  : "trace-pill"
+                                              }
+                                            >
+                                              {label()}
+                                            </span>
+                                          )}
+                                        </Show>
+                                        <span class="trace-pill">{evidenceArtifactLabel(item)}</span>
+                                        <span class="trace-pill">{evidencePayloadDiffLabel(item)}</span>
+                                        {item.blocker ? (
+                                          <span class="trace-pill trace-pill--warn">{item.blocker}</span>
+                                        ) : null}
+                                      </div>
+                                      <div class="trace-strip">
+                                        {item.payload.top_level_keys.slice(0, 8).map((key) => (
+                                          <span class="trace-pill">{key}</span>
+                                        ))}
+                                      </div>
+                                      {item.worker?.transcript_excerpt ? (
+                                        <code class="evidence-excerpt">
+                                          {item.worker.transcript_excerpt}
+                                        </code>
+                                      ) : item.payload.excerpt ? (
+                                        <code class="evidence-excerpt">{item.payload.excerpt}</code>
+                                      ) : null}
+                                    </div>
+                                  ))}
+                                </div>
+                                {drilldown.next_actions.length ? (
+                                  <div class="doctor-actions">
+                                    {drilldown.next_actions.slice(0, 2).map((action, index) => (
+                                      <div class="doctor-action-row">
+                                        <code>{action}</code>
+                                        <button
+                                          type="button"
+                                          aria-label={`Copy evidence drilldown action ${action}`}
+                                          data-testid={`evidence-drilldown-action-copy-${card.issue.id}-${index}`}
                                           onClick={() => void copyDoctorAction(action)}
                                         >
                                           Copy
