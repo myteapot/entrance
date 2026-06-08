@@ -212,6 +212,12 @@ Entrance has reached a local MVP unit:
   into connector execution comments/evidence. MCP resources also expose
   `entrance://connectors/publish-plan{/{provider}}` and
   `entrance://connectors/roundtrip-plan{/{provider}}`.
+- Connector queue state is now also available as one MCP control packet.
+  `entrance_connector_control`, `entrance://connectors/control{/{provider}}`,
+  and the `entrance_connector_decision` prompt aggregate queue counts,
+  publish/roundtrip plans, blockers, A/B/C human options, exact tool call
+  templates, and confirmation policy into
+  `entrance.mcp.connector_control.v1`.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -223,8 +229,8 @@ multi-agent runtime/compiler product.
 - Productize the MCP stdio surface: client config docs, stronger protocol
   tests, real auth/identity policy on top of the local tool-permission
   registry, verified actor identity mapping beyond self-reported author and
-  `initialize.clientInfo`, connector queue/plan/execute readability in real
-  clients, and compatibility checks against real MCP clients.
+  `initialize.clientInfo`, connector control/queue/plan/execute readability in
+  real clients, and compatibility checks against real MCP clients.
 - Add verified operator identity for local Panel/daemon decisions beyond the
   current `local-hive-panel` audit context.
 - Add live token-backed GitHub and Linear validation runs, including safe
