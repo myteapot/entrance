@@ -30,7 +30,9 @@ Entrance has reached a local MVP unit:
   copied into the receipt for audit context. `entrance_issue_control` and
   `entrance://issues/{issue_id}/control` now expose a single issue control
   packet with status, action call templates, blockers, recent evidence, operator
-  events, and confirmation receipts.
+  events, confirmation receipts, and actor identity context. The actor identity
+  policy resource documents self-reported MCP actors and local Panel audit
+  actors with `verified=false`.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -48,7 +50,7 @@ multi-agent runtime/compiler product.
 
 - Productize the MCP stdio surface: client config docs, stronger protocol
   tests, real auth/identity policy on top of the local tool-permission
-  registry, verified actor identity mapping beyond self-reported
+  registry, verified actor identity mapping beyond self-reported author and
   `initialize.clientInfo`, and compatibility checks against real MCP clients.
 - Add verified operator identity for local Panel/daemon decisions beyond the
   current `local-hive-panel` audit context.

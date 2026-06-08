@@ -721,6 +721,8 @@ pub struct OperatorConfirmationReceipt {
     pub marker: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<OperatorConfirmationClient>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<OperatorConfirmationActor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -728,6 +730,15 @@ pub struct OperatorConfirmationClient {
     pub name: String,
     pub version: Option<String>,
     pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorConfirmationActor {
+    pub id: String,
+    pub label: String,
+    pub source: String,
+    pub trust: String,
+    pub verified: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4489,6 +4500,28 @@ fn operator_confirmation_receipt_audit_errors(
             }
         }
     }
+    if let Some(actor) = receipt.get("actor") {
+        if !actor.is_object() {
+            errors.push("comment.confirmation_receipt.actor".to_string());
+        } else {
+            for field in ["id", "label", "source", "trust"] {
+                if actor
+                    .get(field)
+                    .and_then(|value| value.as_str())
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    errors.push(format!("comment.confirmation_receipt.actor.{field}"));
+                }
+            }
+            if actor
+                .get("verified")
+                .and_then(|value| value.as_bool())
+                .is_none()
+            {
+                errors.push("comment.confirmation_receipt.actor.verified".to_string());
+            }
+        }
+    }
     errors
 }
 
@@ -5060,6 +5093,20 @@ fn ensure_operator_confirmation_receipt(
             .is_some_and(|version| version.trim().is_empty())
         {
             anyhow::bail!("operator confirmation receipt client version cannot be empty");
+        }
+    }
+    if let Some(actor) = receipt.actor.as_ref() {
+        if actor.id.trim().is_empty() {
+            anyhow::bail!("operator confirmation receipt actor id is required");
+        }
+        if actor.label.trim().is_empty() {
+            anyhow::bail!("operator confirmation receipt actor label is required");
+        }
+        if actor.source.trim().is_empty() {
+            anyhow::bail!("operator confirmation receipt actor source is required");
+        }
+        if actor.trust.trim().is_empty() {
+            anyhow::bail!("operator confirmation receipt actor trust is required");
         }
     }
     Ok(())
@@ -10744,6 +10791,13 @@ mod tests {
             author: "human".to_string(),
             marker: "MCP confirmation: human_confirmed=true; action=request-review; author=human; policy=entrance.mcp.permission_policy.v1".to_string(),
             client: None,
+            actor: Some(OperatorConfirmationActor {
+                id: "mcp:human".to_string(),
+                label: "human".to_string(),
+                source: "author_arg".to_string(),
+                trust: "self_reported".to_string(),
+                verified: false,
+            }),
         };
         let review_card = decide_issue(
             &store,
@@ -11751,6 +11805,7 @@ mod tests {
             author: "human".to_string(),
             marker: "MCP confirmation: human_confirmed=true; action=cancel; author=human; policy=entrance.mcp.permission_policy.v1".to_string(),
             client: None,
+            actor: None,
         };
         let cancel_card = decide_issue(
             &store,

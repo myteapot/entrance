@@ -11,9 +11,10 @@ use entrance_core::LauncherQuery;
 use entrance_drawer::VaultSecret;
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest, IssueCard,
-    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, OperatorConfirmationClient,
-    OperatorConfirmationReceipt, ReviewDecision, OPERATOR_ACTION_CONFIRMATION_ARG,
-    OPERATOR_ACTION_POLICY_SCHEMA_VERSION, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, OperatorConfirmationActor,
+    OperatorConfirmationClient, OperatorConfirmationReceipt, ReviewDecision,
+    OPERATOR_ACTION_CONFIRMATION_ARG, OPERATOR_ACTION_POLICY_SCHEMA_VERSION,
+    OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -958,6 +959,13 @@ fn panel_human_confirmation_receipt(action: &str, author: &str) -> OperatorConfi
             version: None,
             source: PANEL_CONFIRMATION_CLIENT_SOURCE.to_string(),
         }),
+        actor: Some(OperatorConfirmationActor {
+            id: format!("panel:{author}"),
+            label: author.to_string(),
+            source: "daemon.author".to_string(),
+            trust: "local_panel_audit".to_string(),
+            verified: false,
+        }),
     }
 }
 
@@ -995,6 +1003,12 @@ mod tests {
         assert_eq!(client.name, PANEL_CONFIRMATION_CLIENT_NAME);
         assert_eq!(client.source, PANEL_CONFIRMATION_CLIENT_SOURCE);
         assert!(client.version.is_none());
+        let actor = receipt.actor.expect("panel receipt should record actor");
+        assert_eq!(actor.id, "panel:human");
+        assert_eq!(actor.label, "human");
+        assert_eq!(actor.source, "daemon.author");
+        assert_eq!(actor.trust, "local_panel_audit");
+        assert!(!actor.verified);
     }
 
     #[test]

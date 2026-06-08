@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use entrance_hive::{
     HiveLoopCreateRequest, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueRunRequest,
-    OperatorConfirmationClient, OperatorConfirmationReceipt,
+    OperatorConfirmationActor, OperatorConfirmationClient, OperatorConfirmationReceipt,
     OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ const MCP_TOOL_PERMISSION_SCHEMA_VERSION: &str = "entrance.mcp.tool_permission.v
 const MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION: &str =
     "entrance.mcp.tool_permission_registry.v1";
 const MCP_ISSUE_CONTROL_SCHEMA_VERSION: &str = "entrance.mcp.issue_control.v1";
+const MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION: &str = "entrance.mcp.actor_identity_policy.v1";
 const MCP_TOOL_NAMES: &[&str] = &[
     "entrance_issue_list",
     "entrance_issue_show",
@@ -704,11 +705,13 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
             "last_operator_event": trace.and_then(|trace| trace.last_operator_event.clone())
         },
         "mcp_policy": mcp_issue_policy(&card.actions),
+        "actor_identity": mcp_actor_identity_policy(),
         "resources": {
             "issue": format!("entrance://issues/{}", card.issue.id),
             "control": format!("entrance://issues/{}/control", card.issue.id),
             "review_queue": "entrance://review-queue",
-            "permissions": "entrance://policy/mcp-permissions"
+            "permissions": "entrance://policy/mcp-permissions",
+            "actor_identity": "entrance://policy/actor-identity"
         }
     })
 }
@@ -938,6 +941,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "MCP tool permission and human confirmation policy.",
         ),
         resource_spec(
+            "entrance://policy/actor-identity",
+            "Entrance actor identity policy",
+            "Self-reported MCP and local Panel actor identity bindings.",
+        ),
+        resource_spec(
             "entrance://schema/status",
             "Entrance schema status",
             "SQLite schema contract and health report.",
@@ -999,6 +1007,7 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
         "entrance://review-queue" => review_queue(services, None)?,
         "entrance://policy/registry" => serde_json::to_value(services.hive.policy_registry())?,
         "entrance://policy/mcp-permissions" => mcp_permission_policy(),
+        "entrance://policy/actor-identity" => mcp_actor_identity_policy(),
         "entrance://schema/status" => serde_json::to_value(services.kernel.store.schema_status()?)?,
         value if value.starts_with("entrance://issues/") && value.ends_with("/control") => {
             let issue_id = value
@@ -1136,6 +1145,11 @@ fn mcp_issue_policy(actions: &[entrance_hive::IssueAction]) -> serde_json::Value
                 "source": "initialize.clientInfo",
                 "fields": ["name", "version"],
                 "required": false
+            },
+            "actor_identity": {
+                "resource": "entrance://policy/actor-identity",
+                "field": "confirmation_receipt.actor",
+                "verified": false
             }
         },
         "policy_resource": "entrance://policy/mcp-permissions"
@@ -1363,9 +1377,11 @@ fn mcp_permission_policy() -> serde_json::Value {
     let write_tools = mcp_tools_by_access(&tool_permissions, "write");
     let human_decision_tools = mcp_tools_by_access(&tool_permissions, "human_decision");
     let requires_human_confirmation = mcp_human_confirmation_requirements(&tool_permissions);
+    let actor_identity = mcp_actor_identity_policy();
     serde_json::json!({
         "schema_version": MCP_PERMISSION_POLICY_SCHEMA_VERSION,
         "default_actor": "mcp-agent",
+        "actor_identity": actor_identity,
         "tool_permission_registry": {
             "schema_version": MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION,
             "tools": tool_permissions
@@ -1387,6 +1403,11 @@ fn mcp_permission_policy() -> serde_json::Value {
                 "fields": ["name", "version"],
                 "required": false
             },
+            "actor_identity": {
+                "resource": "entrance://policy/actor-identity",
+                "field": "confirmation_receipt.actor",
+                "verified": false
+            },
             "source": "issue/status/comment",
             "marker_prefix": "MCP confirmation:",
             "note_template": format!("MCP confirmation: human_confirmed=true; action=<action>; author=<author>; policy={MCP_PERMISSION_POLICY_SCHEMA_VERSION}")
@@ -1395,6 +1416,46 @@ fn mcp_permission_policy() -> serde_json::Value {
             "statuses": ["Blocked", "Needs Review"],
             "resource": "entrance://review-queue",
             "prompt": "entrance_blocker_decision"
+        }
+    })
+}
+
+fn mcp_actor_identity_policy() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION,
+        "resource": "entrance://policy/actor-identity",
+        "default_actor": {
+            "id": "mcp:mcp-agent",
+            "label": "mcp-agent",
+            "source": "author_arg_default",
+            "trust": "self_reported",
+            "verified": false
+        },
+        "bindings": [
+            {
+                "surface": "mcp",
+                "actor_source": "author argument",
+                "client_source": "initialize.clientInfo",
+                "trust": "self_reported",
+                "verified": false,
+                "receipt_source": "mcp"
+            },
+            {
+                "surface": "panel",
+                "actor_source": "daemon author argument",
+                "client_source": "local-hive-panel via daemon.invoke",
+                "trust": "local_panel_audit",
+                "verified": false,
+                "receipt_source": "panel"
+            }
+        ],
+        "verified_identity": {
+            "available": false,
+            "missing": [
+                "authenticated operator session",
+                "actor-to-client binding",
+                "connector account mapping"
+            ]
         }
     })
 }
@@ -1458,6 +1519,13 @@ fn mcp_human_confirmation_receipt(
                 version: client.version.clone(),
                 source: "initialize.clientInfo".to_string(),
             }),
+        actor: Some(OperatorConfirmationActor {
+            id: format!("mcp:{author}"),
+            label: author.to_string(),
+            source: "author_arg".to_string(),
+            trust: "self_reported".to_string(),
+            verified: false,
+        }),
     }
 }
 
@@ -1558,9 +1626,9 @@ mod tests {
         append_human_confirmation_note, ensure_human_confirmed, initialize_result,
         issue_control_packet, mcp_client_identity, mcp_human_confirmation_receipt,
         mcp_permission_policy, prompt_loop_contract, prompt_specs, tool_specs, McpSession,
-        MCP_FALLBACK_PROTOCOL_VERSION, MCP_ISSUE_CONTROL_SCHEMA_VERSION,
-        MCP_PERMISSION_POLICY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION,
-        MCP_TOOL_PERMISSION_SCHEMA_VERSION,
+        MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION, MCP_FALLBACK_PROTOCOL_VERSION,
+        MCP_ISSUE_CONTROL_SCHEMA_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
+        MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_SCHEMA_VERSION,
     };
     use entrance_core::{HiveComment, HiveIssue};
     use entrance_hive::{IssueAction, IssueCard};
@@ -1727,6 +1795,18 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("panel")
         );
+        assert_eq!(
+            packet
+                .pointer("/actor_identity/schema_version")
+                .and_then(|value| value.as_str()),
+            Some(MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            packet
+                .pointer("/resources/actor_identity")
+                .and_then(|value| value.as_str()),
+            Some("entrance://policy/actor-identity")
+        );
     }
 
     #[test]
@@ -1833,6 +1913,12 @@ mod tests {
         assert_eq!(client.name, "codex-test-client");
         assert_eq!(client.version.as_deref(), Some("0.1.0"));
         assert_eq!(client.source, "initialize.clientInfo");
+        let actor = receipt.actor.as_ref().expect("receipt should record actor");
+        assert_eq!(actor.id, "mcp:human-a");
+        assert_eq!(actor.label, "human-a");
+        assert_eq!(actor.source, "author_arg");
+        assert_eq!(actor.trust, "self_reported");
+        assert!(!actor.verified);
     }
 
     #[test]
@@ -1906,6 +1992,24 @@ mod tests {
                 .pointer("/confirmation_receipt/client_identity/source")
                 .and_then(|value| value.as_str()),
             Some("initialize.clientInfo")
+        );
+        assert_eq!(
+            policy
+                .pointer("/confirmation_receipt/actor_identity/resource")
+                .and_then(|value| value.as_str()),
+            Some("entrance://policy/actor-identity")
+        );
+        assert_eq!(
+            policy
+                .pointer("/actor_identity/schema_version")
+                .and_then(|value| value.as_str()),
+            Some(MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            policy
+                .pointer("/actor_identity/verified_identity/available")
+                .and_then(|value| value.as_bool()),
+            Some(false)
         );
         assert!(policy
             .pointer("/confirmation_receipt/note_template")

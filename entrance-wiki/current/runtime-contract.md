@@ -328,7 +328,10 @@ actions, blockers, latest comment, and recent evidence summaries.
 single issue as `entrance.mcp.issue_control.v1`, aggregating state, action call
 templates, MCP permissions, blockers, recent evidence, operator events, and
 operator confirmation receipts so agents do not have to infer the control
-surface from raw issue JSON.
+surface from raw issue JSON. `entrance://policy/actor-identity` documents the
+current actor bindings: MCP actors come from the self-reported `author`
+argument, Panel actors come from the daemon author argument, and neither is a
+verified login identity yet.
 `entrance_issue_retry` and `entrance_issue_decide` require
 `human_confirmed=true`; without it the MCP tool result is an error. The
 permission boundary is documented at `entrance://policy/mcp-permissions` and is
@@ -345,9 +348,11 @@ persists the readable note as both the issue comment body and the linked
 `loop_evidence.payload.operator.confirmation_receipt`. If `initialize` provided
 `clientInfo.name` and optional `clientInfo.version`, the MCP stdio session also
 copies that self-reported client identity into the receipt at
-`confirmation_receipt.client`. This is audit context, not a strong
-authentication guarantee. The issue-surface audit checks the receipt schema and
-binds the comment/evidence receipt copies together.
+`confirmation_receipt.client`. The receipt also records
+`confirmation_receipt.actor` with an id, label, source, trust level, and
+`verified=false`. This is audit context, not a strong authentication guarantee.
+The issue-surface audit checks the receipt schema and binds the comment/evidence
+receipt copies together.
 The Electron Panel mirrors that same decision surface as a Review Queue band
 above the status board, using the existing issue actions for retry, review,
 cancel, comment, detail focus, and evidence focus. The issue action contract
@@ -355,7 +360,8 @@ itself marks retry/review/cancel with
 `entrance.hive.operator_action_policy.v1`, `operator_confirmed`, and
 `entrance.hive.operator_confirmation_receipt.v1`; Panel daemon invocations use
 that contract to record `source=panel` confirmation receipts with
-`client.name=local-hive-panel` and `client.source=daemon.invoke`.
+`client.name=local-hive-panel`, `client.source=daemon.invoke`, and
+`actor.trust=local_panel_audit`.
 
 ## Config And Data
 
