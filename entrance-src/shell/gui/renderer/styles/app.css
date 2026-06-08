@@ -753,6 +753,14 @@
   background: rgba(125, 177, 255, 0.08);
 }
 
+.connector-decision {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(255, 193, 7, 0.34);
+  color: #ffd86b;
+  background: rgba(255, 193, 7, 0.11);
+}
+
 .connector-check {
   max-width: 100%;
   overflow-wrap: anywhere;

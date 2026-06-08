@@ -21,6 +21,7 @@ Last updated: 2026-06-09
 - 本轮继续把远端 issue 状态映射推进到 policy registry：`hive policy registry --compact` 现在暴露 remote-fixture/GitHub/Linear status mapping，GitHub write/readback 使用 issue state/state_reason，Linear write/readback 先用 state name 或 description status marker 做受限校验，remote write plan 和 readback detail 都会携带同一份 `status_mapping`。
 - 本轮继续把 Linear status mapping 推进到配置驱动写入：`entrance.toml` 支持 `connectors.linear.status_mappings.<HiveStatus>.remote_state_id`，provider registry/remote contract/connector queue 会暴露 configured mapping，Linear GraphQL update 会写入 configured `stateId`，readback 会优先校验 `state.id` 再 fallback 到 state name/status marker。
 - 本轮继续把 issue 级 connector control 暴露到 agent 和 Panel：新增 `entrance.hive.issue_connector_control.v1` 摘要，MCP `entrance_issue_control` / `entrance://issues/{issue_id}/control` 现在携带 provider、publish/admission gate、remote target、remote write plan、当前 `status_mapping` 和 configured mappings；Panel connector strip 也显示当前 issue 的 status mapping chip。
+- 本轮继续把 external connector blocker 变成 operator decision surface：provider/target/write-plan/admission 阻塞会生成 `entrance.hive.connector_decision_surface.v1`，MCP issue control 和 connector queue 会暴露 primary action、blockers、issue actions、policy/review resource；Panel connector strip 显示 decision chip，selected issue 详情显示 Connector Decision block 和可点击 issue action。
 
 ## 还没做完
 

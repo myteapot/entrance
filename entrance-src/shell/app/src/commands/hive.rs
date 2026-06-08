@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -7143,6 +7144,7 @@ fn compact_issue_connector_control_from_issue(
         "status_mapping": queue_issue.pointer("/remote_write_plan/status_mapping").cloned().unwrap_or(serde_json::Value::Null),
         "status_mapping_policy": status_mapping_policy,
         "configured_status_mappings": configured_status_mappings,
+        "decision_surface": queue_issue.pointer("/decision_surface").cloned().unwrap_or_else(|| serde_json::json!({})),
         "remote_diagnostics": queue_issue.pointer("/remote_diagnostics").cloned().unwrap_or(serde_json::Value::Null),
         "commands": queue_issue.pointer("/commands").cloned().unwrap_or_else(|| serde_json::json!({})),
         "dry_run_action": queue_issue.pointer("/dry_run_action").cloned().unwrap_or_else(|| serde_json::json!({}))
@@ -10636,6 +10638,287 @@ fn compact_connector_queue_provider(
     })
 }
 
+fn compact_connector_decision_surface(
+    issue: &serde_json::Value,
+    provider: &str,
+    can_publish: bool,
+    publish_blockers: &[String],
+    admission_blockers: &[&str],
+    admission_checks: &[serde_json::Value],
+    remote_target: &serde_json::Value,
+    remote_write_plan: &serde_json::Value,
+) -> serde_json::Value {
+    let mut blockers = Vec::new();
+    let mut seen = BTreeSet::new();
+    for blocker in publish_blockers {
+        push_connector_decision_blocker(&mut blockers, &mut seen, "publish", blocker, None);
+    }
+    for blocker in admission_blockers {
+        push_connector_decision_blocker(&mut blockers, &mut seen, "admission", blocker, None);
+    }
+    if remote_target
+        .pointer("/valid")
+        .and_then(|value| value.as_bool())
+        == Some(false)
+    {
+        for blocker in connector_string_array(remote_target, "/blockers") {
+            push_connector_decision_blocker(
+                &mut blockers,
+                &mut seen,
+                "remote_target",
+                &blocker,
+                remote_target
+                    .pointer("/target_kind")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+            );
+        }
+    }
+    for blocker in connector_string_array(remote_write_plan, "/blocked_by") {
+        push_connector_decision_blocker(
+            &mut blockers,
+            &mut seen,
+            "remote_write_plan",
+            &blocker,
+            None,
+        );
+    }
+    if let Some(operations) = remote_write_plan
+        .pointer("/operations")
+        .and_then(|value| value.as_array())
+    {
+        for operation in operations {
+            let operation_kind = operation
+                .pointer("/kind")
+                .and_then(|value| value.as_str())
+                .or_else(|| {
+                    operation
+                        .pointer("/method")
+                        .and_then(|value| value.as_str())
+                })
+                .map(ToOwned::to_owned);
+            for blocker in connector_string_array(operation, "/blocked_by") {
+                push_connector_decision_blocker(
+                    &mut blockers,
+                    &mut seen,
+                    "remote_write_operation",
+                    &blocker,
+                    operation_kind.clone(),
+                );
+            }
+        }
+    }
+    if !can_publish {
+        for check in admission_checks.iter().filter(|check| {
+            check.pointer("/passed").and_then(|value| value.as_bool()) != Some(true)
+        }) {
+            let name = check
+                .pointer("/name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("admission_check_failed");
+            if name == "mirror_current" {
+                continue;
+            }
+            push_connector_decision_blocker(
+                &mut blockers,
+                &mut seen,
+                "admission_check",
+                name,
+                check
+                    .pointer("/summary")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+            );
+        }
+    }
+    let required = !blockers.is_empty();
+    let reason = connector_decision_reason(provider, &blockers, required);
+    let actions = connector_decision_actions(issue, required, &reason);
+    let primary_action = actions
+        .iter()
+        .find(|action| {
+            action
+                .pointer("/recommended")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        })
+        .and_then(|action| {
+            action
+                .pointer("/issue_action/action")
+                .and_then(|value| value.as_str())
+        })
+        .map(ToOwned::to_owned);
+    let issue_id = issue.pointer("/id").and_then(|value| value.as_i64());
+    serde_json::json!({
+        "schema_version": "entrance.hive.connector_decision_surface.v1",
+        "required": required,
+        "scope": "connector",
+        "provider": provider,
+        "issue_status": issue.pointer("/status").and_then(|value| value.as_str()),
+        "primary_action": primary_action,
+        "reason": reason,
+        "summary": connector_decision_summary(provider, required, blockers.len()),
+        "blocker_count": blockers.len(),
+        "blockers": blockers,
+        "actions": actions,
+        "policy_resource": "entrance://policy/mcp-permissions",
+        "review_queue_resource": "entrance://review-queue",
+        "issue_control_resource": issue_id.map(|id| format!("entrance://issues/{id}/control")),
+        "confirmation_arg": OPERATOR_ACTION_CONFIRMATION_ARG
+    })
+}
+
+fn connector_string_array(value: &serde_json::Value, pointer: &str) -> Vec<String> {
+    value
+        .pointer(pointer)
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
+        .collect()
+}
+
+fn push_connector_decision_blocker(
+    blockers: &mut Vec<serde_json::Value>,
+    seen: &mut BTreeSet<String>,
+    source: &str,
+    name: &str,
+    detail: Option<String>,
+) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    let key = format!("{source}:{name}");
+    if !seen.insert(key) {
+        return;
+    }
+    blockers.push(serde_json::json!({
+        "source": source,
+        "name": name,
+        "detail": detail
+    }));
+}
+
+fn connector_decision_reason(
+    provider: &str,
+    blockers: &[serde_json::Value],
+    required: bool,
+) -> String {
+    if !required {
+        return format!("Connector `{provider}` can publish without an operator decision.");
+    }
+    let names = blockers
+        .iter()
+        .filter_map(|blocker| blocker.pointer("/name").and_then(|value| value.as_str()))
+        .take(4)
+        .collect::<Vec<_>>();
+    format!(
+        "Connector `{provider}` is blocked by {}.",
+        if names.is_empty() {
+            "an unresolved external-surface gate".to_string()
+        } else {
+            names.join(", ")
+        }
+    )
+}
+
+fn connector_decision_summary(provider: &str, required: bool, blocker_count: usize) -> String {
+    if required {
+        format!("Connector `{provider}` needs an operator decision for {blocker_count} blocker(s).")
+    } else {
+        format!("Connector `{provider}` has no operator decision blockers.")
+    }
+}
+
+fn connector_decision_actions(
+    issue: &serde_json::Value,
+    required: bool,
+    reason: &str,
+) -> Vec<serde_json::Value> {
+    if !required {
+        return Vec::new();
+    }
+    let mut actions = issue
+        .pointer("/actions")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|action| {
+            action
+                .pointer("/action")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| {
+                    matches!(name, "request-review" | "comment" | "retry" | "cancel")
+                })
+        })
+        .collect::<Vec<_>>();
+    actions.sort_by_key(connector_decision_action_priority);
+    let primary = actions
+        .iter()
+        .find(|action| {
+            action.pointer("/action").and_then(|value| value.as_str()) == Some("request-review")
+        })
+        .or_else(|| {
+            actions.iter().find(|action| {
+                action.pointer("/action").and_then(|value| value.as_str()) == Some("comment")
+            })
+        })
+        .or_else(|| actions.first())
+        .and_then(|action| action.pointer("/action").and_then(|value| value.as_str()))
+        .map(ToOwned::to_owned);
+    actions
+        .into_iter()
+        .map(|action| {
+            let name = action
+                .pointer("/action")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            serde_json::json!({
+                "issue_action": action,
+                "recommended": primary.as_deref() == Some(name),
+                "operator_option": connector_operator_option_for_action(name),
+                "reason": connector_decision_action_reason(name, reason)
+            })
+        })
+        .collect()
+}
+
+fn connector_decision_action_priority(action: &serde_json::Value) -> usize {
+    match action.pointer("/action").and_then(|value| value.as_str()) {
+        Some("request-review") => 0,
+        Some("comment") => 1,
+        Some("retry") => 2,
+        Some("cancel") => 3,
+        _ => 4,
+    }
+}
+
+fn connector_operator_option_for_action(action: &str) -> Option<&'static str> {
+    match action {
+        "request-review" => Some("request-human-review"),
+        "comment" => Some("add-connector-context"),
+        "retry" => Some("retry-after-connector-fix"),
+        "cancel" => Some("cancel-connector-bound-work"),
+        _ => None,
+    }
+}
+
+fn connector_decision_action_reason(action: &str, reason: &str) -> String {
+    match action {
+        "request-review" => format!(
+            "Ask a human reviewer to decide connector configuration, target, or remote policy: {reason}"
+        ),
+        "comment" => format!("Add connector target/configuration context before retrying: {reason}"),
+        "retry" => format!("Retry only after the connector blocker has been resolved: {reason}"),
+        "cancel" => format!("Cancel if this external issue surface is no longer valuable: {reason}"),
+        other => format!("Apply `{other}` to the connector blocker: {reason}"),
+    }
+}
+
 fn compact_connector_queue_issue(
     registry: &ConnectorRegistryReport,
     issue: &serde_json::Value,
@@ -10730,6 +11013,16 @@ fn compact_connector_queue_issue(
             .unwrap_or(false),
         "command": publish_command
     });
+    let decision_surface = compact_connector_decision_surface(
+        issue,
+        &provider_name,
+        can_publish,
+        &publish_blockers,
+        &admission_blockers,
+        &admission_checks,
+        &remote_target,
+        &remote_write_plan,
+    );
     serde_json::json!({
         "id": issue_id,
         "loop_id": issue.pointer("/loop_id").and_then(|value| value.as_i64()),
@@ -10766,6 +11059,7 @@ fn compact_connector_queue_issue(
         "checks": issue.pointer("/connector/checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "remote_readback_checks": issue.pointer("/connector/remote_readback_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
         "remote_diagnostics": issue.pointer("/connector/remote_diagnostics").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "decision_surface": decision_surface,
         "commands": commands,
         "dry_run_action": dry_run_action
     })
@@ -13074,6 +13368,105 @@ mod tests {
                 .pointer("/remote_target/issue_key")
                 .and_then(|value| value.as_str()),
             Some("ENT-43")
+        );
+        assert_eq!(
+            control
+                .pointer("/decision_surface/required")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn issue_connector_control_exposes_decision_surface_for_connector_blockers() {
+        let registry = test_connector_registry();
+        let issue = serde_json::json!({
+            "id": 44,
+            "loop_id": 8,
+            "title": "Loop #8: connector blocked",
+            "status": "Blocked",
+            "actions": [
+                {
+                    "schema_version": "entrance.hive.issue_action.v1",
+                    "action": "comment",
+                    "label": "Comment",
+                    "command": "entrance hive issue comment 44 --body <text> --compact",
+                    "source": "status_fallback",
+                    "input": "body",
+                    "destructive": false,
+                    "runtime": null,
+                    "confirmation_required": false,
+                    "confirmation_arg": null,
+                    "receipt_schema": null,
+                    "policy_schema_version": null
+                },
+                {
+                    "schema_version": "entrance.hive.issue_action.v1",
+                    "action": "request-review",
+                    "label": "Request review",
+                    "command": "entrance hive issue decide 44 request-review --human-confirmed --body <note> --compact",
+                    "source": "human_options",
+                    "input": "note",
+                    "destructive": false,
+                    "runtime": null,
+                    "confirmation_required": true,
+                    "confirmation_arg": "operator_confirmed",
+                    "receipt_schema": "entrance.hive.operator_confirmation_receipt.v1",
+                    "policy_schema_version": "entrance.hive.operator_action_policy.v1"
+                }
+            ],
+            "connector": {
+                "provider": "linear",
+                "review_surface": "linear:ENT-44",
+                "external_key": "ENT-44",
+                "current": false,
+                "publish_required": true,
+                "reason": "mirror_stale",
+                "failed_checks": ["remote_status"],
+                "publish_command": "entrance hive issue mirror-publish 44 --compact",
+                "readback_command": "entrance hive issue mirror-readback 44 --record --compact",
+                "admit_command": "entrance hive issue mirror-admit 44 --record --compact",
+                "roundtrip_command": "entrance hive issue mirror-roundtrip 44 --compact"
+            }
+        });
+
+        let control = compact_issue_connector_control_from_issue(&registry, &issue);
+
+        assert_eq!(
+            control
+                .pointer("/decision_surface/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.connector_decision_surface.v1")
+        );
+        assert_eq!(
+            control
+                .pointer("/decision_surface/required")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            control
+                .pointer("/decision_surface/primary_action")
+                .and_then(|value| value.as_str()),
+            Some("request-review")
+        );
+        assert_eq!(
+            control
+                .pointer("/decision_surface/blockers/0/name")
+                .and_then(|value| value.as_str()),
+            Some("provider_not_active")
+        );
+        assert_eq!(
+            control
+                .pointer("/decision_surface/actions/0/issue_action/action")
+                .and_then(|value| value.as_str()),
+            Some("request-review")
+        );
+        assert_eq!(
+            control
+                .pointer("/decision_surface/actions/0/recommended")
+                .and_then(|value| value.as_bool()),
+            Some(true)
         );
     }
 

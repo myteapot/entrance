@@ -452,6 +452,33 @@ type ConnectorRemoteWritePlan = {
   operations?: ConnectorRemoteWriteOperation[];
 };
 
+type ConnectorDecisionSurface = {
+  schema_version?: string | null;
+  required: boolean;
+  scope?: string | null;
+  provider?: string | null;
+  issue_status?: string | null;
+  primary_action?: string | null;
+  reason?: string | null;
+  summary?: string | null;
+  blocker_count?: number | null;
+  blockers?: Array<{
+    source?: string | null;
+    name?: string | null;
+    detail?: string | null;
+  }>;
+  actions?: Array<{
+    issue_action: IssueAction;
+    recommended: boolean;
+    operator_option: string | null;
+    reason: string;
+  }>;
+  policy_resource?: string | null;
+  review_queue_resource?: string | null;
+  issue_control_resource?: string | null;
+  confirmation_arg?: string | null;
+};
+
 type ConnectorRemoteSignal = {
   stage?: string | null;
   tone?: string | null;
@@ -574,6 +601,7 @@ type ConnectorQueueIssue = {
   adapter?: ConnectorWriterAdapter | null;
   remote_target?: ConnectorRemoteTarget | null;
   remote_write_plan?: ConnectorRemoteWritePlan | null;
+  decision_surface?: ConnectorDecisionSurface | null;
   admission_status: string | null;
   admission_blockers: string[];
   checks?: AdmissionCheck[] | null;
@@ -1775,6 +1803,8 @@ export default function App() {
     connectorQueueIssueById(issueId)?.remote_target ?? null;
   const connectorQueueIssueWritePlan = (issueId: number) =>
     connectorQueueIssueById(issueId)?.remote_write_plan ?? null;
+  const connectorQueueIssueDecisionSurface = (issueId: number) =>
+    connectorQueueIssueById(issueId)?.decision_surface ?? null;
   const connectorRemoteTargetIdentity = (target?: ConnectorRemoteTarget | null) => {
     if (!target) return null;
     if (target.issue_key) return target.issue_key;
@@ -1898,6 +1928,43 @@ export default function App() {
         class="connector-status-map"
         data-testid={testId}
         title={connectorStatusMappingTitle(mapping)}
+      >
+        {label}
+      </span>
+    ) : null;
+  };
+  const connectorDecisionSurfaceLabel = (surface?: ConnectorDecisionSurface | null) => {
+    if (!surface?.required) return null;
+    return surface.primary_action ? `decision ${surface.primary_action}` : "decision needed";
+  };
+  const connectorDecisionSurfaceTitle = (surface?: ConnectorDecisionSurface | null) => {
+    if (!surface?.required) return undefined;
+    const blockers = surface.blockers
+      ?.map((blocker) =>
+        [blocker.source, blocker.name, blocker.detail ? `(${blocker.detail})` : null]
+          .filter(Boolean)
+          .join(" "),
+      )
+      .filter(Boolean);
+    const parts = [
+      surface.summary,
+      surface.reason,
+      blockers?.length ? `blockers: ${blockers.join(" | ")}` : null,
+      surface.policy_resource ? `policy ${surface.policy_resource}` : null,
+      surface.review_queue_resource ? `review ${surface.review_queue_resource}` : null,
+    ].filter((part): part is string => Boolean(part));
+    return parts.length ? parts.join(" | ") : undefined;
+  };
+  const connectorDecisionSurfaceChip = (
+    surface: ConnectorDecisionSurface | null | undefined,
+    testId: string,
+  ) => {
+    const label = connectorDecisionSurfaceLabel(surface);
+    return label ? (
+      <span
+        class="connector-decision"
+        data-testid={testId}
+        title={connectorDecisionSurfaceTitle(surface)}
       >
         {label}
       </span>
@@ -2038,6 +2105,56 @@ export default function App() {
             </details>
           );
         })}
+      </div>
+    );
+  };
+  const connectorDecisionSurfacePanel = (card: IssueCard) => {
+    const decision = connectorQueueIssueDecisionSurface(card.issue.id);
+    if (!decision?.required) return null;
+    const actions = decision.actions ?? [];
+    return (
+      <div
+        class="doctor-lines evidence-blocker-surfaces connector-decision-surface"
+        data-testid={`connector-decision-surface-${card.issue.id}`}
+      >
+        <div class="evidence-blocker-surface">
+          <span>{decision.summary ?? "Connector decision required"}</span>
+          <div class="trace-strip">
+            <span class="trace-pill trace-pill--warn">
+              {connectorDecisionSurfaceLabel(decision) ?? "decision needed"}
+            </span>
+            <span class="trace-pill">blockers {decision.blocker_count ?? decision.blockers?.length ?? 0}</span>
+            <span class="trace-pill">actions {actions.length}</span>
+            {decision.provider ? <span class="trace-pill">{decision.provider}</span> : null}
+          </div>
+          {decision.reason ? <p>{decision.reason}</p> : null}
+          {decision.blockers?.length ? (
+            <div class="trace-strip">
+              {decision.blockers.slice(0, 5).map((blocker) => (
+                <span class="trace-pill trace-pill--warn">
+                  {[blocker.source, blocker.name].filter(Boolean).join(":")}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {actions.length ? (
+            <div class="record-actions evidence-blocker-actions">
+              {actions.slice(0, 4).map((choice) => (
+                <button
+                  type="button"
+                  aria-label={`${choice.issue_action.label} connector decision`}
+                  data-testid={`connector-decision-action-${card.issue.id}-${choice.issue_action.action}`}
+                  disabled={issueOptionDisabled(card, choice.issue_action)}
+                  title={choice.reason}
+                  onClick={() => runIssueAction(card, choice.issue_action)}
+                  {...issueActionButtonAttrs(choice.issue_action)}
+                >
+                  {issueDecisionButtonLabel(card, choice.issue_action)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
       </div>
     );
   };
@@ -3653,6 +3770,10 @@ export default function App() {
           connectorQueueIssueWritePlan(card.issue.id)?.status_mapping,
           `connector-status-map-${surface}-${card.issue.id}`,
         )}
+        {connectorDecisionSurfaceChip(
+          connectorQueueIssueDecisionSurface(card.issue.id),
+          `connector-decision-${surface}-${card.issue.id}`,
+        )}
         {connectorRemoteDiagnosticChips(
           connectorRemoteDiagnostics(card.issue.id),
           `connector-remote-signal-${surface}-${card.issue.id}`,
@@ -4101,6 +4222,7 @@ export default function App() {
                         <h3>{card.issue.title}</h3>
                         <p class="muted">{card.issue.summary ?? "No summary"}</p>
                         {connectorStatusStrip(card, "detail")}
+                        {connectorDecisionSurfacePanel(card)}
                         {connectorRemoteAttemptDetails(
                           connectorRemoteDiagnostics(card.issue.id),
                           `connector-remote-attempts-detail-${card.issue.id}`,

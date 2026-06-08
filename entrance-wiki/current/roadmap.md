@@ -192,6 +192,12 @@ Entrance has reached a local MVP unit:
   `entrance_issue_control` / `entrance://issues/{issue_id}/control` embed that
   summary, and the Panel connector strip renders the same mapping as a compact
   status chip.
+- External connector blockers now become an operator decision surface instead
+  of only CLI detail. Provider, target, remote write-plan, and admission
+  blockers generate `entrance.hive.connector_decision_surface.v1` with primary
+  action, blocker list, issue actions, and policy/review resources; MCP issue
+  control and the connector queue expose it, while the Panel shows a decision
+  chip plus a selected-issue Connector Decision block with clickable actions.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -210,8 +216,8 @@ multi-agent runtime/compiler product.
   credential checks, idempotent comment updates, readback verification, error
   handling, rate-limit behavior, configured provider status mapping behavior,
   and redacted receipts.
-- Expose external connector blockers in the Panel as operator decisions, not
-  just CLI details.
+- Productize external connector blocker decisions with richer remediation
+  guidance, live provider discovery, and drift-repair flows.
 
 ### P0: Worker runtime hardening
 
