@@ -52,6 +52,9 @@ Entrance has reached a local MVP unit:
   runs the local MVP loop, the `remote-fixture:` external dry-run, full Rust and
   frontend gates, formatting checks, diff checks, and a machine-readable report
   from a clean app root.
+- The same workflow now supports `--verify-golden` and `--update-golden` for
+  committed normalized output contracts under
+  `entrance-auto/fixtures/golden/local-mvp-demo/`.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -116,8 +119,8 @@ multi-agent runtime/compiler product.
 
 - Extend the reproducible demo workflow with Panel Browser screenshot capture
   and screenshot metadata, while keeping CLI validation deterministic.
-- Keep representative golden fixtures for compact CLI outputs and Panel-visible
-  connector states.
+- Keep the local MVP golden fixtures current as the intended issue/status/comment
+  contracts evolve.
 - Add release notes and operator docs that clearly separate local MVP, external
   fixture demo, and real GitHub/Linear integrations.
 
@@ -125,7 +128,7 @@ multi-agent runtime/compiler product.
 
 Run one larger convergence loop on productionizing external issue surfaces:
 
-1. Capture representative Browser screenshots and golden outputs for the
+1. Capture representative Browser screenshots and screenshot metadata for the
    already-working Panel fixture action.
 2. Then choose between live token-backed GitHub/Linear validation or worker
    lifecycle hardening.

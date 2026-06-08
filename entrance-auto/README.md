@@ -31,4 +31,6 @@ the workflow Markdown.
   `Explorer -> Developer -> Reviewer` MVP loop plus the `remote-fixture:`
   external issue/status/comment dry-run from a clean app root. Use
   `--full-gates` to include Rust, frontend, formatting, and diff checks before
-  generating the demo report.
+  generating the demo report. Use `--verify-golden` to compare normalized
+  output contracts with `fixtures/golden/local-mvp-demo/`, and
+  `--update-golden` only when the intended contract changes.

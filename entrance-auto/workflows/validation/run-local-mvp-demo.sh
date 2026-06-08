@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  entrance-auto/workflows/validation/run-local-mvp-demo.sh [--full-gates] [--run-id <id>] [--app-root <path>] [--report-dir <path>]
+  entrance-auto/workflows/validation/run-local-mvp-demo.sh [--full-gates] [--verify-golden|--update-golden] [--run-id <id>] [--app-root <path>] [--report-dir <path>] [--golden-dir <path>]
 
 Runs the Entrance local MVP demo from a clean app root, then runs the
 remote-fixture external issue/status/comment roundtrip. Outputs stay under
@@ -12,9 +12,12 @@ ignored entrance-auto/tmp and entrance-auto/reports paths by default.
 
 Options:
   --full-gates        Also run cargo check/test, pnpm check/build, fmt check, and git diff check.
+  --verify-golden     Compare normalized output contracts with tracked golden fixtures.
+  --update-golden     Update tracked golden fixtures from this run.
   --run-id <id>      Stable run id for report and app-root names.
   --app-root <path>  Override ENTRANCE_APP_ROOT for this run.
   --report-dir <dir> Override report output directory.
+  --golden-dir <dir> Override golden fixture directory.
   -h, --help         Show this help.
 USAGE
 }
@@ -24,14 +27,24 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$ROOT_DIR/entrance-src"
 
 FULL_GATES=0
+GOLDEN_MODE="none"
 RUN_ID="${ENTRANCE_DEMO_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 APP_ROOT="${ENTRANCE_DEMO_APP_ROOT:-}"
 REPORT_DIR="${ENTRANCE_DEMO_REPORT_DIR:-$ROOT_DIR/entrance-auto/reports}"
+GOLDEN_DIR="${ENTRANCE_DEMO_GOLDEN_DIR:-$ROOT_DIR/entrance-auto/fixtures/golden/local-mvp-demo}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --full-gates)
       FULL_GATES=1
+      shift
+      ;;
+    --verify-golden)
+      GOLDEN_MODE="verify"
+      shift
+      ;;
+    --update-golden)
+      GOLDEN_MODE="update"
       shift
       ;;
     --run-id)
@@ -44,6 +57,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --report-dir)
       REPORT_DIR="${2:?missing value for --report-dir}"
+      shift 2
+      ;;
+    --golden-dir)
+      GOLDEN_DIR="${2:?missing value for --golden-dir}"
       shift 2
       ;;
     -h|--help)
@@ -65,6 +82,7 @@ LOCAL_DEMO_JSON="$APP_ROOT/local-mvp-demo.json"
 FIXTURE_DEMO_JSON="$APP_ROOT/remote-fixture-demo.json"
 ISSUE_BOARD_JSON="$APP_ROOT/issue-board.json"
 CONNECTOR_QUEUE_JSON="$APP_ROOT/connector-queue.json"
+NORMALIZED_DIR="$APP_ROOT/normalized"
 EVIDENCE_TSV="$APP_ROOT/evidence.tsv"
 
 mkdir -p "$APP_ROOT" "$REPORT_DIR"
@@ -115,8 +133,9 @@ if command -v sqlite3 >/dev/null 2>&1; then
     > "$EVIDENCE_TSV"
 fi
 
-node - "$LOCAL_DEMO_JSON" "$FIXTURE_DEMO_JSON" "$ISSUE_BOARD_JSON" "$CONNECTOR_QUEUE_JSON" "$REPORT_JSON" "$REPORT_MD" "$APP_ROOT" "$RUN_ID" "$SOURCE_COMMIT" "$FULL_GATES" <<'NODE'
+node - "$LOCAL_DEMO_JSON" "$FIXTURE_DEMO_JSON" "$ISSUE_BOARD_JSON" "$CONNECTOR_QUEUE_JSON" "$REPORT_JSON" "$REPORT_MD" "$APP_ROOT" "$RUN_ID" "$SOURCE_COMMIT" "$FULL_GATES" "$NORMALIZED_DIR" "$GOLDEN_DIR" "$GOLDEN_MODE" <<'NODE'
 const fs = require("fs");
+const path = require("path");
 
 const [
   localPath,
@@ -129,6 +148,9 @@ const [
   runId,
   sourceCommit,
   fullGates,
+  normalizedDir,
+  goldenDir,
+  goldenMode,
 ] = process.argv.slice(2);
 
 function readJson(path) {
@@ -146,6 +168,7 @@ const fixture = readJson(fixturePath);
 const board = readJson(boardPath);
 const queue = readJson(queuePath);
 const boardIssues = (board.columns ?? []).flatMap((column) => column.issues ?? []);
+const boardColumns = board.columns ?? [];
 
 assert(local.schema_version === "entrance.hive.loop_demo.compact.v1", "unexpected local demo schema");
 assert(local.ready === true, "local demo did not report ready=true");
@@ -187,6 +210,129 @@ assert(queue.provider_filter === "remote-fixture", "connector queue provider fil
 assert(queue.publish_required_count === 0, "remote-fixture queue has publish-required items");
 assert(queue.current_count >= 1, "remote-fixture queue has no current items");
 
+const normalized = {
+  "local-mvp-summary.json": {
+    schema_version: "entrance.auto.golden.local_mvp_summary.v1",
+    local_demo_schema: local.schema_version,
+    ready: local.ready,
+    loop: {
+      schema_version: local.loop?.schema_version,
+      runtime: local.loop?.runtime,
+      status: local.loop?.status,
+      decision: local.loop?.decision,
+      reason_code: local.loop?.reason_code,
+      health: local.loop?.health,
+      worker_ok: local.loop?.counts?.worker_ok,
+      workers: local.loop?.counts?.workers,
+      receipt_required: local.loop?.counts?.receipt_required,
+      receipt_missing: local.loop?.counts?.receipt_missing,
+    },
+    roles: expectedRoles.map((role) => {
+      const stage = stages.find((item) => item.role === role);
+      return {
+        role,
+        status: stage?.status,
+        admission: stage?.admission,
+        worker_kind: stage?.worker?.kind,
+        worker_ok: stage?.worker?.ok,
+      };
+    }),
+    panel_handoff: {
+      api_url: local.panel?.api_url ?? null,
+      daemon_command: local.panel?.daemon?.command ?? null,
+      dev_server_url: local.panel?.dev_server?.url ?? null,
+    },
+  },
+  "remote-fixture-summary.json": {
+    schema_version: "entrance.auto.golden.remote_fixture_summary.v1",
+    report_schema: fixture.schema_version,
+    provider: fixture.provider,
+    review_surface: fixture.review_surface,
+    completed: fixture.completed,
+    result: fixture.result,
+    stage_count: fixture.summary?.stage_count,
+    passed_stage_count: fixture.summary?.passed_stage_count,
+    failed_stage_count: (fixture.summary?.failed_stages ?? []).length,
+    recorded_evidence_count: (fixture.summary?.recorded_evidence_ids ?? []).length,
+    remote_object_kind: fixture.summary?.remote_object_kind,
+    final_readback_passed: fixture.summary?.final_readback_passed,
+    connector: {
+      provider: fixture.connector?.provider,
+      review_surface: fixture.connector?.review_surface,
+      current: fixture.connector?.current,
+      publish_required: fixture.connector?.publish_required,
+      reason: fixture.connector?.reason,
+    },
+    queue: {
+      provider_filter: fixture.queue?.provider_filter,
+      current_count: fixture.queue?.current_count,
+      publish_required_count: fixture.queue?.publish_required_count,
+    },
+  },
+  "issue-board-summary.json": {
+    schema_version: "entrance.auto.golden.issue_board_summary.v1",
+    board_schema: board.schema_version,
+    total: board.total,
+    columns: boardColumns.map((column) => ({
+      status: column.status,
+      count: column.count,
+      issues: (column.issues ?? []).map((card) => ({
+        title: card.title,
+        status: card.status,
+        summary: card.summary,
+        connector_provider: card.connector?.provider ?? null,
+        connector_current: card.connector?.current ?? null,
+        action_labels: (card.actions ?? []).map((action) => action.label),
+        human_options: card.trace?.human_options ?? [],
+      })),
+    })),
+  },
+  "remote-fixture-queue-summary.json": {
+    schema_version: "entrance.auto.golden.remote_fixture_queue_summary.v1",
+    queue_schema: queue.schema_version ?? null,
+    provider_filter: queue.provider_filter,
+    provider_known: queue.provider_known,
+    current_count: queue.current_count,
+    publish_required_count: queue.publish_required_count,
+    providers: (queue.providers ?? []).map((provider) => ({
+      provider: provider.provider ?? provider.adapter?.provider ?? null,
+      display_name: provider.display_name,
+      configured: provider.configured,
+      admission_status: provider.admission_status,
+      current_count: provider.current_count,
+      publish_required_count: provider.publish_required_count,
+      adapter_status: provider.adapter?.status,
+      adapter_mode: provider.adapter?.mode,
+      supports_publish: provider.adapter?.supports_publish,
+      supports_readback: provider.adapter?.supports_readback,
+      supports_admission: provider.adapter?.supports_admission,
+    })),
+  },
+};
+
+fs.mkdirSync(normalizedDir, { recursive: true });
+for (const [fileName, value] of Object.entries(normalized)) {
+  fs.writeFileSync(path.join(normalizedDir, fileName), `${JSON.stringify(value, null, 2)}\n`);
+}
+
+const goldenFiles = Object.keys(normalized).sort();
+if (goldenMode === "update") {
+  fs.mkdirSync(goldenDir, { recursive: true });
+  for (const fileName of goldenFiles) {
+    fs.copyFileSync(path.join(normalizedDir, fileName), path.join(goldenDir, fileName));
+  }
+} else if (goldenMode === "verify") {
+  for (const fileName of goldenFiles) {
+    const actual = fs.readFileSync(path.join(normalizedDir, fileName), "utf8");
+    const expectedPath = path.join(goldenDir, fileName);
+    assert(fs.existsSync(expectedPath), `missing golden fixture ${expectedPath}`);
+    const expected = fs.readFileSync(expectedPath, "utf8");
+    assert(actual === expected, `golden fixture drift: ${fileName}`);
+  }
+} else if (goldenMode !== "none") {
+  throw new Error(`unsupported golden mode: ${goldenMode}`);
+}
+
 const summary = {
   schema_version: "entrance.auto.local_mvp_demo_report.v1",
   run_id: runId,
@@ -199,6 +345,12 @@ const summary = {
     remote_fixture_demo: fixturePath,
     issue_board: boardPath,
     connector_queue: queuePath,
+    normalized_dir: normalizedDir,
+    golden_dir: goldenMode === "none" ? null : goldenDir,
+  },
+  golden: {
+    mode: goldenMode,
+    files: goldenFiles,
   },
   local_mvp: {
     schema_version: local.schema_version,
@@ -256,6 +408,7 @@ const md = [
   `- Source commit: ${summary.source_commit}`,
   `- App root: \`${summary.app_root}\``,
   `- Full gates: ${summary.full_gates ? "yes" : "no"}`,
+  `- Golden mode: ${summary.golden.mode}`,
   "",
   "## Local MVP",
   "",
@@ -294,11 +447,18 @@ const md = [
   `- Remote fixture JSON: \`${summary.artifacts.remote_fixture_demo}\``,
   `- Issue board JSON: \`${summary.artifacts.issue_board}\``,
   `- Connector queue JSON: \`${summary.artifacts.connector_queue}\``,
+  `- Normalized snapshots: \`${summary.artifacts.normalized_dir}\``,
+  summary.artifacts.golden_dir ? `- Golden fixtures: \`${summary.artifacts.golden_dir}\`` : null,
   "",
-].join("\n");
+].filter((line) => line !== null).join("\n");
 
 fs.writeFileSync(reportMdPath, md);
 console.log(`validated local MVP + remote fixture demo`);
+if (goldenMode === "update") {
+  console.log(`updated golden fixtures: ${goldenDir}`);
+} else if (goldenMode === "verify") {
+  console.log(`verified golden fixtures: ${goldenDir}`);
+}
 console.log(`report: ${reportJsonPath}`);
 console.log(`summary: ${reportMdPath}`);
 NODE

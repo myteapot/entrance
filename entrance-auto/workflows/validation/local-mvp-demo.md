@@ -27,6 +27,18 @@ For a stricter release-style run:
 entrance-auto/workflows/validation/run-local-mvp-demo.sh --full-gates
 ```
 
+To compare normalized output contracts with the committed golden fixtures:
+
+```bash
+entrance-auto/workflows/validation/run-local-mvp-demo.sh --verify-golden
+```
+
+When the intended contract changes, update the fixtures explicitly:
+
+```bash
+entrance-auto/workflows/validation/run-local-mvp-demo.sh --update-golden
+```
+
 ## Outputs
 
 By default the script writes:
@@ -34,6 +46,15 @@ By default the script writes:
 - App data and raw command outputs under
   `entrance-auto/tmp/local-mvp-demo-<run-id>/`.
 - JSON and Markdown summaries under `entrance-auto/reports/`.
+- Normalized run snapshots under
+  `entrance-auto/tmp/local-mvp-demo-<run-id>/normalized/`.
+
+The tracked golden fixtures live under
+`entrance-auto/fixtures/golden/local-mvp-demo/`. They intentionally preserve
+stable contract fields only, such as role/stage status, reviewer decision,
+connector readiness, issue board status, and action labels. Run-specific
+timestamps, paths, ids from external services, hashes, and raw logs stay out of
+the committed fixtures.
 
 The committed workflow is reusable. The generated reports, database, connector
 mirrors, and logs are run artifacts and should stay ignored unless a human
