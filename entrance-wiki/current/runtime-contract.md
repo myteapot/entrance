@@ -272,6 +272,8 @@ Supported methods:
 - `initialize`, `notifications/initialized`, and `ping`
 - `tools/list`
 - `tools/call`
+- `prompts/list`
+- `prompts/get`
 - `resources/list`
 - `resources/read`
 - `resources/templates/list`
@@ -293,6 +295,15 @@ Resources:
 - `entrance://issues/{issue_id}`
 - `entrance://policy/registry`
 - `entrance://schema/status`
+
+Prompts:
+
+- `entrance_loop_contract`: compile a human goal into an issue-bound loop
+  contract and require `entrance_loop_create` before implementation.
+- `entrance_issue_advance`: read an issue resource and advance only when the
+  current status allows a Developer/Reviewer run.
+- `entrance_blocker_decision`: summarize `Blocked` or `Needs Review` state into
+  retry/review/cancel options for a human decision.
 
 `entrance_loop_create` creates an issue-bound
 `Explorer -> Developer -> Reviewer` contract. `entrance_issue_run` and

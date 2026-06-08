@@ -118,6 +118,17 @@ fn handle_request(services: &AppServices, request: JsonRpcRequest) -> Result<Req
             "tools": tool_specs()
         }))),
         "tools/call" => Ok(RequestOutcome::Result(call_tool(services, &request.params))),
+        "prompts/list" => Ok(RequestOutcome::Result(serde_json::json!({
+            "prompts": prompt_specs()
+        }))),
+        "prompts/get" => match get_prompt(services, &request.params) {
+            Ok(value) => Ok(RequestOutcome::Result(value)),
+            Err(error) => Ok(RequestOutcome::Error(json_rpc_error(
+                -32602,
+                "Invalid params",
+                Some(serde_json::json!({ "error": error.to_string() })),
+            ))),
+        },
         "resources/list" => Ok(RequestOutcome::Result(list_resources(services)?)),
         "resources/read" => Ok(RequestOutcome::Result(read_resource(
             services,
@@ -150,6 +161,7 @@ fn initialize_result(params: &serde_json::Value) -> serde_json::Value {
         "protocolVersion": protocol_version,
         "capabilities": {
             "tools": { "listChanged": false },
+            "prompts": { "listChanged": false },
             "resources": { "listChanged": false }
         },
         "serverInfo": {
@@ -157,7 +169,157 @@ fn initialize_result(params: &serde_json::Value) -> serde_json::Value {
             "title": "Entrance",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Entrance exposes a Linear-like local issue/status/comment kernel. Use tools to create issues, comment, run Developer/Reviewer loops, retry blocked issues, and read issue resources for evidence and status."
+        "instructions": "Entrance exposes a Linear-like local issue/status/comment kernel. Start from prompts to preserve the loop contract, use tools to create/comment/run/retry/decide issues, and read resources for status, evidence, blockers, and verdicts."
+    })
+}
+
+fn prompt_specs() -> Vec<serde_json::Value> {
+    vec![
+        prompt_spec(
+            "entrance_loop_contract",
+            "Compile an Entrance loop contract",
+            "Turn a human goal into an issue-bound Entrance loop contract without running it.",
+            vec![
+                prompt_arg("goal", "Human goal to compile into a loop contract.", true),
+                prompt_arg("boundary", "Optional safety, scope, runtime, or file boundary.", false),
+                prompt_arg("runtime", "Optional runtime override such as local or codex.", false),
+            ],
+        ),
+        prompt_spec(
+            "entrance_issue_advance",
+            "Advance an Entrance issue",
+            "Read an issue, preserve role boundaries, and advance it through Developer/Reviewer only when the status allows it.",
+            vec![
+                prompt_arg("issue_id", "Entrance issue id.", true),
+                prompt_arg("runtime", "Optional runtime override such as local or codex.", false),
+            ],
+        ),
+        prompt_spec(
+            "entrance_blocker_decision",
+            "Prepare a blocked issue decision",
+            "Summarize a Blocked or Needs Review issue into human options before retry/review/cancel.",
+            vec![prompt_arg("issue_id", "Entrance issue id.", true)],
+        ),
+    ]
+}
+
+fn prompt_spec(
+    name: &str,
+    title: &str,
+    description: &str,
+    arguments: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "title": title,
+        "description": description,
+        "arguments": arguments
+    })
+}
+
+fn prompt_arg(name: &str, description: &str, required: bool) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "description": description,
+        "required": required
+    })
+}
+
+fn get_prompt(services: &AppServices, params: &serde_json::Value) -> Result<serde_json::Value> {
+    let name = params
+        .get("name")
+        .and_then(|value| value.as_str())
+        .context("prompts/get requires params.name")?;
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    match name {
+        "entrance_loop_contract" => prompt_loop_contract(&args),
+        "entrance_issue_advance" => prompt_issue_advance(services, &args),
+        "entrance_blocker_decision" => prompt_blocker_decision(services, &args),
+        other => anyhow::bail!("unknown Entrance prompt `{other}`"),
+    }
+}
+
+fn prompt_loop_contract(args: &serde_json::Value) -> Result<serde_json::Value> {
+    let goal = string_arg(args, "goal")?;
+    let boundary = optional_string_arg(args, "boundary").unwrap_or_else(|| {
+        "No explicit boundary supplied; ask before expanding scope.".to_string()
+    });
+    let runtime = optional_string_arg(args, "runtime").unwrap_or_else(|| "local".to_string());
+    let text = format!(
+        "You are the Entrance Explorer. Compile the human goal into a typed issue-bound loop contract before any implementation.\n\nGoal: {goal}\nBoundary: {boundary}\nRuntime: {runtime}\n\nRules:\n1. Do not implement directly from this prompt.\n2. Produce approach_space and eval_space as concrete arrays.\n3. Use entrance_loop_create with review_surface=local-hive-panel and runtime={runtime}.\n4. After creation, read the returned issue id and report the next issue action.\n5. Keep all state on issue/status/comment/evidence surfaces so Developer and Reviewer can be audited."
+    );
+    Ok(prompt_result(
+        "Compile a human goal into an Entrance loop contract.",
+        vec![prompt_text_message("user", text)],
+    ))
+}
+
+fn prompt_issue_advance(
+    services: &AppServices,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let issue_id = integer_arg(args, "issue_id")?;
+    let runtime = optional_string_arg(args, "runtime")
+        .unwrap_or_else(|| "stored contract runtime".to_string());
+    let issue_resource = issue_prompt_resource(services, issue_id)?;
+    let text = format!(
+        "You are an Entrance loop operator for issue #{issue_id}. Read the attached issue resource before acting.\n\nRules:\n1. If status is Todo, use entrance_issue_run with runtime={runtime} and then read entrance://issues/{issue_id} again.\n2. If status is Blocked or Needs Review, do not continue automatically unless a human decision explicitly asks for retry; prepare options instead.\n3. Preserve role boundaries: Explorer understands context, Developer implements accepted work, Reviewer decides keep/reject/needs-review/blocked from gates, score vector, and evidence.\n4. If Reviewer returns reject at or after the 3-round budget, treat Blocked as the correct fallback and surface human options.\n5. Summarize only status, decision, evidence, missing receipts, blockers, and next actions. Do not invent unrecorded success."
+    );
+    Ok(prompt_result(
+        "Advance one Entrance issue through the transparent loop contract.",
+        vec![prompt_text_message("user", text), issue_resource],
+    ))
+}
+
+fn prompt_blocker_decision(
+    services: &AppServices,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let issue_id = integer_arg(args, "issue_id")?;
+    let issue_resource = issue_prompt_resource(services, issue_id)?;
+    let text = format!(
+        "You are preparing a human decision for Entrance issue #{issue_id}. Read the attached issue resource and do not choose for the human.\n\nPresent:\nA. retry with the smallest changed assumption or boundary;\nB. request-review when preference, scope, or external data is needed;\nC. cancel when the candidate is no longer valuable.\n\nInclude the current status, Reviewer decision/reason, failed gates, missing receipts, evidence links, and the exact Entrance tool call to execute only after the human chooses."
+    );
+    Ok(prompt_result(
+        "Prepare human retry/review/cancel options for a blocked Entrance issue.",
+        vec![prompt_text_message("user", text), issue_resource],
+    ))
+}
+
+fn issue_prompt_resource(services: &AppServices, issue_id: i64) -> Result<serde_json::Value> {
+    let uri = format!("entrance://issues/{issue_id}");
+    let report = services.hive.issue_report(issue_id)?;
+    Ok(serde_json::json!({
+        "role": "user",
+        "content": {
+            "type": "resource",
+            "resource": {
+                "uri": uri,
+                "mimeType": "application/json",
+                "text": serde_json::to_string_pretty(&report)?
+            }
+        }
+    }))
+}
+
+fn prompt_result(description: &str, messages: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({
+        "description": description,
+        "messages": messages
+    })
+}
+
+fn prompt_text_message(role: &str, text: String) -> serde_json::Value {
+    serde_json::json!({
+        "role": role,
+        "content": {
+            "type": "text",
+            "text": text
+        }
     })
 }
 
@@ -602,7 +764,10 @@ fn optional_string_array_arg(args: &serde_json::Value, name: &str) -> Vec<String
 
 #[cfg(test)]
 mod tests {
-    use super::{initialize_result, tool_specs, MCP_FALLBACK_PROTOCOL_VERSION};
+    use super::{
+        initialize_result, prompt_loop_contract, prompt_specs, tool_specs,
+        MCP_FALLBACK_PROTOCOL_VERSION,
+    };
 
     #[test]
     fn initialize_negotiates_supported_protocol_and_capabilities() {
@@ -628,6 +793,12 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(false)
         );
+        assert_eq!(
+            result
+                .pointer("/capabilities/prompts/listChanged")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
     }
 
     #[test]
@@ -644,5 +815,35 @@ mod tests {
         assert!(names.contains(&"entrance_issue_retry"));
         assert!(names.contains(&"entrance_issue_comment"));
         assert!(names.contains(&"entrance_issue_decide"));
+    }
+
+    #[test]
+    fn loop_prompts_are_exposed_for_agents() {
+        let prompts = prompt_specs();
+        let names = prompts
+            .iter()
+            .filter_map(|prompt| prompt.get("name").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"entrance_loop_contract"));
+        assert!(names.contains(&"entrance_issue_advance"));
+        assert!(names.contains(&"entrance_blocker_decision"));
+    }
+
+    #[test]
+    fn contract_prompt_constrains_agents_to_issue_tools() {
+        let result = prompt_loop_contract(&serde_json::json!({
+            "goal": "Ship an observable issue loop",
+            "runtime": "local"
+        }))
+        .expect("prompt should render");
+        let text = result
+            .pointer("/messages/0/content/text")
+            .and_then(|value| value.as_str())
+            .expect("prompt should include text");
+
+        assert!(text.contains("Do not implement directly"));
+        assert!(text.contains("entrance_loop_create"));
+        assert!(text.contains("issue/status/comment/evidence"));
     }
 }

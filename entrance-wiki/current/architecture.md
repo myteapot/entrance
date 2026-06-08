@@ -28,6 +28,6 @@ those paths, but they are archive-only context.
 External GUI and automation callers should use `entrance daemon` over stdio or
 `entrance daemon http` over loopback HTTP. MCP clients can use
 `entrance mcp stdio`, which is implemented inside the same `shell/app` binary
-and exposes the local Hive issue/status/comment kernel as tools and resources.
-There is still no separate `shell/mcp/` package or remote MCP service in the
-active V2 shape.
+and exposes the local Hive issue/status/comment kernel as tools, resources, and
+prompt contracts. There is still no separate `shell/mcp/` package or remote MCP
+service in the active V2 shape.
