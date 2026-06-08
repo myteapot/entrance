@@ -324,6 +324,11 @@ used by the CLI and Panel, including Developer/Reviewer verdicts and the
 `entrance_review_queue` and `entrance://review-queue` expose only `Blocked` and
 `Needs Review` issues, with reviewer decision, reason code, human options,
 actions, blockers, latest comment, and recent evidence summaries.
+`entrance_issue_control` and `entrance://issues/{issue_id}/control` expose a
+single issue as `entrance.mcp.issue_control.v1`, aggregating state, action call
+templates, MCP permissions, blockers, recent evidence, operator events, and
+operator confirmation receipts so agents do not have to infer the control
+surface from raw issue JSON.
 `entrance_issue_retry` and `entrance_issue_decide` require
 `human_confirmed=true`; without it the MCP tool result is an error. The
 permission boundary is documented at `entrance://policy/mcp-permissions` and is

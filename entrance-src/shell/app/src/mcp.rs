@@ -16,9 +16,11 @@ const MCP_PERMISSION_POLICY_SCHEMA_VERSION: &str = "entrance.mcp.permission_poli
 const MCP_TOOL_PERMISSION_SCHEMA_VERSION: &str = "entrance.mcp.tool_permission.v1";
 const MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION: &str =
     "entrance.mcp.tool_permission_registry.v1";
+const MCP_ISSUE_CONTROL_SCHEMA_VERSION: &str = "entrance.mcp.issue_control.v1";
 const MCP_TOOL_NAMES: &[&str] = &[
     "entrance_issue_list",
     "entrance_issue_show",
+    "entrance_issue_control",
     "entrance_review_queue",
     "entrance_issue_comment",
     "entrance_loop_create",
@@ -355,8 +357,9 @@ fn prompt_blocker_decision(
 }
 
 fn issue_prompt_resource(services: &AppServices, issue_id: i64) -> Result<serde_json::Value> {
-    let uri = format!("entrance://issues/{issue_id}");
-    let report = services.hive.issue_report(issue_id)?;
+    let uri = format!("entrance://issues/{issue_id}/control");
+    let card = services.hive.issue_report(issue_id)?;
+    let report = issue_control_packet(&card);
     Ok(serde_json::json!({
         "role": "user",
         "content": {
@@ -407,6 +410,18 @@ fn tool_specs() -> Vec<serde_json::Value> {
             "entrance_issue_show",
             "Show an Entrance issue",
             "Read one issue card with comments, trace, doctor, and evidence summaries.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "issue_id": { "type": "integer", "description": "Issue id." }
+                },
+                "required": ["issue_id"]
+            }),
+        ),
+        tool_spec(
+            "entrance_issue_control",
+            "Read an Entrance issue control packet",
+            "Read one issue as a Linear-like control packet with status, actions, blockers, evidence, receipts, and human decision boundaries.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -552,6 +567,7 @@ fn call_tool(
     let result = match name {
         Some("entrance_issue_list") => tool_issue_list(services, &args),
         Some("entrance_issue_show") => tool_issue_show(services, &args),
+        Some("entrance_issue_control") => tool_issue_control(services, &args),
         Some("entrance_review_queue") => tool_review_queue(services, &args),
         Some("entrance_issue_comment") => tool_issue_comment(services, &args),
         Some("entrance_loop_create") => tool_loop_create(services, &args),
@@ -595,6 +611,192 @@ fn tool_issue_show(services: &AppServices, args: &serde_json::Value) -> Result<s
     Ok(serde_json::json!({
         "schema_version": "entrance.mcp.issue_show.v1",
         "issue": services.hive.issue_report(issue_id)?
+    }))
+}
+
+fn tool_issue_control(
+    services: &AppServices,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let issue_id = integer_arg(args, "issue_id")?;
+    Ok(issue_control_packet(&services.hive.issue_report(issue_id)?))
+}
+
+fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
+    let trace = card.trace.as_ref();
+    let doctor = card.doctor.as_ref();
+    let recent_evidence = trace
+        .map(|trace| {
+            trace
+                .evidence
+                .iter()
+                .rev()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let latest_comment = card.comments.last();
+    let operator_receipts = card
+        .comments
+        .iter()
+        .filter_map(operator_confirmation_receipt_summary)
+        .collect::<Vec<_>>();
+    let action_controls = card
+        .actions
+        .iter()
+        .filter_map(|action| issue_action_control(card.issue.id, action))
+        .collect::<Vec<_>>();
+    let human_decision_actions = action_controls
+        .iter()
+        .filter(|action| {
+            action
+                .get("human_decision")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schema_version": MCP_ISSUE_CONTROL_SCHEMA_VERSION,
+        "issue": &card.issue,
+        "state": {
+            "status": &card.issue.status,
+            "loop_id": card.issue.loop_id,
+            "current_round": trace.map(|trace| trace.current_round),
+            "decision": trace.and_then(|trace| trace.last_decision.as_deref()),
+            "reason_code": trace.and_then(|trace| trace.reason_code.as_deref()),
+            "terminal": matches!(card.issue.status.as_str(), "Done" | "Canceled"),
+            "needs_human_decision": matches!(card.issue.status.as_str(), "Blocked" | "Needs Review")
+        },
+        "actions": action_controls,
+        "human_decision_boundary": {
+            "required": !human_decision_actions.is_empty(),
+            "actions": human_decision_actions,
+            "confirmation_arg": "human_confirmed",
+            "policy_resource": "entrance://policy/mcp-permissions",
+            "review_queue_resource": "entrance://review-queue"
+        },
+        "blockers": {
+            "failed_checks": doctor.map(|doctor| doctor.failed_checks.clone()).unwrap_or_default(),
+            "audit_failure_details": doctor.map(|doctor| doctor.audit_failure_details.clone()).unwrap_or_default(),
+            "missing_receipts": doctor.map(|doctor| doctor.missing_receipts.clone()).unwrap_or_default(),
+            "worker_failures": doctor.map(|doctor| doctor.worker_failures.clone()).unwrap_or_default()
+        },
+        "doctor": doctor.map(|doctor| serde_json::json!({
+            "health": &doctor.health,
+            "summary": &doctor.summary,
+            "next_actions": &doctor.next_actions
+        })),
+        "comments": {
+            "count": card.comments.len(),
+            "latest": latest_comment,
+            "operator_confirmation_receipts": operator_receipts
+        },
+        "evidence": {
+            "count": trace.map(|trace| trace.evidence_count).unwrap_or_default(),
+            "recent": recent_evidence,
+            "operator_events": trace.map(|trace| trace.operator_events.clone()).unwrap_or_default(),
+            "last_operator_event": trace.and_then(|trace| trace.last_operator_event.clone())
+        },
+        "mcp_policy": mcp_issue_policy(&card.actions),
+        "resources": {
+            "issue": format!("entrance://issues/{}", card.issue.id),
+            "control": format!("entrance://issues/{}/control", card.issue.id),
+            "review_queue": "entrance://review-queue",
+            "permissions": "entrance://policy/mcp-permissions"
+        }
+    })
+}
+
+fn issue_action_control(
+    issue_id: i64,
+    action: &entrance_hive::IssueAction,
+) -> Option<serde_json::Value> {
+    let tool = mcp_tool_for_issue_action(&action.action)?;
+    let human_decision = mcp_action_requires_human_confirmation(&action.action);
+    Some(serde_json::json!({
+        "action": &action.action,
+        "label": &action.label,
+        "tool": tool,
+        "human_decision": human_decision,
+        "command": &action.command,
+        "issue_action_contract": {
+            "schema_version": &action.schema_version,
+            "source": &action.source,
+            "input": &action.input,
+            "destructive": action.destructive,
+            "runtime": &action.runtime,
+            "confirmation_required": action.confirmation_required,
+            "confirmation_arg": &action.confirmation_arg,
+            "receipt_schema": &action.receipt_schema,
+            "policy_schema_version": &action.policy_schema_version
+        },
+        "mcp_permission": mcp_tool_permission(tool),
+        "call": issue_action_call_template(issue_id, action, tool)
+    }))
+}
+
+fn issue_action_call_template(
+    issue_id: i64,
+    action: &entrance_hive::IssueAction,
+    tool: &str,
+) -> serde_json::Value {
+    match action.action.as_str() {
+        "run" => serde_json::json!({
+            "name": tool,
+            "arguments": {
+                "issue_id": issue_id,
+                "runtime": action.runtime
+            }
+        }),
+        "comment" => serde_json::json!({
+            "name": tool,
+            "arguments": {
+                "issue_id": issue_id,
+                "body": "<comment>"
+            }
+        }),
+        "retry" => serde_json::json!({
+            "name": tool,
+            "arguments": {
+                "issue_id": issue_id,
+                "body": "<human note>",
+                "human_confirmed": true,
+                "runtime": action.runtime
+            }
+        }),
+        "request-review" | "cancel" => serde_json::json!({
+            "name": tool,
+            "arguments": {
+                "issue_id": issue_id,
+                "action": &action.action,
+                "body": "<human note>",
+                "human_confirmed": true
+            }
+        }),
+        _ => serde_json::json!({
+            "name": tool,
+            "arguments": {
+                "issue_id": issue_id
+            }
+        }),
+    }
+}
+
+fn operator_confirmation_receipt_summary(
+    comment: &entrance_core::HiveComment,
+) -> Option<serde_json::Value> {
+    let receipt = comment.payload.get("confirmation_receipt")?;
+    Some(serde_json::json!({
+        "comment_id": comment.id,
+        "author": &comment.author,
+        "action": comment.payload.get("action").cloned().unwrap_or_default(),
+        "receipt": receipt
     }))
 }
 
@@ -747,6 +949,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             &format!("Issue #{}: {}", card.issue.id, card.issue.title),
             "One issue card with comments, trace, doctor, and evidence.",
         ));
+        resources.push(resource_spec(
+            &format!("entrance://issues/{}/control", card.issue.id),
+            &format!("Issue #{} control: {}", card.issue.id, card.issue.title),
+            "One issue control packet with actions, blockers, receipts, and human decision boundaries.",
+        ));
     }
     Ok(serde_json::json!({ "resources": resources }))
 }
@@ -758,6 +965,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://issues/{issue_id}",
                 "name": "Entrance issue by id",
                 "description": "Read one issue card with comments, trace, doctor, and evidence.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://issues/{issue_id}/control",
+                "name": "Entrance issue control by id",
+                "description": "Read one issue control packet with actions, blockers, receipts, and human decision boundaries.",
                 "mimeType": "application/json"
             }
         ]
@@ -787,6 +1000,16 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
         "entrance://policy/registry" => serde_json::to_value(services.hive.policy_registry())?,
         "entrance://policy/mcp-permissions" => mcp_permission_policy(),
         "entrance://schema/status" => serde_json::to_value(services.kernel.store.schema_status()?)?,
+        value if value.starts_with("entrance://issues/") && value.ends_with("/control") => {
+            let issue_id = value
+                .trim_start_matches("entrance://issues/")
+                .trim_end_matches("/control")
+                .parse::<i64>()
+                .with_context(|| {
+                    format!("invalid Entrance issue control resource URI `{value}`")
+                })?;
+            issue_control_packet(&services.hive.issue_report(issue_id)?)
+        }
         value if value.starts_with("entrance://issues/") => {
             let issue_id = value
                 .trim_start_matches("entrance://issues/")
@@ -941,6 +1164,20 @@ fn mcp_tool_permission(tool: &str) -> serde_json::Value {
             "read",
             "issue.show",
             vec!["issue/status/comment", "loop/trace/evidence/doctor"],
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        ),
+        "entrance_issue_control" => (
+            "read",
+            "issue.control",
+            vec![
+                "issue/status/comment",
+                "loop/trace/evidence/doctor",
+                "policy/action_permission",
+                "operator_confirmation_receipt",
+            ],
             Vec::new(),
             None,
             None,
@@ -1319,11 +1556,14 @@ fn optional_string_array_arg(args: &serde_json::Value, name: &str) -> Vec<String
 mod tests {
     use super::{
         append_human_confirmation_note, ensure_human_confirmed, initialize_result,
-        mcp_client_identity, mcp_human_confirmation_receipt, mcp_permission_policy,
-        prompt_loop_contract, prompt_specs, tool_specs, McpSession, MCP_FALLBACK_PROTOCOL_VERSION,
+        issue_control_packet, mcp_client_identity, mcp_human_confirmation_receipt,
+        mcp_permission_policy, prompt_loop_contract, prompt_specs, tool_specs, McpSession,
+        MCP_FALLBACK_PROTOCOL_VERSION, MCP_ISSUE_CONTROL_SCHEMA_VERSION,
         MCP_PERMISSION_POLICY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION,
         MCP_TOOL_PERMISSION_SCHEMA_VERSION,
     };
+    use entrance_core::{HiveComment, HiveIssue};
+    use entrance_hive::{IssueAction, IssueCard};
 
     #[test]
     fn initialize_negotiates_supported_protocol_and_capabilities() {
@@ -1366,6 +1606,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(names.contains(&"entrance_issue_list"));
+        assert!(names.contains(&"entrance_issue_control"));
         assert!(names.contains(&"entrance_loop_create"));
         assert!(names.contains(&"entrance_issue_run"));
         assert!(names.contains(&"entrance_issue_retry"));
@@ -1389,6 +1630,103 @@ mod tests {
                 Some(name)
             );
         }
+    }
+
+    #[test]
+    fn issue_control_packet_exposes_actions_blockers_and_receipts() {
+        let card = IssueCard {
+            issue: HiveIssue {
+                id: 42,
+                loop_id: Some(7),
+                title: "Loop #7: blocked issue".to_string(),
+                status: "Blocked".to_string(),
+                summary: Some("Needs human decision".to_string()),
+                created_at: "2026-06-09T00:00:00Z".to_string(),
+                updated_at: "2026-06-09T00:00:01Z".to_string(),
+            },
+            comments: vec![HiveComment {
+                id: 9,
+                issue_id: 42,
+                author: "human".to_string(),
+                body: "Retry with local runtime.\n\nPanel confirmation: action=retry".to_string(),
+                payload: serde_json::json!({
+                    "schema_version": "entrance.hive.operator_decision.v1",
+                    "source": "operator",
+                    "action": "retry",
+                    "confirmation_receipt": {
+                        "schema_version": entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+                        "source": "panel",
+                        "policy_schema_version": entrance_hive::OPERATOR_ACTION_POLICY_SCHEMA_VERSION,
+                        "confirmation_arg": entrance_hive::OPERATOR_ACTION_CONFIRMATION_ARG,
+                        "human_confirmed": true,
+                        "action": "retry",
+                        "author": "human",
+                        "marker": "Panel confirmation: action=retry"
+                    }
+                }),
+                created_at: "2026-06-09T00:00:02Z".to_string(),
+            }],
+            actions: vec![IssueAction {
+                schema_version: "entrance.hive.issue_action.v1".to_string(),
+                action: "retry".to_string(),
+                label: "Retry".to_string(),
+                command: "entrance hive issue retry-run 42 --body <note> --compact".to_string(),
+                source: "human_options".to_string(),
+                input: "note".to_string(),
+                destructive: false,
+                runtime: Some("local".to_string()),
+                confirmation_required: true,
+                confirmation_arg: Some(entrance_hive::OPERATOR_ACTION_CONFIRMATION_ARG.to_string()),
+                receipt_schema: Some(
+                    entrance_hive::OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
+                ),
+                policy_schema_version: Some(
+                    entrance_hive::OPERATOR_ACTION_POLICY_SCHEMA_VERSION.to_string(),
+                ),
+            }],
+            trace: None,
+            doctor: None,
+        };
+
+        let packet = issue_control_packet(&card);
+        assert_eq!(
+            packet
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(MCP_ISSUE_CONTROL_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            packet
+                .pointer("/state/needs_human_decision")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            packet
+                .pointer("/actions/0/tool")
+                .and_then(|value| value.as_str()),
+            Some("entrance_issue_retry")
+        );
+        assert_eq!(
+            packet
+                .pointer("/actions/0/call/arguments/human_confirmed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            packet
+                .pointer(
+                    "/human_decision_boundary/actions/0/issue_action_contract/confirmation_arg"
+                )
+                .and_then(|value| value.as_str()),
+            Some(entrance_hive::OPERATOR_ACTION_CONFIRMATION_ARG)
+        );
+        assert_eq!(
+            packet
+                .pointer("/comments/operator_confirmation_receipts/0/receipt/source")
+                .and_then(|value| value.as_str()),
+            Some("panel")
+        );
     }
 
     #[test]

@@ -27,7 +27,10 @@ Entrance has reached a local MVP unit:
   decision note and a typed `entrance.hive.operator_confirmation_receipt.v1`
   receipt into the operator decision comment/evidence payload. If the MCP
   client sends `initialize.clientInfo`, that self-reported client identity is
-  copied into the receipt for audit context.
+  copied into the receipt for audit context. `entrance_issue_control` and
+  `entrance://issues/{issue_id}/control` now expose a single issue control
+  packet with status, action call templates, blockers, recent evidence, operator
+  events, and confirmation receipts.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
