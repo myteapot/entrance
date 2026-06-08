@@ -620,6 +620,12 @@
   gap: 8px;
 }
 
+.loop-dashboard-rounds {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
 .worker-lifecycle-role {
   display: grid;
   gap: 7px;

@@ -653,6 +653,7 @@ type LoopDashboardReport = {
     missing_receipts: string[];
     worker_failures: string[];
   };
+  rounds: LoopDashboardRound[];
   comments_count: number;
   latest_comment: {
     id: number;
@@ -680,6 +681,71 @@ type LoopDashboardIssue = {
   status: string;
   summary: string | null;
   updated_at: string;
+};
+
+type LoopDashboardRound = {
+  round: number;
+  current: boolean;
+  status: string;
+  decision: string | null;
+  reason_code: string | null;
+  retry_lineage: string | null;
+  blocker: string | null;
+  packet_count: number;
+  admission_count: number;
+  evidence_count: number;
+  verdict_count: number;
+  rejected_count: number;
+  receipt_missing_count: number;
+  worker_count: number;
+  worker_ok_count: number;
+  groups: {
+    packets: LoopDashboardRoundPacket[];
+    admissions: LoopDashboardRoundAdmission[];
+    evidence: LoopDashboardRoundEvidence[];
+    verdicts: LoopDashboardRoundVerdict[];
+  };
+};
+
+type LoopDashboardRoundPacket = {
+  id: number;
+  object_kind: string;
+  writer_role: string;
+  route_from: string;
+  route_to: string;
+  state_code: string;
+  admission_result: string | null;
+};
+
+type LoopDashboardRoundAdmission = {
+  id: number;
+  packet_id: number;
+  result: string;
+  gate: string | null;
+  gate_passed: boolean | null;
+  reason: string;
+  missing_receipts: string[];
+};
+
+type LoopDashboardRoundEvidence = {
+  id: number;
+  stage_role: string | null;
+  kind: string;
+  admission_result: string | null;
+  blocked_phase: string | null;
+  worker_ok: boolean | null;
+  summary: string;
+};
+
+type LoopDashboardRoundVerdict = {
+  id: number;
+  decision: string;
+  reason_code: string | null;
+  score_vector: Array<{
+    name: string;
+    value: number | null;
+  }>;
+  summary: string;
 };
 
 type LoopDashboardAgent = {
@@ -2550,6 +2616,30 @@ export default function App() {
       ? `human decision ${dashboard.human_decision.actions.length}`
       : "human clear";
 
+  const loopDashboardRoundTone = (round: LoopDashboardRound) =>
+    round.blocker || round.rejected_count || round.receipt_missing_count ? "warn" : "ok";
+
+  const loopDashboardRoundLabel = (round: LoopDashboardRound) => {
+    const decision = round.decision ? ` ${round.decision}` : "";
+    const current = round.current ? " current" : "";
+    return `r${round.round} ${round.status}${decision}${current}`;
+  };
+
+  const loopDashboardRoundCounts = (round: LoopDashboardRound) =>
+    `packets ${round.packet_count} / admissions ${round.admission_count} / evidence ${round.evidence_count} / verdicts ${round.verdict_count}`;
+
+  const loopDashboardPacketLabel = (packet: LoopDashboardRoundPacket) =>
+    `packet ${packet.writer_role} ${packet.route_from}->${packet.route_to} ${packet.object_kind} ${packet.admission_result ?? "pending"}`;
+
+  const loopDashboardAdmissionLabel = (admission: LoopDashboardRoundAdmission) =>
+    `gate ${admission.gate ?? "unknown"} ${admission.result}`;
+
+  const loopDashboardEvidenceLabel = (evidence: LoopDashboardRoundEvidence) =>
+    `evidence ${evidence.stage_role ?? "kernel"} ${evidence.kind}`;
+
+  const loopDashboardVerdictLabel = (verdict: LoopDashboardRoundVerdict) =>
+    `verdict ${verdict.decision}${verdict.reason_code ? ` ${verdict.reason_code}` : ""}`;
+
   const runtimePreflightStateLabel = (state: string) =>
     ({
       admitted: "admitted",
@@ -3409,6 +3499,88 @@ export default function App() {
                                         {agent.retry_exhausted ? (
                                           <span class="trace-pill trace-pill--warn">retry exhausted</span>
                                         ) : null}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div
+                                  class="loop-dashboard-rounds"
+                                  data-testid={`loop-dashboard-rounds-${card.issue.id}`}
+                                >
+                                  {dashboard.rounds.map((round) => (
+                                    <div
+                                      class={`worker-lifecycle-role worker-lifecycle-role--${loopDashboardRoundTone(
+                                        round,
+                                      )}`}
+                                      data-testid={`loop-dashboard-round-${card.issue.id}-${round.round}`}
+                                    >
+                                      <div class="stage-row-head">
+                                        <strong>{loopDashboardRoundLabel(round)}</strong>
+                                        <span>{loopDashboardRoundCounts(round)}</span>
+                                      </div>
+                                      <div class="trace-strip">
+                                        <span class="trace-pill">
+                                          workers {round.worker_ok_count}/{round.worker_count}
+                                        </span>
+                                        {round.retry_lineage ? (
+                                          <span class="trace-pill trace-pill--warn">
+                                            {round.retry_lineage}
+                                          </span>
+                                        ) : null}
+                                        {round.blocker ? (
+                                          <span class="trace-pill trace-pill--warn">
+                                            {round.blocker}
+                                          </span>
+                                        ) : null}
+                                        {round.receipt_missing_count ? (
+                                          <span class="trace-pill trace-pill--warn">
+                                            missing {round.receipt_missing_count}
+                                          </span>
+                                        ) : null}
+                                        {round.rejected_count ? (
+                                          <span class="trace-pill trace-pill--warn">
+                                            rejected {round.rejected_count}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      <div class="trace-strip">
+                                        {round.groups.packets.slice(0, 4).map((packet) => (
+                                          <span class="trace-pill">{loopDashboardPacketLabel(packet)}</span>
+                                        ))}
+                                        {round.groups.admissions.slice(0, 4).map((admission) => (
+                                          <span
+                                            class={
+                                              admission.result === "rejected"
+                                                ? "trace-pill trace-pill--warn"
+                                                : "trace-pill"
+                                            }
+                                          >
+                                            {loopDashboardAdmissionLabel(admission)}
+                                          </span>
+                                        ))}
+                                        {round.groups.evidence.slice(0, 4).map((evidence) => (
+                                          <span
+                                            class={
+                                              evidence.worker_ok === false ||
+                                              evidence.admission_result === "rejected"
+                                                ? "trace-pill trace-pill--warn"
+                                                : "trace-pill"
+                                            }
+                                          >
+                                            {loopDashboardEvidenceLabel(evidence)}
+                                          </span>
+                                        ))}
+                                        {round.groups.verdicts.slice(0, 2).map((verdict) => (
+                                          <span
+                                            class={
+                                              verdict.decision === "keep"
+                                                ? "trace-pill"
+                                                : "trace-pill trace-pill--warn"
+                                            }
+                                          >
+                                            {loopDashboardVerdictLabel(verdict)}
+                                          </span>
+                                        ))}
                                       </div>
                                     </div>
                                   ))}

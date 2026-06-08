@@ -91,9 +91,10 @@ and the versioned final verdict. The preflight packet is admitted by
 Explorer/Developer/Reviewer workers spawn and become auditable `Blocked` issues.
 `hive loop dashboard <id>` exposes `entrance.hive.loop_dashboard.v1`, a compact
 loop control-plane view with issue state, kernel preflight, Explorer/Developer/
-Reviewer lanes, reviewer budget, human decision actions, health, and next
-actions; MCP exposes it as `entrance://loops/{loop_id}/dashboard`, and the Panel
-selected issue renders it above Runtime Preflight and Worker Lifecycle.
+Reviewer lanes, reviewer budget, human decision actions, health, round
+packet/admission/evidence/verdict grouping, and next actions; MCP exposes it as
+`entrance://loops/{loop_id}/dashboard`, and the Panel selected issue renders it
+above Runtime Preflight and Worker Lifecycle.
 `hive loop preflight <id>` exposes the same boundary as
 `entrance.hive.runtime_preflight.v1`, including policy, probe, current
 admission, blocker, failures, and next actions; MCP exposes it as

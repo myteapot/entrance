@@ -22,6 +22,8 @@ pub use loop_control::{
     HiveLoopCreateRequest, HiveLoopDashboardAgent, HiveLoopDashboardComment,
     HiveLoopDashboardHealth, HiveLoopDashboardHumanDecision, HiveLoopDashboardKernel,
     HiveLoopDashboardReport, HiveLoopDashboardResources, HiveLoopDashboardReviewer,
+    HiveLoopDashboardRound, HiveLoopDashboardRoundAdmission, HiveLoopDashboardRoundEvidence,
+    HiveLoopDashboardRoundGroups, HiveLoopDashboardRoundPacket, HiveLoopDashboardRoundVerdict,
     HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport,
     HiveLoopReport, HiveLoopRunRequest, HiveLoopRuntimePreflightObservation,
     HiveLoopRuntimePreflightPolicy, HiveLoopRuntimePreflightPreview,

@@ -99,16 +99,17 @@ include a compact runtime preflight summary with gate, route, state, blocker,
 and failure details. The local Panel selected-issue detail renders this report
 as a Runtime Preflight block before Worker Lifecycle, making the kernel gate
 visible before operator attention moves to workers.
-`entrance hive loop dashboard <loop_id>` exposes the minimal loop-level control
-surface as `entrance.hive.loop_dashboard.v1`. It combines issue state, kernel
-preflight, Explorer/Developer/Reviewer lane state, Reviewer score/budget,
-human decision actions, health, blockers, comment summary, resources, primary
-next action, and copyable next actions into one read-only report. MCP clients
-can read the same report through `entrance://loops/{loop_id}/dashboard`, and
-the Panel selected-issue detail renders it above the more specific Runtime
-Preflight and Worker Lifecycle blocks. This is a dashboard summary contract; a
-full round timeline and packet/admission/evidence/verdict drilldown is still
-future dashboard work.
+`entrance hive loop dashboard <loop_id>` exposes the loop-level control surface
+as `entrance.hive.loop_dashboard.v1`. It combines issue state, kernel preflight,
+Explorer/Developer/Reviewer lane state, Reviewer score/budget, human decision
+actions, health, blockers, comment summary, resources, primary next action,
+copyable next actions, and per-round packet/admission/evidence/verdict
+grouping into one read-only report. MCP clients can read the same report
+through `entrance://loops/{loop_id}/dashboard`, and the Panel selected-issue
+detail renders it above the more specific Runtime Preflight and Worker
+Lifecycle blocks. This is a dashboard grouping contract; focused transcript,
+remote receipt, artifact manifest, raw-payload diff, and blocker decision
+drilldowns are still future dashboard work.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as preflight-blocked verdicts. The `codex` runtime uses a read-only
 `codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and

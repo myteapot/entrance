@@ -393,7 +393,23 @@ async function main() {
   );
   await win.webContents.executeJavaScript(\`
   (() => {
-    const lifecycle = document.querySelector('[data-testid^="worker-lifecycle-detail-"]');
+    const card = Array.from(document.querySelectorAll('.issue-card'))
+      .find((item) => (item.textContent || '').includes('Entrance MVP demo'));
+    const button = card ? card.querySelector('[data-testid^="issue-action-board-details-"]') : null;
+    if (!button) return false;
+    button.click();
+    return true;
+  })()
+  \`);
+  await waitForCondition(
+    win,
+    "(() => { const detail = document.querySelector('.panel--detail'); const text = detail ? (detail.textContent || '') : ''; return Boolean(detail) && text.includes('Entrance MVP demo') && text.includes('Reviewer kept the candidate') && text.includes('packets 4 / admissions 4 / evidence 3 / verdicts 1') && Boolean(detail.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(detail.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(detail.querySelector('[data-testid^=worker-lifecycle-detail-]')); })()",
+    "local MVP issue detail",
+  );
+  await win.webContents.executeJavaScript(\`
+  (() => {
+    const detail = document.querySelector('.panel--detail');
+    const lifecycle = detail ? detail.querySelector('[data-testid^="worker-lifecycle-detail-"]') : null;
     if (!lifecycle) return false;
     lifecycle.scrollIntoView({ block: 'center', inline: 'nearest' });
     return true;
@@ -404,6 +420,9 @@ async function main() {
   const page = await win.webContents.executeJavaScript(\`
 (() => {
   const text = (document.body.textContent || '').replace(/\\\\s+/g, ' ').trim();
+  const detail = document.querySelector('.panel--detail');
+  const detailText = detail ? (detail.textContent || '').replace(/\\\\s+/g, ' ').trim() : '';
+  const detailQuery = (selector) => detail ? detail.querySelector(selector) : null;
   const byTestId = (id) => {
     const element = document.querySelector('[data-testid="' + id + '"]');
     return element ? {
@@ -419,27 +438,30 @@ async function main() {
     remote_fixture_issue_visible: text.includes('Entrance remote fixture demo'),
     connector_queue_visible: text.includes('Connector queue'),
     remote_fixture_provider_visible: text.includes('remote-fixture'),
-    loop_dashboard_visible: Boolean(document.querySelector('[data-testid^="loop-dashboard-detail-"]')),
-    loop_dashboard_developer_visible: Boolean(document.querySelector('[data-testid^="loop-dashboard-agent-"][data-testid$="-developer"]')),
-    loop_dashboard_reviewer_visible: Boolean(document.querySelector('[data-testid^="loop-dashboard-agent-"][data-testid$="-reviewer"]')),
-    loop_dashboard_budget_visible: text.includes('review budget 0/3'),
-    runtime_preflight_visible: Boolean(document.querySelector('[data-testid^="runtime-preflight-detail-"]')),
-    runtime_preflight_gate_visible: text.includes('runtime_policy_ready'),
-    runtime_preflight_route_visible: text.includes('kernel -> explorer'),
-    worker_lifecycle_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-detail-"]')),
-    worker_lifecycle_explorer_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-role-"][data-testid$="-explorer"]')),
-    worker_lifecycle_developer_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-role-"][data-testid$="-developer"]')),
-    worker_lifecycle_reviewer_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-role-"][data-testid$="-reviewer"]')),
-    worker_lifecycle_budget_visible: text.includes('review budget 0/3'),
+    selected_local_mvp_detail_visible: detailText.includes('Entrance MVP demo'),
+    loop_dashboard_visible: Boolean(detailQuery('[data-testid^="loop-dashboard-detail-"]')),
+    loop_dashboard_developer_visible: Boolean(detailQuery('[data-testid^="loop-dashboard-agent-"][data-testid$="-developer"]')),
+    loop_dashboard_reviewer_visible: Boolean(detailQuery('[data-testid^="loop-dashboard-agent-"][data-testid$="-reviewer"]')),
+    loop_dashboard_budget_visible: detailText.includes('review budget 0/3'),
+    loop_dashboard_round_visible: Boolean(detailQuery('[data-testid^="loop-dashboard-round-"]')),
+    loop_dashboard_round_groups_visible: detailText.includes('packets 4 / admissions 4 / evidence 3 / verdicts 1') && detailText.includes('packet kernel kernel->explorer PREFLIGHT_PACKET admitted') && detailText.includes('verdict keep all_gates_passed'),
+    runtime_preflight_visible: Boolean(detailQuery('[data-testid^="runtime-preflight-detail-"]')),
+    runtime_preflight_gate_visible: detailText.includes('runtime_policy_ready'),
+    runtime_preflight_route_visible: detailText.includes('kernel -> explorer'),
+    worker_lifecycle_visible: Boolean(detailQuery('[data-testid^="worker-lifecycle-detail-"]')),
+    worker_lifecycle_explorer_visible: Boolean(detailQuery('[data-testid^="worker-lifecycle-role-"][data-testid$="-explorer"]')),
+    worker_lifecycle_developer_visible: Boolean(detailQuery('[data-testid^="worker-lifecycle-role-"][data-testid$="-developer"]')),
+    worker_lifecycle_reviewer_visible: Boolean(detailQuery('[data-testid^="worker-lifecycle-role-"][data-testid$="-reviewer"]')),
+    worker_lifecycle_budget_visible: detailText.includes('review budget 0/3'),
     worker_lifecycle_in_view: (() => {
-      const lifecycle = document.querySelector('[data-testid^="worker-lifecycle-detail-"]');
+      const lifecycle = detailQuery('[data-testid^="worker-lifecycle-detail-"]');
       if (!lifecycle) return false;
       const rect = lifecycle.getBoundingClientRect();
-      return rect.top >= 0 && rect.top < innerHeight;
+      return rect.bottom > 0 && rect.top < innerHeight;
     })(),
     todo_column_visible: text.includes('Todo'),
     done_column_visible: text.includes('Done'),
-    reviewer_keep_visible: text.includes('Reviewer kept the candidate'),
+    reviewer_keep_visible: detailText.includes('Reviewer kept the candidate'),
   };
   return {
     title: document.title,
@@ -453,6 +475,7 @@ async function main() {
     },
     excerpts: {
       main: (document.querySelector('main')?.textContent || '').replace(/\\\\s+/g, ' ').trim().slice(0, 1600),
+      detail: detailText.slice(0, 1600),
     },
   };
 })()

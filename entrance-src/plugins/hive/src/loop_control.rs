@@ -676,6 +676,7 @@ pub struct HiveLoopDashboardReport {
     pub reviewer: HiveLoopDashboardReviewer,
     pub human_decision: HiveLoopDashboardHumanDecision,
     pub health: HiveLoopDashboardHealth,
+    pub rounds: Vec<HiveLoopDashboardRound>,
     pub comments_count: usize,
     pub latest_comment: Option<HiveLoopDashboardComment>,
     pub resources: HiveLoopDashboardResources,
@@ -737,6 +738,76 @@ pub struct HiveLoopDashboardHealth {
     pub audit_failure_details: Vec<String>,
     pub missing_receipts: Vec<String>,
     pub worker_failures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardRound {
+    pub round: i64,
+    pub current: bool,
+    pub status: String,
+    pub decision: Option<String>,
+    pub reason_code: Option<String>,
+    pub retry_lineage: Option<String>,
+    pub blocker: Option<String>,
+    pub packet_count: usize,
+    pub admission_count: usize,
+    pub evidence_count: usize,
+    pub verdict_count: usize,
+    pub rejected_count: usize,
+    pub receipt_missing_count: usize,
+    pub worker_count: usize,
+    pub worker_ok_count: usize,
+    pub groups: HiveLoopDashboardRoundGroups,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardRoundGroups {
+    pub packets: Vec<HiveLoopDashboardRoundPacket>,
+    pub admissions: Vec<HiveLoopDashboardRoundAdmission>,
+    pub evidence: Vec<HiveLoopDashboardRoundEvidence>,
+    pub verdicts: Vec<HiveLoopDashboardRoundVerdict>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardRoundPacket {
+    pub id: i64,
+    pub object_kind: String,
+    pub writer_role: String,
+    pub route_from: String,
+    pub route_to: String,
+    pub state_code: String,
+    pub admission_result: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardRoundAdmission {
+    pub id: i64,
+    pub packet_id: i64,
+    pub result: String,
+    pub gate: Option<String>,
+    pub gate_passed: Option<bool>,
+    pub reason: String,
+    pub missing_receipts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardRoundEvidence {
+    pub id: i64,
+    pub stage_role: Option<String>,
+    pub kind: String,
+    pub admission_result: Option<String>,
+    pub blocked_phase: Option<String>,
+    pub worker_ok: Option<bool>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardRoundVerdict {
+    pub id: i64,
+    pub decision: String,
+    pub reason_code: Option<String>,
+    pub score_vector: Vec<ScoreVectorMetric>,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2386,6 +2457,7 @@ pub fn dashboard(store: &Store, loop_id: i64) -> Result<HiveLoopDashboardReport>
     let agents = dashboard_agents(&lifecycle.current);
     let reviewer = dashboard_reviewer(&doctor.trace, &lifecycle);
     let human_decision = dashboard_human_decision(issue.as_ref(), &doctor.trace, &actions);
+    let rounds = dashboard_rounds(store, loop_id, &doctor.trace)?;
     let health = HiveLoopDashboardHealth {
         health: doctor.health.clone(),
         audit_failed_count: doctor.counts.audit_failed_count,
@@ -2445,6 +2517,7 @@ pub fn dashboard(store: &Store, loop_id: i64) -> Result<HiveLoopDashboardReport>
         reviewer,
         human_decision,
         health,
+        rounds,
         comments_count,
         latest_comment,
         resources: HiveLoopDashboardResources {
@@ -3431,6 +3504,254 @@ fn dashboard_human_decision(
         options: trace.human_options.clone(),
         actions: actions.to_vec(),
     }
+}
+
+fn dashboard_rounds(
+    store: &Store,
+    loop_id: i64,
+    trace: &IssueTraceSummary,
+) -> Result<Vec<HiveLoopDashboardRound>> {
+    let packets = store.list_hive_loop_packets(loop_id)?;
+    let admissions = store.list_hive_loop_admissions(loop_id)?;
+    let stages = store.list_hive_loop_stages(loop_id)?;
+    let evidence = store.list_hive_loop_evidence(loop_id)?;
+    let verdicts = store.list_hive_loop_verdicts(loop_id)?;
+    let stage_roles = stage_role_map(&stages);
+    let evidence_summaries = evidence
+        .iter()
+        .map(|row| issue_evidence_summary(row, &stage_roles))
+        .collect::<Vec<_>>();
+    let packet_rounds = packets
+        .iter()
+        .map(|packet| (packet.id, packet.round))
+        .collect::<HashMap<_, _>>();
+    let admission_by_packet = admissions
+        .iter()
+        .map(|admission| (admission.packet_id, admission))
+        .collect::<HashMap<_, _>>();
+    let failed_rounds = trace
+        .rounds
+        .iter()
+        .filter(|round| dashboard_round_summary_failed(round))
+        .map(|round| round.round)
+        .collect::<Vec<_>>();
+
+    Ok(trace
+        .rounds
+        .iter()
+        .map(|round_summary| {
+            let round = round_summary.round;
+            let round_packets = packets
+                .iter()
+                .filter(|packet| packet.round == round)
+                .map(|packet| dashboard_round_packet(packet, &admission_by_packet))
+                .collect::<Vec<_>>();
+            let round_admissions = admissions
+                .iter()
+                .filter(|admission| {
+                    packet_rounds
+                        .get(&admission.packet_id)
+                        .is_some_and(|packet_round| *packet_round == round)
+                })
+                .map(dashboard_round_admission)
+                .collect::<Vec<_>>();
+            let round_evidence = evidence_summaries
+                .iter()
+                .filter(|row| row.round == round)
+                .map(dashboard_round_evidence)
+                .collect::<Vec<_>>();
+            let round_verdicts = verdicts
+                .iter()
+                .filter(|verdict| verdict.round == round)
+                .map(dashboard_round_verdict)
+                .collect::<Vec<_>>();
+            let groups = HiveLoopDashboardRoundGroups {
+                packets: round_packets,
+                admissions: round_admissions,
+                evidence: round_evidence,
+                verdicts: round_verdicts,
+            };
+            let blocker = dashboard_round_blocker(round_summary, &groups);
+            let retry_lineage =
+                dashboard_retry_lineage(round_summary, trace.current_round, &failed_rounds);
+            HiveLoopDashboardRound {
+                round,
+                current: round == trace.current_round,
+                status: round_summary.status.clone(),
+                decision: round_summary.decision.clone(),
+                reason_code: groups
+                    .verdicts
+                    .iter()
+                    .rev()
+                    .find_map(|verdict| verdict.reason_code.clone()),
+                retry_lineage,
+                blocker,
+                packet_count: groups.packets.len(),
+                admission_count: groups.admissions.len(),
+                evidence_count: round_summary.evidence_count,
+                verdict_count: groups.verdicts.len(),
+                rejected_count: round_summary.rejected_count,
+                receipt_missing_count: round_summary.receipt_missing_count,
+                worker_count: round_summary.worker_count,
+                worker_ok_count: round_summary.worker_ok_count,
+                groups,
+            }
+        })
+        .collect())
+}
+
+fn dashboard_round_packet(
+    packet: &HiveLoopPacket,
+    admission_by_packet: &HashMap<i64, &HiveLoopAdmission>,
+) -> HiveLoopDashboardRoundPacket {
+    HiveLoopDashboardRoundPacket {
+        id: packet.id,
+        object_kind: packet.object_kind.clone(),
+        writer_role: packet.writer_role.clone(),
+        route_from: packet.route_from.clone(),
+        route_to: packet.route_to.clone(),
+        state_code: packet.state_code.clone(),
+        admission_result: admission_by_packet
+            .get(&packet.id)
+            .map(|admission| admission.result.clone()),
+    }
+}
+
+fn dashboard_round_admission(admission: &HiveLoopAdmission) -> HiveLoopDashboardRoundAdmission {
+    HiveLoopDashboardRoundAdmission {
+        id: admission.id,
+        packet_id: admission.packet_id,
+        result: admission.result.clone(),
+        gate: admission
+            .policy
+            .pointer("/gate/name")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        gate_passed: admission
+            .policy
+            .pointer("/gate/passed")
+            .and_then(|value| value.as_bool()),
+        reason: admission.reason.clone(),
+        missing_receipts: string_array_at(&admission.policy, "/receipt/missing"),
+    }
+}
+
+fn dashboard_round_evidence(evidence: &IssueEvidenceSummary) -> HiveLoopDashboardRoundEvidence {
+    HiveLoopDashboardRoundEvidence {
+        id: evidence.id,
+        stage_role: evidence.stage_role.clone(),
+        kind: evidence.kind.clone(),
+        admission_result: evidence.admission_result.clone(),
+        blocked_phase: evidence.blocked_phase.clone(),
+        worker_ok: evidence.worker_ok,
+        summary: evidence.summary.clone(),
+    }
+}
+
+fn dashboard_round_verdict(verdict: &HiveLoopVerdict) -> HiveLoopDashboardRoundVerdict {
+    HiveLoopDashboardRoundVerdict {
+        id: verdict.id,
+        decision: verdict.decision.clone(),
+        reason_code: verdict_reason_code(verdict),
+        score_vector: score_vector(&verdict.score),
+        summary: verdict.summary.clone(),
+    }
+}
+
+fn verdict_reason_code(verdict: &HiveLoopVerdict) -> Option<String> {
+    verdict
+        .score
+        .get("reason_code")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            verdict
+                .evidence
+                .get("reason_code")
+                .and_then(|value| value.as_str())
+        })
+        .map(ToOwned::to_owned)
+}
+
+fn dashboard_round_blocker(
+    round: &IssueRoundSummary,
+    groups: &HiveLoopDashboardRoundGroups,
+) -> Option<String> {
+    groups
+        .admissions
+        .iter()
+        .find(|admission| admission.result == "rejected")
+        .map(|admission| admission.reason.clone())
+        .or_else(|| {
+            groups
+                .evidence
+                .iter()
+                .find(|evidence| evidence.blocked_phase.is_some())
+                .and_then(|evidence| evidence.blocked_phase.clone())
+        })
+        .or_else(|| {
+            groups.verdicts.iter().rev().find_map(|verdict| {
+                if matches!(
+                    verdict.decision.as_str(),
+                    "reject" | "blocked" | "needs-review"
+                ) {
+                    verdict
+                        .reason_code
+                        .clone()
+                        .or_else(|| Some(verdict.summary.clone()))
+                } else {
+                    None
+                }
+            })
+        })
+        .or_else(|| {
+            if round.receipt_missing_count > 0 {
+                Some(format!("missing_receipts={}", round.receipt_missing_count))
+            } else {
+                None
+            }
+        })
+}
+
+fn dashboard_retry_lineage(
+    round: &IssueRoundSummary,
+    current_round: i64,
+    failed_rounds: &[i64],
+) -> Option<String> {
+    if round.round == current_round {
+        let prior = failed_rounds
+            .iter()
+            .copied()
+            .filter(|failed_round| *failed_round < current_round)
+            .collect::<Vec<_>>();
+        if prior.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "recovered_from {}",
+                prior
+                    .iter()
+                    .map(|value| format!("r{value}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+        }
+    } else if failed_rounds.contains(&round.round) {
+        Some(format!("retried_after r{}", round.round))
+    } else {
+        None
+    }
+}
+
+fn dashboard_round_summary_failed(round: &IssueRoundSummary) -> bool {
+    round.status != "kept"
+        && (round.rejected_count > 0
+            || round.receipt_missing_count > 0
+            || round.worker_retry_exhausted_count > 0
+            || round.worker_timeout_count > 0
+            || matches!(
+                round.decision.as_deref(),
+                Some("reject" | "blocked" | "needs-review")
+            ))
 }
 
 fn dashboard_state(
@@ -10220,6 +10541,36 @@ mod tests {
             dashboard_report.resources.loop_dashboard,
             format!("entrance://loops/{}/dashboard", created.contract.id)
         );
+        assert_eq!(dashboard_report.rounds.len(), 1);
+        let dashboard_round = dashboard_report
+            .rounds
+            .first()
+            .expect("dashboard should include current round");
+        assert!(dashboard_round.current);
+        assert_eq!(dashboard_round.status, "kept");
+        assert_eq!(dashboard_round.packet_count, 4);
+        assert_eq!(dashboard_round.admission_count, 4);
+        assert_eq!(dashboard_round.evidence_count, 3);
+        assert_eq!(dashboard_round.verdict_count, 1);
+        assert!(dashboard_round.blocker.is_none());
+        assert!(dashboard_round.retry_lineage.is_none());
+        assert!(dashboard_round.groups.packets.iter().any(|packet| {
+            packet.object_kind == "PREFLIGHT_PACKET"
+                && packet.writer_role == "kernel"
+                && packet.admission_result.as_deref() == Some("admitted")
+        }));
+        assert!(dashboard_round.groups.admissions.iter().any(|admission| {
+            admission.gate.as_deref() == Some("runtime_policy_ready")
+                && admission.gate_passed == Some(true)
+        }));
+        assert!(dashboard_round.groups.evidence.iter().any(|evidence| {
+            evidence.stage_role.as_deref() == Some("developer")
+                && evidence.kind == "execution_packet"
+                && evidence.worker_ok == Some(true)
+        }));
+        assert!(dashboard_round.groups.verdicts.iter().any(|verdict| {
+            verdict.decision == "keep" && verdict.reason_code.as_deref() == Some("all_gates_passed")
+        }));
         assert!(dashboard_report.primary_next_action.is_some());
         assert!(dashboard_report.next_actions.iter().any(|action| {
             action == &format!("entrance hive loop dashboard {}", created.contract.id)
