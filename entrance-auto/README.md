@@ -34,3 +34,6 @@ the workflow Markdown.
   generating the demo report. Use `--verify-golden` to compare normalized
   output contracts with `fixtures/golden/local-mvp-demo/`, and
   `--update-golden` only when the intended contract changes.
+- `workflows/validation/capture-panel-screenshot.mjs` reuses the local MVP demo
+  data, starts the local daemon and Vite, captures the Panel Issue board through
+  Electron, and writes ignored screenshot plus metadata artifacts.

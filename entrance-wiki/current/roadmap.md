@@ -55,6 +55,11 @@ Entrance has reached a local MVP unit:
 - The same workflow now supports `--verify-golden` and `--update-golden` for
   committed normalized output contracts under
   `entrance-auto/fixtures/golden/local-mvp-demo/`.
+- `entrance-auto/workflows/validation/capture-panel-screenshot.mjs --full-gates`
+  now captures the Panel Issue board from the same clean app root and writes
+  screenshot metadata proving that the local MVP issue, `remote-fixture:` issue,
+  connector queue, `Run Fixture` actions, `Todo`/`Done` columns, and reviewer
+  keep evidence are visible.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -117,8 +122,8 @@ multi-agent runtime/compiler product.
 
 ### P2: Release and validation workflow
 
-- Extend the reproducible demo workflow with Panel Browser screenshot capture
-  and screenshot metadata, while keeping CLI validation deterministic.
+- Keep Panel screenshot metadata current as the issue board and connector
+  dashboard evolve.
 - Keep the local MVP golden fixtures current as the intended issue/status/comment
   contracts evolve.
 - Add release notes and operator docs that clearly separate local MVP, external
@@ -128,7 +133,5 @@ multi-agent runtime/compiler product.
 
 Run one larger convergence loop on productionizing external issue surfaces:
 
-1. Capture representative Browser screenshots and screenshot metadata for the
-   already-working Panel fixture action.
-2. Then choose between live token-backed GitHub/Linear validation or worker
+1. Choose between live token-backed GitHub/Linear validation or worker
    lifecycle hardening.

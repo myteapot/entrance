@@ -66,3 +66,21 @@ The generated report includes the daemon and Vite commands needed to inspect the
 same app root in the local Panel. Browser screenshots are intentionally kept as
 separate ignored artifacts so the CLI workflow remains deterministic and can run
 without a browser session.
+
+To capture the Panel Issue board with the same local MVP data:
+
+```bash
+entrance-auto/workflows/validation/capture-panel-screenshot.mjs
+```
+
+For a release-style screenshot run that also verifies the source gates and
+golden CLI contracts:
+
+```bash
+entrance-auto/workflows/validation/capture-panel-screenshot.mjs --full-gates
+```
+
+The screenshot workflow writes PNG files under `entrance-auto/screenshots/` and
+metadata/summary reports under `entrance-auto/reports/`. It validates that the
+Panel exposes the local MVP issue, the `remote-fixture:` issue, connector queue,
+`Run Fixture` actions, `Todo`/`Done` columns, and reviewer keep evidence.
