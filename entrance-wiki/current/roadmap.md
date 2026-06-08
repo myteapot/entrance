@@ -65,7 +65,13 @@ Entrance has reached a local MVP unit:
   now captures the Panel Issue board from the same clean app root and writes
   screenshot metadata proving that the local MVP issue, `remote-fixture:` issue,
   connector queue, `Run Fixture` actions, `Todo`/`Done` columns, and reviewer
-  keep evidence are visible.
+  keep evidence are visible. The screenshot workflow also scrolls the selected
+  issue Worker Lifecycle detail into view and asserts that Explorer,
+  Developer, Reviewer, fallback budget, and lifecycle state are visible.
+- The Panel selected-issue detail now consumes the daemon
+  `hive_loop_worker_lifecycle` report and renders Worker Lifecycle state,
+  expected role lanes, observed worker receipts, round chips, fallback budget,
+  timeout/failure summaries, and copyable next actions.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -109,9 +115,9 @@ multi-agent runtime/compiler product.
 
 ### P1: Loop dashboard
 
-- Extend the current Panel Review Queue and issue board into a real loop
-  dashboard: round timeline, role lanes, packet/admission/evidence/verdict
-  grouping, and retry lineage.
+- Extend the current Panel Review Queue, issue board, and selected-issue Worker
+  Lifecycle detail into a real loop dashboard: round timeline, role lanes,
+  packet/admission/evidence/verdict grouping, and retry lineage.
 - Add focused evidence drill-down views so operators can inspect transcripts,
   failed checks, connector receipts, and human decisions without reading raw
   JSON first.

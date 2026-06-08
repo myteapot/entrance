@@ -388,9 +388,17 @@ async function main() {
 
   await waitForCondition(
     win,
-    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && document.body.textContent.includes('Entrance remote fixture demo')",
+    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
     "Panel issue board",
   );
+  await win.webContents.executeJavaScript(\`
+  (() => {
+    const lifecycle = document.querySelector('[data-testid^="worker-lifecycle-detail-"]');
+    if (!lifecycle) return false;
+    lifecycle.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return true;
+  })()
+  \`);
   await sleep(500);
 
   const page = await win.webContents.executeJavaScript(\`
@@ -411,6 +419,17 @@ async function main() {
     remote_fixture_issue_visible: text.includes('Entrance remote fixture demo'),
     connector_queue_visible: text.includes('Connector queue'),
     remote_fixture_provider_visible: text.includes('remote-fixture'),
+    worker_lifecycle_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-detail-"]')),
+    worker_lifecycle_explorer_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-role-"][data-testid$="-explorer"]')),
+    worker_lifecycle_developer_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-role-"][data-testid$="-developer"]')),
+    worker_lifecycle_reviewer_visible: Boolean(document.querySelector('[data-testid^="worker-lifecycle-role-"][data-testid$="-reviewer"]')),
+    worker_lifecycle_budget_visible: text.includes('review budget 0/3'),
+    worker_lifecycle_in_view: (() => {
+      const lifecycle = document.querySelector('[data-testid^="worker-lifecycle-detail-"]');
+      if (!lifecycle) return false;
+      const rect = lifecycle.getBoundingClientRect();
+      return rect.top >= 0 && rect.top < innerHeight;
+    })(),
     todo_column_visible: text.includes('Todo'),
     done_column_visible: text.includes('Done'),
     reviewer_keep_visible: text.includes('Reviewer kept the candidate'),

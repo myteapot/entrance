@@ -605,6 +605,81 @@ type IssueDoctorSummary = {
   worker_failures: string[];
 };
 
+type WorkerLifecycleReport = {
+  schema_version: string;
+  loop_id: number;
+  issue_id: number | null;
+  issue_status: string | null;
+  status: string;
+  active_phase: string;
+  current_round: number;
+  runtime: string;
+  lifecycle_state: string;
+  summary: string;
+  policy: {
+    schema_version: string;
+    expected_roles: string[];
+    legacy_roles: string[];
+    default_timeout_secs: number;
+    max_timeout_secs: number;
+    timeout_env: string;
+    default_attempts: number;
+    max_attempts: number;
+    attempts_env: string;
+    reviewer_invalid_round_budget: number;
+    fallback_status: string;
+    human_decision_statuses: string[];
+  };
+  current: WorkerLifecycleRound;
+  rounds: WorkerLifecycleRound[];
+  failures: string[];
+  next_actions: string[];
+};
+
+type WorkerLifecycleRound = {
+  round: number;
+  status: string;
+  decision: string | null;
+  expected_roles: string[];
+  observed_roles: string[];
+  missing_roles: string[];
+  worker_count: number;
+  worker_ok_count: number;
+  worker_timeout_count: number;
+  worker_retry_exhausted_count: number;
+  worker_duration_ms: number;
+  reviewer_invalid_rounds_used: number;
+  reviewer_invalid_budget_exhausted: boolean;
+  failures: string[];
+  workers: WorkerLifecycleWorker[];
+};
+
+type WorkerLifecycleWorker = {
+  evidence_id: number;
+  round: number;
+  role: string;
+  stage_role: string | null;
+  evidence_kind: string;
+  kind: string | null;
+  mode: string | null;
+  ok: boolean | null;
+  receipt_ok: boolean | null;
+  timed_out: boolean | null;
+  status: number | null;
+  duration_ms: number | null;
+  timeout_secs: number | null;
+  attempt_count: number | null;
+  max_attempts: number | null;
+  retry_exhausted: boolean | null;
+  command: string | null;
+  cwd: string | null;
+  action: string | null;
+  evidence_summary: string | null;
+  gate_count: number | null;
+  receipt_errors: string[];
+  transcript_excerpt: string | null;
+};
+
 type LauncherResult = {
   id: number;
   name: string;
@@ -906,6 +981,28 @@ export default function App() {
     return cards.find((card) => card.issue.id === issueId) ?? cards[0];
   });
   const selectedIssueDoctor = createMemo(() => selectedIssueCard()?.doctor ?? null);
+  const selectedIssueLifecycleKey = createMemo(() => {
+    const card = selectedIssueCard();
+    if (!card?.issue.loop_id) return null;
+    return [
+      card.issue.loop_id,
+      card.issue.updated_at,
+      card.trace?.current_round ?? 0,
+      card.trace?.evidence_count ?? 0,
+      card.trace?.role_worker_count ?? 0,
+    ].join(":");
+  });
+  const [selectedWorkerLifecycle] = createResource(selectedIssueLifecycleKey, async (key) => {
+    if (!key) return null;
+    const loopId = Number.parseInt(key.split(":")[0], 10);
+    if (!Number.isFinite(loopId)) return null;
+    return bridge.invoke<WorkerLifecycleReport>("hive_loop_worker_lifecycle", { id: loopId });
+  });
+  const selectedIssueWorkerLifecycle = createMemo(() => {
+    const lifecycle = selectedWorkerLifecycle();
+    const loopId = selectedIssueCard()?.issue.loop_id;
+    return lifecycle && lifecycle.loop_id === loopId ? lifecycle : null;
+  });
   const issueCardsForStatus = (statusName: string) =>
     (issueCards() ?? []).filter((card) => card.issue.status === statusName);
   const reviewQueueCards = createMemo(() =>
@@ -2226,6 +2323,66 @@ export default function App() {
     return `runtime ${runtimeDurationLabel(doctor.counts.round_worker_duration_ms)}`;
   };
 
+  const workerLifecycleStateLabel = (state: string) =>
+    ({
+      succeeded: "succeeded",
+      blocked: "blocked",
+      needs_review: "needs review",
+      worker_failed: "worker failed",
+      canceled: "canceled",
+      running: "running",
+      pending: "pending",
+      observed: "observed",
+    })[state] ?? state;
+
+  const workerLifecycleTone = (state: string) =>
+    state === "succeeded" ? "ok" : state === "pending" || state === "running" ? "pending" : "warn";
+
+  const workerLifecycleWorkerState = (worker: WorkerLifecycleWorker | null | undefined) => {
+    if (!worker) return "missing";
+    if (worker.retry_exhausted) return "retry exhausted";
+    if (worker.timed_out) return "timeout";
+    if (worker.ok === true && worker.receipt_ok !== false) return "ok";
+    if (worker.ok === false || worker.receipt_ok === false || worker.receipt_errors.length) return "blocked";
+    return "observed";
+  };
+
+  const workerLifecycleRoleTone = (worker: WorkerLifecycleWorker | null | undefined) => {
+    const state = workerLifecycleWorkerState(worker);
+    return state === "ok" ? "ok" : state === "observed" ? "pending" : "warn";
+  };
+
+  const workerLifecycleReceiptLabel = (worker: WorkerLifecycleWorker | null | undefined) => {
+    if (!worker) return "receipt missing";
+    if (worker.receipt_ok === null) return "receipt pending";
+    return worker.receipt_ok ? "receipt ok" : "receipt fail";
+  };
+
+  const workerLifecycleAttemptLabel = (worker: WorkerLifecycleWorker | null | undefined) => {
+    if (worker?.attempt_count === null || worker?.attempt_count === undefined) return null;
+    return worker.max_attempts
+      ? `attempts ${worker.attempt_count}/${worker.max_attempts}`
+      : `attempts ${worker.attempt_count}`;
+  };
+
+  const workerLifecycleDurationLabel = (worker: WorkerLifecycleWorker | null | undefined) =>
+    worker?.duration_ms === null || worker?.duration_ms === undefined
+      ? null
+      : runtimeDurationLabel(worker.duration_ms);
+
+  const workerLifecycleBudgetLabel = (lifecycle: WorkerLifecycleReport) =>
+    `review budget ${lifecycle.current.reviewer_invalid_rounds_used}/${lifecycle.policy.reviewer_invalid_round_budget}`;
+
+  const workerLifecycleRoundLabel = (round: WorkerLifecycleRound) => {
+    const workers = round.worker_count ? ` ${round.worker_ok_count}/${round.worker_count}` : "";
+    const decision = round.decision ? ` ${round.decision}` : "";
+    const warn = round.worker_timeout_count || round.worker_retry_exhausted_count ? " retry" : "";
+    return `r${round.round} ${round.status}${decision}${workers}${warn}`;
+  };
+
+  const workerLifecycleWorkerForRole = (round: WorkerLifecycleRound, role: string) =>
+    round.workers.find((worker) => worker.role === role) ?? null;
+
   const roundHistoryLabel = (card: IssueCard) =>
     card.trace?.rounds.length
       ? card.trace.rounds
@@ -2958,6 +3115,186 @@ export default function App() {
                             </div>
                           )}
                         </Show>
+                        {card.issue.loop_id ? (
+                          <Show
+                            when={selectedIssueWorkerLifecycle()}
+                            keyed
+                            fallback={
+                              <div
+                                class="worker-lifecycle worker-lifecycle--pending"
+                                data-testid={`worker-lifecycle-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Worker Lifecycle</strong>
+                                  <span>
+                                    {selectedWorkerLifecycle.loading ? "loading" : "pending"}
+                                  </span>
+                                </div>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">loop #{card.issue.loop_id}</span>
+                                  <span class="trace-pill">worker_lifecycle.v1</span>
+                                </div>
+                              </div>
+                            }
+                          >
+                            {(lifecycle) => (
+                              <div
+                                class={`worker-lifecycle worker-lifecycle--${workerLifecycleTone(
+                                  lifecycle.lifecycle_state,
+                                )}`}
+                                data-testid={`worker-lifecycle-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Worker Lifecycle</strong>
+                                  <span>{workerLifecycleStateLabel(lifecycle.lifecycle_state)}</span>
+                                </div>
+                                <p>{lifecycle.summary}</p>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">{schemaLabel(lifecycle.schema_version)}</span>
+                                  <span class="trace-pill">loop #{lifecycle.loop_id}</span>
+                                  <span class="trace-pill">round {lifecycle.current_round}</span>
+                                  <span class="trace-pill">{lifecycle.runtime}</span>
+                                  <span
+                                    class={
+                                      lifecycle.current.reviewer_invalid_budget_exhausted
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {workerLifecycleBudgetLabel(lifecycle)}
+                                  </span>
+                                  <span class="trace-pill">fallback {lifecycle.policy.fallback_status}</span>
+                                  <span class="trace-pill">{lifecycle.current.worker_ok_count}/{lifecycle.current.worker_count} workers</span>
+                                  {lifecycle.current.missing_roles.length ? (
+                                    <span class="trace-pill trace-pill--warn">
+                                      missing {lifecycle.current.missing_roles.join(", ")}
+                                    </span>
+                                  ) : null}
+                                  {lifecycle.current.worker_timeout_count ||
+                                  lifecycle.current.worker_retry_exhausted_count ? (
+                                    <span class="trace-pill trace-pill--warn">
+                                      {lifecycle.current.worker_timeout_count} timeout /{" "}
+                                      {lifecycle.current.worker_retry_exhausted_count} exhausted
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div class="worker-lifecycle-roles">
+                                  {lifecycle.current.expected_roles.map((role) => {
+                                    const worker = workerLifecycleWorkerForRole(lifecycle.current, role);
+                                    return (
+                                      <div
+                                        class={`worker-lifecycle-role worker-lifecycle-role--${workerLifecycleRoleTone(
+                                          worker,
+                                        )}`}
+                                        data-testid={`worker-lifecycle-role-${card.issue.id}-${role}`}
+                                      >
+                                        <div class="stage-row-head">
+                                          <strong>{role}</strong>
+                                          <span>{workerLifecycleWorkerState(worker)}</span>
+                                        </div>
+                                        <p>
+                                          {worker?.evidence_summary ??
+                                            worker?.action ??
+                                            "No worker receipt"}
+                                        </p>
+                                        <div class="trace-strip">
+                                          <span
+                                            class={
+                                              workerLifecycleWorkerState(worker) === "ok"
+                                                ? "trace-pill"
+                                                : "trace-pill trace-pill--warn"
+                                            }
+                                          >
+                                            {worker?.kind ?? "missing"}
+                                          </span>
+                                          <span
+                                            class={
+                                              worker?.receipt_ok === false || !worker
+                                                ? "trace-pill trace-pill--warn"
+                                                : "trace-pill"
+                                            }
+                                          >
+                                            {workerLifecycleReceiptLabel(worker)}
+                                          </span>
+                                          {worker?.evidence_kind ? (
+                                            <span class="trace-pill">{worker.evidence_kind}</span>
+                                          ) : null}
+                                          {worker?.mode ? <span class="trace-pill">{worker.mode}</span> : null}
+                                          {workerLifecycleDurationLabel(worker) ? (
+                                            <span class="trace-pill">{workerLifecycleDurationLabel(worker)}</span>
+                                          ) : null}
+                                          {worker?.timeout_secs !== null && worker?.timeout_secs !== undefined ? (
+                                            <span class="trace-pill">limit {worker.timeout_secs}s</span>
+                                          ) : null}
+                                          {workerLifecycleAttemptLabel(worker) ? (
+                                            <span class="trace-pill">{workerLifecycleAttemptLabel(worker)}</span>
+                                          ) : null}
+                                          {worker?.action ? <span class="trace-pill">{worker.action}</span> : null}
+                                          {worker?.gate_count !== null && worker?.gate_count !== undefined ? (
+                                            <span class="trace-pill">gates {worker.gate_count}</span>
+                                          ) : null}
+                                          {worker?.timed_out ? (
+                                            <span class="trace-pill trace-pill--warn">timeout</span>
+                                          ) : null}
+                                          {worker?.retry_exhausted ? (
+                                            <span class="trace-pill trace-pill--warn">retry exhausted</span>
+                                          ) : null}
+                                          {worker?.receipt_errors.map((field) => (
+                                            <span class="trace-pill trace-pill--warn">receipt {field}</span>
+                                          ))}
+                                        </div>
+                                        {worker?.transcript_excerpt ? (
+                                          <p class="muted">{worker.transcript_excerpt}</p>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                <div class="worker-lifecycle-rounds">
+                                  {lifecycle.rounds.map((round) => (
+                                    <span
+                                      class={
+                                        round.failures.length ||
+                                        round.worker_timeout_count ||
+                                        round.worker_retry_exhausted_count ||
+                                        round.reviewer_invalid_budget_exhausted
+                                          ? "trace-pill trace-pill--warn"
+                                          : "trace-pill"
+                                      }
+                                      title={round.failures.join(" | ") || undefined}
+                                    >
+                                      {workerLifecycleRoundLabel(round)}
+                                    </span>
+                                  ))}
+                                </div>
+                                {lifecycle.failures.length ? (
+                                  <div class="doctor-lines">
+                                    {lifecycle.failures.map((failure) => (
+                                      <span>{failure}</span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                {lifecycle.next_actions.length ? (
+                                  <div class="doctor-actions">
+                                    {lifecycle.next_actions.slice(0, 2).map((action, index) => (
+                                      <div class="doctor-action-row">
+                                        <code>{action}</code>
+                                        <button
+                                          type="button"
+                                          aria-label={`Copy worker lifecycle action ${action}`}
+                                          data-testid={`worker-lifecycle-action-copy-${card.issue.id}-${index}`}
+                                          onClick={() => void copyDoctorAction(action)}
+                                        >
+                                          Copy
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )}
+                          </Show>
+                        ) : null}
                         {issueHumanActions(card).length ? (
                           <div class="decision-options">
                             {card.issue.loop_id && card.issue.status === "Todo" ? (

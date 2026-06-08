@@ -587,6 +587,69 @@
   background: rgba(255, 255, 255, 0.025);
 }
 
+.worker-lifecycle {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.worker-lifecycle p {
+  margin: 0;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.worker-lifecycle--ok .stage-row-head span {
+  color: var(--ok);
+}
+
+.worker-lifecycle--warn .stage-row-head span {
+  color: #ffc107;
+}
+
+.worker-lifecycle--pending .stage-row-head span {
+  color: var(--text-dim);
+}
+
+.worker-lifecycle-roles {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.worker-lifecycle-role {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.worker-lifecycle-role--ok {
+  border-color: rgba(121, 215, 167, 0.24);
+  background: rgba(121, 215, 167, 0.055);
+}
+
+.worker-lifecycle-role--warn {
+  border-color: rgba(255, 193, 7, 0.32);
+  background: rgba(255, 193, 7, 0.08);
+}
+
+.worker-lifecycle-role--pending {
+  border-color: var(--border);
+}
+
+.worker-lifecycle-rounds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .connector-strip {
   display: flex;
   flex-wrap: wrap;

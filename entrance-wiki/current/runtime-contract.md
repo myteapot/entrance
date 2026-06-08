@@ -144,8 +144,11 @@ as a first-class `entrance.hive.worker_lifecycle.v1` report: expected
 Explorer/Developer/Reviewer roles, observed workers by round, missing roles,
 timeouts, attempts, retry exhaustion, receipt errors, the 3-round Reviewer
 invalid budget, and the `Blocked` fallback status. This is a lifecycle
-observability contract; durable worker heartbeat, resume, cancel, replacement,
-and isolation are still future runtime-hardening work.
+observability contract. The local Panel selected-issue detail calls the daemon
+`hive_loop_worker_lifecycle` command and renders the same report as Worker
+Lifecycle role lanes, round chips, fallback budget, timeout/failure summaries,
+and copyable next actions. Durable worker heartbeat, resume, cancel,
+replacement, and isolation are still future runtime-hardening work.
 
 Operator comments and decisions are summarized into a current-round operator trail plus
 total operator event counts, making human retry, review, cancel, and comment
