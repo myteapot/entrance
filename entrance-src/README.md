@@ -59,6 +59,7 @@ Local agent-loop MVP:
 .\entrance.exe hive loop evidence 1
 .\entrance.exe hive loop audit 1
 .\entrance.exe hive loop doctor 1
+.\entrance.exe hive loop dashboard 1
 .\entrance.exe hive loop preflight 1
 .\entrance.exe hive loop policies 1
 .\entrance.exe hive schema --compact
@@ -88,6 +89,11 @@ receipt-aware admission gates, versioned admission receipts, stage evidence,
 and the versioned final verdict. The preflight packet is admitted by
 `runtime_policy_ready`; unsupported or probe-failed runtimes are rejected before
 Explorer/Developer/Reviewer workers spawn and become auditable `Blocked` issues.
+`hive loop dashboard <id>` exposes `entrance.hive.loop_dashboard.v1`, a compact
+loop control-plane view with issue state, kernel preflight, Explorer/Developer/
+Reviewer lanes, reviewer budget, human decision actions, health, and next
+actions; MCP exposes it as `entrance://loops/{loop_id}/dashboard`, and the Panel
+selected issue renders it above Runtime Preflight and Worker Lifecycle.
 `hive loop preflight <id>` exposes the same boundary as
 `entrance.hive.runtime_preflight.v1`, including policy, probe, current
 admission, blocker, failures, and next actions; MCP exposes it as

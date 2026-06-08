@@ -21,6 +21,12 @@ Entrance has reached a local MVP unit:
   packet, and the Panel selected-issue Runtime Preflight block. It exposes the
   active runtime policy, kernel `PREFLIGHT_PACKET` route, runtime probe,
   current admission result, blocker, failures, and next actions.
+- Loop dashboard is now a first-class minimal control-plane contract through
+  `entrance hive loop dashboard <loop_id>`,
+  `entrance://loops/{loop_id}/dashboard`, and the Panel selected-issue Loop
+  Dashboard block. It summarizes issue state, kernel preflight,
+  Explorer/Developer/Reviewer lanes, reviewer budget, human decision actions,
+  health, blockers, and next actions in one report.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
 - Worker lifecycle is now a first-class observable contract through
@@ -76,9 +82,12 @@ Entrance has reached a local MVP unit:
   now captures the Panel Issue board from the same clean app root and writes
   screenshot metadata proving that the local MVP issue, `remote-fixture:` issue,
   connector queue, `Run Fixture` actions, `Todo`/`Done` columns, and reviewer
-  keep evidence are visible. The screenshot workflow also scrolls the selected
-  issue Worker Lifecycle detail into view and asserts that Explorer,
-  Developer, Reviewer, fallback budget, and lifecycle state are visible.
+  keep evidence are visible. The screenshot workflow also asserts that the
+  selected issue Loop Dashboard, Runtime Preflight, Worker Lifecycle,
+  Developer/Reviewer lanes, fallback budget, and lifecycle state are visible.
+- The Panel selected-issue detail now consumes the daemon `hive_loop_dashboard`
+  report and renders Loop Dashboard state, kernel gate, role lanes, reviewer
+  budget, human decision status, blockers, and copyable next actions.
 - The Panel selected-issue detail now consumes the daemon
   `hive_loop_runtime_preflight` report and renders Runtime Preflight state,
   route, object kind, gate result, runtime policy/probe, blockers, failures,
@@ -133,10 +142,9 @@ multi-agent runtime/compiler product.
 
 ### P1: Loop dashboard
 
-- Extend the current Panel Review Queue, issue board, selected-issue Runtime
-  Preflight block, and selected-issue Worker Lifecycle detail into a real loop
-  dashboard: round timeline, role lanes, packet/admission/evidence/verdict
-  grouping, and retry lineage.
+- Extend the current selected-issue Loop Dashboard from a minimal summary into
+  a real drilldown: round timeline, packet/admission/evidence/verdict grouping,
+  retry lineage, and blocker decision surface.
 - Add focused evidence drill-down views so operators can inspect transcripts,
   failed checks, connector receipts, and human decisions without reading raw
   JSON first.

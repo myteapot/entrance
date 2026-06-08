@@ -99,6 +99,16 @@ include a compact runtime preflight summary with gate, route, state, blocker,
 and failure details. The local Panel selected-issue detail renders this report
 as a Runtime Preflight block before Worker Lifecycle, making the kernel gate
 visible before operator attention moves to workers.
+`entrance hive loop dashboard <loop_id>` exposes the minimal loop-level control
+surface as `entrance.hive.loop_dashboard.v1`. It combines issue state, kernel
+preflight, Explorer/Developer/Reviewer lane state, Reviewer score/budget,
+human decision actions, health, blockers, comment summary, resources, primary
+next action, and copyable next actions into one read-only report. MCP clients
+can read the same report through `entrance://loops/{loop_id}/dashboard`, and
+the Panel selected-issue detail renders it above the more specific Runtime
+Preflight and Worker Lifecycle blocks. This is a dashboard summary contract; a
+full round timeline and packet/admission/evidence/verdict drilldown is still
+future dashboard work.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as preflight-blocked verdicts. The `codex` runtime uses a read-only
 `codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and
@@ -347,6 +357,8 @@ Resources:
 - `entrance://review-queue`
 - `entrance://issues/{issue_id}`
 - `entrance://issues/{issue_id}/control`
+- `entrance://loops/{loop_id}/dashboard`
+- `entrance://loops/{loop_id}/runtime-preflight`
 - `entrance://loops/{loop_id}/worker-lifecycle`
 - `entrance://policy/registry`
 - `entrance://policy/mcp-permissions`
@@ -374,9 +386,11 @@ actions, blockers, latest comment, and recent evidence summaries.
 single issue as `entrance.mcp.issue_control.v1`, aggregating state, action call
 templates, MCP permissions, blockers, recent evidence, operator events, and
 operator confirmation receipts so agents do not have to infer the control
-surface from raw issue JSON. The control packet now includes a
-`worker_lifecycle` summary and a pointer to
-`entrance://loops/{loop_id}/worker-lifecycle`, whose full
+surface from raw issue JSON. The control packet now includes `loop_dashboard`,
+`runtime_preflight`, and `worker_lifecycle` resource pointers plus compact
+runtime preflight and worker lifecycle summaries. The full
+`entrance.hive.loop_dashboard.v1` report gives agents one loop-level control
+view before they inspect lower-level resources; the full
 `entrance.hive.worker_lifecycle.v1` report lists expected roles, observed
 workers, receipt status, timeout/attempt metadata, retry exhaustion, and the
 Reviewer invalid-budget fallback. `entrance://policy/actor-identity` documents

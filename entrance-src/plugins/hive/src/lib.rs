@@ -19,8 +19,11 @@ pub use loop_control::{
     connector_retry_policy_for_provider, ConnectorAdmissionCheckSpec, ConnectorAdmissionPolicySpec,
     ConnectorPolicyRegistry, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
     ConnectorRegistryReport, ConnectorRetryPolicySpec, HiveLoopAuditCheck, HiveLoopAuditReport,
-    HiveLoopCreateRequest, HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceReport,
-    HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest, HiveLoopRuntimePreflightObservation,
+    HiveLoopCreateRequest, HiveLoopDashboardAgent, HiveLoopDashboardComment,
+    HiveLoopDashboardHealth, HiveLoopDashboardHumanDecision, HiveLoopDashboardKernel,
+    HiveLoopDashboardReport, HiveLoopDashboardResources, HiveLoopDashboardReviewer,
+    HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceReport, HiveLoopPolicyReport,
+    HiveLoopReport, HiveLoopRunRequest, HiveLoopRuntimePreflightObservation,
     HiveLoopRuntimePreflightPolicy, HiveLoopRuntimePreflightPreview,
     HiveLoopRuntimePreflightReport, HiveLoopTraceReport, HiveLoopWorkerLifecyclePolicy,
     HiveLoopWorkerLifecycleReport, HiveLoopWorkerLifecycleRound, HiveLoopWorkerLifecycleWorker,
@@ -153,6 +156,10 @@ impl HivePlugin {
 
     pub fn loop_runtime_preflight(&self, id: i64) -> Result<HiveLoopRuntimePreflightReport> {
         loop_control::runtime_preflight(&self.store, id)
+    }
+
+    pub fn loop_dashboard(&self, id: i64) -> Result<HiveLoopDashboardReport> {
+        loop_control::dashboard(&self.store, id)
     }
 
     pub fn panel(&self) -> Result<Vec<IssueCard>> {

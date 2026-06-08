@@ -34,6 +34,7 @@ const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
 const WORKER_LIFECYCLE_SCHEMA_VERSION: &str = "entrance.hive.worker_lifecycle.v1";
 const RUNTIME_PREFLIGHT_SCHEMA_VERSION: &str = "entrance.hive.runtime_preflight.v1";
+const LOOP_DASHBOARD_SCHEMA_VERSION: &str = "entrance.hive.loop_dashboard.v1";
 pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
@@ -657,6 +658,103 @@ pub struct HiveLoopRuntimePreflightObservation {
     pub probe_ok: Option<bool>,
     pub blocker: Option<String>,
     pub runtime_probe: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardReport {
+    pub schema_version: String,
+    pub loop_id: i64,
+    pub issue: Option<HiveIssue>,
+    pub status: String,
+    pub active_phase: String,
+    pub current_round: i64,
+    pub runtime: String,
+    pub dashboard_state: String,
+    pub summary: String,
+    pub kernel: HiveLoopDashboardKernel,
+    pub agents: Vec<HiveLoopDashboardAgent>,
+    pub reviewer: HiveLoopDashboardReviewer,
+    pub human_decision: HiveLoopDashboardHumanDecision,
+    pub health: HiveLoopDashboardHealth,
+    pub comments_count: usize,
+    pub latest_comment: Option<HiveLoopDashboardComment>,
+    pub resources: HiveLoopDashboardResources,
+    pub primary_next_action: Option<String>,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardKernel {
+    pub preflight_state: String,
+    pub gate: String,
+    pub gate_passed: Option<bool>,
+    pub route_from: String,
+    pub route_to: String,
+    pub object_kind: String,
+    pub blocker: Option<String>,
+    pub failures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardAgent {
+    pub role: String,
+    pub state: String,
+    pub evidence_id: Option<i64>,
+    pub worker_kind: Option<String>,
+    pub worker_mode: Option<String>,
+    pub ok: Option<bool>,
+    pub receipt_ok: Option<bool>,
+    pub timed_out: Option<bool>,
+    pub retry_exhausted: Option<bool>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardReviewer {
+    pub decision: Option<String>,
+    pub reason_code: Option<String>,
+    pub score_vector: Vec<ScoreVectorMetric>,
+    pub human_options: Vec<String>,
+    pub reviewer_invalid_rounds_used: i64,
+    pub reviewer_invalid_round_budget: i64,
+    pub reviewer_invalid_budget_exhausted: bool,
+    pub fallback_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardHumanDecision {
+    pub required: bool,
+    pub issue_status: Option<String>,
+    pub options: Vec<String>,
+    pub actions: Vec<IssueAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardHealth {
+    pub health: String,
+    pub audit_failed_count: usize,
+    pub failed_checks: Vec<String>,
+    pub audit_failure_details: Vec<String>,
+    pub missing_receipts: Vec<String>,
+    pub worker_failures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardComment {
+    pub id: i64,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopDashboardResources {
+    pub loop_dashboard: String,
+    pub runtime_preflight: String,
+    pub worker_lifecycle: String,
+    pub issue: Option<String>,
+    pub issue_control: Option<String>,
+    pub review_queue: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2256,6 +2354,116 @@ pub fn runtime_preflight(store: &Store, loop_id: i64) -> Result<HiveLoopRuntimeP
     })
 }
 
+pub fn dashboard(store: &Store, loop_id: i64) -> Result<HiveLoopDashboardReport> {
+    let preflight = runtime_preflight(store, loop_id)?;
+    let lifecycle = worker_lifecycle(store, loop_id)?;
+    let doctor = doctor(store, loop_id)?;
+    let issue_card = store
+        .list_hive_issues_for_loop(loop_id)?
+        .into_iter()
+        .next()
+        .map(|issue| issue_card_from_issue(store, issue))
+        .transpose()?;
+    let issue = issue_card.as_ref().map(|card| card.issue.clone());
+    let actions = issue_card
+        .as_ref()
+        .map(|card| card.actions.clone())
+        .unwrap_or_default();
+    let comments_count = issue_card
+        .as_ref()
+        .map(|card| card.comments.len())
+        .unwrap_or_default();
+    let latest_comment = issue_card
+        .as_ref()
+        .and_then(|card| card.comments.last())
+        .map(|comment| HiveLoopDashboardComment {
+            id: comment.id,
+            author: comment.author.clone(),
+            body: comment.body.clone(),
+            created_at: comment.created_at.clone(),
+        });
+    let kernel = dashboard_kernel(&preflight);
+    let agents = dashboard_agents(&lifecycle.current);
+    let reviewer = dashboard_reviewer(&doctor.trace, &lifecycle);
+    let human_decision = dashboard_human_decision(issue.as_ref(), &doctor.trace, &actions);
+    let health = HiveLoopDashboardHealth {
+        health: doctor.health.clone(),
+        audit_failed_count: doctor.counts.audit_failed_count,
+        failed_checks: doctor.failed_checks.clone(),
+        audit_failure_details: doctor.audit_failure_details.clone(),
+        missing_receipts: doctor.missing_receipts.clone(),
+        worker_failures: doctor.worker_failures.clone(),
+    };
+    let mut next_actions = Vec::new();
+    push_unique(
+        &mut next_actions,
+        format!("entrance hive loop dashboard {loop_id}"),
+    );
+    for action in actions.iter().map(|action| action.command.clone()) {
+        push_unique(&mut next_actions, action);
+    }
+    for action in preflight
+        .next_actions
+        .iter()
+        .chain(lifecycle.next_actions.iter())
+        .chain(doctor.next_actions.iter())
+    {
+        push_unique(&mut next_actions, action.clone());
+    }
+    let primary_next_action = next_actions
+        .iter()
+        .find(|action| !action.starts_with("entrance hive loop dashboard "))
+        .cloned();
+    let dashboard_state = dashboard_state(
+        issue.as_ref(),
+        &doctor,
+        &preflight,
+        &lifecycle.lifecycle_state,
+    )
+    .to_string();
+    let summary = dashboard_summary(
+        loop_id,
+        issue.as_ref().map(|issue| issue.status.as_str()),
+        &dashboard_state,
+        &kernel,
+        &lifecycle,
+        &reviewer,
+    );
+
+    Ok(HiveLoopDashboardReport {
+        schema_version: LOOP_DASHBOARD_SCHEMA_VERSION.to_string(),
+        loop_id,
+        issue,
+        status: doctor.status,
+        active_phase: doctor.active_phase,
+        current_round: doctor.current_round,
+        runtime: doctor.runtime,
+        dashboard_state,
+        summary,
+        kernel,
+        agents,
+        reviewer,
+        human_decision,
+        health,
+        comments_count,
+        latest_comment,
+        resources: HiveLoopDashboardResources {
+            loop_dashboard: format!("entrance://loops/{loop_id}/dashboard"),
+            runtime_preflight: format!("entrance://loops/{loop_id}/runtime-preflight"),
+            worker_lifecycle: format!("entrance://loops/{loop_id}/worker-lifecycle"),
+            issue: issue_card
+                .as_ref()
+                .map(|card| format!("entrance://issues/{}", card.issue.id)),
+            issue_control: issue_card
+                .as_ref()
+                .map(|card| format!("entrance://issues/{}/control", card.issue.id)),
+            review_queue: "entrance://review-queue".to_string(),
+        },
+        primary_next_action,
+        next_actions,
+    })
+}
+
 fn store_schema_audit_check(status: &StoreSchemaStatus) -> HiveLoopAuditCheck {
     let present_table_count = status.tables.iter().filter(|table| table.present).count();
     let present_index_count = status.indexes.iter().filter(|index| index.present).count();
@@ -3119,6 +3327,169 @@ fn runtime_preflight_summary(
         contract.current_round,
         issue_status.unwrap_or("none")
     )
+}
+
+fn dashboard_kernel(preflight: &HiveLoopRuntimePreflightReport) -> HiveLoopDashboardKernel {
+    HiveLoopDashboardKernel {
+        preflight_state: preflight.preflight_state.clone(),
+        gate: preflight
+            .current
+            .as_ref()
+            .and_then(|current| current.gate.clone())
+            .unwrap_or_else(|| preflight.policy.gate.clone()),
+        gate_passed: preflight
+            .current
+            .as_ref()
+            .and_then(|current| current.gate_passed),
+        route_from: preflight.policy.route_from.clone(),
+        route_to: preflight.policy.route_to.clone(),
+        object_kind: preflight.policy.object_kind.clone(),
+        blocker: preflight
+            .current
+            .as_ref()
+            .and_then(|current| current.blocker.clone())
+            .or_else(|| preflight.preview.blocker.clone()),
+        failures: preflight.failures.clone(),
+    }
+}
+
+fn dashboard_agents(round: &HiveLoopWorkerLifecycleRound) -> Vec<HiveLoopDashboardAgent> {
+    round
+        .expected_roles
+        .iter()
+        .map(|role| {
+            let worker = round.workers.iter().find(|worker| worker.role == *role);
+            HiveLoopDashboardAgent {
+                role: role.clone(),
+                state: dashboard_agent_state(worker).to_string(),
+                evidence_id: worker.map(|worker| worker.evidence_id),
+                worker_kind: worker.and_then(|worker| worker.kind.clone()),
+                worker_mode: worker.and_then(|worker| worker.mode.clone()),
+                ok: worker.and_then(|worker| worker.ok),
+                receipt_ok: worker.and_then(|worker| worker.receipt_ok),
+                timed_out: worker.and_then(|worker| worker.timed_out),
+                retry_exhausted: worker.and_then(|worker| worker.retry_exhausted),
+                summary: worker
+                    .and_then(|worker| worker.evidence_summary.clone())
+                    .or_else(|| worker.and_then(|worker| worker.action.clone())),
+            }
+        })
+        .collect()
+}
+
+fn dashboard_agent_state(worker: Option<&HiveLoopWorkerLifecycleWorker>) -> &'static str {
+    let Some(worker) = worker else {
+        return "pending";
+    };
+    if worker.retry_exhausted == Some(true) {
+        return "retry_exhausted";
+    }
+    if worker.timed_out == Some(true) {
+        return "timeout";
+    }
+    if worker.ok == Some(true) && worker.receipt_ok != Some(false) {
+        return "ok";
+    }
+    if worker.ok == Some(false)
+        || worker.receipt_ok == Some(false)
+        || !worker.receipt_errors.is_empty()
+    {
+        return "blocked";
+    }
+    "observed"
+}
+
+fn dashboard_reviewer(
+    trace: &IssueTraceSummary,
+    lifecycle: &HiveLoopWorkerLifecycleReport,
+) -> HiveLoopDashboardReviewer {
+    HiveLoopDashboardReviewer {
+        decision: trace.last_decision.clone(),
+        reason_code: trace.reason_code.clone(),
+        score_vector: trace.score_vector.clone(),
+        human_options: trace.human_options.clone(),
+        reviewer_invalid_rounds_used: lifecycle.current.reviewer_invalid_rounds_used,
+        reviewer_invalid_round_budget: lifecycle.policy.reviewer_invalid_round_budget,
+        reviewer_invalid_budget_exhausted: lifecycle.current.reviewer_invalid_budget_exhausted,
+        fallback_status: lifecycle.policy.fallback_status.clone(),
+    }
+}
+
+fn dashboard_human_decision(
+    issue: Option<&HiveIssue>,
+    trace: &IssueTraceSummary,
+    actions: &[IssueAction],
+) -> HiveLoopDashboardHumanDecision {
+    let issue_status = issue.map(|issue| issue.status.clone());
+    let required = issue_status
+        .as_deref()
+        .is_some_and(|status| matches!(status, "Blocked" | "Needs Review"))
+        || actions.iter().any(|action| action.confirmation_required);
+    HiveLoopDashboardHumanDecision {
+        required,
+        issue_status,
+        options: trace.human_options.clone(),
+        actions: actions.to_vec(),
+    }
+}
+
+fn dashboard_state(
+    issue: Option<&HiveIssue>,
+    doctor: &HiveLoopDoctorReport,
+    preflight: &HiveLoopRuntimePreflightReport,
+    lifecycle_state: &str,
+) -> &'static str {
+    if let Some(issue) = issue {
+        match issue.status.as_str() {
+            "Blocked" => return "blocked",
+            "Needs Review" => return "needs_review",
+            "Done" => return "done",
+            "Canceled" => return "canceled",
+            _ => {}
+        }
+    }
+    if preflight.preflight_state == "blocked" {
+        return "blocked";
+    }
+    match lifecycle_state {
+        "running" => "running",
+        "pending" => "pending",
+        "worker_failed" => "worker_failed",
+        "needs_review" => "needs_review",
+        "blocked" => "blocked",
+        "succeeded" if doctor.health == "ok" => "ok",
+        _ if doctor.health == "ok" => "ok",
+        _ => "attention",
+    }
+}
+
+fn dashboard_summary(
+    loop_id: i64,
+    issue_status: Option<&str>,
+    dashboard_state: &str,
+    kernel: &HiveLoopDashboardKernel,
+    lifecycle: &HiveLoopWorkerLifecycleReport,
+    reviewer: &HiveLoopDashboardReviewer,
+) -> String {
+    format!(
+        "Loop #{} dashboard is {}; issue {}; kernel {} via {}; workers {}/{}; reviewer budget {}/{}; decision {}.",
+        loop_id,
+        dashboard_state,
+        issue_status.unwrap_or("none"),
+        kernel.preflight_state,
+        kernel.gate,
+        lifecycle.current.worker_ok_count,
+        lifecycle.current.worker_count,
+        reviewer.reviewer_invalid_rounds_used,
+        reviewer.reviewer_invalid_round_budget,
+        reviewer.decision.as_deref().unwrap_or("pending")
+    )
+}
+
+fn push_unique(items: &mut Vec<String>, item: String) {
+    if !items.iter().any(|existing| existing == &item) {
+        items.push(item);
+    }
 }
 
 fn audit_check(
@@ -9819,6 +10190,39 @@ mod tests {
                     "entrance hive loop worker-lifecycle {}",
                     created.contract.id
                 )
+        }));
+        let dashboard_report =
+            super::dashboard(&store, created.contract.id).expect("loop dashboard should resolve");
+        assert_eq!(
+            dashboard_report.schema_version,
+            LOOP_DASHBOARD_SCHEMA_VERSION
+        );
+        assert_eq!(dashboard_report.dashboard_state, "done");
+        assert_eq!(dashboard_report.kernel.preflight_state, "admitted");
+        assert_eq!(dashboard_report.kernel.gate, "runtime_policy_ready");
+        assert_eq!(dashboard_report.kernel.gate_passed, Some(true));
+        assert_eq!(
+            dashboard_report
+                .agents
+                .iter()
+                .map(|agent| (agent.role.as_str(), agent.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("explorer", "ok"), ("developer", "ok"), ("reviewer", "ok")]
+        );
+        assert_eq!(dashboard_report.reviewer.decision.as_deref(), Some("keep"));
+        assert_eq!(dashboard_report.reviewer.reviewer_invalid_rounds_used, 0);
+        assert_eq!(
+            dashboard_report.reviewer.reviewer_invalid_round_budget,
+            REVIEWER_INVALID_ROUND_BUDGET
+        );
+        assert!(!dashboard_report.human_decision.required);
+        assert_eq!(
+            dashboard_report.resources.loop_dashboard,
+            format!("entrance://loops/{}/dashboard", created.contract.id)
+        );
+        assert!(dashboard_report.primary_next_action.is_some());
+        assert!(dashboard_report.next_actions.iter().any(|action| {
+            action == &format!("entrance hive loop dashboard {}", created.contract.id)
         }));
 
         let rerun = run(

@@ -715,6 +715,7 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
         "resources": {
             "issue": format!("entrance://issues/{}", card.issue.id),
             "control": format!("entrance://issues/{}/control", card.issue.id),
+            "loop_dashboard": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/dashboard")),
             "runtime_preflight": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/runtime-preflight")),
             "worker_lifecycle": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
             "review_queue": "entrance://review-queue",
@@ -1060,6 +1061,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
     }
     for contract in services.hive.loop_list()? {
         resources.push(resource_spec(
+            &format!("entrance://loops/{}/dashboard", contract.id),
+            &format!("Loop #{} dashboard", contract.id),
+            "One loop dashboard report with issue state, kernel preflight, agents, reviewer verdict, human decision surface, blockers, and next actions.",
+        ));
+        resources.push(resource_spec(
             &format!("entrance://loops/{}/runtime-preflight", contract.id),
             &format!("Loop #{} runtime preflight", contract.id),
             "One loop runtime preflight report with runtime policy, probe, admission gate, blocker, and next actions.",
@@ -1086,6 +1092,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://issues/{issue_id}/control",
                 "name": "Entrance issue control by id",
                 "description": "Read one issue control packet with actions, blockers, receipts, and human decision boundaries.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://loops/{loop_id}/dashboard",
+                "name": "Entrance loop dashboard by id",
+                "description": "Read loop dashboard with issue state, kernel preflight, agents, reviewer verdict, human decision surface, blockers, and next actions.",
                 "mimeType": "application/json"
             },
             {
@@ -1128,6 +1140,16 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
         "entrance://policy/mcp-permissions" => mcp_permission_policy(),
         "entrance://policy/actor-identity" => mcp_actor_identity_policy(),
         "entrance://schema/status" => serde_json::to_value(services.kernel.store.schema_status()?)?,
+        value if value.starts_with("entrance://loops/") && value.ends_with("/dashboard") => {
+            let loop_id = value
+                .trim_start_matches("entrance://loops/")
+                .trim_end_matches("/dashboard")
+                .parse::<i64>()
+                .with_context(|| {
+                    format!("invalid Entrance loop dashboard resource URI `{value}`")
+                })?;
+            serde_json::to_value(services.hive.loop_dashboard(loop_id)?)?
+        }
         value
             if value.starts_with("entrance://loops/") && value.ends_with("/runtime-preflight") =>
         {
@@ -1950,6 +1972,12 @@ mod tests {
         );
         assert_eq!(
             packet
+                .pointer("/resources/loop_dashboard")
+                .and_then(|value| value.as_str()),
+            Some("entrance://loops/7/dashboard")
+        );
+        assert_eq!(
+            packet
                 .pointer("/resources/runtime_preflight")
                 .and_then(|value| value.as_str()),
             Some("entrance://loops/7/runtime-preflight")
@@ -1981,6 +2009,7 @@ mod tests {
 
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/control"));
+        assert!(uri_templates.contains(&"entrance://loops/{loop_id}/dashboard"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/runtime-preflight"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/worker-lifecycle"));
     }

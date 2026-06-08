@@ -605,6 +605,96 @@ type IssueDoctorSummary = {
   worker_failures: string[];
 };
 
+type LoopDashboardReport = {
+  schema_version: string;
+  loop_id: number;
+  issue: LoopDashboardIssue | null;
+  status: string;
+  active_phase: string;
+  current_round: number;
+  runtime: string;
+  dashboard_state: string;
+  summary: string;
+  kernel: {
+    preflight_state: string;
+    gate: string;
+    gate_passed: boolean | null;
+    route_from: string;
+    route_to: string;
+    object_kind: string;
+    blocker: string | null;
+    failures: string[];
+  };
+  agents: LoopDashboardAgent[];
+  reviewer: {
+    decision: string | null;
+    reason_code: string | null;
+    score_vector: Array<{
+      name: string;
+      value: number | null;
+    }>;
+    human_options: string[];
+    reviewer_invalid_rounds_used: number;
+    reviewer_invalid_round_budget: number;
+    reviewer_invalid_budget_exhausted: boolean;
+    fallback_status: string;
+  };
+  human_decision: {
+    required: boolean;
+    issue_status: string | null;
+    options: string[];
+    actions: IssueAction[];
+  };
+  health: {
+    health: string;
+    audit_failed_count: number;
+    failed_checks: string[];
+    audit_failure_details: string[];
+    missing_receipts: string[];
+    worker_failures: string[];
+  };
+  comments_count: number;
+  latest_comment: {
+    id: number;
+    author: string;
+    body: string;
+    created_at: string;
+    payload?: Record<string, unknown>;
+  } | null;
+  resources: {
+    loop_dashboard: string;
+    runtime_preflight: string;
+    worker_lifecycle: string;
+    issue: string | null;
+    issue_control: string | null;
+    review_queue: string;
+  };
+  primary_next_action: string | null;
+  next_actions: string[];
+};
+
+type LoopDashboardIssue = {
+  id: number;
+  loop_id: number | null;
+  title: string;
+  status: string;
+  summary: string | null;
+  updated_at: string;
+};
+
+type LoopDashboardAgent = {
+  role: string;
+  state: string;
+  evidence_id: number | null;
+  worker_kind: string | null;
+  worker_mode: string | null;
+  ok: boolean | null;
+  receipt_ok: boolean | null;
+  timed_out: boolean | null;
+  retry_exhausted: boolean | null;
+  summary: string | null;
+};
+
 type RuntimePreflightReport = {
   schema_version: string;
   loop_id: number;
@@ -1031,6 +1121,29 @@ export default function App() {
     return cards.find((card) => card.issue.id === issueId) ?? cards[0];
   });
   const selectedIssueDoctor = createMemo(() => selectedIssueCard()?.doctor ?? null);
+  const selectedIssueDashboardKey = createMemo(() => {
+    const card = selectedIssueCard();
+    if (!card?.issue.loop_id) return null;
+    return [
+      card.issue.loop_id,
+      card.issue.updated_at,
+      card.trace?.current_round ?? 0,
+      card.trace?.last_decision ?? "pending",
+      card.trace?.last_admission_passed ?? "pending",
+      card.trace?.round_role_worker_count ?? 0,
+    ].join(":");
+  });
+  const [selectedLoopDashboard] = createResource(selectedIssueDashboardKey, async (key) => {
+    if (!key) return null;
+    const loopId = Number.parseInt(key.split(":")[0], 10);
+    if (!Number.isFinite(loopId)) return null;
+    return bridge.invoke<LoopDashboardReport>("hive_loop_dashboard", { id: loopId });
+  });
+  const selectedIssueLoopDashboard = createMemo(() => {
+    const dashboard = selectedLoopDashboard();
+    const loopId = selectedIssueCard()?.issue.loop_id;
+    return dashboard && dashboard.loop_id === loopId ? dashboard : null;
+  });
   const selectedIssuePreflightKey = createMemo(() => {
     const card = selectedIssueCard();
     if (!card?.issue.loop_id) return null;
@@ -2395,6 +2508,48 @@ export default function App() {
     return `runtime ${runtimeDurationLabel(doctor.counts.round_worker_duration_ms)}`;
   };
 
+  const loopDashboardStateLabel = (state: string) =>
+    ({
+      ok: "ok",
+      done: "done",
+      ready: "ready",
+      running: "running",
+      pending: "pending",
+      blocked: "blocked",
+      needs_review: "needs review",
+      worker_failed: "worker failed",
+      canceled: "canceled",
+      attention: "attention",
+    })[state] ?? state;
+
+  const loopDashboardTone = (state: string) =>
+    state === "ok" || state === "done" || state === "ready"
+      ? "ok"
+      : state === "pending" || state === "running"
+        ? "pending"
+        : "warn";
+
+  const loopDashboardAgentTone = (agent: LoopDashboardAgent) =>
+    agent.state === "ok" ? "ok" : agent.state === "pending" || agent.state === "observed" ? "pending" : "warn";
+
+  const loopDashboardAgentLabel = (agent: LoopDashboardAgent) => {
+    if (agent.state === "ok") return "ok";
+    if (agent.state === "retry_exhausted") return "retry exhausted";
+    return agent.state.replace(/_/g, " ");
+  };
+
+  const loopDashboardGateLabel = (dashboard: LoopDashboardReport) => {
+    const passed = dashboard.kernel.gate_passed;
+    if (passed === true) return `${dashboard.kernel.gate} ok`;
+    if (passed === false) return `${dashboard.kernel.gate} blocked`;
+    return `${dashboard.kernel.gate} pending`;
+  };
+
+  const loopDashboardHumanLabel = (dashboard: LoopDashboardReport) =>
+    dashboard.human_decision.required
+      ? `human decision ${dashboard.human_decision.actions.length}`
+      : "human clear";
+
   const runtimePreflightStateLabel = (state: string) =>
     ({
       admitted: "admitted",
@@ -3135,6 +3290,169 @@ export default function App() {
                           connectorRemoteDiagnostics(card.issue.id),
                           `connector-remote-attempts-detail-${card.issue.id}`,
                         )}
+                        {card.issue.loop_id ? (
+                          <Show
+                            when={selectedIssueLoopDashboard()}
+                            keyed
+                            fallback={
+                              <div
+                                class="doctor-summary loop-dashboard doctor-summary--pending"
+                                data-testid={`loop-dashboard-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Loop Dashboard</strong>
+                                  <span>{selectedLoopDashboard.loading ? "loading" : "pending"}</span>
+                                </div>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">loop #{card.issue.loop_id}</span>
+                                  <span class="trace-pill">loop_dashboard.v1</span>
+                                </div>
+                              </div>
+                            }
+                          >
+                            {(dashboard) => (
+                              <div
+                                class={`doctor-summary loop-dashboard doctor-summary--${loopDashboardTone(
+                                  dashboard.dashboard_state,
+                                )}`}
+                                data-testid={`loop-dashboard-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Loop Dashboard</strong>
+                                  <span>{loopDashboardStateLabel(dashboard.dashboard_state)}</span>
+                                </div>
+                                <p>{dashboard.summary}</p>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">{schemaLabel(dashboard.schema_version)}</span>
+                                  <span class="trace-pill">loop #{dashboard.loop_id}</span>
+                                  <span class="trace-pill">round {dashboard.current_round}</span>
+                                  <span class="trace-pill">{dashboard.runtime}</span>
+                                  <span class="trace-pill">
+                                    {dashboard.kernel.route_from}
+                                    {" -> "}
+                                    {dashboard.kernel.route_to}
+                                  </span>
+                                  <span
+                                    class={
+                                      dashboard.kernel.gate_passed === false
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {loopDashboardGateLabel(dashboard)}
+                                  </span>
+                                  <span class="trace-pill">
+                                    workers{" "}
+                                    {dashboard.agents.filter((agent) => agent.state === "ok").length}/
+                                    {dashboard.agents.length}
+                                  </span>
+                                  <span
+                                    class={
+                                      dashboard.reviewer.reviewer_invalid_budget_exhausted
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    review budget {dashboard.reviewer.reviewer_invalid_rounds_used}/
+                                    {dashboard.reviewer.reviewer_invalid_round_budget}
+                                  </span>
+                                  <span class="trace-pill">
+                                    decision {dashboard.reviewer.decision ?? "pending"}
+                                  </span>
+                                  <span
+                                    class={
+                                      dashboard.human_decision.required
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {loopDashboardHumanLabel(dashboard)}
+                                  </span>
+                                  {dashboard.kernel.blocker ? (
+                                    <span class="trace-pill trace-pill--warn">
+                                      {dashboard.kernel.blocker}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div class="worker-lifecycle-roles">
+                                  {dashboard.agents.map((agent) => (
+                                    <div
+                                      class={`worker-lifecycle-role worker-lifecycle-role--${loopDashboardAgentTone(
+                                        agent,
+                                      )}`}
+                                      data-testid={`loop-dashboard-agent-${card.issue.id}-${agent.role}`}
+                                    >
+                                      <div class="stage-row-head">
+                                        <strong>{agent.role}</strong>
+                                        <span>{loopDashboardAgentLabel(agent)}</span>
+                                      </div>
+                                      <p>{agent.summary ?? "No worker receipt"}</p>
+                                      <div class="trace-strip">
+                                        <span
+                                          class={
+                                            agent.state === "ok"
+                                              ? "trace-pill"
+                                              : "trace-pill trace-pill--warn"
+                                          }
+                                        >
+                                          {agent.worker_kind ?? "missing"}
+                                        </span>
+                                        {agent.worker_mode ? (
+                                          <span class="trace-pill">{agent.worker_mode}</span>
+                                        ) : null}
+                                        {agent.receipt_ok === false ? (
+                                          <span class="trace-pill trace-pill--warn">receipt fail</span>
+                                        ) : null}
+                                        {agent.timed_out ? (
+                                          <span class="trace-pill trace-pill--warn">timeout</span>
+                                        ) : null}
+                                        {agent.retry_exhausted ? (
+                                          <span class="trace-pill trace-pill--warn">retry exhausted</span>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                                {dashboard.health.failed_checks.length ||
+                                dashboard.health.missing_receipts.length ||
+                                dashboard.health.worker_failures.length ||
+                                dashboard.kernel.failures.length ? (
+                                  <div class="doctor-lines">
+                                    {dashboard.health.failed_checks.map((check) => (
+                                      <span>check {check}</span>
+                                    ))}
+                                    {dashboard.health.missing_receipts.map((receipt) => (
+                                      <span>missing {receipt}</span>
+                                    ))}
+                                    {dashboard.health.worker_failures.map((failure) => (
+                                      <span>{failure}</span>
+                                    ))}
+                                    {dashboard.kernel.failures.map((failure) => (
+                                      <span>{failure}</span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                {dashboard.next_actions.length ? (
+                                  <div class="doctor-actions">
+                                    {dashboard.next_actions.slice(0, 2).map((action, index) => (
+                                      <div class="doctor-action-row">
+                                        <code>{action}</code>
+                                        <button
+                                          type="button"
+                                          aria-label={`Copy loop dashboard action ${action}`}
+                                          data-testid={`loop-dashboard-action-copy-${card.issue.id}-${index}`}
+                                          onClick={() => void copyDoctorAction(action)}
+                                        >
+                                          Copy
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )}
+                          </Show>
+                        ) : null}
                         <Show when={selectedIssueDoctor()} keyed>
                           {(doctor) => (
                             <div class={`doctor-summary doctor-summary--${doctorHealthTone(doctor.health)}`}>

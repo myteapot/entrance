@@ -388,7 +388,7 @@ async function main() {
 
   await waitForCondition(
     win,
-    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
+    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(document.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
     "Panel issue board",
   );
   await win.webContents.executeJavaScript(\`
@@ -419,6 +419,10 @@ async function main() {
     remote_fixture_issue_visible: text.includes('Entrance remote fixture demo'),
     connector_queue_visible: text.includes('Connector queue'),
     remote_fixture_provider_visible: text.includes('remote-fixture'),
+    loop_dashboard_visible: Boolean(document.querySelector('[data-testid^="loop-dashboard-detail-"]')),
+    loop_dashboard_developer_visible: Boolean(document.querySelector('[data-testid^="loop-dashboard-agent-"][data-testid$="-developer"]')),
+    loop_dashboard_reviewer_visible: Boolean(document.querySelector('[data-testid^="loop-dashboard-agent-"][data-testid$="-reviewer"]')),
+    loop_dashboard_budget_visible: text.includes('review budget 0/3'),
     runtime_preflight_visible: Boolean(document.querySelector('[data-testid^="runtime-preflight-detail-"]')),
     runtime_preflight_gate_visible: text.includes('runtime_policy_ready'),
     runtime_preflight_route_visible: text.includes('kernel -> explorer'),
