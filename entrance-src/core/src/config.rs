@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -85,6 +86,26 @@ pub struct ConnectorProviderConfig {
     pub storage: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
+    #[serde(default)]
+    pub status_mappings: BTreeMap<String, ConnectorProviderStatusMappingConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConnectorProviderStatusMappingConfig {
+    #[serde(default)]
+    pub remote_state: Option<String>,
+    #[serde(default)]
+    pub remote_state_id: Option<String>,
+    #[serde(default)]
+    pub remote_state_reason: Option<String>,
+    #[serde(default)]
+    pub remote_state_type: Option<String>,
+    #[serde(default)]
+    pub remote_status_marker: Option<String>,
+    #[serde(default)]
+    pub readback_check: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,6 +194,11 @@ enabled = false
 enabled = true
 auth_env = ["ENTRANCE_TEST_LINEAR_TOKEN"]
 storage = "linear-dry-run"
+
+[connectors.linear.status_mappings.Done]
+remote_state = "Done"
+remote_state_id = "lin-state-done"
+remote_state_type = "completed"
 "#,
         )
         .unwrap();
@@ -189,6 +215,17 @@ storage = "linear-dry-run"
             config.connectors.linear.storage.as_deref(),
             Some("linear-dry-run")
         );
+        let done_mapping = config
+            .connectors
+            .linear
+            .status_mappings
+            .get("Done")
+            .expect("Done mapping should parse");
+        assert_eq!(
+            done_mapping.remote_state_id.as_deref(),
+            Some("lin-state-done")
+        );
+        assert_eq!(done_mapping.remote_state_type.as_deref(), Some("completed"));
         let _ = fs::remove_file(path);
     }
 }

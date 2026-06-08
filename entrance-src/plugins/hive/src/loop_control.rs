@@ -8,11 +8,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use entrance_core::{
-    ConnectorProviderConfig, ConnectorsConfig, HiveComment, HiveCommentCreate, HiveIssue,
-    HiveIssueCreate, HiveLoopAdmission, HiveLoopAdmissionCreate, HiveLoopContract,
-    HiveLoopContractCreate, HiveLoopEvidence, HiveLoopEvidenceCreate, HiveLoopPacket,
-    HiveLoopPacketCreate, HiveLoopPolicy, HiveLoopPolicyCreate, HiveLoopStage, HiveLoopStageCreate,
-    HiveLoopVerdict, HiveLoopVerdictCreate, Store, StoreSchemaStatus,
+    ConnectorProviderConfig, ConnectorProviderStatusMappingConfig, ConnectorsConfig, HiveComment,
+    HiveCommentCreate, HiveIssue, HiveIssueCreate, HiveLoopAdmission, HiveLoopAdmissionCreate,
+    HiveLoopContract, HiveLoopContractCreate, HiveLoopEvidence, HiveLoopEvidenceCreate,
+    HiveLoopPacket, HiveLoopPacketCreate, HiveLoopPolicy, HiveLoopPolicyCreate, HiveLoopStage,
+    HiveLoopStageCreate, HiveLoopVerdict, HiveLoopVerdictCreate, Store, StoreSchemaStatus,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -308,6 +308,7 @@ pub struct ConnectorStatusMappingPolicySpec {
 pub struct ConnectorStatusMappingSpec {
     pub hive_status: String,
     pub remote_state: Option<String>,
+    pub remote_state_id: Option<String>,
     pub remote_state_reason: Option<String>,
     pub remote_state_type: Option<String>,
     pub remote_status_marker: Option<String>,
@@ -338,6 +339,7 @@ pub struct ConnectorProviderSpec {
     pub supports_readback: bool,
     pub supports_admission: bool,
     pub storage: String,
+    pub status_mappings: Vec<ConnectorStatusMappingSpec>,
     pub notes: String,
 }
 
@@ -2203,6 +2205,7 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
         supports_readback: true,
         supports_admission: true,
         storage: "connectors/issue-mirrors/*.json".to_string(),
+        status_mappings: Vec::new(),
         notes: "Local connector mirror used as the external issue surface dry-run.".to_string(),
     };
     apply_connector_provider_config(&mut file, &config.file);
@@ -2220,6 +2223,7 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
         supports_readback: true,
         supports_admission: true,
         storage: "connectors/remote-fixture/{external_key}.json".to_string(),
+        status_mappings: Vec::new(),
         notes: "File-backed remote issue API fixture for validating remote write/readback contracts; not a third-party connector.".to_string(),
     };
     let mut linear = ConnectorProviderSpec {
@@ -2236,6 +2240,7 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
         supports_readback: false,
         supports_admission: false,
         storage: "not-configured".to_string(),
+        status_mappings: Vec::new(),
         notes: "Target provider for real issue/status/comment sync; connector is not active yet."
             .to_string(),
     };
@@ -2254,6 +2259,7 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
         supports_readback: false,
         supports_admission: false,
         storage: "not-configured".to_string(),
+        status_mappings: Vec::new(),
         notes: "Target provider for GitHub issue mirrors; connector is not active yet.".to_string(),
     };
     apply_connector_provider_config(&mut github, &config.github);
@@ -2273,6 +2279,7 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
             supports_readback: true,
             supports_admission: true,
             storage: "sqlite".to_string(),
+            status_mappings: Vec::new(),
             notes: "Built-in local issue/status/comment surface; publish/readback are in-process checks."
                 .to_string(),
         },
@@ -2719,6 +2726,7 @@ fn connector_status_mapping_policy_spec(
             .map(|status| ConnectorStatusMappingSpec {
                 hive_status: (*status).to_string(),
                 remote_state: Some((*status).to_string()),
+                remote_state_id: None,
                 remote_state_reason: None,
                 remote_state_type: None,
                 remote_status_marker: None,
@@ -2742,6 +2750,7 @@ fn connector_github_status_mapping_policy() -> ConnectorStatusMappingPolicySpec 
             .map(|status| ConnectorStatusMappingSpec {
                 hive_status: (*status).to_string(),
                 remote_state: Some(connector_github_issue_state(status).to_string()),
+                remote_state_id: None,
                 remote_state_reason: connector_github_issue_state_reason(status)
                     .map(str::to_string),
                 remote_state_type: None,
@@ -2773,6 +2782,7 @@ fn connector_linear_status_mapping_policy() -> ConnectorStatusMappingPolicySpec 
             .map(|status| ConnectorStatusMappingSpec {
                 hive_status: (*status).to_string(),
                 remote_state: Some((*status).to_string()),
+                remote_state_id: None,
                 remote_state_reason: None,
                 remote_state_type: connector_linear_state_type(status).map(str::to_string),
                 remote_status_marker: Some(format!("Status: {status}")),
@@ -2845,6 +2855,7 @@ fn apply_connector_provider_config(
     {
         provider.mode = mode.trim().to_string();
     }
+    provider.status_mappings = connector_provider_status_mappings_from_config(config);
 
     if let Some(enabled) = config.enabled {
         if !enabled {
@@ -2885,6 +2896,44 @@ fn apply_connector_provider_config(
         }
         provider.notes = format!("{} Configured from entrance.toml.", provider.notes);
     }
+}
+
+fn connector_provider_status_mappings_from_config(
+    config: &ConnectorProviderConfig,
+) -> Vec<ConnectorStatusMappingSpec> {
+    config
+        .status_mappings
+        .iter()
+        .map(|(hive_status, mapping)| {
+            connector_provider_status_mapping_from_config(hive_status, mapping)
+        })
+        .collect()
+}
+
+fn connector_provider_status_mapping_from_config(
+    hive_status: &str,
+    mapping: &ConnectorProviderStatusMappingConfig,
+) -> ConnectorStatusMappingSpec {
+    ConnectorStatusMappingSpec {
+        hive_status: hive_status.to_string(),
+        remote_state: trimmed_optional(mapping.remote_state.as_deref()),
+        remote_state_id: trimmed_optional(mapping.remote_state_id.as_deref()),
+        remote_state_reason: trimmed_optional(mapping.remote_state_reason.as_deref()),
+        remote_state_type: trimmed_optional(mapping.remote_state_type.as_deref()),
+        remote_status_marker: trimmed_optional(mapping.remote_status_marker.as_deref()),
+        readback_check: trimmed_optional(mapping.readback_check.as_deref())
+            .unwrap_or_else(|| "remote_status".to_string()),
+        notes: trimmed_optional(mapping.notes.as_deref()).unwrap_or_else(|| {
+            "Configured provider status mapping from entrance.toml.".to_string()
+        }),
+    }
+}
+
+fn trimmed_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn connector_provider_auth_configured(provider: &ConnectorProviderSpec) -> bool {
@@ -13866,6 +13915,16 @@ mod tests {
 
     #[test]
     fn connector_registry_applies_runtime_config_overrides() {
+        let mut linear_status_mappings = BTreeMap::new();
+        linear_status_mappings.insert(
+            "Done".to_string(),
+            ConnectorProviderStatusMappingConfig {
+                remote_state: Some("Done".to_string()),
+                remote_state_id: Some("lin-state-done".to_string()),
+                remote_state_type: Some("completed".to_string()),
+                ..ConnectorProviderStatusMappingConfig::default()
+            },
+        );
         let config = ConnectorsConfig {
             file: ConnectorProviderConfig {
                 enabled: Some(false),
@@ -13875,6 +13934,7 @@ mod tests {
                 enabled: Some(true),
                 auth_env: vec!["ENTRANCE_TEST_LINEAR_TOKEN".to_string()],
                 storage: Some("linear-dry-run".to_string()),
+                status_mappings: linear_status_mappings,
                 ..ConnectorProviderConfig::default()
             },
             github: ConnectorProviderConfig::default(),
@@ -13899,6 +13959,17 @@ mod tests {
         assert_eq!(linear.status, "planned");
         assert_eq!(linear.storage, "linear-dry-run");
         assert_eq!(linear.auth_env, vec!["ENTRANCE_TEST_LINEAR_TOKEN"]);
+        let done_mapping = linear
+            .status_mappings
+            .iter()
+            .find(|mapping| mapping.hive_status == "Done")
+            .expect("configured Linear Done mapping should be exposed");
+        assert_eq!(done_mapping.remote_state.as_deref(), Some("Done"));
+        assert_eq!(
+            done_mapping.remote_state_id.as_deref(),
+            Some("lin-state-done")
+        );
+        assert_eq!(done_mapping.remote_state_type.as_deref(), Some("completed"));
         assert!(!linear.configured);
         assert!(linear.notes.contains("Configured from entrance.toml."));
         let linear_admission = registry

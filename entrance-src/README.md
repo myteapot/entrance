@@ -328,10 +328,11 @@ plus `GET` issue comments, follows `Link` pagination for the comment list, emits
 `entrance.hive.connector_remote_readback.v1`, and connector admission can pass
 only when target, auth, issue state/body, latest comment, and write-receipt
 binding checks pass. Linear publish reads the issue UUID by identifier, updates
-title/description through GraphQL, updates the matching issue-stable comment
-marker when present, creates one only when absent, emits the same remote
-write/readback schemas, and gates admission on typed target, auth, issue body,
-comment surface, and write-receipt checks. `storage` can override
+title/description plus a configured `stateId` through GraphQL, updates the
+matching issue-stable comment marker when present, creates one only when absent,
+emits the same remote write/readback schemas, and gates admission on typed
+target, auth, status mapping, issue body, comment surface, and write-receipt
+checks. `storage` can override
 the file-backed mirror path used by active local adapters; for GitHub it can
 override the REST API base URL, and for Linear an `http(s)://` value overrides
 the GraphQL endpoint for fixtures or self-hosted-compatible testing. GitHub REST
@@ -347,14 +348,24 @@ is exposed through `hive policy registry --compact` and embedded in active remot
 contracts. The same policy registry also exposes provider status mappings, and
 remote write/readback reports carry the selected mapping so `remote_status`
 checks explain whether they are comparing GitHub state/state_reason, Linear
-state name, or a Linear status marker. Connector admission previews include a
+state id, Linear state name, or a Linear status marker. Linear workflow state
+ids can be configured in `entrance.toml`, for example:
+
+```toml
+[connectors.linear.status_mappings.Done]
+remote_state = "Done"
+remote_state_id = "lin-workflow-state-uuid"
+remote_state_type = "completed"
+```
+
+Connector admission previews include a
 `retry_policy_bound` check that compares observed write/readback attempt counts
 with that active budget before a remote issue surface can be admitted, and
 `hive policy registry --compact` exposes the same check name inside the
 connector admission `required_checks` compatibility list plus the structured
 `check_registry` contract; actual admission check rows include the matched
 owner, severity, required evidence, and policy summary. Production drift
-handling, configurable Linear workflow state mapping, real-token coverage, and
+handling, live workflow discovery/migration, real-token coverage, and
 configurable/adaptive retry policy are still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and

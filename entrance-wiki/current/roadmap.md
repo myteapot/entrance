@@ -176,8 +176,15 @@ Entrance has reached a local MVP unit:
 - Connector status mapping is now policy-backed. `entrance hive policy registry
   --compact` exposes remote-fixture/GitHub/Linear status mappings; GitHub
   write/readback uses issue state/state_reason, Linear write/readback currently
-  uses state name or a description status marker, and remote write/readback
-  reports carry the selected `status_mapping` contract.
+  uses configured workflow `stateId` when present, then falls back to state name
+  or a description status marker, and remote write/readback reports carry the
+  selected `status_mapping` contract.
+- Linear status mapping now has a config-driven write/readback path.
+  `entrance.toml` can define
+  `connectors.linear.status_mappings.<HiveStatus>.remote_state_id`; the provider
+  registry, remote contract, and connector queue expose that configured mapping,
+  Linear GraphQL update writes the configured `stateId`, and readback validates
+  `state.id` before fallback checks.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -194,8 +201,8 @@ multi-agent runtime/compiler product.
   current `local-hive-panel` audit context.
 - Add live token-backed GitHub and Linear validation runs, including safe
   credential checks, idempotent comment updates, readback verification, error
-  handling, rate-limit behavior, provider status mapping behavior, and redacted
-  receipts.
+  handling, rate-limit behavior, configured provider status mapping behavior,
+  and redacted receipts.
 - Expose external connector blockers in the Panel as operator decisions, not
   just CLI details.
 
@@ -219,8 +226,8 @@ multi-agent runtime/compiler product.
   versions, owner, required evidence, and migration behavior.
 - Productize the current `issue_transition_policy.v1`
   registry/report/audit/admission/state-machine binding with version migration,
-  stronger policy lifecycle semantics, and configurable remote issue status
-  mapping.
+  stronger policy lifecycle semantics, and remote status mapping
+  discovery/migration.
 - Extend the new runtime preflight admission into a fuller capability preview:
   sandbox scope, connector readiness, artifact capture expectations, and human
   preference boundaries before any agent worker is spawned. Current
@@ -261,6 +268,6 @@ multi-agent runtime/compiler product.
 
 Run one larger convergence loop on productionizing external issue surfaces:
 
-1. Start with configurable GitHub/Linear status mapping lifecycle plus
-   token-backed validation, then choose whether the next slice should harden
-   worker lifecycle or deepen connector drift recovery.
+1. Start with live token-backed GitHub/Linear validation for configured status
+   mappings, then choose whether the next slice should harden worker lifecycle
+   or deepen connector drift recovery.

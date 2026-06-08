@@ -1490,6 +1490,7 @@ fn compact_connector_status_mapping(mapping: &ConnectorStatusMappingSpec) -> ser
     serde_json::json!({
         "hive_status": mapping.hive_status.as_str(),
         "remote_state": mapping.remote_state.as_deref(),
+        "remote_state_id": mapping.remote_state_id.as_deref(),
         "remote_state_reason": mapping.remote_state_reason.as_deref(),
         "remote_state_type": mapping.remote_state_type.as_deref(),
         "remote_status_marker": mapping.remote_status_marker.as_deref(),
@@ -1524,13 +1525,18 @@ fn connector_remote_retry_policy(provider_name: &str) -> ConnectorRetryPolicySpe
     })
 }
 
-fn connector_remote_status_mapping(provider_name: &str, hive_status: &str) -> serde_json::Value {
-    connector_status_mapping_for_provider(provider_name, hive_status)
+fn connector_remote_status_mapping(
+    provider: Option<&ConnectorProviderSpec>,
+    provider_name: &str,
+    hive_status: &str,
+) -> serde_json::Value {
+    connector_status_mapping_for_provider_with_config(provider, provider_name, hive_status)
         .map(|mapping| compact_connector_status_mapping(&mapping))
         .unwrap_or_else(|| {
             serde_json::json!({
                 "hive_status": hive_status,
                 "remote_state": hive_status,
+                "remote_state_id": serde_json::Value::Null,
                 "remote_state_reason": serde_json::Value::Null,
                 "remote_state_type": serde_json::Value::Null,
                 "remote_status_marker": serde_json::Value::Null,
@@ -1538,6 +1544,53 @@ fn connector_remote_status_mapping(provider_name: &str, hive_status: &str) -> se
                 "notes": "No provider-specific status mapping policy is registered; fallback uses the Hive status as the remote state."
             })
         })
+}
+
+fn connector_status_mapping_for_provider_with_config(
+    provider: Option<&ConnectorProviderSpec>,
+    provider_name: &str,
+    hive_status: &str,
+) -> Option<ConnectorStatusMappingSpec> {
+    let configured = provider.and_then(|provider| {
+        provider
+            .status_mappings
+            .iter()
+            .find(|mapping| mapping.hive_status == hive_status)
+            .cloned()
+    });
+    let default = connector_status_mapping_for_provider(provider_name, hive_status);
+    match (default, configured) {
+        (Some(mut base), Some(configured)) => {
+            merge_connector_status_mapping(&mut base, configured);
+            Some(base)
+        }
+        (Some(base), None) => Some(base),
+        (None, Some(configured)) => Some(configured),
+        (None, None) => None,
+    }
+}
+
+fn merge_connector_status_mapping(
+    base: &mut ConnectorStatusMappingSpec,
+    configured: ConnectorStatusMappingSpec,
+) {
+    base.remote_state = configured.remote_state.or(base.remote_state.take());
+    base.remote_state_id = configured.remote_state_id.or(base.remote_state_id.take());
+    base.remote_state_reason = configured
+        .remote_state_reason
+        .or(base.remote_state_reason.take());
+    base.remote_state_type = configured
+        .remote_state_type
+        .or(base.remote_state_type.take());
+    base.remote_status_marker = configured
+        .remote_status_marker
+        .or(base.remote_status_marker.take());
+    if !configured.readback_check.trim().is_empty() {
+        base.readback_check = configured.readback_check;
+    }
+    if !configured.notes.trim().is_empty() {
+        base.notes = configured.notes;
+    }
 }
 
 fn github_retry_policy() -> ConnectorRetryPolicySpec {
@@ -1611,6 +1664,7 @@ fn compact_connector_provider(provider: &ConnectorProviderSpec) -> serde_json::V
         "review_surface_prefixes": provider.review_surface_prefixes.iter().map(String::as_str).collect::<Vec<_>>(),
         "capabilities": capabilities,
         "storage": provider.storage.as_str(),
+        "configured_status_mappings": provider.status_mappings.iter().map(compact_connector_status_mapping).collect::<Vec<_>>(),
         "writer_adapter": compact_connector_writer_adapter(&provider.name, Some(provider)),
         "remote_contract": compact_connector_remote_contract(Some(provider)),
         "notes": compact_text(&provider.notes, 180)
@@ -4705,8 +4759,11 @@ fn connector_remote_readback_report(
     let remote_status_current = remote_mirror
         .map(|remote| remote.issue.status == mirror.issue.status)
         .unwrap_or(false);
-    let status_mapping =
-        connector_remote_status_mapping(&provider.name, mirror.issue.status.as_str());
+    let status_mapping = connector_remote_status_mapping(
+        Some(provider),
+        &provider.name,
+        mirror.issue.status.as_str(),
+    );
     let remote_comment_surface_current = remote_mirror
         .map(|remote| issue_mirror_comment_surface_current(mirror, remote))
         .unwrap_or(false);
@@ -4931,7 +4988,8 @@ fn connector_github_remote_readback_report(
     let expected_body = connector_remote_issue_body(&source_issue);
     let expected_state = connector_github_issue_state(&mirror.issue.status);
     let expected_state_reason = connector_github_issue_state_reason(&mirror.issue.status);
-    let status_mapping = connector_remote_status_mapping("github", &mirror.issue.status);
+    let status_mapping =
+        connector_remote_status_mapping(Some(provider), "github", &mirror.issue.status);
     let expected_comment = mirror
         .comments
         .last()
@@ -5281,20 +5339,29 @@ fn connector_linear_remote_readback_report(
     let remote_state_name = issue_summary
         .and_then(|value| value.pointer("/state/name"))
         .and_then(|value| value.as_str());
+    let remote_state_id = issue_summary
+        .and_then(|value| value.pointer("/state/id"))
+        .and_then(|value| value.as_str());
     let remote_comment_surface_current = expected_comment.as_ref().map_or(true, |expected| {
         linear_readback_comments_contain_body(comments_summary, expected)
     });
     let expected_status = mirror.issue.status.as_str();
-    let status_mapping = connector_remote_status_mapping("linear", expected_status);
+    let status_mapping = connector_remote_status_mapping(Some(provider), "linear", expected_status);
     let expected_remote_state = status_mapping
         .pointer("/remote_state")
+        .and_then(|value| value.as_str());
+    let expected_remote_state_id = status_mapping
+        .pointer("/remote_state_id")
         .and_then(|value| value.as_str());
     let expected_status_marker = status_mapping
         .pointer("/remote_status_marker")
         .and_then(|value| value.as_str());
-    let remote_status_current = expected_remote_state
-        .map(|state| remote_state_name == Some(state))
+    let remote_status_current = expected_remote_state_id
+        .map(|state_id| remote_state_id == Some(state_id))
         .unwrap_or(false)
+        || expected_remote_state
+            .map(|state| remote_state_name == Some(state))
+            .unwrap_or(false)
         || expected_status_marker
             .map(|marker| {
                 remote_body
@@ -5394,7 +5461,9 @@ fn connector_linear_remote_readback_report(
                 "mapping": status_mapping,
                 "expected_status": expected_status,
                 "expected_remote_state": expected_remote_state,
+                "expected_remote_state_id": expected_remote_state_id,
                 "expected_status_marker": expected_status_marker,
+                "remote_state_id": remote_state_id,
                 "remote_state_name": remote_state_name,
                 "description_status_marker": expected_status_marker.map(|marker| {
                     remote_body
@@ -7673,6 +7742,11 @@ fn compact_connector_remote_contract(
         "status_mapping": connector_status_mapping_policy_for_provider(&provider.name)
             .as_ref()
             .map(compact_connector_status_mapping_policy),
+        "configured_status_mappings": provider
+            .status_mappings
+            .iter()
+            .map(compact_connector_status_mapping)
+            .collect::<Vec<_>>(),
         "target": {
             "schema_version": CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION,
             "review_surface": "provider-specific issue target",
@@ -8021,8 +8095,8 @@ fn connector_remote_write_plan(
         .and_then(|value| value.as_str())
         .unwrap_or("Todo");
     let operations = match provider.name.as_str() {
-        "github" => connector_github_remote_write_operations(remote_target, issue),
-        "linear" => connector_linear_remote_write_operations(remote_target, issue),
+        "github" => connector_github_remote_write_operations(provider, remote_target, issue),
+        "linear" => connector_linear_remote_write_operations(provider, remote_target, issue),
         "remote-fixture" => connector_fixture_remote_write_operations(remote_target, issue),
         _ => connector_generic_remote_write_operations(provider, remote_target, issue),
     };
@@ -8040,7 +8114,7 @@ fn connector_remote_write_plan(
         "auth": connector_remote_write_auth_plan(provider),
         "remote_target": remote_target,
         "source": source,
-        "status_mapping": connector_remote_status_mapping(&provider.name, source_status),
+        "status_mapping": connector_remote_status_mapping(Some(provider), &provider.name, source_status),
         "operations": operations,
         "receipt_schema_version": CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION,
         "readback_schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION
@@ -8119,6 +8193,7 @@ fn connector_remote_write_auth_plan(provider: &ConnectorProviderSpec) -> serde_j
 }
 
 fn connector_github_remote_write_operations(
+    provider: &ConnectorProviderSpec,
     remote_target: &serde_json::Value,
     issue: &serde_json::Value,
 ) -> serde_json::Value {
@@ -8133,7 +8208,7 @@ fn connector_github_remote_write_operations(
         .pointer("/status")
         .and_then(|value| value.as_str())
         .unwrap_or("Todo");
-    let status_mapping = connector_remote_status_mapping("github", status);
+    let status_mapping = connector_remote_status_mapping(Some(provider), "github", status);
     let state = status_mapping
         .pointer("/remote_state")
         .and_then(|value| value.as_str())
@@ -8210,6 +8285,7 @@ fn connector_github_remote_write_operations(
 }
 
 fn connector_linear_remote_write_operations(
+    provider: &ConnectorProviderSpec,
     remote_target: &serde_json::Value,
     issue: &serde_json::Value,
 ) -> serde_json::Value {
@@ -8225,7 +8301,22 @@ fn connector_linear_remote_write_operations(
         .pointer("/status")
         .and_then(|value| value.as_str())
         .unwrap_or("Todo");
-    let status_mapping = connector_remote_status_mapping("linear", status);
+    let status_mapping = connector_remote_status_mapping(Some(provider), "linear", status);
+    let mut issue_update_input = serde_json::json!({
+        "title": issue.pointer("/title").and_then(|value| value.as_str()).unwrap_or("Entrance issue"),
+        "description": connector_remote_issue_body(issue)
+    });
+    if let Some(state_id) = status_mapping
+        .pointer("/remote_state_id")
+        .and_then(|value| value.as_str())
+    {
+        if let Some(object) = issue_update_input.as_object_mut() {
+            object.insert(
+                "stateId".to_string(),
+                serde_json::Value::String(state_id.to_string()),
+            );
+        }
+    }
     let idempotency_key = connector_remote_issue_idempotency_key("linear", issue);
     serde_json::json!([
         {
@@ -8252,10 +8343,7 @@ fn connector_linear_remote_write_operations(
                 "query": "mutation EntranceIssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id identifier title state { id name } } } }",
                 "variables": {
                     "id": "<lookup.issue.id>",
-                    "input": {
-                        "title": issue.pointer("/title").and_then(|value| value.as_str()).unwrap_or("Entrance issue"),
-                        "description": connector_remote_issue_body(issue)
-                    }
+                    "input": issue_update_input
                 }
             },
             "source": "hive_issue.status_title_summary",
@@ -10455,6 +10543,11 @@ fn compact_connector_queue_provider(
             .unwrap_or_default(),
         "mode": provider.mode.as_str(),
         "storage": provider.storage.as_str(),
+        "configured_status_mappings": provider
+            .status_mappings
+            .iter()
+            .map(compact_connector_status_mapping)
+            .collect::<Vec<_>>(),
         "adapter": compact_connector_writer_adapter(&provider.name, Some(provider)),
         "issue_count": provider_issues.len(),
         "current_count": current_count,
@@ -10952,8 +11045,9 @@ mod tests {
     };
     use entrance_hive::{
         ConnectorAdmissionCheckSpec, ConnectorAdmissionPolicySpec, ConnectorProviderAdmissionSpec,
-        ConnectorProviderSpec, ConnectorRegistryReport, HiveLoopAuditCheck, HiveLoopAuditReport,
-        HiveLoopDoctorCounts, IssueAction, IssueCard, IssueDoctorSummary, IssueMirrorReport,
+        ConnectorProviderSpec, ConnectorRegistryReport, ConnectorStatusMappingSpec,
+        HiveLoopAuditCheck, HiveLoopAuditReport, HiveLoopDoctorCounts, IssueAction, IssueCard,
+        IssueDoctorSummary, IssueMirrorReport,
     };
 
     fn test_issue_action(action: &str, label: &str, command: &str) -> IssueAction {
@@ -11236,7 +11330,26 @@ mod tests {
             supports_readback: supports_publish,
             supports_admission: supports_publish,
             storage: "test".to_string(),
+            status_mappings: Vec::new(),
             notes: "test provider".to_string(),
+        }
+    }
+
+    fn test_linear_status_mapping(
+        hive_status: &str,
+        remote_state: &str,
+        remote_state_id: &str,
+        remote_state_type: &str,
+    ) -> ConnectorStatusMappingSpec {
+        ConnectorStatusMappingSpec {
+            hive_status: hive_status.to_string(),
+            remote_state: Some(remote_state.to_string()),
+            remote_state_id: Some(remote_state_id.to_string()),
+            remote_state_reason: None,
+            remote_state_type: Some(remote_state_type.to_string()),
+            remote_status_marker: Some(format!("Status: {hive_status}")),
+            readback_check: "remote_status".to_string(),
+            notes: "test Linear state mapping".to_string(),
         }
     }
 
@@ -11618,6 +11731,9 @@ mod tests {
     struct LinearFixtureState {
         title: String,
         description: String,
+        state_id: String,
+        state_name: String,
+        state_type: String,
         comment_body: Option<String>,
     }
 
@@ -11636,6 +11752,9 @@ mod tests {
         let state = Arc::new(Mutex::new(LinearFixtureState {
             title: "Loop #47: Linear connector".to_string(),
             description: "Old Linear description".to_string(),
+            state_id: "state-todo".to_string(),
+            state_name: "Todo".to_string(),
+            state_type: "unstarted".to_string(),
             comment_body: initial_comment_body,
         }));
         let fixture_state = Arc::clone(&state);
@@ -11671,6 +11790,15 @@ mod tests {
                             .and_then(|value| value.as_str())
                         {
                             state.description = description.to_string();
+                        }
+                        if let Some(state_id) = payload
+                            .pointer("/variables/input/stateId")
+                            .and_then(|value| value.as_str())
+                        {
+                            state.state_id = state_id.to_string();
+                            let (name, state_type) = linear_fixture_state_from_id(state_id);
+                            state.state_name = name.to_string();
+                            state.state_type = state_type.to_string();
                         }
                         serde_json::json!({
                             "data": {
@@ -11751,14 +11879,24 @@ mod tests {
             "description": state.description,
             "url": "https://linear.app/acme/issue/ENT-47/linear-connector",
             "state": {
-                "id": "state-todo",
-                "name": "Todo",
-                "type": "unstarted"
+                "id": state.state_id,
+                "name": state.state_name,
+                "type": state.state_type
             },
             "comments": {
                 "nodes": comments
             }
         })
+    }
+
+    fn linear_fixture_state_from_id(state_id: &str) -> (&'static str, &'static str) {
+        match state_id {
+            "state-done" | "lin-state-done" => ("Done", "completed"),
+            "state-canceled" | "lin-state-canceled" => ("Canceled", "canceled"),
+            "state-doing" | "lin-state-doing" => ("Doing", "started"),
+            "state-blocked" | "lin-state-blocked" => ("Blocked", "backlog"),
+            _ => ("Todo", "unstarted"),
+        }
     }
 
     fn linear_fixture_comment_json(body: &str) -> serde_json::Value {
@@ -13404,6 +13542,12 @@ mod tests {
         let mut linear =
             test_connector_provider("linear", "Linear", "active", true, true, vec!["linear:"]);
         linear.mode = "remote-issue-api".to_string();
+        linear.status_mappings = vec![test_linear_status_mapping(
+            "Done",
+            "Done",
+            "lin-state-done",
+            "completed",
+        )];
         let linear_target =
             connector_remote_target(Some(&linear), "linear:ENT-37", "hive-loop-8-issue-8");
         let linear_plan = connector_remote_write_plan(Some(&linear), &issue, &linear_target, &[]);
@@ -13433,6 +13577,18 @@ mod tests {
         );
         assert_eq!(
             linear_plan
+                .pointer("/status_mapping/remote_state_id")
+                .and_then(|value| value.as_str()),
+            Some("lin-state-done")
+        );
+        assert_eq!(
+            linear_plan
+                .pointer("/operations/1/graphql/variables/input/stateId")
+                .and_then(|value| value.as_str()),
+            Some("lin-state-done")
+        );
+        assert_eq!(
+            linear_plan
                 .pointer("/operations/1/status_mapping/readback_check")
                 .and_then(|value| value.as_str()),
             Some("remote_status")
@@ -13458,6 +13614,12 @@ mod tests {
         linear.mode = "remote-issue-api".to_string();
         linear.auth_required = true;
         linear.auth_env = vec!["ENTRANCE_TEST_LINEAR_GRAPHQL_TOKEN".to_string()];
+        linear.status_mappings = vec![test_linear_status_mapping(
+            "Done",
+            "Done",
+            "lin-state-done",
+            "completed",
+        )];
         std::env::set_var("ENTRANCE_TEST_LINEAR_GRAPHQL_TOKEN", "test-token");
         let (base_url, requests, server) = spawn_linear_graphql_server();
         linear.storage = base_url;
@@ -13470,7 +13632,7 @@ mod tests {
                 id: 47,
                 loop_id: Some(47),
                 title: "Loop #47: Linear connector".to_string(),
-                status: "Todo".to_string(),
+                status: "Done".to_string(),
                 summary: Some("Validate Linear GraphQL mirror.".to_string()),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 updated_at: "2026-01-01T00:04:00Z".to_string(),
@@ -13584,6 +13746,18 @@ mod tests {
         );
         assert_eq!(
             readback
+                .pointer("/remote/surface/issue/state/id")
+                .and_then(|value| value.as_str()),
+            Some("lin-state-done")
+        );
+        assert_eq!(
+            readback
+                .pointer("/remote_readback/checks/6/details/expected_remote_state_id")
+                .and_then(|value| value.as_str()),
+            Some("lin-state-done")
+        );
+        assert_eq!(
+            readback
                 .pointer("/remote_readback/checks/9/name")
                 .and_then(|value| value.as_str()),
             Some("write_receipt_binding")
@@ -13594,6 +13768,7 @@ mod tests {
             .join("\n---\n");
         assert!(request_log.contains("\"operationName\":\"EntranceIssueRead\""));
         assert!(request_log.contains("\"operationName\":\"EntranceIssueUpdate\""));
+        assert!(request_log.contains("\"stateId\":\"lin-state-done\""));
         assert!(request_log.contains("\"operationName\":\"EntranceCommentCreate\""));
         assert!(connector_linear_remote_comment_body(&source_issue)
             .contains("<!-- entrance-idempotency-key:"));

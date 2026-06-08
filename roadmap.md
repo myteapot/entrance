@@ -19,19 +19,20 @@ Last updated: 2026-06-09
 - 本轮继续补齐 Panel 操作后刷新：Panel 写 issue ledger 的操作，包括 create/run/retry/review/cancel/comment、issue mirror sync/publish/verify/readback/admit/roundtrip、connector publish/roundtrip execute 和 fixture demo，都会刷新 board 并强制重新读取 selected issue 的 Transition Policy、Loop Dashboard、Evidence Drilldown、Evidence Manifest、Activity Timeline、Runtime Preflight 和 Worker Lifecycle。
 - 本轮继续把 issue transition policy 推进成可验证状态机：`issue_transitions.state_machine` 现在随 `hive policy registry --compact` / MCP policy registry 暴露每个状态的 allowed/blocked action、gate、confirmation、terminal/human-decision class，并补了状态矩阵测试来校验真实 issue action surface 与 registry 不漂移，包括 loop-bound `run` 和 retryable runtime-rejected `Canceled` 条件。
 - 本轮继续把远端 issue 状态映射推进到 policy registry：`hive policy registry --compact` 现在暴露 remote-fixture/GitHub/Linear status mapping，GitHub write/readback 使用 issue state/state_reason，Linear write/readback 先用 state name 或 description status marker 做受限校验，remote write plan 和 readback detail 都会携带同一份 `status_mapping`。
+- 本轮继续把 Linear status mapping 推进到配置驱动写入：`entrance.toml` 支持 `connectors.linear.status_mappings.<HiveStatus>.remote_state_id`，provider registry/remote contract/connector queue 会暴露 configured mapping，Linear GraphQL update 会写入 configured `stateId`，readback 会优先校验 `state.id` 再 fallback 到 state name/status marker。
 
 ## 还没做完
 
 - 把 `runtime_preflight.v1` 扩展成完整 capability preview：sandbox scope、connector readiness、artifact capture、人类偏好边界，而不仅是 runtime support/probe。
 - 把 Evidence Drilldown/Manifest 产品化：完整 transcript 展开、真实远端 receipt 归档、真实 artifact manifest 生成/内容校验、payload schema diff、更完整的 blocker decision workflow。
 - Productize MCP：真实客户端配置、协议兼容测试、verified actor identity、权限边界、远程 connector 绑定。
-- Productize Linear/GitHub connector：真实 token 验证、可配置 Linear workflow state mapping、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
+- Productize Linear/GitHub connector：真实 token 验证、Linear workflow discovery/migration、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
 - Productize issue timeline：筛选/折叠、远端 issue comment 映射、inline decision 的操作后刷新状态、receipt drilldown 和更强的 blocked action provenance。
-- Productize issue transition policy：当前已经有 kernel registry/report snapshot/audit 绑定、execution-time transition admission receipt、Panel 操作后 selected issue control surface 刷新、系统化状态机矩阵测试和 provider status mapping policy；还缺版本迁移、状态映射配置/迁移和更完整的 policy lifecycle。
+- Productize issue transition policy：当前已经有 kernel registry/report snapshot/audit 绑定、execution-time transition admission receipt、Panel 操作后 selected issue control surface 刷新、系统化状态机矩阵测试、provider status mapping policy 和 Linear configured stateId mapping；还缺版本迁移、状态映射 discovery/migration 和更完整的 policy lifecycle。
 - Hardening workers：sandbox、环境脱敏、heartbeat、resume/cancel/replacement、timeout recovery、跨进程 durable failure attribution。
 - Reviewer gates 继续加强：目标漂移检测、score vector 计算、keep/reject/block 证据要求，以及需要人类偏好时的选项生成。
 - 正式 compiler IR：从 archive 中提升为 current truth，并把 loop contract、packet、receipt、evidence、verdict、policy registry lifecycle 变成版本化 runtime 对象。
 
 ## 下一轮建议
 
-优先把 issue transition policy 和 connector status mapping 补到可配置 policy lifecycle，同时把 issue timeline inline decision、Evidence Drilldown/Manifest 接到真实 agent/connector 产物：receipt drilldown、真实 artifact manifest 生成与内容校验、完整 transcript 展开、blocker decision workflow。
+优先把 connector status mapping 补到 live token-backed validation 和 drift recovery，同时把 issue timeline inline decision、Evidence Drilldown/Manifest 接到真实 agent/connector 产物：receipt drilldown、真实 artifact manifest 生成与内容校验、完整 transcript 展开、blocker decision workflow。
