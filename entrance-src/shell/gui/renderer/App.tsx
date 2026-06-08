@@ -431,12 +431,24 @@ type ConnectorRemoteWriteOperation = {
   } | null;
 };
 
+type ConnectorStatusMapping = {
+  hive_status?: string | null;
+  remote_state?: string | null;
+  remote_state_id?: string | null;
+  remote_state_reason?: string | null;
+  remote_state_type?: string | null;
+  remote_status_marker?: string | null;
+  readback_check?: string | null;
+  notes?: string | null;
+};
+
 type ConnectorRemoteWritePlan = {
   schema_version?: string;
   provider?: string | null;
   remote_object_kind?: string | null;
   executable?: boolean | null;
   blocked_by?: string[];
+  status_mapping?: ConnectorStatusMapping | null;
   operations?: ConnectorRemoteWriteOperation[];
 };
 
@@ -1845,6 +1857,51 @@ export default function App() {
       operations?.length ? `ops: ${operations.join(" | ")}` : null,
     ].filter((part): part is string => Boolean(part));
     return parts.length ? parts.join(" | ") : undefined;
+  };
+  const connectorStatusMappingRemoteLabel = (mapping?: ConnectorStatusMapping | null) => {
+    if (!mapping) return null;
+    return (
+      mapping.remote_state ??
+      mapping.remote_state_id ??
+      mapping.remote_status_marker ??
+      mapping.remote_state_type ??
+      null
+    );
+  };
+  const connectorStatusMappingLabel = (mapping?: ConnectorStatusMapping | null) => {
+    if (!mapping) return null;
+    const hiveStatus = mapping.hive_status ?? "status";
+    const remote = connectorStatusMappingRemoteLabel(mapping);
+    return remote ? `map ${hiveStatus} -> ${remote}` : null;
+  };
+  const connectorStatusMappingTitle = (mapping?: ConnectorStatusMapping | null) => {
+    if (!mapping) return undefined;
+    const parts = [
+      mapping.hive_status ? `hive ${mapping.hive_status}` : null,
+      mapping.remote_state ? `remote state ${mapping.remote_state}` : null,
+      mapping.remote_state_id ? `state id ${mapping.remote_state_id}` : null,
+      mapping.remote_state_type ? `type ${mapping.remote_state_type}` : null,
+      mapping.remote_state_reason ? `reason ${mapping.remote_state_reason}` : null,
+      mapping.remote_status_marker ? `marker ${mapping.remote_status_marker}` : null,
+      mapping.readback_check ? `readback ${mapping.readback_check}` : null,
+      mapping.notes,
+    ].filter((part): part is string => Boolean(part));
+    return parts.length ? parts.join(" | ") : undefined;
+  };
+  const connectorStatusMappingChip = (
+    mapping: ConnectorStatusMapping | null | undefined,
+    testId: string,
+  ) => {
+    const label = connectorStatusMappingLabel(mapping);
+    return label ? (
+      <span
+        class="connector-status-map"
+        data-testid={testId}
+        title={connectorStatusMappingTitle(mapping)}
+      >
+        {label}
+      </span>
+    ) : null;
   };
   const connectorRemoteWritePlanTone = (plan?: ConnectorRemoteWritePlan | null) =>
     plan?.executable === false ||
@@ -3591,6 +3648,10 @@ export default function App() {
         {connectorRemoteWritePlanChip(
           connectorQueueIssueWritePlan(card.issue.id),
           `connector-write-plan-${surface}-${card.issue.id}`,
+        )}
+        {connectorStatusMappingChip(
+          connectorQueueIssueWritePlan(card.issue.id)?.status_mapping,
+          `connector-status-map-${surface}-${card.issue.id}`,
         )}
         {connectorRemoteDiagnosticChips(
           connectorRemoteDiagnostics(card.issue.id),

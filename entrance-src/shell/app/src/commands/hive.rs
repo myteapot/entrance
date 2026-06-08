@@ -53,6 +53,7 @@ const CONNECTOR_REMOTE_WRITE_PLAN_SCHEMA_VERSION: &str =
     "entrance.hive.connector_remote_write_plan.v1";
 const CONNECTOR_REMOTE_WRITE_EXECUTE_SCHEMA_VERSION: &str =
     "entrance.hive.connector_remote_write_execute.v1";
+const ISSUE_CONNECTOR_CONTROL_SCHEMA_VERSION: &str = "entrance.hive.issue_connector_control.v1";
 const ISSUE_CONNECTOR_ADMISSION_PREVIEW_SCHEMA_VERSION: &str =
     "entrance.hive.issue_connector_admission_preview.v1";
 const CONNECTOR_FIXTURE_DEMO_SCHEMA_VERSION: &str = "entrance.hive.connector_fixture_demo.v1";
@@ -7080,6 +7081,74 @@ fn compact_issue_card_with_connector_status(
     issue
 }
 
+pub(crate) fn compact_issue_connector_control(
+    services: &AppServices,
+    card: &IssueCard,
+) -> serde_json::Value {
+    let issue = compact_issue_card_with_connector_status(services, card);
+    compact_issue_connector_control_from_issue(&services.hive.connector_registry(), &issue)
+}
+
+fn compact_issue_connector_control_from_issue(
+    registry: &ConnectorRegistryReport,
+    issue: &serde_json::Value,
+) -> serde_json::Value {
+    let queue_issue = compact_connector_queue_issue(registry, issue);
+    let provider_name = queue_issue
+        .pointer("/provider")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let provider = registry
+        .providers
+        .iter()
+        .find(|provider| provider.name == provider_name);
+    let status_mapping_policy = connector_status_mapping_policy_for_provider(provider_name)
+        .map(|policy| compact_connector_status_mapping_policy(&policy))
+        .unwrap_or(serde_json::Value::Null);
+    let configured_status_mappings = provider
+        .map(|provider| {
+            provider
+                .status_mappings
+                .iter()
+                .map(compact_connector_status_mapping)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "schema_version": ISSUE_CONNECTOR_CONTROL_SCHEMA_VERSION,
+        "issue_id": queue_issue.pointer("/id").and_then(|value| value.as_i64()),
+        "loop_id": queue_issue.pointer("/loop_id").and_then(|value| value.as_i64()),
+        "status": queue_issue.pointer("/status").and_then(|value| value.as_str()),
+        "provider": provider_name,
+        "provider_status": queue_issue.pointer("/provider_status").and_then(|value| value.as_str()),
+        "configured": queue_issue.pointer("/configured").and_then(|value| value.as_bool()),
+        "supports_publish": queue_issue.pointer("/supports_publish").and_then(|value| value.as_bool()),
+        "supports_readback": queue_issue.pointer("/supports_readback").and_then(|value| value.as_bool()),
+        "supports_admission": queue_issue.pointer("/supports_admission").and_then(|value| value.as_bool()),
+        "review_surface": queue_issue.pointer("/review_surface").and_then(|value| value.as_str()),
+        "external_key": queue_issue.pointer("/external_key").and_then(|value| value.as_str()),
+        "publish_required": queue_issue.pointer("/publish_required").and_then(|value| value.as_bool()),
+        "current": queue_issue.pointer("/current").and_then(|value| value.as_bool()),
+        "reason": queue_issue.pointer("/reason").and_then(|value| value.as_str()),
+        "can_publish": queue_issue.pointer("/can_publish").and_then(|value| value.as_bool()),
+        "publish_blockers": queue_issue.pointer("/publish_blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "admission_status": queue_issue.pointer("/admission_status").and_then(|value| value.as_str()),
+        "admission_blockers": queue_issue.pointer("/admission_blockers").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "admission_checks": queue_issue.pointer("/admission_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "remote_readback_checks": queue_issue.pointer("/remote_readback_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "failed_checks": queue_issue.pointer("/failed_checks").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "remote_target": queue_issue.pointer("/remote_target").cloned().unwrap_or(serde_json::Value::Null),
+        "remote_write_plan": queue_issue.pointer("/remote_write_plan").cloned().unwrap_or(serde_json::Value::Null),
+        "status_mapping": queue_issue.pointer("/remote_write_plan/status_mapping").cloned().unwrap_or(serde_json::Value::Null),
+        "status_mapping_policy": status_mapping_policy,
+        "configured_status_mappings": configured_status_mappings,
+        "remote_diagnostics": queue_issue.pointer("/remote_diagnostics").cloned().unwrap_or(serde_json::Value::Null),
+        "commands": queue_issue.pointer("/commands").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "dry_run_action": queue_issue.pointer("/dry_run_action").cloned().unwrap_or_else(|| serde_json::json!({}))
+    })
+}
+
 fn compact_connector_status_for_issue(services: &AppServices, issue_id: i64) -> serde_json::Value {
     issue_mirror_status(services, issue_id, None).unwrap_or_else(|error| {
         serde_json::json!({
@@ -11014,13 +11083,13 @@ mod tests {
         compact_connector_publish_plan, compact_connector_queue, compact_connector_registry,
         compact_connector_remote_contract, compact_connector_roundtrip_plan,
         compact_github_issue_mirror_readback, compact_issue_board,
-        compact_issue_connector_admission_preview, compact_issue_detail, compact_issue_mirror,
-        compact_issue_mirror_admission, compact_issue_mirror_admission_summary,
-        compact_issue_mirror_audit, compact_issue_mirror_audit_summary,
-        compact_issue_mirror_publish, compact_issue_mirror_readback,
-        compact_issue_mirror_readback_summary, compact_issue_mirror_roundtrip,
-        compact_issue_mirror_roundtrip_summary, compact_issue_mirror_status,
-        compact_issue_mirror_sync, compact_issue_mirror_verify,
+        compact_issue_connector_admission_preview, compact_issue_connector_control_from_issue,
+        compact_issue_detail, compact_issue_mirror, compact_issue_mirror_admission,
+        compact_issue_mirror_admission_summary, compact_issue_mirror_audit,
+        compact_issue_mirror_audit_summary, compact_issue_mirror_publish,
+        compact_issue_mirror_readback, compact_issue_mirror_readback_summary,
+        compact_issue_mirror_roundtrip, compact_issue_mirror_roundtrip_summary,
+        compact_issue_mirror_status, compact_issue_mirror_sync, compact_issue_mirror_verify,
         compact_linear_issue_mirror_readback, compact_local_panel_issue_mirror_publish,
         compact_local_panel_issue_mirror_readback, compact_loop_audit, compact_loop_start_summary,
         compact_policy_registry, compact_store_schema_status, connector_admission_check_failed,
@@ -12913,6 +12982,99 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(blockers.contains(&"provider_not_active"));
         assert!(blockers.contains(&"publish_not_supported"));
+    }
+
+    #[test]
+    fn issue_connector_control_exposes_status_mapping_for_current_issue() {
+        let mut provider =
+            test_connector_provider("linear", "Linear", "active", true, true, vec!["linear:"]);
+        provider.status_mappings = vec![test_linear_status_mapping(
+            "Blocked",
+            "Triage Blocked",
+            "state-blocked",
+            "blocked",
+        )];
+        let registry = ConnectorRegistryReport {
+            schema_version: "entrance.hive.connector_registry.v1".to_string(),
+            provider_admissions: vec![test_provider_admission(&provider)],
+            providers: vec![provider],
+            admission: ConnectorAdmissionPolicySpec {
+                schema_version: "entrance.hive.policy_registry.v1".to_string(),
+                gate: "connector_mirror_receipt_current".to_string(),
+                route_to: "external_issue_surface".to_string(),
+                expected_object_kind: "ISSUE_CONNECTOR_MIRROR".to_string(),
+                check: "external_receipt_current".to_string(),
+                required_receipts: vec!["mirror_file_current".to_string()],
+                required_checks: test_connector_admission_required_checks(),
+                check_registry: test_connector_admission_check_registry(),
+                dry_run_command: "entrance hive issue connector-admission <id> --compact"
+                    .to_string(),
+            },
+        };
+        let issue = serde_json::json!({
+            "id": 43,
+            "loop_id": 8,
+            "title": "Loop #8: connector mapped",
+            "status": "Blocked",
+            "connector": {
+                "provider": "linear",
+                "review_surface": "linear:ENT-43",
+                "external_key": "ENT-43",
+                "current": false,
+                "publish_required": true,
+                "reason": "mirror_stale",
+                "failed_checks": ["remote_status"],
+                "publish_command": "entrance hive issue mirror-publish 43 --compact",
+                "readback_command": "entrance hive issue mirror-readback 43 --record --compact",
+                "admit_command": "entrance hive issue mirror-admit 43 --record --compact",
+                "roundtrip_command": "entrance hive issue mirror-roundtrip 43 --compact"
+            }
+        });
+
+        let control = compact_issue_connector_control_from_issue(&registry, &issue);
+
+        assert_eq!(
+            control
+                .pointer("/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_connector_control.v1")
+        );
+        assert_eq!(
+            control
+                .pointer("/status_mapping/hive_status")
+                .and_then(|value| value.as_str()),
+            Some("Blocked")
+        );
+        assert_eq!(
+            control
+                .pointer("/status_mapping/remote_state")
+                .and_then(|value| value.as_str()),
+            Some("Triage Blocked")
+        );
+        assert_eq!(
+            control
+                .pointer("/status_mapping/remote_state_id")
+                .and_then(|value| value.as_str()),
+            Some("state-blocked")
+        );
+        assert_eq!(
+            control
+                .pointer("/configured_status_mappings/0/remote_state_id")
+                .and_then(|value| value.as_str()),
+            Some("state-blocked")
+        );
+        assert_eq!(
+            control
+                .pointer("/remote_write_plan/status_mapping/remote_state_id")
+                .and_then(|value| value.as_str()),
+            Some("state-blocked")
+        );
+        assert_eq!(
+            control
+                .pointer("/remote_target/issue_key")
+                .and_then(|value| value.as_str()),
+            Some("ENT-43")
+        );
     }
 
     #[test]

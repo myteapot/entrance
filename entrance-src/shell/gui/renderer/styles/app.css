@@ -745,6 +745,14 @@
   overflow-wrap: anywhere;
 }
 
+.connector-status-map {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(125, 177, 255, 0.3);
+  color: #b9d2ff;
+  background: rgba(125, 177, 255, 0.08);
+}
+
 .connector-check {
   max-width: 100%;
   overflow-wrap: anywhere;

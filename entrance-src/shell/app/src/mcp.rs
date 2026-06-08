@@ -7,7 +7,7 @@ use entrance_hive::{
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::app::AppServices;
+use crate::{app::AppServices, commands::hive::compact_issue_connector_control};
 
 const MCP_LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_FALLBACK_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -364,7 +364,7 @@ fn prompt_blocker_decision(
 fn issue_prompt_resource(services: &AppServices, issue_id: i64) -> Result<serde_json::Value> {
     let uri = format!("entrance://issues/{issue_id}/control");
     let card = services.hive.issue_report(issue_id)?;
-    let report = issue_control_packet(&card);
+    let report = issue_control_packet_for_services(services, &card);
     Ok(serde_json::json!({
         "role": "user",
         "content": {
@@ -624,10 +624,26 @@ fn tool_issue_control(
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let issue_id = integer_arg(args, "issue_id")?;
-    Ok(issue_control_packet(&services.hive.issue_report(issue_id)?))
+    let card = services.hive.issue_report(issue_id)?;
+    Ok(issue_control_packet_for_services(services, &card))
 }
 
+#[cfg(test)]
 fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
+    issue_control_packet_with_connector(card, serde_json::Value::Null)
+}
+
+fn issue_control_packet_for_services(
+    services: &AppServices,
+    card: &IssueCard,
+) -> serde_json::Value {
+    issue_control_packet_with_connector(card, compact_issue_connector_control(services, card))
+}
+
+fn issue_control_packet_with_connector(
+    card: &IssueCard,
+    connector: serde_json::Value,
+) -> serde_json::Value {
     let trace = card.trace.as_ref();
     let doctor = card.doctor.as_ref();
     let recent_evidence = trace
@@ -692,6 +708,7 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
             "missing_receipts": doctor.map(|doctor| doctor.missing_receipts.clone()).unwrap_or_default(),
             "worker_failures": doctor.map(|doctor| doctor.worker_failures.clone()).unwrap_or_default()
         },
+        "connector": connector,
         "runtime_preflight": issue_runtime_preflight_summary(card),
         "worker_lifecycle": issue_worker_lifecycle_summary(card),
         "doctor": doctor.map(|doctor| serde_json::json!({
@@ -1270,7 +1287,8 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
                 .with_context(|| {
                     format!("invalid Entrance issue control resource URI `{value}`")
                 })?;
-            issue_control_packet(&services.hive.issue_report(issue_id)?)
+            let card = services.hive.issue_report(issue_id)?;
+            issue_control_packet_for_services(services, &card)
         }
         value
             if value.starts_with("entrance://issues/") && value.ends_with("/transition-policy") =>
@@ -1909,11 +1927,12 @@ fn optional_string_array_arg(args: &serde_json::Value, name: &str) -> Vec<String
 mod tests {
     use super::{
         append_human_confirmation_note, ensure_human_confirmed, initialize_result,
-        issue_control_packet, mcp_client_identity, mcp_human_confirmation_receipt,
-        mcp_permission_policy, prompt_loop_contract, prompt_specs, resource_templates, tool_specs,
-        McpSession, MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION, MCP_FALLBACK_PROTOCOL_VERSION,
-        MCP_ISSUE_CONTROL_SCHEMA_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
-        MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_SCHEMA_VERSION,
+        issue_control_packet, issue_control_packet_with_connector, mcp_client_identity,
+        mcp_human_confirmation_receipt, mcp_permission_policy, prompt_loop_contract, prompt_specs,
+        resource_templates, tool_specs, McpSession, MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION,
+        MCP_FALLBACK_PROTOCOL_VERSION, MCP_ISSUE_CONTROL_SCHEMA_VERSION,
+        MCP_PERMISSION_POLICY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION,
+        MCP_TOOL_PERMISSION_SCHEMA_VERSION,
     };
     use entrance_core::{HiveComment, HiveIssue};
     use entrance_hive::{IssueAction, IssueCard};
@@ -2136,6 +2155,70 @@ mod tests {
         assert!(packet
             .get("worker_lifecycle")
             .is_some_and(|value| value.is_null()));
+    }
+
+    #[test]
+    fn issue_control_packet_exposes_connector_status_mapping() {
+        let card = IssueCard {
+            issue: HiveIssue {
+                id: 43,
+                loop_id: Some(8),
+                title: "Loop #8: mapped issue".to_string(),
+                status: "Blocked".to_string(),
+                summary: Some("Needs remote status mapping".to_string()),
+                created_at: "2026-06-09T00:00:00Z".to_string(),
+                updated_at: "2026-06-09T00:00:01Z".to_string(),
+            },
+            comments: Vec::new(),
+            actions: Vec::new(),
+            trace: None,
+            doctor: None,
+        };
+        let connector = serde_json::json!({
+            "schema_version": "entrance.hive.issue_connector_control.v1",
+            "issue_id": 43,
+            "provider": "linear",
+            "review_surface": "linear:ENT-43",
+            "status_mapping": {
+                "hive_status": "Blocked",
+                "remote_state": "Blocked",
+                "remote_state_id": "state-blocked",
+                "remote_status_marker": "Status: Blocked",
+                "readback_check": "remote_status"
+            },
+            "configured_status_mappings": [{
+                "hive_status": "Blocked",
+                "remote_state": "Blocked",
+                "remote_state_id": "state-blocked"
+            }]
+        });
+
+        let packet = issue_control_packet_with_connector(&card, connector);
+
+        assert_eq!(
+            packet
+                .pointer("/connector/schema_version")
+                .and_then(|value| value.as_str()),
+            Some("entrance.hive.issue_connector_control.v1")
+        );
+        assert_eq!(
+            packet
+                .pointer("/connector/status_mapping/hive_status")
+                .and_then(|value| value.as_str()),
+            Some("Blocked")
+        );
+        assert_eq!(
+            packet
+                .pointer("/connector/status_mapping/remote_state_id")
+                .and_then(|value| value.as_str()),
+            Some("state-blocked")
+        );
+        assert_eq!(
+            packet
+                .pointer("/connector/configured_status_mappings/0/remote_state_id")
+                .and_then(|value| value.as_str()),
+            Some("state-blocked")
+        );
     }
 
     #[test]

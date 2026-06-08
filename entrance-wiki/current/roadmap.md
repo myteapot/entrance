@@ -185,6 +185,13 @@ Entrance has reached a local MVP unit:
   registry, remote contract, and connector queue expose that configured mapping,
   Linear GraphQL update writes the configured `stateId`, and readback validates
   `state.id` before fallback checks.
+- Issue-level connector control now exposes the selected remote status mapping
+  to both agents and operators. `entrance.hive.issue_connector_control.v1`
+  summarizes provider state, publish/admission gates, remote target, remote
+  write plan, the current `status_mapping`, and configured mappings; MCP
+  `entrance_issue_control` / `entrance://issues/{issue_id}/control` embed that
+  summary, and the Panel connector strip renders the same mapping as a compact
+  status chip.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.

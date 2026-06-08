@@ -20,6 +20,7 @@ Last updated: 2026-06-09
 - 本轮继续把 issue transition policy 推进成可验证状态机：`issue_transitions.state_machine` 现在随 `hive policy registry --compact` / MCP policy registry 暴露每个状态的 allowed/blocked action、gate、confirmation、terminal/human-decision class，并补了状态矩阵测试来校验真实 issue action surface 与 registry 不漂移，包括 loop-bound `run` 和 retryable runtime-rejected `Canceled` 条件。
 - 本轮继续把远端 issue 状态映射推进到 policy registry：`hive policy registry --compact` 现在暴露 remote-fixture/GitHub/Linear status mapping，GitHub write/readback 使用 issue state/state_reason，Linear write/readback 先用 state name 或 description status marker 做受限校验，remote write plan 和 readback detail 都会携带同一份 `status_mapping`。
 - 本轮继续把 Linear status mapping 推进到配置驱动写入：`entrance.toml` 支持 `connectors.linear.status_mappings.<HiveStatus>.remote_state_id`，provider registry/remote contract/connector queue 会暴露 configured mapping，Linear GraphQL update 会写入 configured `stateId`，readback 会优先校验 `state.id` 再 fallback 到 state name/status marker。
+- 本轮继续把 issue 级 connector control 暴露到 agent 和 Panel：新增 `entrance.hive.issue_connector_control.v1` 摘要，MCP `entrance_issue_control` / `entrance://issues/{issue_id}/control` 现在携带 provider、publish/admission gate、remote target、remote write plan、当前 `status_mapping` 和 configured mappings；Panel connector strip 也显示当前 issue 的 status mapping chip。
 
 ## 还没做完
 
