@@ -1066,6 +1066,15 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             &format!("Issue #{} timeline: {}", card.issue.id, card.issue.title),
             "One issue activity timeline with comments, evidence, verdicts, operator decisions, decision receipts, blockers, linked resources, round groups, and human decision surface.",
         ));
+        if let Ok(timeline) = services.hive.issue_timeline(card.issue.id) {
+            for item in timeline.items {
+                resources.push(resource_spec(
+                    &item.permalink,
+                    &format!("Issue #{} timeline item {}", card.issue.id, item.id),
+                    "One permalinked timeline item with context, neighboring items, round group, and linked evidence or receipt.",
+                ));
+            }
+        }
     }
     for contract in services.hive.loop_list()? {
         resources.push(resource_spec(
@@ -1116,6 +1125,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://issues/{issue_id}/timeline",
                 "name": "Entrance issue timeline by id",
                 "description": "Read one issue activity timeline with comments, evidence, verdicts, operator decisions, decision receipts, blockers, linked resources, round groups, and human decision surface.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://issues/{issue_id}/timeline/items/{item_id}",
+                "name": "Entrance issue timeline item by id",
+                "description": "Read one permalinked timeline item with context, neighboring items, round group, and linked evidence or receipt.",
                 "mimeType": "application/json"
             },
             {
@@ -1241,6 +1256,16 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
                     format!("invalid Entrance issue control resource URI `{value}`")
                 })?;
             issue_control_packet(&services.hive.issue_report(issue_id)?)
+        }
+        value if value.starts_with("entrance://issues/") && value.contains("/timeline/items/") => {
+            let rest = value.trim_start_matches("entrance://issues/");
+            let (issue_id, item_id) = rest
+                .split_once("/timeline/items/")
+                .with_context(|| format!("invalid Entrance issue timeline item URI `{value}`"))?;
+            let issue_id = issue_id
+                .parse::<i64>()
+                .with_context(|| format!("invalid Entrance issue timeline item URI `{value}`"))?;
+            serde_json::to_value(services.hive.issue_timeline_item(issue_id, item_id)?)?
         }
         value if value.starts_with("entrance://issues/") && value.ends_with("/timeline") => {
             let issue_id = value
@@ -2092,6 +2117,7 @@ mod tests {
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/control"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/timeline"));
+        assert!(uri_templates.contains(&"entrance://issues/{issue_id}/timeline/items/{item_id}"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/dashboard"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/evidence-manifest"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/runtime-preflight"));

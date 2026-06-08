@@ -40,6 +40,7 @@ const LOOP_DASHBOARD_SCHEMA_VERSION: &str = "entrance.hive.loop_dashboard.v1";
 const EVIDENCE_DRILLDOWN_SCHEMA_VERSION: &str = "entrance.hive.evidence_drilldown.v1";
 const EVIDENCE_MANIFEST_SCHEMA_VERSION: &str = "entrance.hive.evidence_manifest.v1";
 const ISSUE_TIMELINE_SCHEMA_VERSION: &str = "entrance.hive.issue_timeline.v1";
+const ISSUE_TIMELINE_ITEM_SCHEMA_VERSION: &str = "entrance.hive.issue_timeline_item.v1";
 pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
@@ -1097,6 +1098,31 @@ pub struct IssueTimelineReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineItemReport {
+    pub schema_version: String,
+    pub issue: HiveIssue,
+    pub loop_id: Option<i64>,
+    pub item: IssueTimelineItem,
+    pub item_index: usize,
+    pub previous_item_id: Option<String>,
+    pub next_item_id: Option<String>,
+    pub round: Option<IssueTimelineRoundGroup>,
+    pub decision_receipt: Option<IssueTimelineDecisionReceipt>,
+    pub resources: IssueTimelineItemResources,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineItemResources {
+    pub issue: String,
+    pub issue_control: String,
+    pub issue_timeline: String,
+    pub item_permalink: String,
+    pub linked_resource: Option<String>,
+    pub review_queue: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueTimelineCounts {
     pub item_count: usize,
     pub comment_count: usize,
@@ -1175,6 +1201,7 @@ pub struct IssueTimelineDecisionReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueTimelineItem {
     pub id: String,
+    pub permalink: String,
     pub sequence: usize,
     pub timestamp: String,
     pub source: String,
@@ -7805,10 +7832,68 @@ pub fn issue_timeline(store: &Store, issue_id: i64) -> Result<IssueTimelineRepor
     })
 }
 
+pub fn issue_timeline_item(
+    store: &Store,
+    issue_id: i64,
+    item_id: &str,
+) -> Result<IssueTimelineItemReport> {
+    let timeline = issue_timeline(store, issue_id)?;
+    let item_index = timeline
+        .items
+        .iter()
+        .position(|item| item.id == item_id)
+        .with_context(|| format!("unknown issue #{issue_id} timeline item `{item_id}`"))?;
+    let item = timeline.items[item_index].clone();
+    let previous_item_id = item_index
+        .checked_sub(1)
+        .and_then(|index| timeline.items.get(index))
+        .map(|item| item.id.clone());
+    let next_item_id = timeline
+        .items
+        .get(item_index + 1)
+        .map(|item| item.id.clone());
+    let round = timeline
+        .rounds
+        .iter()
+        .find(|round| round.round == item.round)
+        .cloned();
+    let decision_receipt = timeline
+        .decision_receipts
+        .iter()
+        .find(|receipt| {
+            item.comment_id.is_some() && receipt.comment_id == item.comment_id
+                || item.evidence_id.is_some() && receipt.evidence_id == item.evidence_id
+        })
+        .cloned();
+    let resources = issue_timeline_item_resources(&timeline.issue, &item);
+    let mut next_actions = vec![
+        format!("entrance hive issue timeline-item {issue_id} {}", item.id),
+        format!("entrance hive issue timeline {issue_id}"),
+    ];
+    if let Some(linked) = item.linked_resource.as_ref() {
+        next_actions.push(format!("open resource {linked}"));
+    }
+    Ok(IssueTimelineItemReport {
+        schema_version: ISSUE_TIMELINE_ITEM_SCHEMA_VERSION.to_string(),
+        issue: timeline.issue.clone(),
+        loop_id: timeline.loop_id,
+        item,
+        item_index: item_index + 1,
+        previous_item_id,
+        next_item_id,
+        round,
+        decision_receipt,
+        resources,
+        next_actions,
+    })
+}
+
 fn issue_timeline_issue_created_item(issue: &HiveIssue, sequence: &mut usize) -> IssueTimelineItem {
     *sequence += 1;
+    let id = format!("issue-{}-created", issue.id);
     IssueTimelineItem {
-        id: format!("issue-{}-created", issue.id),
+        permalink: issue_timeline_item_permalink(issue.id, &id),
+        id,
         sequence: *sequence,
         timestamp: issue.created_at.clone(),
         source: "issue".to_string(),
@@ -7859,6 +7944,7 @@ fn issue_timeline_comment_item(
         .and_then(|value| value.as_i64());
     IssueTimelineItem {
         id: format!("comment-{}", comment.id),
+        permalink: issue_timeline_item_permalink(issue.id, &format!("comment-{}", comment.id)),
         sequence: *sequence,
         timestamp: comment.created_at.clone(),
         source: "comment".to_string(),
@@ -7902,6 +7988,7 @@ fn issue_timeline_evidence_item(
         .unwrap_or_else(|| "hive".to_string());
     IssueTimelineItem {
         id: format!("evidence-{}", evidence.id),
+        permalink: issue_timeline_item_permalink(issue.id, &format!("evidence-{}", evidence.id)),
         sequence: *sequence,
         timestamp: evidence.created_at.clone(),
         source: "evidence".to_string(),
@@ -7965,6 +8052,7 @@ fn issue_timeline_verdict_item(
     *sequence += 1;
     IssueTimelineItem {
         id: format!("verdict-{}", verdict.id),
+        permalink: issue_timeline_item_permalink(issue.id, &format!("verdict-{}", verdict.id)),
         sequence: *sequence,
         timestamp: verdict.created_at.clone(),
         source: "verdict".to_string(),
@@ -8514,6 +8602,24 @@ fn issue_timeline_resources(issue: &HiveIssue) -> IssueTimelineResources {
             .map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
         review_queue: "entrance://review-queue".to_string(),
     }
+}
+
+fn issue_timeline_item_resources(
+    issue: &HiveIssue,
+    item: &IssueTimelineItem,
+) -> IssueTimelineItemResources {
+    IssueTimelineItemResources {
+        issue: format!("entrance://issues/{}", issue.id),
+        issue_control: format!("entrance://issues/{}/control", issue.id),
+        issue_timeline: format!("entrance://issues/{}/timeline", issue.id),
+        item_permalink: item.permalink.clone(),
+        linked_resource: item.linked_resource.clone(),
+        review_queue: "entrance://review-queue".to_string(),
+    }
+}
+
+fn issue_timeline_item_permalink(issue_id: i64, item_id: &str) -> String {
+    format!("entrance://issues/{issue_id}/timeline/items/{item_id}")
 }
 
 fn issue_timeline_next_actions(card: &IssueCard) -> Vec<String> {
@@ -12646,7 +12752,39 @@ mod tests {
                 && item.event_kind == "execution_packet"
                 && item.actor == "developer"
                 && item.status.as_deref() == Some("admitted")
+                && item.permalink.starts_with(&format!(
+                    "entrance://issues/{}/timeline/items/evidence-",
+                    report.issues[0].issue.id
+                ))
         }));
+        let execution_item = issue_timeline
+            .items
+            .iter()
+            .find(|item| item.event_kind == "execution_packet")
+            .expect("execution packet timeline item should exist");
+        let item_report =
+            super::issue_timeline_item(&store, report.issues[0].issue.id, &execution_item.id)
+                .expect("timeline item permalink should resolve");
+        assert_eq!(
+            item_report.schema_version,
+            ISSUE_TIMELINE_ITEM_SCHEMA_VERSION
+        );
+        assert_eq!(item_report.item.id, execution_item.id);
+        assert_eq!(item_report.item.permalink, execution_item.permalink);
+        assert_eq!(
+            item_report.round.as_ref().and_then(|round| round.round),
+            Some(1)
+        );
+        assert_eq!(
+            item_report.resources.item_permalink,
+            execution_item.permalink
+        );
+        assert!(item_report.previous_item_id.is_some());
+        assert!(item_report.next_item_id.is_some());
+        assert!(item_report
+            .next_actions
+            .iter()
+            .any(|action| action.contains("issue timeline-item")));
         assert!(issue_timeline.items.iter().any(|item| {
             item.source == "verdict"
                 && item.decision.as_deref() == Some("keep")

@@ -113,11 +113,14 @@ coverage, path verification state, and next actions; MCP exposes it as
 renders it below Evidence Drilldown.
 `hive issue timeline <id>` exposes `entrance.hive.issue_timeline.v1`, an
 issue-first activity feed with issue creation, typed comments, stage evidence,
-verdicts, operator decisions, blockers, linked resources, round groups, a
-Blocked/Needs Review human decision surface, operator confirmation receipt
-provenance, and next actions; MCP exposes it as
+verdicts, operator decisions, blockers, linked resources, round groups, item
+permalinks, a Blocked/Needs Review human decision surface, operator confirmation
+receipt provenance, and next actions; MCP exposes it as
 `entrance://issues/{issue_id}/timeline`, and the Panel selected issue renders it
-below Evidence Manifest.
+below Evidence Manifest. `hive issue timeline-item <id> <item-id>` and
+`entrance://issues/{issue_id}/timeline/items/{item_id}` read one permalinked
+timeline item with neighboring item ids, round context, linked evidence, and an
+optional decision receipt.
 `hive loop preflight <id>` exposes the same boundary as
 `entrance.hive.runtime_preflight.v1`, including policy, probe, current
 admission, blocker, failures, and next actions; MCP exposes it as
@@ -166,6 +169,9 @@ need to read comments, evidence, verdicts, operator decisions, blockers, and
 linked loop resources in one chronological control-plane view, with round
 grouping, operator confirmation receipts, and the current issue-level human
 decision contract when the issue is `Blocked` or `Needs Review`.
+`hive issue timeline-item <id> <item-id>` returns the single permalinked
+timeline item report for agents or operators who need to cite one comment,
+evidence row, verdict, or operator decision without rereading the whole feed.
 `hive loop audit <id>` returns a compiler-style audit over the SQLite ledger
 schema, loop contract, active policies, runtime policy, stage sequence, stage
 evidence, typed packets, packet sequence, admission receipts, worker receipts,

@@ -38,7 +38,8 @@ pub use loop_control::{
     HiveLoopWorkerLifecycleWorker, IssueAction, IssueCard, IssueCommentRequest,
     IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport, IssueRunRequest,
     IssueTimelineCounts, IssueTimelineDecisionAction, IssueTimelineDecisionReceipt,
-    IssueTimelineHumanDecision, IssueTimelineItem, IssueTimelineReport, IssueTimelineResources,
+    IssueTimelineHumanDecision, IssueTimelineItem, IssueTimelineItemReport,
+    IssueTimelineItemResources, IssueTimelineReport, IssueTimelineResources,
     IssueTimelineRoundGroup, OperatorConfirmationActor, OperatorConfirmationClient,
     OperatorConfirmationReceipt, PolicyGateSpec, PolicyRegistryReport,
     CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
@@ -191,6 +192,10 @@ impl HivePlugin {
 
     pub fn issue_timeline(&self, id: i64) -> Result<IssueTimelineReport> {
         loop_control::issue_timeline(&self.store, id)
+    }
+
+    pub fn issue_timeline_item(&self, id: i64, item_id: &str) -> Result<IssueTimelineItemReport> {
+        loop_control::issue_timeline_item(&self.store, id, item_id)
     }
 
     pub fn issue_mirror(&self, id: i64) -> Result<loop_control::IssueMirrorReport> {

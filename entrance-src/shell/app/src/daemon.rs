@@ -666,6 +666,22 @@ async fn handle_invoke(
                 state.services.hive.issue_timeline(issue_id)?,
             )?)
         }
+        "hive_issue_timeline_item" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_timeline_item requires `issueId`")?;
+            let item_id = args
+                .get("itemId")
+                .or_else(|| args.get("item_id"))
+                .and_then(|value| value.as_str())
+                .context("hive_issue_timeline_item requires `itemId`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.issue_timeline_item(issue_id, item_id)?,
+            )?)
+        }
         "hive_issue_mirror_sync" => {
             let issue_id = args
                 .get("issueId")

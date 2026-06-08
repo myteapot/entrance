@@ -47,8 +47,9 @@ Entrance has reached a local MVP unit:
   `entrance://issues/{issue_id}/timeline`, and the Panel selected-issue
   Activity Timeline block. It combines issue creation, typed comments, stage
   evidence, verdicts, operator decisions, blockers, linked resources, and next
-  actions in one chronological feed, plus round groups and a Blocked/Needs
-  Review human decision surface with primary action, issue commands,
+  actions in one chronological feed, plus round groups, item permalinks, a
+  single-item resource surface, and a Blocked/Needs Review human decision surface
+  with primary action, issue commands,
   operator confirmation receipt provenance, confirmation policy, and
   issue-control/review-queue resources.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
@@ -186,8 +187,8 @@ multi-agent runtime/compiler product.
   artifact manifest generation/content verification, payload schema diffing,
   and blocker decision workflow.
 - Productize the current Activity Timeline beyond the minimum report: filters,
-  remote issue comment mapping, item permalinks, inline decision refresh state,
-  receipt drilldown, and stronger blocked action provenance.
+  remote issue comment mapping, inline decision refresh state, receipt
+  drilldown, and stronger blocked action provenance.
 - Reduce repeated status chips and make the primary next action obvious for
   `Todo`, `Running`, `Blocked`, `Needs Review`, and `Done` issues.
 

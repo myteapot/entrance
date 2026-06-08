@@ -353,6 +353,13 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
         [scope, action, id] if scope == "issue" && action == "timeline" => {
             print_json(&services.hive.issue_timeline(id.parse::<i64>()?)?)
         }
+        [scope, action, id, item_id] if scope == "issue" && action == "timeline-item" => {
+            print_json(
+                &services
+                    .hive
+                    .issue_timeline_item(id.parse::<i64>()?, item_id)?,
+            )
+        }
         [scope, action, id, rest @ ..] if scope == "issue" && action == "connector-admission" => {
             let report = issue_connector_admission_preview(
                 services,

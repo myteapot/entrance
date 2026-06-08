@@ -1106,6 +1106,11 @@
   color: var(--text);
 }
 
+.trace-pill--button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
 .comment-stack {
   display: grid;
   gap: 8px;

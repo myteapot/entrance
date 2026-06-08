@@ -1047,6 +1047,7 @@ type IssueTimelineDecisionReceipt = {
 
 type IssueTimelineItem = {
   id: string;
+  permalink: string;
   sequence: number;
   timestamp: string;
   source: string;
@@ -4644,6 +4645,17 @@ export default function App() {
                                     <div class="trace-strip">
                                       <span class="trace-pill">{issueTimelineItemMeta(item)}</span>
                                       <span class="trace-pill">{item.event_kind}</span>
+                                      <span class="trace-pill">permalink</span>
+                                      <button
+                                        type="button"
+                                        class="trace-pill trace-pill--button"
+                                        aria-label={`Copy issue timeline item permalink ${item.id}`}
+                                        data-testid={`issue-timeline-item-permalink-${card.issue.id}-${item.id}`}
+                                        title={item.permalink}
+                                        onClick={() => void copyDoctorAction(item.permalink)}
+                                      >
+                                        Copy
+                                      </button>
                                       {item.schema_version ? (
                                         <span class="trace-pill">{schemaLabel(item.schema_version)}</span>
                                       ) : null}
