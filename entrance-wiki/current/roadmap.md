@@ -36,6 +36,12 @@ Entrance has reached a local MVP unit:
   blockers, blocker-bound decision surfaces, and next actions. Evidence-level
   blockers and Reviewer budget fallback loop-level blockers both carry primary
   action, issue command, confirmation policy, and review queue/policy resource.
+- Evidence manifest is now a first-class ledger-oriented evidence contract
+  through `entrance hive loop evidence-manifest <loop_id>`,
+  `entrance://loops/{loop_id}/evidence-manifest`, and the Panel selected-issue
+  Evidence Manifest block. It exposes payload, worker receipt, transcript
+  excerpt, artifact/path entries, digest coverage, path verification state,
+  resources, and next actions.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
 - Worker lifecycle is now a first-class observable contract through
@@ -105,6 +111,10 @@ Entrance has reached a local MVP unit:
   payload key diffs, blockers, human decision status, and copyable next
   actions.
 - The Panel selected-issue detail now consumes the daemon
+  `hive_loop_evidence_manifest` report and renders evidence coverage,
+  payload/receipt/artifact entries, digest prefixes, path verification state,
+  and copyable next actions.
+- The Panel selected-issue detail now consumes the daemon
   `hive_loop_runtime_preflight` report and renders Runtime Preflight state,
   route, object kind, gate result, runtime policy/probe, blockers, failures,
   and copyable next actions before worker lifecycle details.
@@ -151,17 +161,17 @@ multi-agent runtime/compiler product.
 - Make policy registry changes explicit and auditable, including admission gate
   versions, owner, required evidence, and migration behavior.
 - Extend the new runtime preflight admission into a fuller capability preview:
-  sandbox scope, connector readiness, artifact/evidence manifest expectations,
-  and human preference boundaries before any agent worker is spawned. Current
+  sandbox scope, connector readiness, artifact capture expectations, and human
+  preference boundaries before any agent worker is spawned. Current
   `runtime_preflight.v1` is observable, but it still mostly previews runtime
   support/probe rather than full execution capability.
 
 ### P1: Loop dashboard
 
-- Productize the current Evidence Drilldown beyond the minimum report:
-  full transcript expansion, durable remote receipt archives, artifact manifest
-  collection/verification, payload schema diffing, and blocker decision
-  workflow.
+- Productize the current Evidence Drilldown/Manifest beyond the minimum
+  reports: full transcript expansion, durable remote receipt archives, real
+  artifact manifest generation/content verification, payload schema diffing,
+  and blocker decision workflow.
 - Reduce repeated status chips and make the primary next action obvious for
   `Todo`, `Running`, `Blocked`, `Needs Review`, and `Done` issues.
 

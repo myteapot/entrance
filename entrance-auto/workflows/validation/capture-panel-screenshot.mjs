@@ -388,7 +388,7 @@ async function main() {
 
   await waitForCondition(
     win,
-    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(document.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(document.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
+    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(document.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(document.querySelector('[data-testid^=evidence-manifest-detail-]')) && Boolean(document.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
     "Panel issue board",
   );
   await win.webContents.executeJavaScript(\`
@@ -403,15 +403,15 @@ async function main() {
   \`);
   await waitForCondition(
     win,
-    "(() => { const detail = document.querySelector('.panel--detail'); const text = detail ? (detail.textContent || '') : ''; return Boolean(detail) && text.includes('Entrance MVP demo') && text.includes('Reviewer kept the candidate') && text.includes('packets 4 / admissions 4 / evidence 3 / verdicts 1') && text.includes('evidence_drilldown.v1') && Boolean(detail.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(detail.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(detail.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(detail.querySelector('[data-testid^=worker-lifecycle-detail-]')); })()",
+    "(() => { const detail = document.querySelector('.panel--detail'); const text = detail ? (detail.textContent || '') : ''; return Boolean(detail) && text.includes('Entrance MVP demo') && text.includes('Reviewer kept the candidate') && text.includes('packets 4 / admissions 4 / evidence 3 / verdicts 1') && text.includes('evidence_drilldown.v1') && text.includes('evidence_manifest.v1') && Boolean(detail.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(detail.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(detail.querySelector('[data-testid^=evidence-manifest-detail-]')) && Boolean(detail.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(detail.querySelector('[data-testid^=worker-lifecycle-detail-]')); })()",
     "local MVP issue detail",
   );
   await win.webContents.executeJavaScript(\`
   (() => {
     const detail = document.querySelector('.panel--detail');
-    const drilldown = detail ? detail.querySelector('[data-testid^="evidence-drilldown-detail-"]') : null;
-    if (!drilldown) return false;
-    drilldown.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const manifest = detail ? detail.querySelector('[data-testid^="evidence-manifest-detail-"]') : null;
+    if (!manifest) return false;
+    manifest.scrollIntoView({ block: 'center', inline: 'nearest' });
     return true;
   })()
   \`);
@@ -449,10 +449,15 @@ async function main() {
     evidence_drilldown_item_visible: Boolean(detailQuery('[data-testid^="evidence-drilldown-item-"]')),
     evidence_drilldown_receipt_visible: detailText.includes('receipt developer implement-admitted-candidate gates'),
     evidence_drilldown_payload_visible: detailText.includes('payload +') && detailText.includes('worker'),
-    evidence_drilldown_in_view: (() => {
-      const drilldown = detailQuery('[data-testid^="evidence-drilldown-detail-"]');
-      if (!drilldown) return false;
-      const rect = drilldown.getBoundingClientRect();
+    evidence_manifest_visible: Boolean(detailQuery('[data-testid^="evidence-manifest-detail-"]')),
+    evidence_manifest_entry_visible: Boolean(detailQuery('[data-testid^="evidence-manifest-entry-"]')),
+    evidence_manifest_payload_visible: detailText.includes('evidence.payload') && detailText.includes('payload'),
+    evidence_manifest_receipt_visible: detailText.includes('worker.receipt') && detailText.includes('receipt'),
+    evidence_manifest_digest_visible: detailText.includes('sha256'),
+    evidence_manifest_in_view: (() => {
+      const manifest = detailQuery('[data-testid^="evidence-manifest-detail-"]');
+      if (!manifest) return false;
+      const rect = manifest.getBoundingClientRect();
       return rect.bottom > 0 && rect.top < innerHeight;
     })(),
     runtime_preflight_visible: Boolean(detailQuery('[data-testid^="runtime-preflight-detail-"]')),

@@ -26,7 +26,9 @@ pub use loop_control::{
     HiveLoopDashboardRoundGroups, HiveLoopDashboardRoundPacket, HiveLoopDashboardRoundVerdict,
     HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceArtifact, HiveLoopEvidenceBlocker,
     HiveLoopEvidenceDrilldownItem, HiveLoopEvidenceDrilldownReport,
-    HiveLoopEvidenceDrilldownResources, HiveLoopEvidenceHumanDecision, HiveLoopEvidencePayloadDiff,
+    HiveLoopEvidenceDrilldownResources, HiveLoopEvidenceHumanDecision,
+    HiveLoopEvidenceManifestCoverage, HiveLoopEvidenceManifestEntry,
+    HiveLoopEvidenceManifestReport, HiveLoopEvidenceManifestResources, HiveLoopEvidencePayloadDiff,
     HiveLoopEvidencePayloadInspection, HiveLoopEvidenceReceiptDrilldown,
     HiveLoopEvidenceReceiptGate, HiveLoopEvidenceRemoteReceipt, HiveLoopEvidenceReport,
     HiveLoopEvidenceWorkerDrilldown, HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest,
@@ -150,6 +152,10 @@ impl HivePlugin {
 
     pub fn loop_evidence_drilldown(&self, id: i64) -> Result<HiveLoopEvidenceDrilldownReport> {
         loop_control::evidence_drilldown(&self.store, id)
+    }
+
+    pub fn loop_evidence_manifest(&self, id: i64) -> Result<HiveLoopEvidenceManifestReport> {
+        loop_control::evidence_manifest(&self.store, id)
     }
 
     pub fn loop_audit(&self, id: i64) -> Result<HiveLoopAuditReport> {

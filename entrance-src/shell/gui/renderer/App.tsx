@@ -665,6 +665,7 @@ type LoopDashboardReport = {
   resources: {
     loop_dashboard: string;
     evidence_drilldown: string;
+    evidence_manifest: string;
     runtime_preflight: string;
     worker_lifecycle: string;
     issue: string | null;
@@ -807,6 +808,7 @@ type EvidenceDrilldownReport = {
   };
   resources: {
     evidence_drilldown: string;
+    evidence_manifest: string;
     loop_dashboard: string;
     worker_lifecycle: string;
     runtime_preflight: string;
@@ -887,6 +889,67 @@ type EvidenceDrilldownItem = {
       changed_keys: string[];
     };
   };
+};
+
+type EvidenceManifestReport = {
+  schema_version: string;
+  loop_id: number;
+  issue_id: number | null;
+  issue_status: string | null;
+  status: string;
+  active_phase: string;
+  current_round: number;
+  runtime: string;
+  manifest_state: string;
+  summary: string;
+  coverage: EvidenceManifestCoverage;
+  entries: EvidenceManifestEntry[];
+  resources: {
+    evidence_manifest: string;
+    evidence_drilldown: string;
+    loop_dashboard: string;
+    worker_lifecycle: string;
+    runtime_preflight: string;
+    issue: string | null;
+    issue_control: string | null;
+    review_queue: string;
+  };
+  next_actions: string[];
+};
+
+type EvidenceManifestCoverage = {
+  evidence_count: number;
+  entry_count: number;
+  payload_count: number;
+  receipt_count: number;
+  transcript_count: number;
+  artifact_count: number;
+  path_count: number;
+  path_present_count: number;
+  path_missing_count: number;
+  path_unverified_count: number;
+  path_none_count: number;
+  digest_count: number;
+};
+
+type EvidenceManifestEntry = {
+  id: string;
+  evidence_id: number;
+  round: number;
+  stage_role: string | null;
+  kind: string;
+  source: string;
+  entry_kind: string;
+  label: string;
+  summary: string;
+  path: string | null;
+  path_status: string;
+  schema_version: string | null;
+  sha256: string | null;
+  size_bytes: number | null;
+  required: boolean;
+  verified: boolean;
+  details: unknown;
 };
 
 type RuntimePreflightReport = {
@@ -1360,6 +1423,17 @@ export default function App() {
     const drilldown = selectedEvidenceDrilldown();
     const loopId = selectedIssueCard()?.issue.loop_id;
     return drilldown && drilldown.loop_id === loopId ? drilldown : null;
+  });
+  const [selectedEvidenceManifest] = createResource(selectedIssueEvidenceKey, async (key) => {
+    if (!key) return null;
+    const loopId = Number.parseInt(key.split(":")[0], 10);
+    if (!Number.isFinite(loopId)) return null;
+    return bridge.invoke<EvidenceManifestReport>("hive_loop_evidence_manifest", { id: loopId });
+  });
+  const selectedIssueEvidenceManifest = createMemo(() => {
+    const manifest = selectedEvidenceManifest();
+    const loopId = selectedIssueCard()?.issue.loop_id;
+    return manifest && manifest.loop_id === loopId ? manifest : null;
   });
   const selectedIssuePreflightKey = createMemo(() => {
     const card = selectedIssueCard();
@@ -2802,6 +2876,35 @@ export default function App() {
       needs_human: "needs human",
     })[state] ?? state;
 
+  const evidenceManifestTone = (state: string) =>
+    state === "ok" ? "ok" : state === "observing" ? "pending" : "warn";
+
+  const evidenceManifestStateLabel = (state: string) =>
+    ({
+      ok: "ok",
+      observing: "observing",
+      reviewing: "reviewing",
+      blocked: "blocked",
+    })[state] ?? state;
+
+  const evidenceManifestCoverageLabel = (coverage: EvidenceManifestCoverage) =>
+    `entries ${coverage.entry_count} / payloads ${coverage.payload_count} / receipts ${coverage.receipt_count} / artifacts ${coverage.artifact_count}`;
+
+  const evidenceManifestPathLabel = (coverage: EvidenceManifestCoverage) =>
+    `paths ${coverage.path_present_count}/${coverage.path_missing_count}/${coverage.path_unverified_count}`;
+
+  const evidenceManifestEntryTone = (entry: EvidenceManifestEntry) =>
+    !entry.verified || entry.path_status === "missing" ? "warn" : "ok";
+
+  const evidenceManifestEntryDigestLabel = (entry: EvidenceManifestEntry) =>
+    entry.sha256 ? `sha256 ${entry.sha256.slice(0, 12)}` : "sha256 none";
+
+  const evidenceManifestEntryPathLabel = (entry: EvidenceManifestEntry) =>
+    entry.path ? `${entry.path_status} ${entry.path}` : entry.path_status;
+
+  const evidenceManifestEntrySizeLabel = (entry: EvidenceManifestEntry) =>
+    entry.size_bytes == null ? null : `${entry.size_bytes} bytes`;
+
   const evidenceItemTone = (item: EvidenceDrilldownItem) =>
     item.blocker || item.admission_result === "rejected" || item.worker?.ok === false
       ? "warn"
@@ -4010,6 +4113,117 @@ export default function App() {
                                           type="button"
                                           aria-label={`Copy evidence drilldown action ${action}`}
                                           data-testid={`evidence-drilldown-action-copy-${card.issue.id}-${index}`}
+                                          onClick={() => void copyDoctorAction(action)}
+                                        >
+                                          Copy
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )}
+                          </Show>
+                        ) : null}
+                        {card.issue.loop_id ? (
+                          <Show
+                            when={selectedIssueEvidenceManifest()}
+                            keyed
+                            fallback={
+                              <div
+                                class="worker-lifecycle evidence-manifest worker-lifecycle--pending"
+                                data-testid={`evidence-manifest-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Evidence Manifest</strong>
+                                  <span>
+                                    {selectedEvidenceManifest.loading ? "loading" : "pending"}
+                                  </span>
+                                </div>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">loop #{card.issue.loop_id}</span>
+                                  <span class="trace-pill">evidence_manifest.v1</span>
+                                </div>
+                              </div>
+                            }
+                          >
+                            {(manifest) => (
+                              <div
+                                class={`worker-lifecycle evidence-manifest worker-lifecycle--${evidenceManifestTone(
+                                  manifest.manifest_state,
+                                )}`}
+                                data-testid={`evidence-manifest-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Evidence Manifest</strong>
+                                  <span>{evidenceManifestStateLabel(manifest.manifest_state)}</span>
+                                </div>
+                                <p>{manifest.summary}</p>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">{schemaLabel(manifest.schema_version)}</span>
+                                  <span class="trace-pill">loop #{manifest.loop_id}</span>
+                                  <span class="trace-pill">round {manifest.current_round}</span>
+                                  <span class="trace-pill">{manifest.runtime}</span>
+                                  <span class="trace-pill">
+                                    {evidenceManifestCoverageLabel(manifest.coverage)}
+                                  </span>
+                                  <span
+                                    class={
+                                      manifest.coverage.path_missing_count ||
+                                      manifest.coverage.path_unverified_count
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {evidenceManifestPathLabel(manifest.coverage)}
+                                  </span>
+                                  <span class="trace-pill">digests {manifest.coverage.digest_count}</span>
+                                </div>
+                                <div class="worker-lifecycle-roles evidence-manifest-entries">
+                                  {manifest.entries.slice(0, 6).map((entry) => (
+                                    <div
+                                      class={`worker-lifecycle-role worker-lifecycle-role--${evidenceManifestEntryTone(
+                                        entry,
+                                      )}`}
+                                      data-testid={`evidence-manifest-entry-${card.issue.id}-${entry.id}`}
+                                    >
+                                      <div class="stage-row-head">
+                                        <strong>{entry.label}</strong>
+                                        <span>{entry.verified ? "verified" : "unverified"}</span>
+                                      </div>
+                                      <p>{entry.summary}</p>
+                                      <div class="trace-strip">
+                                        <span class="trace-pill">{entry.source}</span>
+                                        <span class="trace-pill">{entry.entry_kind}</span>
+                                        <span class="trace-pill">{evidenceManifestEntryDigestLabel(entry)}</span>
+                                        <span
+                                          class={
+                                            entry.path_status === "missing"
+                                              ? "trace-pill trace-pill--warn"
+                                              : "trace-pill"
+                                          }
+                                        >
+                                          {evidenceManifestEntryPathLabel(entry)}
+                                        </span>
+                                        {entry.schema_version ? (
+                                          <span class="trace-pill">{schemaLabel(entry.schema_version)}</span>
+                                        ) : null}
+                                        {evidenceManifestEntrySizeLabel(entry) ? (
+                                          <span class="trace-pill">{evidenceManifestEntrySizeLabel(entry)}</span>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                                {manifest.next_actions.length ? (
+                                  <div class="doctor-actions">
+                                    {manifest.next_actions.slice(0, 2).map((action, index) => (
+                                      <div class="doctor-action-row">
+                                        <code>{action}</code>
+                                        <button
+                                          type="button"
+                                          aria-label={`Copy evidence manifest action ${action}`}
+                                          data-testid={`evidence-manifest-action-copy-${card.issue.id}-${index}`}
                                           onClick={() => void copyDoctorAction(action)}
                                         >
                                           Copy

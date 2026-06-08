@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeSet, HashMap},
+    path::Path,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -14,6 +15,7 @@ use entrance_core::{
     HiveLoopVerdict, HiveLoopVerdictCreate, Store, StoreSchemaStatus,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const PACKET_SCHEMA_VERSION: &str = "entrance.hive.packet.v1";
 const POLICY_SCHEMA_VERSION: &str = "entrance.hive.policy.v1";
@@ -36,6 +38,7 @@ const WORKER_LIFECYCLE_SCHEMA_VERSION: &str = "entrance.hive.worker_lifecycle.v1
 const RUNTIME_PREFLIGHT_SCHEMA_VERSION: &str = "entrance.hive.runtime_preflight.v1";
 const LOOP_DASHBOARD_SCHEMA_VERSION: &str = "entrance.hive.loop_dashboard.v1";
 const EVIDENCE_DRILLDOWN_SCHEMA_VERSION: &str = "entrance.hive.evidence_drilldown.v1";
+const EVIDENCE_MANIFEST_SCHEMA_VERSION: &str = "entrance.hive.evidence_manifest.v1";
 pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
@@ -610,6 +613,74 @@ pub struct HiveLoopEvidenceHumanDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveLoopEvidenceDrilldownResources {
     pub evidence_drilldown: String,
+    pub evidence_manifest: String,
+    pub loop_dashboard: String,
+    pub worker_lifecycle: String,
+    pub runtime_preflight: String,
+    pub issue: Option<String>,
+    pub issue_control: Option<String>,
+    pub review_queue: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceManifestReport {
+    pub schema_version: String,
+    pub loop_id: i64,
+    pub issue_id: Option<i64>,
+    pub issue_status: Option<String>,
+    pub status: String,
+    pub active_phase: String,
+    pub current_round: i64,
+    pub runtime: String,
+    pub manifest_state: String,
+    pub summary: String,
+    pub coverage: HiveLoopEvidenceManifestCoverage,
+    pub entries: Vec<HiveLoopEvidenceManifestEntry>,
+    pub resources: HiveLoopEvidenceManifestResources,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceManifestCoverage {
+    pub evidence_count: usize,
+    pub entry_count: usize,
+    pub payload_count: usize,
+    pub receipt_count: usize,
+    pub transcript_count: usize,
+    pub artifact_count: usize,
+    pub path_count: usize,
+    pub path_present_count: usize,
+    pub path_missing_count: usize,
+    pub path_unverified_count: usize,
+    pub path_none_count: usize,
+    pub digest_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceManifestEntry {
+    pub id: String,
+    pub evidence_id: i64,
+    pub round: i64,
+    pub stage_role: Option<String>,
+    pub kind: String,
+    pub source: String,
+    pub entry_kind: String,
+    pub label: String,
+    pub summary: String,
+    pub path: Option<String>,
+    pub path_status: String,
+    pub schema_version: Option<String>,
+    pub sha256: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub required: bool,
+    pub verified: bool,
+    pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopEvidenceManifestResources {
+    pub evidence_manifest: String,
+    pub evidence_drilldown: String,
     pub loop_dashboard: String,
     pub worker_lifecycle: String,
     pub runtime_preflight: String,
@@ -991,6 +1062,7 @@ pub struct HiveLoopDashboardComment {
 pub struct HiveLoopDashboardResources {
     pub loop_dashboard: String,
     pub evidence_drilldown: String,
+    pub evidence_manifest: String,
     pub runtime_preflight: String,
     pub worker_lifecycle: String,
     pub issue: Option<String>,
@@ -2254,6 +2326,7 @@ pub fn evidence_drilldown(store: &Store, loop_id: i64) -> Result<HiveLoopEvidenc
         human_decision,
         resources: HiveLoopEvidenceDrilldownResources {
             evidence_drilldown: format!("entrance://loops/{loop_id}/evidence-drilldown"),
+            evidence_manifest: format!("entrance://loops/{loop_id}/evidence-manifest"),
             loop_dashboard: format!("entrance://loops/{loop_id}/dashboard"),
             worker_lifecycle: format!("entrance://loops/{loop_id}/worker-lifecycle"),
             runtime_preflight: format!("entrance://loops/{loop_id}/runtime-preflight"),
@@ -2267,6 +2340,385 @@ pub fn evidence_drilldown(store: &Store, loop_id: i64) -> Result<HiveLoopEvidenc
         },
         next_actions,
     })
+}
+
+pub fn evidence_manifest(store: &Store, loop_id: i64) -> Result<HiveLoopEvidenceManifestReport> {
+    let contract = store
+        .get_hive_loop_contract(loop_id)?
+        .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
+    let issue = store.list_hive_issues_for_loop(loop_id)?.into_iter().next();
+    let stages = store.list_hive_loop_stages(loop_id)?;
+    let stage_roles = stage_role_map(&stages);
+    let evidence_rows = store.list_hive_loop_evidence(loop_id)?;
+    let mut entries = Vec::new();
+    for row in &evidence_rows {
+        let summary = issue_evidence_summary(row, &stage_roles);
+        entries.push(evidence_manifest_payload_entry(row, &summary));
+        if let Some(receipt) = row
+            .payload
+            .get("worker")
+            .and_then(worker_structured_receipt)
+        {
+            entries.push(evidence_manifest_receipt_entry(row, &summary, receipt));
+        }
+        if let Some(transcript) = summary.transcript_excerpt.as_ref() {
+            entries.push(evidence_manifest_transcript_entry(
+                row, &summary, transcript,
+            ));
+        }
+        for (index, artifact) in evidence_artifacts(row).into_iter().enumerate() {
+            entries.push(evidence_manifest_artifact_entry(
+                row, &summary, artifact, index,
+            ));
+        }
+    }
+    let coverage = evidence_manifest_coverage(evidence_rows.len(), &entries);
+    let manifest_state = evidence_manifest_state(&coverage);
+    let summary = evidence_manifest_summary(&manifest_state, &coverage);
+    let next_actions = evidence_manifest_next_actions(loop_id, issue.as_ref(), &coverage);
+    Ok(HiveLoopEvidenceManifestReport {
+        schema_version: EVIDENCE_MANIFEST_SCHEMA_VERSION.to_string(),
+        loop_id,
+        issue_id: issue.as_ref().map(|issue| issue.id),
+        issue_status: issue.as_ref().map(|issue| issue.status.clone()),
+        status: contract.status.clone(),
+        active_phase: contract.active_phase.clone(),
+        current_round: contract.current_round,
+        runtime: contract.runtime.clone(),
+        manifest_state,
+        summary,
+        coverage,
+        entries,
+        resources: HiveLoopEvidenceManifestResources {
+            evidence_manifest: format!("entrance://loops/{loop_id}/evidence-manifest"),
+            evidence_drilldown: format!("entrance://loops/{loop_id}/evidence-drilldown"),
+            loop_dashboard: format!("entrance://loops/{loop_id}/dashboard"),
+            worker_lifecycle: format!("entrance://loops/{loop_id}/worker-lifecycle"),
+            runtime_preflight: format!("entrance://loops/{loop_id}/runtime-preflight"),
+            issue: issue
+                .as_ref()
+                .map(|issue| format!("entrance://issues/{}", issue.id)),
+            issue_control: issue
+                .as_ref()
+                .map(|issue| format!("entrance://issues/{}/control", issue.id)),
+            review_queue: "entrance://review-queue".to_string(),
+        },
+        next_actions,
+    })
+}
+
+fn evidence_manifest_payload_entry(
+    row: &HiveLoopEvidence,
+    summary: &IssueEvidenceSummary,
+) -> HiveLoopEvidenceManifestEntry {
+    let top_level_keys = top_level_keys(&row.payload);
+    HiveLoopEvidenceManifestEntry {
+        id: format!("evidence-{}-payload", row.id),
+        evidence_id: row.id,
+        round: row.round,
+        stage_role: summary.stage_role.clone(),
+        kind: row.kind.clone(),
+        source: "evidence.payload".to_string(),
+        entry_kind: "payload".to_string(),
+        label: format!(
+            "payload #{} {} {}",
+            row.id,
+            summary.stage_role.as_deref().unwrap_or("kernel"),
+            row.kind
+        ),
+        summary: row.summary.clone(),
+        path: None,
+        path_status: "none".to_string(),
+        schema_version: summary.schema_version.clone(),
+        sha256: Some(sha256_json(&row.payload)),
+        size_bytes: json_size_bytes(&row.payload),
+        required: true,
+        verified: true,
+        details: serde_json::json!({
+            "top_level_keys": top_level_keys,
+            "excerpt": json_excerpt(&row.payload, 520)
+        }),
+    }
+}
+
+fn evidence_manifest_receipt_entry(
+    row: &HiveLoopEvidence,
+    summary: &IssueEvidenceSummary,
+    receipt: serde_json::Value,
+) -> HiveLoopEvidenceManifestEntry {
+    let receipt_errors = worker_receipt_contract_errors(&receipt, summary.stage_role.as_deref());
+    HiveLoopEvidenceManifestEntry {
+        id: format!("evidence-{}-receipt", row.id),
+        evidence_id: row.id,
+        round: row.round,
+        stage_role: summary.stage_role.clone(),
+        kind: row.kind.clone(),
+        source: "worker.receipt".to_string(),
+        entry_kind: "receipt".to_string(),
+        label: format!(
+            "receipt #{} {} {}",
+            row.id,
+            receipt
+                .get("role")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown"),
+            receipt
+                .get("action")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+        ),
+        summary: receipt
+            .get("evidence_summary")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| row.summary.clone()),
+        path: None,
+        path_status: "none".to_string(),
+        schema_version: schema_version(&receipt),
+        sha256: Some(sha256_json(&receipt)),
+        size_bytes: json_size_bytes(&receipt),
+        required: true,
+        verified: receipt_errors.is_empty(),
+        details: serde_json::json!({
+            "ok": receipt.get("ok").and_then(|value| value.as_bool()),
+            "role": receipt.get("role").and_then(|value| value.as_str()),
+            "action": receipt.get("action").and_then(|value| value.as_str()),
+            "gates": receipt.get("gates").cloned().unwrap_or_else(|| serde_json::json!({})),
+            "receipt_errors": receipt_errors,
+            "excerpt": json_excerpt(&receipt, 520)
+        }),
+    }
+}
+
+fn evidence_manifest_transcript_entry(
+    row: &HiveLoopEvidence,
+    summary: &IssueEvidenceSummary,
+    transcript: &str,
+) -> HiveLoopEvidenceManifestEntry {
+    HiveLoopEvidenceManifestEntry {
+        id: format!("evidence-{}-transcript", row.id),
+        evidence_id: row.id,
+        round: row.round,
+        stage_role: summary.stage_role.clone(),
+        kind: row.kind.clone(),
+        source: "worker.transcript".to_string(),
+        entry_kind: "transcript".to_string(),
+        label: format!(
+            "transcript #{} {}",
+            row.id,
+            summary.stage_role.as_deref().unwrap_or("kernel")
+        ),
+        summary: row.summary.clone(),
+        path: None,
+        path_status: "none".to_string(),
+        schema_version: None,
+        sha256: Some(sha256_text(transcript)),
+        size_bytes: Some(transcript.len() as u64),
+        required: false,
+        verified: true,
+        details: serde_json::json!({
+            "excerpt": truncate_text(transcript, 520)
+        }),
+    }
+}
+
+fn evidence_manifest_artifact_entry(
+    row: &HiveLoopEvidence,
+    summary: &IssueEvidenceSummary,
+    artifact: HiveLoopEvidenceArtifact,
+    index: usize,
+) -> HiveLoopEvidenceManifestEntry {
+    let path_status = evidence_manifest_path_status(artifact.path.as_deref());
+    let path_size = evidence_manifest_path_size_bytes(artifact.path.as_deref(), &path_status);
+    let manifest = artifact_manifest_value(row, &artifact);
+    let verified = match path_status.as_str() {
+        "present" => true,
+        "none" => artifact.manifest.is_some(),
+        _ => false,
+    };
+    HiveLoopEvidenceManifestEntry {
+        id: format!("evidence-{}-artifact-{}", row.id, index + 1),
+        evidence_id: row.id,
+        round: row.round,
+        stage_role: summary.stage_role.clone(),
+        kind: row.kind.clone(),
+        source: "evidence.artifact".to_string(),
+        entry_kind: artifact.kind.clone(),
+        label: format!(
+            "artifact #{} {} {}",
+            row.id,
+            artifact.kind,
+            artifact.path.as_deref().unwrap_or("inline")
+        ),
+        summary: artifact
+            .summary
+            .clone()
+            .unwrap_or_else(|| row.summary.clone()),
+        path: artifact.path.clone(),
+        path_status,
+        schema_version: artifact
+            .manifest
+            .as_ref()
+            .and_then(schema_version)
+            .or_else(|| summary.schema_version.clone()),
+        sha256: Some(sha256_json(&manifest)),
+        size_bytes: path_size.or_else(|| json_size_bytes(&manifest)),
+        required: false,
+        verified,
+        details: serde_json::json!({
+            "artifact_kind": artifact.kind,
+            "manifest": artifact.manifest,
+            "summary": artifact.summary
+        }),
+    }
+}
+
+fn artifact_manifest_value(
+    row: &HiveLoopEvidence,
+    artifact: &HiveLoopEvidenceArtifact,
+) -> serde_json::Value {
+    artifact.manifest.clone().unwrap_or_else(|| {
+        serde_json::json!({
+            "kind": artifact.kind.clone(),
+            "path": artifact.path.clone(),
+            "summary": artifact.summary.as_deref().unwrap_or(&row.summary)
+        })
+    })
+}
+
+fn evidence_manifest_coverage(
+    evidence_count: usize,
+    entries: &[HiveLoopEvidenceManifestEntry],
+) -> HiveLoopEvidenceManifestCoverage {
+    let payload_count = entries
+        .iter()
+        .filter(|entry| entry.entry_kind == "payload")
+        .count();
+    let receipt_count = entries
+        .iter()
+        .filter(|entry| entry.entry_kind == "receipt")
+        .count();
+    let transcript_count = entries
+        .iter()
+        .filter(|entry| entry.entry_kind == "transcript")
+        .count();
+    let artifact_count = entries
+        .iter()
+        .filter(|entry| entry.source == "evidence.artifact")
+        .count();
+    let path_count = entries
+        .iter()
+        .filter(|entry| entry.path_status != "none")
+        .count();
+    let path_present_count = entries
+        .iter()
+        .filter(|entry| entry.path_status == "present")
+        .count();
+    let path_missing_count = entries
+        .iter()
+        .filter(|entry| entry.path_status == "missing")
+        .count();
+    let path_unverified_count = entries
+        .iter()
+        .filter(|entry| entry.path_status == "unverified-relative")
+        .count();
+    let path_none_count = entries
+        .iter()
+        .filter(|entry| entry.path_status == "none")
+        .count();
+    let digest_count = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .sha256
+                .as_deref()
+                .is_some_and(|digest| !digest.is_empty())
+        })
+        .count();
+    HiveLoopEvidenceManifestCoverage {
+        evidence_count,
+        entry_count: entries.len(),
+        payload_count,
+        receipt_count,
+        transcript_count,
+        artifact_count,
+        path_count,
+        path_present_count,
+        path_missing_count,
+        path_unverified_count,
+        path_none_count,
+        digest_count,
+    }
+}
+
+fn evidence_manifest_state(coverage: &HiveLoopEvidenceManifestCoverage) -> String {
+    if coverage.entry_count == 0 {
+        "observing".to_string()
+    } else if coverage.path_missing_count > 0 {
+        "blocked".to_string()
+    } else if coverage.path_unverified_count > 0 {
+        "reviewing".to_string()
+    } else {
+        "ok".to_string()
+    }
+}
+
+fn evidence_manifest_summary(state: &str, coverage: &HiveLoopEvidenceManifestCoverage) -> String {
+    format!(
+        "Evidence manifest is {state}: indexed {} entries from {} evidence rows (payloads {}, receipts {}, transcripts {}, artifacts {}, paths present/missing/unverified {}/{}/{}).",
+        coverage.entry_count,
+        coverage.evidence_count,
+        coverage.payload_count,
+        coverage.receipt_count,
+        coverage.transcript_count,
+        coverage.artifact_count,
+        coverage.path_present_count,
+        coverage.path_missing_count,
+        coverage.path_unverified_count
+    )
+}
+
+fn evidence_manifest_next_actions(
+    loop_id: i64,
+    issue: Option<&HiveIssue>,
+    coverage: &HiveLoopEvidenceManifestCoverage,
+) -> Vec<String> {
+    let mut actions = vec![
+        format!("entrance hive loop evidence-manifest {loop_id}"),
+        format!("entrance hive loop evidence-drilldown {loop_id}"),
+    ];
+    if coverage.path_missing_count > 0 || coverage.path_unverified_count > 0 {
+        if let Some(issue) = issue {
+            actions.push(format!(
+                "entrance hive issue decide {} request-review --body <artifact-manifest-note> --compact",
+                issue.id
+            ));
+        }
+    }
+    actions
+}
+
+fn evidence_manifest_path_status(path: Option<&str>) -> String {
+    let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return "none".to_string();
+    };
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return "unverified-relative".to_string();
+    }
+    if std::fs::metadata(path).is_ok() {
+        "present".to_string()
+    } else {
+        "missing".to_string()
+    }
+}
+
+fn evidence_manifest_path_size_bytes(path: Option<&str>, path_status: &str) -> Option<u64> {
+    if path_status != "present" {
+        return None;
+    }
+    path.and_then(|path| std::fs::metadata(Path::new(path)).ok())
+        .map(|metadata| metadata.len())
 }
 
 fn evidence_drilldown_item(
@@ -2815,6 +3267,7 @@ fn evidence_drilldown_next_actions(
 ) -> Vec<String> {
     let mut next = vec![
         format!("entrance hive loop evidence-drilldown {loop_id}"),
+        format!("entrance hive loop evidence-manifest {loop_id}"),
         format!("entrance hive loop dashboard {loop_id}"),
         format!("entrance hive loop evidence {loop_id}"),
         format!("entrance hive loop worker-lifecycle {loop_id}"),
@@ -2870,6 +3323,28 @@ fn json_excerpt(value: &serde_json::Value, max_chars: usize) -> String {
     serde_json::to_string(value)
         .map(|text| truncate_text(&text, max_chars))
         .unwrap_or_else(|_| "<json unavailable>".to_string())
+}
+
+fn json_size_bytes(value: &serde_json::Value) -> Option<u64> {
+    serde_json::to_vec(value)
+        .ok()
+        .map(|bytes| bytes.len() as u64)
+}
+
+fn sha256_json(value: &serde_json::Value) -> String {
+    serde_json::to_vec(value)
+        .map(|bytes| sha256_bytes(&bytes))
+        .unwrap_or_else(|_| sha256_text("<json unavailable>"))
+}
+
+fn sha256_text(value: &str) -> String {
+    sha256_bytes(value.as_bytes())
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
@@ -3358,6 +3833,7 @@ pub fn dashboard(store: &Store, loop_id: i64) -> Result<HiveLoopDashboardReport>
         resources: HiveLoopDashboardResources {
             loop_dashboard: format!("entrance://loops/{loop_id}/dashboard"),
             evidence_drilldown: format!("entrance://loops/{loop_id}/evidence-drilldown"),
+            evidence_manifest: format!("entrance://loops/{loop_id}/evidence-manifest"),
             runtime_preflight: format!("entrance://loops/{loop_id}/runtime-preflight"),
             worker_lifecycle: format!("entrance://loops/{loop_id}/worker-lifecycle"),
             issue: issue_card
@@ -11291,6 +11767,51 @@ mod tests {
                     created.contract.id
                 )
         }));
+        assert_eq!(
+            evidence_drilldown.resources.evidence_manifest,
+            format!("entrance://loops/{}/evidence-manifest", created.contract.id)
+        );
+        let evidence_manifest = super::evidence_manifest(&store, created.contract.id)
+            .expect("loop evidence manifest should resolve");
+        assert_eq!(
+            evidence_manifest.schema_version,
+            EVIDENCE_MANIFEST_SCHEMA_VERSION
+        );
+        assert_eq!(evidence_manifest.manifest_state, "ok");
+        assert_eq!(evidence_manifest.coverage.evidence_count, 3);
+        assert_eq!(evidence_manifest.coverage.payload_count, 3);
+        assert_eq!(evidence_manifest.coverage.receipt_count, 3);
+        assert!(evidence_manifest.coverage.digest_count >= 6);
+        assert_eq!(
+            evidence_manifest.resources.evidence_manifest,
+            format!("entrance://loops/{}/evidence-manifest", created.contract.id)
+        );
+        assert!(evidence_manifest.entries.iter().any(|entry| {
+            entry.source == "evidence.payload"
+                && entry.entry_kind == "payload"
+                && entry
+                    .sha256
+                    .as_deref()
+                    .is_some_and(|digest| digest.len() == 64)
+                && entry.verified
+        }));
+        assert!(evidence_manifest.entries.iter().any(|entry| {
+            entry.source == "worker.receipt"
+                && entry.entry_kind == "receipt"
+                && entry.stage_role.as_deref() == Some("developer")
+                && entry
+                    .sha256
+                    .as_deref()
+                    .is_some_and(|digest| digest.len() == 64)
+                && entry.verified
+        }));
+        assert!(evidence_manifest.next_actions.iter().any(|action| {
+            action
+                == &format!(
+                    "entrance hive loop evidence-manifest {}",
+                    created.contract.id
+                )
+        }));
         let audit_report =
             super::audit(&store, created.contract.id).expect("loop audit should resolve");
         assert_eq!(audit_report.schema_version, AUDIT_SCHEMA_VERSION);
@@ -11437,6 +11958,10 @@ mod tests {
                 "entrance://loops/{}/evidence-drilldown",
                 created.contract.id
             )
+        );
+        assert_eq!(
+            dashboard_report.resources.evidence_manifest,
+            format!("entrance://loops/{}/evidence-manifest", created.contract.id)
         );
         assert_eq!(dashboard_report.rounds.len(), 1);
         let dashboard_round = dashboard_report

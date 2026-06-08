@@ -116,10 +116,16 @@ evidence row, evidence/loop-level blockers, blocker-bound decision surfaces,
 resources, and next actions.
 MCP clients can read it through
 `entrance://loops/{loop_id}/evidence-drilldown`, and the Panel selected-issue
-detail renders the same report below Loop Dashboard. Full transcript expansion,
-durable remote receipt archives, artifact manifest collection/verification,
-payload schema diffing, and richer blocker decision workflows remain future
-work.
+detail renders the same report below Loop Dashboard.
+`entrance hive loop evidence-manifest <loop_id>` exposes
+`entrance.hive.evidence_manifest.v1`: a ledger-oriented evidence manifest with
+payload, worker receipt, transcript excerpt, artifact/path entries, digest
+coverage, local path verification status, resources, and next actions. MCP
+clients can read it through `entrance://loops/{loop_id}/evidence-manifest`,
+and the Panel selected-issue detail renders it below Evidence Drilldown. Full
+transcript expansion, durable remote receipt archives, real artifact manifest
+generation/content verification, payload schema diffing, and richer blocker
+decision workflows remain future work.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
 reported as preflight-blocked verdicts. The `codex` runtime uses a read-only
 `codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and
@@ -399,13 +405,15 @@ single issue as `entrance.mcp.issue_control.v1`, aggregating state, action call
 templates, MCP permissions, blockers, recent evidence, operator events, and
 operator confirmation receipts so agents do not have to infer the control
 surface from raw issue JSON. The control packet now includes `loop_dashboard`,
-`evidence_drilldown`, `runtime_preflight`, and `worker_lifecycle` resource
-pointers plus compact runtime preflight and worker lifecycle summaries. The
-full `entrance.hive.loop_dashboard.v1` report gives agents one loop-level
-control view before they inspect lower-level resources; the full
-`entrance.hive.evidence_drilldown.v1` report exposes worker receipts,
+`evidence_drilldown`, `evidence_manifest`, `runtime_preflight`, and
+`worker_lifecycle` resource pointers plus compact runtime preflight and worker
+lifecycle summaries. The full `entrance.hive.loop_dashboard.v1` report gives
+agents one loop-level control view before they inspect lower-level resources;
+the full `entrance.hive.evidence_drilldown.v1` report exposes worker receipts,
 transcript/payload excerpts, remote receipt summaries, artifact/path hints,
 payload key diffs, blockers, and blocker-bound decision surfaces; the full
+`entrance.hive.evidence_manifest.v1` report exposes payload/receipt/artifact
+entries, digest coverage, and path verification state; the full
 `entrance.hive.worker_lifecycle.v1` report lists expected roles, observed
 workers, receipt status, timeout/attempt metadata, retry exhaustion, and the
 Reviewer invalid-budget fallback. `entrance://policy/actor-identity` documents

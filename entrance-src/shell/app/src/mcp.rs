@@ -717,6 +717,7 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
             "control": format!("entrance://issues/{}/control", card.issue.id),
             "loop_dashboard": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/dashboard")),
             "evidence_drilldown": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/evidence-drilldown")),
+            "evidence_manifest": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/evidence-manifest")),
             "runtime_preflight": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/runtime-preflight")),
             "worker_lifecycle": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
             "review_queue": "entrance://review-queue",
@@ -1072,6 +1073,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "One loop evidence drilldown report with worker receipts, transcript excerpts, remote connector receipts, artifacts, payload diffs, blockers, and human decision surface.",
         ));
         resources.push(resource_spec(
+            &format!("entrance://loops/{}/evidence-manifest", contract.id),
+            &format!("Loop #{} evidence manifest", contract.id),
+            "One loop evidence manifest report with payload, worker receipt, transcript, artifact, path verification, digest coverage, and next actions.",
+        ));
+        resources.push(resource_spec(
             &format!("entrance://loops/{}/runtime-preflight", contract.id),
             &format!("Loop #{} runtime preflight", contract.id),
             "One loop runtime preflight report with runtime policy, probe, admission gate, blocker, and next actions.",
@@ -1110,6 +1116,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://loops/{loop_id}/evidence-drilldown",
                 "name": "Entrance loop evidence drilldown by id",
                 "description": "Read evidence drilldown with worker receipts, transcript excerpts, remote connector receipts, artifacts, payload diffs, blockers, and human decision surface.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://loops/{loop_id}/evidence-manifest",
+                "name": "Entrance loop evidence manifest by id",
+                "description": "Read evidence manifest with payload, receipt, transcript, artifact, path verification, digest coverage, and next actions.",
                 "mimeType": "application/json"
             },
             {
@@ -1173,6 +1185,18 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
                     format!("invalid Entrance loop evidence drilldown resource URI `{value}`")
                 })?;
             serde_json::to_value(services.hive.loop_evidence_drilldown(loop_id)?)?
+        }
+        value
+            if value.starts_with("entrance://loops/") && value.ends_with("/evidence-manifest") =>
+        {
+            let loop_id = value
+                .trim_start_matches("entrance://loops/")
+                .trim_end_matches("/evidence-manifest")
+                .parse::<i64>()
+                .with_context(|| {
+                    format!("invalid Entrance loop evidence manifest resource URI `{value}`")
+                })?;
+            serde_json::to_value(services.hive.loop_evidence_manifest(loop_id)?)?
         }
         value
             if value.starts_with("entrance://loops/") && value.ends_with("/runtime-preflight") =>
@@ -2008,6 +2032,12 @@ mod tests {
         );
         assert_eq!(
             packet
+                .pointer("/resources/evidence_manifest")
+                .and_then(|value| value.as_str()),
+            Some("entrance://loops/7/evidence-manifest")
+        );
+        assert_eq!(
+            packet
                 .pointer("/resources/worker_lifecycle")
                 .and_then(|value| value.as_str()),
             Some("entrance://loops/7/worker-lifecycle")
@@ -2034,6 +2064,7 @@ mod tests {
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/control"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/dashboard"));
+        assert!(uri_templates.contains(&"entrance://loops/{loop_id}/evidence-manifest"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/runtime-preflight"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/worker-lifecycle"));
     }

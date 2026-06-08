@@ -96,7 +96,8 @@ loop control-plane view with issue state, kernel preflight, Explorer/Developer/
 Reviewer lanes, reviewer budget, human decision actions, health, round
 packet/admission/evidence/verdict grouping, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/dashboard`, and the Panel selected issue renders it
-above Evidence Drilldown, Runtime Preflight, and Worker Lifecycle.
+above Evidence Drilldown, Evidence Manifest, Runtime Preflight, and Worker
+Lifecycle.
 `hive loop evidence-drilldown <id>` exposes
 `entrance.hive.evidence_drilldown.v1`, a focused evidence control-plane view
 with worker receipts, transcript/payload excerpts, remote connector receipt
@@ -104,6 +105,12 @@ summaries, artifact/path hints, payload key diffs, blockers, blocker-bound
 decision surfaces, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/evidence-drilldown`, and the Panel selected issue
 renders it below Loop Dashboard.
+`hive loop evidence-manifest <id>` exposes
+`entrance.hive.evidence_manifest.v1`, a ledger-oriented evidence manifest with
+payload, worker receipt, transcript excerpt, artifact/path entries, digest
+coverage, path verification state, and next actions; MCP exposes it as
+`entrance://loops/{loop_id}/evidence-manifest`, and the Panel selected issue
+renders it below Evidence Drilldown.
 `hive loop preflight <id>` exposes the same boundary as
 `entrance.hive.runtime_preflight.v1`, including policy, probe, current
 admission, blocker, failures, and next actions; MCP exposes it as
@@ -144,6 +151,9 @@ operator options, and short transcript excerpts.
 operators who need to inspect receipt contents, payload changes, connector
 readback summaries, artifact hints, and blocker-bound retry/review/cancel
 decision context without opening raw SQLite rows first.
+`hive loop evidence-manifest <id>` returns the manifest report for operators
+who need to audit evidence coverage, receipt/payload digests, artifact/path
+entries, and local path verification state.
 `hive loop audit <id>` returns a compiler-style audit over the SQLite ledger
 schema, loop contract, active policies, runtime policy, stage sequence, stage
 evidence, typed packets, packet sequence, admission receipts, worker receipts,
