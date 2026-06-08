@@ -21,7 +21,9 @@ Entrance has reached a local MVP unit:
   commenting on, reading, prompting issue-bound loops, and listing the
   `Blocked`/`Needs Review` review queue. MCP retry/review/cancel calls now
   require `human_confirmed=true` and expose the permission policy through
-  `entrance://policy/mcp-permissions`.
+  `entrance://policy/mcp-permissions`; confirmed MCP human decisions also write
+  an action/author/policy marker into the operator decision comment/evidence
+  note.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -35,8 +37,8 @@ multi-agent runtime/compiler product.
 ### P0: External issue surfaces
 
 - Productize the MCP stdio surface: client config docs, stronger protocol
-  tests, richer auth/permission policy, and compatibility checks against real
-  MCP clients.
+  tests, richer auth/permission policy, actor identity mapping, and
+  compatibility checks against real MCP clients.
 - Make `file:` and `remote-fixture:` connector roundtrips the default external
   dry-run demo path, with one clear CLI command and one clear Panel action.
 - Add live token-backed GitHub and Linear validation runs, including safe

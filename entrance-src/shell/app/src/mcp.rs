@@ -10,6 +10,7 @@ use crate::app::AppServices;
 const MCP_LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_FALLBACK_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SCHEMA_VERSION: &str = "entrance.mcp.v1";
+const MCP_PERMISSION_POLICY_SCHEMA_VERSION: &str = "entrance.mcp.permission_policy.v1";
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -425,7 +426,7 @@ fn tool_specs() -> Vec<serde_json::Value> {
                     "body": { "type": "string" },
                     "human_confirmed": {
                         "type": "boolean",
-                        "description": "Must be true because retry is a human decision boundary."
+                        "description": "Must be true because retry is a human decision boundary; Entrance records the confirmation in the operator decision note."
                     },
                     "author": { "type": "string", "description": "Optional author label. Defaults to mcp-agent." },
                     "runtime": { "type": "string" },
@@ -448,7 +449,7 @@ fn tool_specs() -> Vec<serde_json::Value> {
                     "body": { "type": "string" },
                     "human_confirmed": {
                         "type": "boolean",
-                        "description": "Must be true because retry/review/cancel are human decision boundaries."
+                        "description": "Must be true because retry/review/cancel are human decision boundaries; Entrance records the confirmation in the operator decision note."
                     },
                     "author": { "type": "string", "description": "Optional author label. Defaults to mcp-agent." }
                 },
@@ -581,9 +582,10 @@ fn tool_issue_run(
     retry: bool,
 ) -> Result<serde_json::Value> {
     let issue_id = integer_arg(args, "issue_id")?;
+    let author = mcp_author(args);
     let body = if retry {
         ensure_human_confirmed(args, "retry")?;
-        Some(string_arg(args, "body")?)
+        append_human_confirmation_note(Some(string_arg(args, "body")?), "retry", &author)
     } else {
         optional_string_arg(args, "body")
     };
@@ -594,7 +596,7 @@ fn tool_issue_run(
         worker_timeout_secs: optional_u64_arg(args, "worker_timeout_secs"),
         worker_attempts: optional_u64_arg(args, "worker_attempts"),
         retry,
-        author: optional_string_arg(args, "author").unwrap_or_else(|| "mcp-agent".to_string()),
+        author,
         body,
     })?;
     Ok(serde_json::json!({
@@ -612,11 +614,13 @@ fn tool_issue_decide(
     let issue_id = integer_arg(args, "issue_id")?;
     let action = string_arg(args, "action")?;
     ensure_human_confirmed(args, &action)?;
+    let author = mcp_author(args);
+    let body = append_human_confirmation_note(optional_string_arg(args, "body"), &action, &author);
     let card = services.hive.issue_decide(IssueDecisionRequest {
         issue_id,
         action,
-        author: optional_string_arg(args, "author").unwrap_or_else(|| "mcp-agent".to_string()),
-        body: optional_string_arg(args, "body"),
+        author,
+        body,
     })?;
     Ok(serde_json::json!({
         "schema_version": "entrance.mcp.issue_decide.v1",
@@ -803,13 +807,18 @@ fn mcp_issue_policy(actions: &[entrance_hive::IssueAction]) -> serde_json::Value
         "schema_version": "entrance.mcp.issue_permission_policy.v1",
         "human_confirmed_actions": human_confirmed_actions,
         "confirmation_arg": "human_confirmed",
+        "confirmation_receipt": {
+            "recorded_as": ["issue_comment.body", "loop_evidence.payload.operator.comment_body"],
+            "marker_prefix": "MCP confirmation:",
+            "policy_schema_version": MCP_PERMISSION_POLICY_SCHEMA_VERSION
+        },
         "policy_resource": "entrance://policy/mcp-permissions"
     })
 }
 
 fn mcp_permission_policy() -> serde_json::Value {
     serde_json::json!({
-        "schema_version": "entrance.mcp.permission_policy.v1",
+        "schema_version": MCP_PERMISSION_POLICY_SCHEMA_VERSION,
         "default_actor": "mcp-agent",
         "read_only_tools": [
             "entrance_issue_list",
@@ -841,6 +850,12 @@ fn mcp_permission_policy() -> serde_json::Value {
                 "reason": "Retry, review, and cancel are human decision boundaries."
             }
         ],
+        "confirmation_receipt": {
+            "recorded_as": ["issue_comment.body", "loop_evidence.payload.operator.comment_body"],
+            "source": "issue/status/comment",
+            "marker_prefix": "MCP confirmation:",
+            "note_template": format!("MCP confirmation: human_confirmed=true; action=<action>; author=<author>; policy={MCP_PERMISSION_POLICY_SCHEMA_VERSION}")
+        },
         "blocked_boundary": {
             "statuses": ["Blocked", "Needs Review"],
             "resource": "entrance://review-queue",
@@ -865,6 +880,27 @@ fn ensure_human_confirmed(args: &serde_json::Value, action: &str) -> Result<()> 
     anyhow::bail!(
         "MCP action `{action}` requires human_confirmed=true; read entrance://review-queue or prompt entrance_blocker_decision before executing human decisions"
     )
+}
+
+fn mcp_author(args: &serde_json::Value) -> String {
+    optional_string_arg(args, "author").unwrap_or_else(|| "mcp-agent".to_string())
+}
+
+fn append_human_confirmation_note(
+    body: Option<String>,
+    action: &str,
+    author: &str,
+) -> Option<String> {
+    let marker = format!(
+        "MCP confirmation: human_confirmed=true; action={action}; author={author}; policy={MCP_PERMISSION_POLICY_SCHEMA_VERSION}"
+    );
+    let body = body
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    Some(match body {
+        Some(body) => format!("{body}\n\n{marker}"),
+        None => marker,
+    })
 }
 
 fn tool_result(is_error: bool, text: String, structured: serde_json::Value) -> serde_json::Value {
@@ -955,8 +991,9 @@ fn optional_string_array_arg(args: &serde_json::Value, name: &str) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_human_confirmed, initialize_result, mcp_permission_policy, prompt_loop_contract,
-        prompt_specs, tool_specs, MCP_FALLBACK_PROTOCOL_VERSION,
+        append_human_confirmation_note, ensure_human_confirmed, initialize_result,
+        mcp_permission_policy, prompt_loop_contract, prompt_specs, tool_specs,
+        MCP_FALLBACK_PROTOCOL_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
     };
 
     #[test]
@@ -1045,6 +1082,30 @@ mod tests {
     }
 
     #[test]
+    fn human_confirmation_note_records_action_author_and_policy() {
+        let note = append_human_confirmation_note(
+            Some("Retry with a narrower scope.".to_string()),
+            "retry",
+            "human-a",
+        )
+        .expect("confirmed decisions should always return a note");
+
+        assert!(note.contains("Retry with a narrower scope."));
+        assert!(note.contains(
+            "MCP confirmation: human_confirmed=true; action=retry; author=human-a; policy=entrance.mcp.permission_policy.v1"
+        ));
+
+        let marker_only = append_human_confirmation_note(None, "cancel", "mcp-agent")
+            .expect("marker-only confirmed decisions should return a note");
+        assert_eq!(
+            marker_only,
+            format!(
+                "MCP confirmation: human_confirmed=true; action=cancel; author=mcp-agent; policy={MCP_PERMISSION_POLICY_SCHEMA_VERSION}"
+            )
+        );
+    }
+
+    #[test]
     fn permission_policy_names_human_decision_tools() {
         let policy = mcp_permission_policy();
         let human_tools = policy
@@ -1064,6 +1125,16 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("entrance://review-queue")
         );
+        assert_eq!(
+            policy
+                .pointer("/confirmation_receipt/source")
+                .and_then(|value| value.as_str()),
+            Some("issue/status/comment")
+        );
+        assert!(policy
+            .pointer("/confirmation_receipt/note_template")
+            .and_then(|value| value.as_str())
+            .is_some_and(|template| template.contains(MCP_PERMISSION_POLICY_SCHEMA_VERSION)));
     }
 
     #[test]

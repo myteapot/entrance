@@ -319,7 +319,11 @@ actions, blockers, latest comment, and recent evidence summaries.
 `entrance_issue_retry` and `entrance_issue_decide` require
 `human_confirmed=true`; without it the MCP tool result is an error. The
 permission boundary is documented at `entrance://policy/mcp-permissions` and is
-also included in review queue item policy metadata.
+also included in review queue item policy metadata. When a confirmed MCP
+retry/review/cancel call is accepted, the MCP layer appends an
+`MCP confirmation:` marker with action, author, and policy schema to the
+operator decision note; Hive then persists that note as both the issue comment
+body and the linked `operator_decision` evidence payload.
 The Electron Panel mirrors that same decision surface as a Review Queue band
 above the status board, using the existing issue actions for retry, review,
 cancel, comment, detail focus, and evidence focus.
