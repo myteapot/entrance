@@ -10606,6 +10606,13 @@ mod tests {
             .to_string(),
             destructive: action == "cancel",
             runtime: None,
+            confirmation_required: matches!(action, "retry" | "request-review" | "cancel"),
+            confirmation_arg: matches!(action, "retry" | "request-review" | "cancel")
+                .then(|| "operator_confirmed".to_string()),
+            receipt_schema: matches!(action, "retry" | "request-review" | "cancel")
+                .then(|| "entrance.hive.operator_confirmation_receipt.v1".to_string()),
+            policy_schema_version: matches!(action, "retry" | "request-review" | "cancel")
+                .then(|| "entrance.hive.operator_action_policy.v1".to_string()),
         }
     }
 

@@ -345,7 +345,12 @@ authentication guarantee. The issue-surface audit checks the receipt schema and
 binds the comment/evidence receipt copies together.
 The Electron Panel mirrors that same decision surface as a Review Queue band
 above the status board, using the existing issue actions for retry, review,
-cancel, comment, detail focus, and evidence focus.
+cancel, comment, detail focus, and evidence focus. The issue action contract
+itself marks retry/review/cancel with
+`entrance.hive.operator_action_policy.v1`, `operator_confirmed`, and
+`entrance.hive.operator_confirmation_receipt.v1`; Panel daemon invocations use
+that contract to record `source=panel` confirmation receipts with
+`client.name=local-hive-panel` and `client.source=daemon.invoke`.
 
 ## Config And Data
 

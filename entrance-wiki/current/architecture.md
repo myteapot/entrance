@@ -36,5 +36,8 @@ annotations and the policy resource. Confirmed MCP human decisions are recorded
 back into the Hive operator decision
 comment/evidence payload as typed confirmation receipts, with a readable policy
 marker still present in the note and optional `initialize.clientInfo` copied as
-self-reported client identity. There is still no
+self-reported client identity. The daemon bridge used by the Electron Panel now
+records Panel retry/review/cancel decisions with the same typed confirmation
+receipt schema using `source=panel`; this is local audit context, not verified
+operator authentication. There is still no
 separate `shell/mcp/` package or remote MCP service in the active V2 shape.

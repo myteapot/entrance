@@ -25,6 +25,8 @@ const OPERATOR_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.operator_comment.v1
 pub const OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION: &str =
     "entrance.hive.operator_confirmation_receipt.v1";
 const ISSUE_ACTION_SCHEMA_VERSION: &str = "entrance.hive.issue_action.v1";
+pub const OPERATOR_ACTION_POLICY_SCHEMA_VERSION: &str = "entrance.hive.operator_action_policy.v1";
+pub const OPERATOR_ACTION_CONFIRMATION_ARG: &str = "operator_confirmed";
 const ISSUE_MIRROR_SCHEMA_VERSION: &str = "entrance.hive.issue_mirror.v1";
 const CONNECTOR_REGISTRY_SCHEMA_VERSION: &str = "entrance.hive.connector_registry.v1";
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
@@ -517,6 +519,17 @@ pub struct IssueAction {
     pub input: String,
     pub destructive: bool,
     pub runtime: Option<String>,
+    #[serde(default)]
+    pub confirmation_required: bool,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_arg: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_schema: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_schema_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4116,6 +4129,31 @@ fn issue_action_field_errors(
     if action.destructive != (action.action == "cancel") {
         errors.push("action.destructive".to_string());
     }
+    let confirmation_required = issue_action_requires_confirmation(&action.action);
+    if action.confirmation_required != confirmation_required {
+        errors.push("action.confirmation_required".to_string());
+    }
+    if confirmation_required {
+        if action.confirmation_arg.as_deref() != Some(OPERATOR_ACTION_CONFIRMATION_ARG) {
+            errors.push("action.confirmation_arg".to_string());
+        }
+        if action.receipt_schema.as_deref() != Some(OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION) {
+            errors.push("action.receipt_schema".to_string());
+        }
+        if action.policy_schema_version.as_deref() != Some(OPERATOR_ACTION_POLICY_SCHEMA_VERSION) {
+            errors.push("action.policy_schema_version".to_string());
+        }
+    } else {
+        if action.confirmation_arg.is_some() {
+            errors.push("action.confirmation_arg".to_string());
+        }
+        if action.receipt_schema.is_some() {
+            errors.push("action.receipt_schema".to_string());
+        }
+        if action.policy_schema_version.is_some() {
+            errors.push("action.policy_schema_version".to_string());
+        }
+    }
     match action.action.as_str() {
         "run" => {
             if action.runtime.as_deref() != Some(contract.runtime.as_str()) {
@@ -5214,6 +5252,7 @@ fn issue_action(
     destructive: bool,
     runtime: Option<&str>,
 ) -> IssueAction {
+    let confirmation_required = issue_action_requires_confirmation(action);
     IssueAction {
         schema_version: ISSUE_ACTION_SCHEMA_VERSION.to_string(),
         action: action.to_string(),
@@ -5223,7 +5262,18 @@ fn issue_action(
         input: input.to_string(),
         destructive,
         runtime: runtime.map(ToOwned::to_owned),
+        confirmation_required,
+        confirmation_arg: confirmation_required
+            .then(|| OPERATOR_ACTION_CONFIRMATION_ARG.to_string()),
+        receipt_schema: confirmation_required
+            .then(|| OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string()),
+        policy_schema_version: confirmation_required
+            .then(|| OPERATOR_ACTION_POLICY_SCHEMA_VERSION.to_string()),
     }
+}
+
+fn issue_action_requires_confirmation(action: &str) -> bool {
+    matches!(action, "retry" | "request-review" | "cancel")
 }
 
 fn issue_run_action_command(
@@ -10627,6 +10677,26 @@ mod tests {
         assert_eq!(review_action.schema_version, ISSUE_ACTION_SCHEMA_VERSION);
         assert_eq!(review_action.source, "human_options");
         assert_eq!(review_action.input, "note");
+        assert!(review_action.confirmation_required);
+        assert_eq!(
+            review_action.confirmation_arg.as_deref(),
+            Some(OPERATOR_ACTION_CONFIRMATION_ARG)
+        );
+        assert_eq!(
+            review_action.receipt_schema.as_deref(),
+            Some(OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            review_action.policy_schema_version.as_deref(),
+            Some(OPERATOR_ACTION_POLICY_SCHEMA_VERSION)
+        );
+        let comment_action = blocked.issues[0]
+            .actions
+            .iter()
+            .find(|action| action.action == "comment")
+            .expect("blocked issue should expose comment action");
+        assert!(!comment_action.confirmation_required);
+        assert!(comment_action.receipt_schema.is_none());
         let mut corrupt_actions = blocked.issues[0].actions.clone();
         corrupt_actions.retain(|action| action.action != "request-review");
         corrupt_actions[0].schema_version = "bad.schema".to_string();
@@ -10636,6 +10706,11 @@ mod tests {
             .find(|action| action.action == "cancel")
             .expect("cancel action should exist")
             .destructive = false;
+        corrupt_actions
+            .iter_mut()
+            .find(|action| action.action == "retry")
+            .expect("retry action should exist")
+            .confirmation_required = false;
         let action_error = issue_action_audit_error(
             &blocked.issues[0].issue,
             &blocked.contract,
@@ -10657,6 +10732,7 @@ mod tests {
         assert!(action_error_fields.contains(&"action.schema_version"));
         assert!(action_error_fields.contains(&"action.source"));
         assert!(action_error_fields.contains(&"action.destructive"));
+        assert!(action_error_fields.contains(&"action.confirmation_required"));
 
         let review_receipt = OperatorConfirmationReceipt {
             schema_version: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),

@@ -228,6 +228,10 @@ type IssueAction = {
   input: string;
   destructive: boolean;
   runtime: string | null;
+  confirmation_required: boolean;
+  confirmation_arg?: string | null;
+  receipt_schema?: string | null;
+  policy_schema_version?: string | null;
 };
 
 type IssueConnectorStatus = {
@@ -1905,6 +1909,7 @@ export default function App() {
       action.source,
       action.input,
       action.runtime ?? "no-runtime",
+      action.confirmation_required ? "confirmed" : "no-confirm",
       action.destructive ? "destructive" : "non-destructive",
     ].join(" / ");
   const issueActionTitle = (action: IssueAction) =>
@@ -1913,9 +1918,15 @@ export default function App() {
       `source=${action.source}`,
       `input=${action.input}`,
       `runtime=${action.runtime ?? "none"}`,
+      `confirmation_required=${action.confirmation_required ? "true" : "false"}`,
+      action.confirmation_arg ? `confirmation_arg=${action.confirmation_arg}` : null,
+      action.receipt_schema ? `receipt_schema=${action.receipt_schema}` : null,
+      action.policy_schema_version ? `policy=${action.policy_schema_version}` : null,
       `destructive=${action.destructive ? "true" : "false"}`,
       action.command,
-    ].join(" | ");
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" | ");
   const issueActionButtonAttrs = (action: IssueAction | undefined) =>
     action
       ? {
@@ -1924,6 +1935,10 @@ export default function App() {
           "data-action-runtime": action.runtime ?? "",
           "data-action-schema-version": action.schema_version,
           "data-action-source": action.source,
+          "data-action-confirmation-required": action.confirmation_required ? "true" : "false",
+          "data-action-confirmation-arg": action.confirmation_arg ?? "",
+          "data-action-receipt-schema": action.receipt_schema ?? "",
+          "data-action-policy-schema-version": action.policy_schema_version ?? "",
           title: issueActionTitle(action),
         }
       : {};

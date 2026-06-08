@@ -11,7 +11,9 @@ use entrance_core::LauncherQuery;
 use entrance_drawer::VaultSecret;
 use entrance_hive::{
     HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest, IssueCard,
-    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, ReviewDecision,
+    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, OperatorConfirmationClient,
+    OperatorConfirmationReceipt, ReviewDecision, OPERATOR_ACTION_CONFIRMATION_ARG,
+    OPERATOR_ACTION_POLICY_SCHEMA_VERSION, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -26,6 +28,9 @@ use crate::{
         sync_issue_mirror_to_file, verify_issue_mirror_file,
     },
 };
+
+const PANEL_CONFIRMATION_CLIENT_NAME: &str = "local-hive-panel";
+const PANEL_CONFIRMATION_CLIENT_SOURCE: &str = "daemon.invoke";
 
 #[derive(Debug, Clone)]
 struct DaemonState {
@@ -776,26 +781,32 @@ async fn handle_invoke(
                 .or_else(|| args.get("issue_id"))
                 .and_then(|value| value.as_i64())
                 .context("hive_issue_decide requires `issueId`")?;
-            Ok(serde_json::to_value(
-                state.services.hive.issue_decide(IssueDecisionRequest {
+            let action = args
+                .get("action")
+                .and_then(|value| value.as_str())
+                .context("hive_issue_decide requires `action`")?
+                .to_string();
+            let author = args
+                .get("author")
+                .and_then(|value| value.as_str())
+                .unwrap_or("human")
+                .to_string();
+            let body = append_panel_confirmation_note(
+                args.get("body")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                &action,
+                &author,
+            );
+            Ok(serde_json::to_value(state.services.hive.issue_decide(
+                IssueDecisionRequest {
                     issue_id,
-                    action: args
-                        .get("action")
-                        .and_then(|value| value.as_str())
-                        .context("hive_issue_decide requires `action`")?
-                        .to_string(),
-                    author: args
-                        .get("author")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("human")
-                        .to_string(),
-                    body: args
-                        .get("body")
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned),
-                    confirmation_receipt: None,
-                })?,
-            )?)
+                    action: action.clone(),
+                    author: author.clone(),
+                    body,
+                    confirmation_receipt: Some(panel_human_confirmation_receipt(&action, &author)),
+                },
+            )?)?)
         }
         "hive_issue_run" => {
             let issue_id = args
@@ -804,6 +815,15 @@ async fn handle_invoke(
                 .and_then(|value| value.as_i64())
                 .context("hive_issue_run requires `issueId`")?;
             let hive = state.services.hive.clone();
+            let retry = args
+                .get("retry")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let author = args
+                .get("author")
+                .and_then(|value| value.as_str())
+                .unwrap_or("human")
+                .to_string();
             let request = IssueRunRequest {
                 issue_id,
                 runtime: args
@@ -822,20 +842,23 @@ async fn handle_invoke(
                     .get("workerAttempts")
                     .or_else(|| args.get("worker_attempts"))
                     .and_then(|value| value.as_u64()),
-                retry: args
-                    .get("retry")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false),
-                author: args
-                    .get("author")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("human")
-                    .to_string(),
-                body: args
-                    .get("body")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-                confirmation_receipt: None,
+                retry,
+                author: author.clone(),
+                body: if retry {
+                    append_panel_confirmation_note(
+                        args.get("body")
+                            .and_then(|value| value.as_str())
+                            .map(ToOwned::to_owned),
+                        "retry",
+                        &author,
+                    )
+                } else {
+                    args.get("body")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned)
+                },
+                confirmation_receipt: retry
+                    .then(|| panel_human_confirmation_receipt("retry", &author)),
             };
             tokio::task::spawn_blocking(move || Ok(serde_json::to_value(hive.issue_run(request)?)?))
                 .await
@@ -903,5 +926,87 @@ async fn handle_invoke(
             Ok(serde_json::json!({ "command": command, "pinned": pinned }))
         }
         _ => anyhow::bail!("unsupported daemon command `{command}`"),
+    }
+}
+
+fn append_panel_confirmation_note(
+    body: Option<String>,
+    action: &str,
+    author: &str,
+) -> Option<String> {
+    let marker = panel_confirmation_marker(action, author);
+    let note = body.unwrap_or_default().trim().to_string();
+    Some(if note.is_empty() {
+        marker
+    } else {
+        format!("{note}\n\n{marker}")
+    })
+}
+
+fn panel_human_confirmation_receipt(action: &str, author: &str) -> OperatorConfirmationReceipt {
+    OperatorConfirmationReceipt {
+        schema_version: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
+        source: "panel".to_string(),
+        policy_schema_version: OPERATOR_ACTION_POLICY_SCHEMA_VERSION.to_string(),
+        confirmation_arg: OPERATOR_ACTION_CONFIRMATION_ARG.to_string(),
+        human_confirmed: true,
+        action: action.to_string(),
+        author: author.to_string(),
+        marker: panel_confirmation_marker(action, author),
+        client: Some(OperatorConfirmationClient {
+            name: PANEL_CONFIRMATION_CLIENT_NAME.to_string(),
+            version: None,
+            source: PANEL_CONFIRMATION_CLIENT_SOURCE.to_string(),
+        }),
+    }
+}
+
+fn panel_confirmation_marker(action: &str, author: &str) -> String {
+    format!(
+        "Panel confirmation: action={action}; author={author}; policy={OPERATOR_ACTION_POLICY_SCHEMA_VERSION}"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        append_panel_confirmation_note, panel_human_confirmation_receipt,
+        PANEL_CONFIRMATION_CLIENT_NAME, PANEL_CONFIRMATION_CLIENT_SOURCE,
+    };
+
+    #[test]
+    fn panel_confirmation_receipt_records_action_author_and_client() {
+        let receipt = panel_human_confirmation_receipt("retry", "human");
+
+        assert_eq!(receipt.source, "panel");
+        assert_eq!(
+            receipt.policy_schema_version,
+            entrance_hive::OPERATOR_ACTION_POLICY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            receipt.confirmation_arg,
+            entrance_hive::OPERATOR_ACTION_CONFIRMATION_ARG
+        );
+        assert!(receipt.human_confirmed);
+        assert_eq!(receipt.action, "retry");
+        assert_eq!(receipt.author, "human");
+        assert!(receipt.marker.contains("Panel confirmation:"));
+        let client = receipt.client.expect("panel receipt should name client");
+        assert_eq!(client.name, PANEL_CONFIRMATION_CLIENT_NAME);
+        assert_eq!(client.source, PANEL_CONFIRMATION_CLIENT_SOURCE);
+        assert!(client.version.is_none());
+    }
+
+    #[test]
+    fn panel_confirmation_note_preserves_operator_note() {
+        let body = append_panel_confirmation_note(
+            Some("Try again with local runtime".to_string()),
+            "retry",
+            "human",
+        )
+        .expect("panel note should be present");
+
+        assert!(body.starts_with("Try again with local runtime"));
+        assert!(body.contains("Panel confirmation: action=retry; author=human;"));
     }
 }

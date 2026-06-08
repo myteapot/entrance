@@ -32,6 +32,9 @@ Entrance has reached a local MVP unit:
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
   board with verdict reason, blockers, recent evidence, and decision actions.
+  Retry/review/cancel issue actions now carry a typed operator confirmation
+  contract, and Panel daemon decisions write `source=panel` confirmation
+  receipts into the operator decision comment/evidence ledger.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -44,6 +47,8 @@ multi-agent runtime/compiler product.
   tests, real auth/identity policy on top of the local tool-permission
   registry, verified actor identity mapping beyond self-reported
   `initialize.clientInfo`, and compatibility checks against real MCP clients.
+- Add verified operator identity for local Panel/daemon decisions beyond the
+  current `local-hive-panel` audit context.
 - Make `file:` and `remote-fixture:` connector roundtrips the default external
   dry-run demo path, with one clear CLI command and one clear Panel action.
 - Add live token-backed GitHub and Linear validation runs, including safe
