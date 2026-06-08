@@ -13,6 +13,12 @@ Entrance has reached a local MVP unit:
   comments, audit checks, and schema health.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
+- Worker lifecycle is now a first-class observable contract through
+  `entrance hive loop worker-lifecycle <loop_id>` and
+  `entrance://loops/{loop_id}/worker-lifecycle`, exposing expected
+  Explorer/Developer/Reviewer roles, observed workers by round, receipt status,
+  timeout/attempt/retry-exhaustion metadata, failures, and the 3-round Reviewer
+  invalid-budget fallback.
 - The built-in `local-hive-panel` is now the default in-process
   issue/status/comment surface. It reports current local issues without
   requiring an external mirror file.
@@ -29,10 +35,10 @@ Entrance has reached a local MVP unit:
   client sends `initialize.clientInfo`, that self-reported client identity is
   copied into the receipt for audit context. `entrance_issue_control` and
   `entrance://issues/{issue_id}/control` now expose a single issue control
-  packet with status, action call templates, blockers, recent evidence, operator
-  events, confirmation receipts, and actor identity context. The actor identity
-  policy resource documents self-reported MCP actors and local Panel audit
-  actors with `verified=false`.
+  packet with status, action call templates, blockers, worker lifecycle summary,
+  recent evidence, operator events, confirmation receipts, and actor identity
+  context. The actor identity policy resource documents self-reported MCP
+  actors and local Panel audit actors with `verified=false`.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -86,7 +92,8 @@ multi-agent runtime/compiler product.
   policy, environment redaction, and output limits.
 - Add durable worker lifecycle handling across process restarts: heartbeat,
   resume, cancel, retry, replacement, timeout recovery, and stale worker
-  cleanup.
+  cleanup. The current `worker_lifecycle.v1` report is observable state only,
+  not durable process supervision.
 - Separate worker execution policy from demo defaults so production loops can
   choose stricter runtime profiles.
 

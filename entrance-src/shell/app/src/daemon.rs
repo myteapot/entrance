@@ -442,6 +442,15 @@ async fn handle_invoke(
                 .context("hive_loop_doctor requires `id`")?;
             Ok(serde_json::to_value(state.services.hive.loop_doctor(id)?)?)
         }
+        "hive_loop_worker_lifecycle" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_worker_lifecycle requires `id`")?;
+            Ok(serde_json::to_value(
+                state.services.hive.loop_worker_lifecycle(id)?,
+            )?)
+        }
         "hive_loop_policies" => {
             let id = args
                 .get("id")

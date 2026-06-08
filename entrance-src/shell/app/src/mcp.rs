@@ -17,6 +17,8 @@ const MCP_TOOL_PERMISSION_SCHEMA_VERSION: &str = "entrance.mcp.tool_permission.v
 const MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION: &str =
     "entrance.mcp.tool_permission_registry.v1";
 const MCP_ISSUE_CONTROL_SCHEMA_VERSION: &str = "entrance.mcp.issue_control.v1";
+const MCP_WORKER_LIFECYCLE_SUMMARY_SCHEMA_VERSION: &str =
+    "entrance.mcp.worker_lifecycle_summary.v1";
 const MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION: &str = "entrance.mcp.actor_identity_policy.v1";
 const MCP_TOOL_NAMES: &[&str] = &[
     "entrance_issue_list",
@@ -688,6 +690,7 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
             "missing_receipts": doctor.map(|doctor| doctor.missing_receipts.clone()).unwrap_or_default(),
             "worker_failures": doctor.map(|doctor| doctor.worker_failures.clone()).unwrap_or_default()
         },
+        "worker_lifecycle": issue_worker_lifecycle_summary(card),
         "doctor": doctor.map(|doctor| serde_json::json!({
             "health": &doctor.health,
             "summary": &doctor.summary,
@@ -709,11 +712,61 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
         "resources": {
             "issue": format!("entrance://issues/{}", card.issue.id),
             "control": format!("entrance://issues/{}/control", card.issue.id),
+            "worker_lifecycle": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
             "review_queue": "entrance://review-queue",
             "permissions": "entrance://policy/mcp-permissions",
             "actor_identity": "entrance://policy/actor-identity"
         }
     })
+}
+
+fn issue_worker_lifecycle_summary(card: &IssueCard) -> Option<serde_json::Value> {
+    let trace = card.trace.as_ref()?;
+    let expected_roles = ["explorer", "developer", "reviewer"];
+    let mut observed_roles = trace
+        .evidence
+        .iter()
+        .filter(|evidence| {
+            evidence.worker_kind.is_some()
+                || evidence.worker_ok.is_some()
+                || evidence.worker_attempt_count.is_some()
+        })
+        .filter_map(|evidence| evidence.stage_role.clone())
+        .collect::<Vec<_>>();
+    observed_roles.sort();
+    observed_roles.dedup();
+    let missing_roles = expected_roles
+        .iter()
+        .filter(|role| {
+            !observed_roles
+                .iter()
+                .any(|observed| observed.as_str() == **role)
+        })
+        .map(|role| (*role).to_string())
+        .collect::<Vec<_>>();
+    let reviewer_invalid_round_budget = 3_i64;
+    let reviewer_invalid_budget_exhausted = trace.reason_code.as_deref()
+        == Some("review_budget_exhausted")
+        || (trace.last_decision.as_deref() == Some("blocked")
+            && trace.current_round >= reviewer_invalid_round_budget);
+
+    Some(serde_json::json!({
+        "schema_version": MCP_WORKER_LIFECYCLE_SUMMARY_SCHEMA_VERSION,
+        "resource": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
+        "loop_id": card.issue.loop_id,
+        "current_round": trace.current_round,
+        "expected_roles": expected_roles,
+        "observed_roles": observed_roles,
+        "missing_roles": missing_roles,
+        "round_worker_count": trace.round_role_worker_count,
+        "round_worker_ok_count": trace.round_role_worker_ok_count,
+        "round_worker_timeout_count": trace.round_worker_timeout_count,
+        "round_worker_retry_exhausted_count": trace.round_worker_retry_exhausted_count,
+        "round_worker_duration_ms": trace.round_worker_duration_ms,
+        "reviewer_invalid_round_budget": reviewer_invalid_round_budget,
+        "reviewer_invalid_budget_exhausted": reviewer_invalid_budget_exhausted,
+        "fallback_status": "Blocked"
+    }))
 }
 
 fn issue_action_control(
@@ -963,6 +1016,13 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             "One issue control packet with actions, blockers, receipts, and human decision boundaries.",
         ));
     }
+    for contract in services.hive.loop_list()? {
+        resources.push(resource_spec(
+            &format!("entrance://loops/{}/worker-lifecycle", contract.id),
+            &format!("Loop #{} worker lifecycle", contract.id),
+            "One loop worker lifecycle report with expected roles, observed workers, receipts, retries, and fallback budget.",
+        ));
+    }
     Ok(serde_json::json!({ "resources": resources }))
 }
 
@@ -979,6 +1039,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://issues/{issue_id}/control",
                 "name": "Entrance issue control by id",
                 "description": "Read one issue control packet with actions, blockers, receipts, and human decision boundaries.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://loops/{loop_id}/worker-lifecycle",
+                "name": "Entrance loop worker lifecycle by id",
+                "description": "Read worker lifecycle with expected roles, observed workers, receipts, retries, and fallback budget.",
                 "mimeType": "application/json"
             }
         ]
@@ -1009,6 +1075,16 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
         "entrance://policy/mcp-permissions" => mcp_permission_policy(),
         "entrance://policy/actor-identity" => mcp_actor_identity_policy(),
         "entrance://schema/status" => serde_json::to_value(services.kernel.store.schema_status()?)?,
+        value if value.starts_with("entrance://loops/") && value.ends_with("/worker-lifecycle") => {
+            let loop_id = value
+                .trim_start_matches("entrance://loops/")
+                .trim_end_matches("/worker-lifecycle")
+                .parse::<i64>()
+                .with_context(|| {
+                    format!("invalid Entrance loop worker lifecycle resource URI `{value}`")
+                })?;
+            serde_json::to_value(services.hive.loop_worker_lifecycle(loop_id)?)?
+        }
         value if value.starts_with("entrance://issues/") && value.ends_with("/control") => {
             let issue_id = value
                 .trim_start_matches("entrance://issues/")
@@ -1625,8 +1701,8 @@ mod tests {
     use super::{
         append_human_confirmation_note, ensure_human_confirmed, initialize_result,
         issue_control_packet, mcp_client_identity, mcp_human_confirmation_receipt,
-        mcp_permission_policy, prompt_loop_contract, prompt_specs, tool_specs, McpSession,
-        MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION, MCP_FALLBACK_PROTOCOL_VERSION,
+        mcp_permission_policy, prompt_loop_contract, prompt_specs, resource_templates, tool_specs,
+        McpSession, MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION, MCP_FALLBACK_PROTOCOL_VERSION,
         MCP_ISSUE_CONTROL_SCHEMA_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
         MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_SCHEMA_VERSION,
     };
@@ -1807,6 +1883,31 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("entrance://policy/actor-identity")
         );
+        assert_eq!(
+            packet
+                .pointer("/resources/worker_lifecycle")
+                .and_then(|value| value.as_str()),
+            Some("entrance://loops/7/worker-lifecycle")
+        );
+        assert!(packet
+            .get("worker_lifecycle")
+            .is_some_and(|value| value.is_null()));
+    }
+
+    #[test]
+    fn resource_templates_expose_worker_lifecycle() {
+        let templates = resource_templates();
+        let uri_templates = templates
+            .get("resourceTemplates")
+            .and_then(|value| value.as_array())
+            .expect("resource templates should be an array")
+            .iter()
+            .filter_map(|template| template.get("uriTemplate").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(uri_templates.contains(&"entrance://issues/{issue_id}"));
+        assert!(uri_templates.contains(&"entrance://issues/{issue_id}/control"));
+        assert!(uri_templates.contains(&"entrance://loops/{loop_id}/worker-lifecycle"));
     }
 
     #[test]

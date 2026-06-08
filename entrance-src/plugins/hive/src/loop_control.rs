@@ -32,6 +32,7 @@ const CONNECTOR_REGISTRY_SCHEMA_VERSION: &str = "entrance.hive.connector_registr
 const SYSTEM_COMMENT_SCHEMA_VERSION: &str = "entrance.hive.system_comment.v1";
 const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
+const WORKER_LIFECYCLE_SCHEMA_VERSION: &str = "entrance.hive.worker_lifecycle.v1";
 pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
@@ -484,6 +485,87 @@ pub struct HiveLoopDoctorCheck {
     pub name: String,
     pub passed: bool,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopWorkerLifecycleReport {
+    pub schema_version: String,
+    pub loop_id: i64,
+    pub issue_id: Option<i64>,
+    pub issue_status: Option<String>,
+    pub status: String,
+    pub active_phase: String,
+    pub current_round: i64,
+    pub runtime: String,
+    pub lifecycle_state: String,
+    pub summary: String,
+    pub policy: HiveLoopWorkerLifecyclePolicy,
+    pub current: HiveLoopWorkerLifecycleRound,
+    pub rounds: Vec<HiveLoopWorkerLifecycleRound>,
+    pub failures: Vec<String>,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopWorkerLifecyclePolicy {
+    pub schema_version: String,
+    pub expected_roles: Vec<String>,
+    pub legacy_roles: Vec<String>,
+    pub default_timeout_secs: u64,
+    pub max_timeout_secs: u64,
+    pub timeout_env: String,
+    pub default_attempts: u64,
+    pub max_attempts: u64,
+    pub attempts_env: String,
+    pub reviewer_invalid_round_budget: i64,
+    pub fallback_status: String,
+    pub human_decision_statuses: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopWorkerLifecycleRound {
+    pub round: i64,
+    pub status: String,
+    pub decision: Option<String>,
+    pub expected_roles: Vec<String>,
+    pub observed_roles: Vec<String>,
+    pub missing_roles: Vec<String>,
+    pub worker_count: usize,
+    pub worker_ok_count: usize,
+    pub worker_timeout_count: usize,
+    pub worker_retry_exhausted_count: usize,
+    pub worker_duration_ms: u64,
+    pub reviewer_invalid_rounds_used: i64,
+    pub reviewer_invalid_budget_exhausted: bool,
+    pub failures: Vec<String>,
+    pub workers: Vec<HiveLoopWorkerLifecycleWorker>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopWorkerLifecycleWorker {
+    pub evidence_id: i64,
+    pub round: i64,
+    pub role: String,
+    pub stage_role: Option<String>,
+    pub evidence_kind: String,
+    pub kind: Option<String>,
+    pub mode: Option<String>,
+    pub ok: Option<bool>,
+    pub receipt_ok: Option<bool>,
+    pub timed_out: Option<bool>,
+    pub status: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub timeout_secs: Option<u64>,
+    pub attempt_count: Option<u64>,
+    pub max_attempts: Option<u64>,
+    pub retry_exhausted: Option<bool>,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub action: Option<String>,
+    pub evidence_summary: Option<String>,
+    pub gate_count: Option<usize>,
+    pub receipt_errors: Vec<String>,
+    pub transcript_excerpt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1946,6 +2028,70 @@ pub fn doctor(store: &Store, loop_id: i64) -> Result<HiveLoopDoctorReport> {
     })
 }
 
+pub fn worker_lifecycle(store: &Store, loop_id: i64) -> Result<HiveLoopWorkerLifecycleReport> {
+    let trace_report = trace(store, loop_id)?;
+    let contract = trace_report.contract;
+    let issue_id = trace_report.issue.as_ref().map(|issue| issue.id);
+    let issue_status = trace_report
+        .issue
+        .as_ref()
+        .map(|issue| issue.status.clone());
+    let trace_summary = trace_report.trace;
+    let stages = store.list_hive_loop_stages(loop_id)?;
+    let stage_roles = stage_role_map(&stages);
+    let evidence = store
+        .list_hive_loop_evidence(loop_id)?
+        .iter()
+        .map(|row| issue_evidence_summary(row, &stage_roles))
+        .collect::<Vec<_>>();
+    let workers = evidence
+        .iter()
+        .filter_map(worker_lifecycle_worker)
+        .collect::<Vec<_>>();
+    let rounds = worker_lifecycle_rounds(&trace_summary, &workers);
+    let current = rounds
+        .iter()
+        .find(|round| round.round == contract.current_round)
+        .cloned()
+        .unwrap_or_else(|| empty_worker_lifecycle_round(contract.current_round));
+    let failures = worker_lifecycle_failures(&workers);
+    let current_failures = current.failures.clone();
+    let lifecycle_state = worker_lifecycle_state(
+        &contract,
+        issue_status.as_deref(),
+        &trace_summary,
+        &current,
+        &current_failures,
+    )
+    .to_string();
+    let next_actions =
+        worker_lifecycle_next_actions(&lifecycle_state, contract.id, issue_id, &contract.runtime);
+    let summary = worker_lifecycle_summary(
+        &contract,
+        issue_status.as_deref(),
+        &lifecycle_state,
+        &current,
+    );
+
+    Ok(HiveLoopWorkerLifecycleReport {
+        schema_version: WORKER_LIFECYCLE_SCHEMA_VERSION.to_string(),
+        loop_id: contract.id,
+        issue_id,
+        issue_status,
+        status: contract.status,
+        active_phase: contract.active_phase,
+        current_round: contract.current_round,
+        runtime: contract.runtime,
+        lifecycle_state,
+        summary,
+        policy: worker_lifecycle_policy(),
+        current,
+        rounds,
+        failures,
+        next_actions,
+    })
+}
+
 fn store_schema_audit_check(status: &StoreSchemaStatus) -> HiveLoopAuditCheck {
     let present_table_count = status.tables.iter().filter(|table| table.present).count();
     let present_index_count = status.indexes.iter().filter(|index| index.present).count();
@@ -2298,6 +2444,310 @@ fn pending_run_command(loop_id: i64, issue_id: Option<i64>, runtime: &str) -> St
         }
         None => format!("entrance hive loop run {loop_id} --runtime {runtime} --compact"),
     }
+}
+
+fn worker_lifecycle_policy() -> HiveLoopWorkerLifecyclePolicy {
+    HiveLoopWorkerLifecyclePolicy {
+        schema_version: WORKER_LIFECYCLE_SCHEMA_VERSION.to_string(),
+        expected_roles: CURRENT_LOOP_ROLES
+            .iter()
+            .map(|role| (*role).to_string())
+            .collect(),
+        legacy_roles: LEGACY_LOOP_ROLES
+            .iter()
+            .map(|role| (*role).to_string())
+            .collect(),
+        default_timeout_secs: DEFAULT_WORKER_TIMEOUT_SECS,
+        max_timeout_secs: MAX_WORKER_TIMEOUT_SECS,
+        timeout_env: "ENTRANCE_HIVE_WORKER_TIMEOUT_SECS".to_string(),
+        default_attempts: DEFAULT_WORKER_ATTEMPTS,
+        max_attempts: MAX_WORKER_ATTEMPTS,
+        attempts_env: "ENTRANCE_HIVE_WORKER_ATTEMPTS".to_string(),
+        reviewer_invalid_round_budget: REVIEWER_INVALID_ROUND_BUDGET,
+        fallback_status: "Blocked".to_string(),
+        human_decision_statuses: vec!["Blocked".to_string(), "Needs Review".to_string()],
+    }
+}
+
+fn worker_lifecycle_worker(
+    evidence: &IssueEvidenceSummary,
+) -> Option<HiveLoopWorkerLifecycleWorker> {
+    if evidence.worker_kind.is_none()
+        && evidence.worker_ok.is_none()
+        && evidence.worker_attempt_count.is_none()
+        && evidence.worker_receipt_ok.is_none()
+    {
+        return None;
+    }
+
+    Some(HiveLoopWorkerLifecycleWorker {
+        evidence_id: evidence.id,
+        round: evidence.round,
+        role: worker_lifecycle_role(evidence),
+        stage_role: evidence.stage_role.clone(),
+        evidence_kind: evidence.kind.clone(),
+        kind: evidence.worker_kind.clone(),
+        mode: evidence.worker_mode.clone(),
+        ok: evidence.worker_ok,
+        receipt_ok: evidence.worker_receipt_ok,
+        timed_out: evidence.worker_timed_out,
+        status: evidence.worker_status,
+        duration_ms: evidence.worker_duration_ms,
+        timeout_secs: evidence.worker_timeout_secs,
+        attempt_count: evidence.worker_attempt_count,
+        max_attempts: evidence.worker_max_attempts,
+        retry_exhausted: evidence.worker_retry_exhausted,
+        command: evidence.worker_command.clone(),
+        cwd: evidence.worker_cwd.clone(),
+        action: evidence.worker_action.clone(),
+        evidence_summary: evidence.worker_evidence_summary.clone(),
+        gate_count: evidence.worker_gate_count,
+        receipt_errors: evidence.worker_receipt_errors.clone(),
+        transcript_excerpt: evidence.transcript_excerpt.clone(),
+    })
+}
+
+fn worker_lifecycle_role(evidence: &IssueEvidenceSummary) -> String {
+    evidence
+        .stage_role
+        .clone()
+        .or_else(|| match evidence.kind.as_str() {
+            "exploration_packet" => Some("explorer".to_string()),
+            "execution_packet" => Some("developer".to_string()),
+            "verdict_packet" => Some("reviewer".to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "loop".to_string())
+}
+
+fn worker_lifecycle_rounds(
+    trace: &IssueTraceSummary,
+    workers: &[HiveLoopWorkerLifecycleWorker],
+) -> Vec<HiveLoopWorkerLifecycleRound> {
+    let mut rounds = trace
+        .rounds
+        .iter()
+        .map(|round| round.round)
+        .collect::<Vec<_>>();
+    rounds.push(trace.current_round);
+    rounds.extend(workers.iter().map(|worker| worker.round));
+    rounds.sort_unstable();
+    rounds.dedup();
+    rounds
+        .into_iter()
+        .map(|round| {
+            let trace_round = trace.rounds.iter().find(|item| item.round == round);
+            let round_workers = workers
+                .iter()
+                .filter(|worker| worker.round == round)
+                .cloned()
+                .collect::<Vec<_>>();
+            worker_lifecycle_round(round, trace_round, round_workers)
+        })
+        .collect()
+}
+
+fn worker_lifecycle_round(
+    round: i64,
+    trace_round: Option<&IssueRoundSummary>,
+    workers: Vec<HiveLoopWorkerLifecycleWorker>,
+) -> HiveLoopWorkerLifecycleRound {
+    let expected_roles = CURRENT_LOOP_ROLES
+        .iter()
+        .map(|role| (*role).to_string())
+        .collect::<Vec<_>>();
+    let mut observed_roles = workers
+        .iter()
+        .map(|worker| worker.role.clone())
+        .collect::<Vec<_>>();
+    observed_roles.sort();
+    observed_roles.dedup();
+    let missing_roles = expected_roles
+        .iter()
+        .filter(|role| !observed_roles.contains(role))
+        .cloned()
+        .collect::<Vec<_>>();
+    let worker_count = workers.len();
+    let worker_ok_count = workers
+        .iter()
+        .filter(|worker| worker.ok == Some(true))
+        .count();
+    let worker_timeout_count = workers
+        .iter()
+        .filter(|worker| worker.timed_out == Some(true))
+        .count();
+    let worker_retry_exhausted_count = workers
+        .iter()
+        .filter(|worker| worker.retry_exhausted == Some(true))
+        .count();
+    let worker_duration_ms = workers.iter().filter_map(|worker| worker.duration_ms).sum();
+    let failures = workers
+        .iter()
+        .filter_map(worker_lifecycle_worker_failure)
+        .collect::<Vec<_>>();
+    let decision = trace_round.and_then(|round| round.decision.clone());
+    let reviewer_invalid_rounds_used = match decision.as_deref() {
+        Some("reject") => round.min(REVIEWER_INVALID_ROUND_BUDGET),
+        Some("blocked") if round >= REVIEWER_INVALID_ROUND_BUDGET => REVIEWER_INVALID_ROUND_BUDGET,
+        _ => 0,
+    };
+    let reviewer_invalid_budget_exhausted = reviewer_invalid_rounds_used
+        >= REVIEWER_INVALID_ROUND_BUDGET
+        && decision.as_deref() == Some("blocked");
+
+    HiveLoopWorkerLifecycleRound {
+        round,
+        status: trace_round
+            .map(|round| round.status.clone())
+            .unwrap_or_else(|| {
+                issue_round_status(None, 0, 0, worker_count, worker_ok_count).to_string()
+            }),
+        decision,
+        expected_roles,
+        observed_roles,
+        missing_roles,
+        worker_count,
+        worker_ok_count,
+        worker_timeout_count,
+        worker_retry_exhausted_count,
+        worker_duration_ms,
+        reviewer_invalid_rounds_used,
+        reviewer_invalid_budget_exhausted,
+        failures,
+        workers,
+    }
+}
+
+fn empty_worker_lifecycle_round(round: i64) -> HiveLoopWorkerLifecycleRound {
+    worker_lifecycle_round(round, None, Vec::new())
+}
+
+fn worker_lifecycle_failures(workers: &[HiveLoopWorkerLifecycleWorker]) -> Vec<String> {
+    workers
+        .iter()
+        .filter_map(worker_lifecycle_worker_failure)
+        .collect()
+}
+
+fn worker_lifecycle_worker_failure(worker: &HiveLoopWorkerLifecycleWorker) -> Option<String> {
+    if worker.ok != Some(false)
+        && worker.receipt_ok != Some(false)
+        && worker.timed_out != Some(true)
+        && worker.retry_exhausted != Some(true)
+        && worker.receipt_errors.is_empty()
+    {
+        return None;
+    }
+
+    let receipt_suffix = if worker.receipt_errors.is_empty() {
+        String::new()
+    } else {
+        format!(" receipt_errors={}", worker.receipt_errors.join("|"))
+    };
+    Some(format!(
+        "round={} role={} evidence={} worker={} ok={} receipt={}{}{}",
+        worker.round,
+        worker.role,
+        worker.evidence_kind,
+        worker.kind.as_deref().unwrap_or("unknown"),
+        doctor_bool_label(worker.ok),
+        doctor_bool_label(worker.receipt_ok),
+        if worker.retry_exhausted == Some(true) {
+            " retry_exhausted"
+        } else if worker.timed_out == Some(true) {
+            " timeout"
+        } else {
+            ""
+        },
+        receipt_suffix
+    ))
+}
+
+fn worker_lifecycle_state(
+    contract: &HiveLoopContract,
+    issue_status: Option<&str>,
+    trace: &IssueTraceSummary,
+    current: &HiveLoopWorkerLifecycleRound,
+    current_failures: &[String],
+) -> &'static str {
+    if matches!(contract.status.as_str(), "blocked")
+        || issue_status == Some("Blocked")
+        || trace.last_decision.as_deref() == Some("blocked")
+    {
+        return "blocked";
+    }
+    if matches!(contract.status.as_str(), "needs-review")
+        || issue_status == Some("Needs Review")
+        || trace.last_decision.as_deref() == Some("needs-review")
+    {
+        return "needs_review";
+    }
+    if matches!(contract.status.as_str(), "rejected") || issue_status == Some("Canceled") {
+        return "canceled";
+    }
+    if !current_failures.is_empty() {
+        return "worker_failed";
+    }
+    if contract.status == "kept"
+        && issue_status == Some("Done")
+        && trace.last_decision.as_deref() == Some("keep")
+    {
+        return "succeeded";
+    }
+    if contract.status == "running" || issue_status == Some("Doing") {
+        return "running";
+    }
+    if current.worker_count == 0 {
+        return "pending";
+    }
+    "observed"
+}
+
+fn worker_lifecycle_next_actions(
+    lifecycle_state: &str,
+    loop_id: i64,
+    issue_id: Option<i64>,
+    runtime: &str,
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    actions.push(format!("entrance hive loop worker-lifecycle {loop_id}"));
+    actions.push(format!("entrance hive loop evidence {loop_id}"));
+    match lifecycle_state {
+        "pending" => actions.push(pending_run_command(loop_id, issue_id, runtime)),
+        "blocked" | "needs_review" | "worker_failed" => {
+            if let Some(issue_id) = issue_id {
+                actions.push(retry_run_command(issue_id, runtime));
+            }
+        }
+        "succeeded" => actions.push(format!("entrance hive loop trace {loop_id}")),
+        _ => {}
+    }
+    let mut deduped = Vec::new();
+    for action in actions {
+        if !deduped.contains(&action) {
+            deduped.push(action);
+        }
+    }
+    deduped
+}
+
+fn worker_lifecycle_summary(
+    contract: &HiveLoopContract,
+    issue_status: Option<&str>,
+    lifecycle_state: &str,
+    current: &HiveLoopWorkerLifecycleRound,
+) -> String {
+    format!(
+        "Loop #{} worker lifecycle is {} at round {}; issue {}; observed roles {}/{}; reviewer invalid budget {}/{}.",
+        contract.id,
+        lifecycle_state,
+        current.round,
+        issue_status.unwrap_or("none"),
+        current.observed_roles.len(),
+        current.expected_roles.len(),
+        current.reviewer_invalid_rounds_used,
+        REVIEWER_INVALID_ROUND_BUDGET
+    )
 }
 
 fn audit_check(
@@ -8817,6 +9267,52 @@ mod tests {
         assert!(doctor_report.next_actions.iter().any(
             |action| action == &format!("entrance hive loop evidence {}", created.contract.id)
         ));
+        let lifecycle_report = super::worker_lifecycle(&store, created.contract.id)
+            .expect("loop worker lifecycle should resolve");
+        assert_eq!(
+            lifecycle_report.schema_version,
+            WORKER_LIFECYCLE_SCHEMA_VERSION
+        );
+        assert_eq!(lifecycle_report.lifecycle_state, "succeeded");
+        assert_eq!(
+            lifecycle_report.policy.expected_roles,
+            vec!["explorer", "developer", "reviewer"]
+        );
+        assert_eq!(
+            lifecycle_report.policy.reviewer_invalid_round_budget,
+            REVIEWER_INVALID_ROUND_BUDGET
+        );
+        assert_eq!(lifecycle_report.current.round, 1);
+        assert_eq!(lifecycle_report.current.worker_count, 3);
+        assert_eq!(lifecycle_report.current.worker_ok_count, 3);
+        assert!(lifecycle_report.current.missing_roles.is_empty());
+        assert_eq!(
+            lifecycle_report.current.observed_roles,
+            vec!["developer", "explorer", "reviewer"]
+        );
+        assert!(lifecycle_report.current.failures.is_empty());
+        let developer_worker = lifecycle_report
+            .current
+            .workers
+            .iter()
+            .find(|worker| worker.role == "developer")
+            .expect("developer worker should be visible");
+        assert_eq!(developer_worker.kind.as_deref(), Some("local"));
+        assert_eq!(developer_worker.ok, Some(true));
+        assert_eq!(developer_worker.timeout_secs, Some(7));
+        assert_eq!(developer_worker.attempt_count, Some(1));
+        assert_eq!(developer_worker.max_attempts, Some(2));
+        assert_eq!(
+            developer_worker.action.as_deref(),
+            Some("implement-admitted-candidate")
+        );
+        assert!(lifecycle_report.next_actions.iter().any(|action| {
+            action
+                == &format!(
+                    "entrance hive loop worker-lifecycle {}",
+                    created.contract.id
+                )
+        }));
 
         let rerun = run(
             &store,
@@ -9833,6 +10329,29 @@ mod tests {
         assert!(exhausted_report.verdicts[0]
             .summary
             .contains("still invalid after 3 review rounds"));
+        let exhausted_lifecycle = super::worker_lifecycle(&store, exhausted.contract.id)
+            .expect("exhausted worker lifecycle should resolve");
+        assert_eq!(exhausted_lifecycle.lifecycle_state, "blocked");
+        assert_eq!(exhausted_lifecycle.issue_status.as_deref(), Some("Blocked"));
+        assert_eq!(exhausted_lifecycle.policy.fallback_status, "Blocked");
+        assert_eq!(
+            exhausted_lifecycle.current.round,
+            REVIEWER_INVALID_ROUND_BUDGET
+        );
+        assert_eq!(
+            exhausted_lifecycle.current.reviewer_invalid_rounds_used,
+            REVIEWER_INVALID_ROUND_BUDGET
+        );
+        assert!(
+            exhausted_lifecycle
+                .current
+                .reviewer_invalid_budget_exhausted
+        );
+        assert!(exhausted_lifecycle
+            .current
+            .observed_roles
+            .iter()
+            .any(|role| role == "reviewer"));
 
         let _ = fs::remove_dir_all(root);
     }

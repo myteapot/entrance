@@ -137,8 +137,17 @@ current-round packet/admission/evidence/verdict counts, and total historical
 counts so retries do not look like stale verdicts from the previous round.
 Trace summaries also expose role-worker coverage and current-round worker
 runtime totals so the Panel can show whether all role receipts in the current
-round were produced successfully and how long the runtime spent. Operator
-comments and decisions are summarized into a current-round operator trail plus
+round were produced successfully and how long the runtime spent.
+
+`entrance hive loop worker-lifecycle <loop_id>` exposes the same worker facts
+as a first-class `entrance.hive.worker_lifecycle.v1` report: expected
+Explorer/Developer/Reviewer roles, observed workers by round, missing roles,
+timeouts, attempts, retry exhaustion, receipt errors, the 3-round Reviewer
+invalid budget, and the `Blocked` fallback status. This is a lifecycle
+observability contract; durable worker heartbeat, resume, cancel, replacement,
+and isolation are still future runtime-hardening work.
+
+Operator comments and decisions are summarized into a current-round operator trail plus
 total operator event counts, making human retry, review, cancel, and comment
 actions visible without opening the raw evidence stream.
 Issue human options are status-aware: `Blocked` issues can retry, request
@@ -311,8 +320,11 @@ Resources:
 - `entrance://issues`
 - `entrance://review-queue`
 - `entrance://issues/{issue_id}`
+- `entrance://issues/{issue_id}/control`
+- `entrance://loops/{loop_id}/worker-lifecycle`
 - `entrance://policy/registry`
 - `entrance://policy/mcp-permissions`
+- `entrance://policy/actor-identity`
 - `entrance://schema/status`
 
 Prompts:
@@ -336,8 +348,13 @@ actions, blockers, latest comment, and recent evidence summaries.
 single issue as `entrance.mcp.issue_control.v1`, aggregating state, action call
 templates, MCP permissions, blockers, recent evidence, operator events, and
 operator confirmation receipts so agents do not have to infer the control
-surface from raw issue JSON. `entrance://policy/actor-identity` documents the
-current actor bindings: MCP actors come from the self-reported `author`
+surface from raw issue JSON. The control packet now includes a
+`worker_lifecycle` summary and a pointer to
+`entrance://loops/{loop_id}/worker-lifecycle`, whose full
+`entrance.hive.worker_lifecycle.v1` report lists expected roles, observed
+workers, receipt status, timeout/attempt metadata, retry exhaustion, and the
+Reviewer invalid-budget fallback. `entrance://policy/actor-identity` documents
+the current actor bindings: MCP actors come from the self-reported `author`
 argument, Panel actors come from the daemon author argument, and neither is a
 verified login identity yet.
 `entrance_issue_retry` and `entrance_issue_decide` require
