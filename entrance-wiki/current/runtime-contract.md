@@ -76,8 +76,18 @@ summary. Runtime admission check rows inherit that registry metadata so a failed
 check carries both observed details and the policy owner/evidence contract.
 Admission gate failures are recorded as rejected receipts and returned as
 blocked verdicts/issues instead of escaping as raw CLI errors.
+Every new loop run starts with a kernel-owned `PREFLIGHT_PACKET` routed
+`kernel -> explorer` and admitted by the `runtime_policy_ready` gate. That
+packet records the selected runtime, the runtime probe result, the supported
+runtime registry, the selected runtime sandbox/required context, and a blocker
+such as `runtime.unsupported` or `runtime.probe_failed` when the gate fails.
+If preflight is rejected, Hive creates a `kernel` stage, records
+`admission_rejection` evidence and a blocked verdict, moves the linked issue to
+`Blocked`, and does not spawn Explorer/Developer/Reviewer workers. Successful
+preflight records only packet/admission receipts; the agent stage/evidence
+ledger remains the three role stages.
 The MVP runtime set is `local` and `codex`; unsupported runtime names are
-reported as blocked verdicts. The `codex` runtime uses a read-only
+reported as preflight-blocked verdicts. The `codex` runtime uses a read-only
 `codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and
 records stdout, stderr, and last-message transcript data in the stage evidence
 for that role. Trace, Doctor, and Panel card summaries aggregate current-round

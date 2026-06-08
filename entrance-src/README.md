@@ -82,8 +82,11 @@ outcome with issue, Doctor, evidence, stage, connector, recovery, and
 next-action summaries. When a worker times out, exhausts attempts, or misses
 receipts, the compact recovery section surfaces failed checks, missing receipts,
 failed worker rows, and a retry command directly. `hive loop run` records the same minimal compiler path in
-SQLite: active policies, versioned typed packets, receipt-aware admission gates,
-versioned admission receipts, stage evidence, and the versioned final verdict.
+SQLite: active policies, a kernel `PREFLIGHT_PACKET`, versioned typed packets,
+receipt-aware admission gates, versioned admission receipts, stage evidence,
+and the versioned final verdict. The preflight packet is admitted by
+`runtime_policy_ready`; unsupported or probe-failed runtimes are rejected before
+Explorer/Developer/Reviewer workers spawn and become auditable `Blocked` issues.
 Add `--compact` to `hive loop create` to print the linked issue card and next
 actions instead of the full empty loop report. Add `--compact` to `hive loop run`
 to print the Doctor summary after execution instead of the full packet/evidence
@@ -121,9 +124,9 @@ evidence, typed packets, packet sequence, admission receipts, worker receipts,
 verdict packets, and linked issue surface. The `store_schema` check gates loop
 health on the same table/column/index contract surfaced by `hive schema`, so
 doctor and issue cards fail closed when the local ledger structure drifts. The
-active policy check verifies the canonical
-Explorer/Developer/Reviewer route and gate contract. Legacy Doer/Evaluator
-ledgers remain audit-compatible. The stage sequence check
+active policy check verifies the kernel preflight route plus the canonical
+Explorer/Developer/Reviewer route and gate contract. Legacy current loops
+without preflight and older Doer/Evaluator ledgers remain audit-compatible. The stage sequence check
 rejects duplicate role stages in a loop round and verifies terminal loops still
 have the expected current-round stages. The stage evidence check verifies each
 expected stage has exactly one stage-bound evidence row with the expected kind.

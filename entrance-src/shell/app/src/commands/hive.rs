@@ -11619,7 +11619,7 @@ mod tests {
                         "workers": 3,
                         "worker_ok": 3,
                         "worker_duration_ms": 2100,
-                        "receipt_required": 11,
+                        "receipt_required": 14,
                         "receipt_missing": 0,
                         "audit_failed": 0
                     },
@@ -11871,7 +11871,7 @@ mod tests {
                         "workers": 3,
                         "worker_ok": 3,
                         "worker_duration_ms": 32000,
-                        "receipt_required": 11,
+                        "receipt_required": 14,
                         "receipt_missing": 0,
                         "audit_failed": 0
                     },
@@ -11904,7 +11904,7 @@ mod tests {
                             "decision": "keep",
                             "evidence_count": 4,
                             "rejected_count": 0,
-                            "receipt_required": 11,
+                            "receipt_required": 14,
                             "receipt_missing": 0,
                             "workers": 3,
                             "worker_ok": 3,
@@ -15452,7 +15452,7 @@ mod tests {
                 id: 13,
                 issue_id: 9,
                 author: "compiler".to_string(),
-                body: "Loop contract admitted into Hive with 3 active policies.".to_string(),
+                body: "Loop contract admitted into Hive with 4 active policies.".to_string(),
                 payload: serde_json::json!({
                     "source": "compiler",
                     "next_phase": "explorer"

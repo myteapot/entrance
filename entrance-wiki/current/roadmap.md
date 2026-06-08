@@ -11,6 +11,10 @@ Entrance has reached a local MVP unit:
 - The default runtime can use real `codex` workers and records worker receipts.
 - SQLite/Hive stores loop contracts, packets, admissions, evidence, verdicts,
   comments, audit checks, and schema health.
+- Loop runs now start with a kernel `PREFLIGHT_PACKET` admitted by
+  `runtime_policy_ready`. Unsupported or probe-failed runtimes are blocked
+  before Explorer/Developer/Reviewer workers spawn, with `runtime_policy`
+  audit detail and a linked `Blocked` issue instead of a fake worker failure.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
 - Worker lifecycle is now a first-class observable contract through
@@ -110,8 +114,9 @@ multi-agent runtime/compiler product.
   schemas as first-class runtime objects.
 - Make policy registry changes explicit and auditable, including admission gate
   versions, owner, required evidence, and migration behavior.
-- Add admission previews before execution so a loop can be rejected before
-  spawning workers when required capabilities are missing.
+- Extend the new runtime preflight admission into a fuller capability preview:
+  sandbox scope, connector readiness, artifact/evidence manifest expectations,
+  and human preference boundaries before any agent worker is spawned.
 
 ### P1: Loop dashboard
 

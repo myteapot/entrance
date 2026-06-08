@@ -131,6 +131,7 @@ enum GateCheck {
     ReceiptRequirementsSatisfied,
     BodyFieldPresent(&'static str),
     DecisionPresent,
+    RuntimePolicyReady,
     ExternalReceiptCurrent,
 }
 
@@ -313,7 +314,38 @@ const CURRENT_LOOP_ROLES: &[&str] = &["explorer", "developer", "reviewer"];
 const LEGACY_LOOP_ROLES: &[&str] = &["explorer", "doer", "evaluator"];
 const REVIEWER_INVALID_ROUND_BUDGET: i64 = 3;
 
+const CURRENT_LOOP_POLICIES: &[LoopPolicySpec] = &[
+    LoopPolicySpec {
+        object_kind: "EXPLORATION_PACKET",
+        writer_role: "explorer",
+        route_from: "explorer",
+        route_to: "developer",
+        gate: "candidate_receipts_present",
+    },
+    LoopPolicySpec {
+        object_kind: "EXECUTION_PACKET",
+        writer_role: "developer",
+        route_from: "developer",
+        route_to: "reviewer",
+        gate: "runtime_receipts_present",
+    },
+    LoopPolicySpec {
+        object_kind: "VERDICT_PACKET",
+        writer_role: "reviewer",
+        route_from: "reviewer",
+        route_to: "complete",
+        gate: "verdict_receipts_present",
+    },
+];
+
 const DEFAULT_LOOP_POLICIES: &[LoopPolicySpec] = &[
+    LoopPolicySpec {
+        object_kind: "PREFLIGHT_PACKET",
+        writer_role: "kernel",
+        route_from: "kernel",
+        route_to: "explorer",
+        gate: "runtime_policy_ready",
+    },
     LoopPolicySpec {
         object_kind: "EXPLORATION_PACKET",
         writer_role: "explorer",
@@ -856,14 +888,17 @@ pub fn create(store: &Store, request: HiveLoopCreateRequest) -> Result<HiveLoopR
     store.insert_hive_comment(HiveCommentCreate {
         issue_id,
         author: "compiler".to_string(),
-        body: "Loop contract admitted into Hive with 3 active policies.".to_string(),
+        body: format!(
+            "Loop contract admitted into Hive with {} active policies.",
+            DEFAULT_LOOP_POLICIES.len()
+        ),
         payload: system_comment_payload(
             "compiler",
             serde_json::json!({
                 "loop_id": loop_id,
                 "goal": request.goal,
                 "next_phase": "explorer",
-                "policy_count": 3
+                "policy_count": DEFAULT_LOOP_POLICIES.len()
             }),
         ),
     })?;
@@ -891,6 +926,39 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
     }
 
     let runtime_probe = probe_runtime(&runtime);
+    let preflight_admission = emit_and_admit(
+        store,
+        &contract,
+        "PREFLIGHT_PACKET",
+        "kernel",
+        "kernel",
+        "explorer",
+        runtime_preflight_payload(&runtime, &runtime_probe),
+    )?;
+    if preflight_admission.result != "admitted" {
+        let kernel_stage = insert_stage(
+            store,
+            &contract,
+            "kernel",
+            "Kernel preflight rejected the loop before spawning agent workers.",
+            serde_json::json!({
+                "runtime": runtime,
+                "runtime_probe": runtime_probe
+            }),
+            serde_json::json!({
+                "admission": preflight_admission.result,
+                "reason": preflight_admission.reason
+            }),
+        )?;
+        return block_on_admission_rejection(
+            store,
+            &contract,
+            issue_id,
+            "kernel",
+            Some(kernel_stage),
+            &preflight_admission,
+        );
+    }
 
     if let Some(issue_id) = issue_id {
         store.update_hive_issue_status(
@@ -1762,6 +1830,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .iter()
         .filter(|policy| policy.status == "active")
         .collect::<Vec<_>>();
+    let expected_active_policies = expected_loop_policies_for_active(&active_policies);
     let policy_errors = active_policy_audit_errors(&active_policies);
     let stage_sequence_errors = stage_sequence_audit_errors(&contract, &stages, &evidence);
     let packet_sequence_errors = packet_sequence_audit_errors(&packets);
@@ -1829,7 +1898,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
             ),
             serde_json::json!({
                 "active_policy_count": active_policies.len(),
-                "expected_policy_count": DEFAULT_LOOP_POLICIES.len(),
+                "expected_policy_count": expected_active_policies.len(),
                 "policy_errors": policy_errors
             }),
         ),
@@ -2877,7 +2946,14 @@ fn legacy_stage_roles() -> &'static [&'static str] {
 }
 
 fn known_stage_roles() -> &'static [&'static str] {
-    &["explorer", "developer", "reviewer", "doer", "evaluator"]
+    &[
+        "kernel",
+        "explorer",
+        "developer",
+        "reviewer",
+        "doer",
+        "evaluator",
+    ]
 }
 
 fn expected_stage_roles_for_contract(
@@ -2898,6 +2974,7 @@ fn expected_stage_roles_for_contract(
             _ if admission_rejection_role.is_some() => {
                 expected_stage_roles_through(admission_rejection_role.unwrap_or_default())
             }
+            "kernel" => vec!["kernel"],
             "explorer" => vec!["explorer"],
             "developer" => vec!["explorer", "developer"],
             "reviewer" => canonical_stage_roles().to_vec(),
@@ -2938,6 +3015,7 @@ fn stage_role_family_for_contract(
 
 fn expected_stage_roles_through(role: &str) -> Vec<&'static str> {
     match role {
+        "kernel" => vec!["kernel"],
         "explorer" => vec!["explorer"],
         "developer" => vec!["explorer", "developer"],
         "reviewer" => canonical_stage_roles().to_vec(),
@@ -3943,7 +4021,7 @@ fn expected_loop_policies_for_active(
                 .any(|policy| policy_matches_expected_route(policy, expected))
         })
         .count();
-    let current_match_count = DEFAULT_LOOP_POLICIES
+    let current_match_count = CURRENT_LOOP_POLICIES
         .iter()
         .filter(|expected| {
             active_policies
@@ -3953,8 +4031,13 @@ fn expected_loop_policies_for_active(
         .count();
     if legacy_match_count > current_match_count {
         LEGACY_LOOP_POLICIES
-    } else {
+    } else if active_policies
+        .iter()
+        .any(|policy| policy_matches_expected_route(policy, &DEFAULT_LOOP_POLICIES[0]))
+    {
         DEFAULT_LOOP_POLICIES
+    } else {
+        CURRENT_LOOP_POLICIES
     }
 }
 
@@ -6666,6 +6749,18 @@ fn block_on_admission_rejection(
         .as_ref()
         .and_then(|packet| packet_role_worker(&packet.payload))
         .cloned();
+    let mut evidence_payload = serde_json::json!({
+        "phase": phase,
+        "admission_id": admission.id,
+        "packet_id": admission.packet_id,
+        "result": admission.result,
+        "reason": admission.reason,
+        "admission_receipt": admission.policy.clone(),
+        "operator_options": ["fix-policy", "retry", "request-human-review"]
+    });
+    if let Some(worker) = rejected_worker {
+        evidence_payload["worker"] = worker;
+    }
     let evidence_id = store.insert_hive_loop_evidence(HiveLoopEvidenceCreate {
         loop_id: contract.id,
         stage_id,
@@ -6673,16 +6768,7 @@ fn block_on_admission_rejection(
         kind: "admission_rejection".to_string(),
         summary: summary.clone(),
         path: None,
-        payload: serde_json::json!({
-            "phase": phase,
-            "admission_id": admission.id,
-            "packet_id": admission.packet_id,
-            "result": admission.result,
-            "reason": admission.reason,
-            "worker": rejected_worker,
-            "admission_receipt": admission.policy.clone(),
-            "operator_options": ["fix-policy", "retry", "request-human-review"]
-        }),
+        payload: evidence_payload,
     })?;
 
     store.insert_hive_loop_verdict(HiveLoopVerdictCreate {
@@ -6723,6 +6809,7 @@ fn block_on_admission_rejection(
 
 fn stage_completeness_for_phase(phase: &str) -> f64 {
     match phase {
+        "kernel" => 0.0,
         "explorer" => 0.33,
         "developer" => 0.66,
         "reviewer" => 1.0,
@@ -7054,6 +7141,7 @@ impl GateCheck {
             Self::ReceiptRequirementsSatisfied => "receipt_requirements_satisfied",
             Self::BodyFieldPresent(_) => "body_field_present",
             Self::DecisionPresent => "decision_present",
+            Self::RuntimePolicyReady => "runtime_policy_ready",
             Self::ExternalReceiptCurrent => "external_receipt_current",
         }
     }
@@ -7298,6 +7386,7 @@ fn typed_packet_payload(
 
 fn receipt_requirements_for_packet(object_kind: &str) -> Vec<&'static str> {
     match object_kind {
+        "PREFLIGHT_PACKET" => vec!["runtime", "runtime_probe", "runtime_policy"],
         "EXPLORATION_PACKET" => vec!["candidate", "constraints", "role_worker"],
         "EXECUTION_PACKET" => vec!["runtime_probe", "runtime_worker", "artifact", "role_worker"],
         "VERDICT_PACKET" => vec!["decision", "summary", "score", "role_worker"],
@@ -7307,6 +7396,13 @@ fn receipt_requirements_for_packet(object_kind: &str) -> Vec<&'static str> {
 
 fn gate_spec(gate: &str) -> Option<GateSpec> {
     match gate {
+        "runtime_policy_ready" => Some(GateSpec {
+            name: "runtime_policy_ready",
+            description: "Kernel preflight must prove the selected runtime is supported and probe-ready before spawning agent workers.",
+            expected_object_kind: Some("PREFLIGHT_PACKET"),
+            required_receipts: &["runtime", "runtime_probe", "runtime_policy"],
+            check: GateCheck::RuntimePolicyReady,
+        }),
         "candidate_receipts_present" => Some(GateSpec {
             name: "candidate_receipts_present",
             description: "Explorer packets must carry the candidate, constraints, and role worker receipt.",
@@ -7367,6 +7463,7 @@ fn gate_spec(gate: &str) -> Option<GateSpec> {
 
 fn all_gate_specs() -> Vec<GateSpec> {
     [
+        "runtime_policy_ready",
         "candidate_receipts_present",
         "runtime_receipts_present",
         "verdict_receipts_present",
@@ -7480,6 +7577,17 @@ fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
             .get("decision")
             .and_then(|value| value.as_str())
             .is_some_and(|value| matches!(value, "keep" | "reject" | "needs-review" | "blocked")),
+        GateCheck::RuntimePolicyReady => {
+            receipt_requirements_satisfied(payload)
+                && body
+                    .pointer("/runtime_policy/supported")
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+                && body
+                    .pointer("/runtime_probe/ok")
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+        }
         GateCheck::ExternalReceiptCurrent => receipt_requirements_satisfied(payload),
     }
 }
@@ -7499,7 +7607,24 @@ fn gate_failure_reason(gate: &str, payload: &serde_json::Value) -> String {
     }
     let (_required, missing) = receipt_requirement_status(payload);
     if missing.is_empty() {
-        format!("{gate} failed")
+        if gate == "runtime_policy_ready" {
+            let body = packet_body(payload);
+            let runtime = body
+                .get("runtime")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let supported = body
+                .pointer("/runtime_policy/supported")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let probe_ok = body
+                .pointer("/runtime_probe/ok")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            format!("{gate} failed: runtime={runtime} supported={supported} probe_ok={probe_ok}")
+        } else {
+            format!("{gate} failed")
+        }
     } else {
         format!(
             "{gate} failed: missing or invalid receipts {}",
@@ -7645,6 +7770,49 @@ fn packet_body(payload: &serde_json::Value) -> &serde_json::Value {
 
 fn packet_role_worker(payload: &serde_json::Value) -> Option<&serde_json::Value> {
     packet_body(payload).get("role_worker")
+}
+
+fn runtime_preflight_payload(
+    runtime: &str,
+    runtime_probe: &serde_json::Value,
+) -> serde_json::Value {
+    let registry = runtime_policy_registry();
+    let supported_runtime = runtime_policy_spec(&registry, runtime);
+    let probe_ok = runtime_probe
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let blocker = if supported_runtime.is_none() {
+        Some("runtime.unsupported")
+    } else if !probe_ok {
+        Some("runtime.probe_failed")
+    } else {
+        None
+    };
+
+    serde_json::json!({
+        "runtime": runtime,
+        "runtime_probe": runtime_probe,
+        "runtime_policy": {
+            "schema_version": POLICY_SCHEMA_VERSION,
+            "gate": "runtime_policy_ready",
+            "supported": supported_runtime.is_some(),
+            "probe_ok": probe_ok,
+            "blocker": blocker,
+            "supported_runtimes": registry
+                .supported
+                .iter()
+                .map(|spec| spec.name.clone())
+                .collect::<Vec<_>>(),
+            "selected": supported_runtime.map(|spec| serde_json::json!({
+                "name": &spec.name,
+                "mode": &spec.mode,
+                "command": &spec.command,
+                "required_worker_context": &spec.required_worker_context,
+                "sandbox": &spec.sandbox
+            }))
+        }
+    })
 }
 
 fn probe_runtime(runtime: &str) -> serde_json::Value {
@@ -8159,8 +8327,22 @@ mod tests {
     fn policy_registry_and_loop_policies_expose_typed_gate_specs() {
         let registry = policy_registry();
         assert_eq!(registry.schema_version, POLICY_SCHEMA_VERSION);
-        assert!(registry.gates.len() >= 7);
+        assert!(registry.gates.len() >= 8);
         assert_eq!(registry.runtime.schema_version, POLICY_SCHEMA_VERSION);
+        let preflight_gate = registry
+            .gates
+            .iter()
+            .find(|gate| gate.name == "runtime_policy_ready")
+            .expect("runtime preflight gate should be registered");
+        assert_eq!(
+            preflight_gate.expected_object_kind.as_deref(),
+            Some("PREFLIGHT_PACKET")
+        );
+        assert_eq!(preflight_gate.check, "runtime_policy_ready");
+        assert!(preflight_gate
+            .required_receipts
+            .iter()
+            .any(|receipt| receipt == "runtime_policy"));
         let connector_gate = registry
             .gates
             .iter()
@@ -8352,13 +8534,21 @@ mod tests {
 
         let report = policies(&store, created.contract.id).expect("loop policies should resolve");
         assert_eq!(report.loop_id, created.contract.id);
-        assert_eq!(report.policies.len(), 3);
+        assert_eq!(report.policies.len(), 4);
         assert!(report.policies.iter().all(|card| card
             .gate_spec
             .as_ref()
             .is_some_and(|spec| spec.schema_version == POLICY_SCHEMA_VERSION)));
         assert_eq!(
             report.policies[0]
+                .gate_spec
+                .as_ref()
+                .expect("preflight gate spec should exist")
+                .required_receipts,
+            vec!["runtime", "runtime_probe", "runtime_policy"]
+        );
+        assert_eq!(
+            report.policies[1]
                 .gate_spec
                 .as_ref()
                 .expect("candidate gate spec should exist")
@@ -8809,11 +8999,12 @@ mod tests {
 
         assert_eq!(report.contract.status, "kept");
         assert_eq!(report.contract.active_phase, "complete");
-        assert_eq!(report.policies.len(), 3);
-        assert_eq!(report.policies[0].gate, "candidate_receipts_present");
-        assert_eq!(report.policies[1].gate, "runtime_receipts_present");
-        assert_eq!(report.policies[2].gate, "verdict_receipts_present");
-        assert_eq!(report.packets.len(), 3);
+        assert_eq!(report.policies.len(), 4);
+        assert_eq!(report.policies[0].gate, "runtime_policy_ready");
+        assert_eq!(report.policies[1].gate, "candidate_receipts_present");
+        assert_eq!(report.policies[2].gate, "runtime_receipts_present");
+        assert_eq!(report.policies[3].gate, "verdict_receipts_present");
+        assert_eq!(report.packets.len(), 4);
         assert!(report.packets.iter().all(|packet| packet
             .payload
             .get("schema_version")
@@ -8822,32 +9013,46 @@ mod tests {
         assert_eq!(
             report.packets[0]
                 .payload
+                .get("object_kind")
+                .and_then(|value| value.as_str()),
+            Some("PREFLIGHT_PACKET")
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/runtime_policy/supported")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            report.packets[1]
+                .payload
                 .pointer("/body/role_worker/role")
                 .and_then(|value| value.as_str()),
             Some("explorer")
         );
         assert_eq!(
-            report.packets[0]
+            report.packets[1]
                 .payload
                 .pointer("/body/candidate")
                 .and_then(|value| value.as_str()),
             Some("Run a local MVP loop through Hive")
         );
         assert_eq!(
-            report.packets[1]
+            report.packets[2]
                 .payload
                 .pointer("/receipt_requirements/3")
                 .and_then(|value| value.as_str()),
             Some("role_worker")
         );
         assert_eq!(
-            report.packets[2]
+            report.packets[3]
                 .payload
                 .pointer("/body/role_worker/role")
                 .and_then(|value| value.as_str()),
             Some("reviewer")
         );
-        assert_eq!(report.admissions.len(), 3);
+        assert_eq!(report.admissions.len(), 4);
         assert!(report
             .admissions
             .iter()
@@ -8874,14 +9079,14 @@ mod tests {
                 .policy
                 .pointer("/gate/spec/check")
                 .and_then(|value| value.as_str()),
-            Some("receipt_requirements_satisfied")
+            Some("runtime_policy_ready")
         );
         assert_eq!(
             report.admissions[0]
                 .policy
                 .pointer("/gate/spec/expected_object_kind")
                 .and_then(|value| value.as_str()),
-            Some("EXPLORATION_PACKET")
+            Some("PREFLIGHT_PACKET")
         );
         assert_eq!(
             report.admissions[0]
@@ -8906,14 +9111,14 @@ mod tests {
             .and_then(|value| value.as_bool())
             == Some(true)));
         assert_eq!(
-            report.admissions[1]
+            report.admissions[2]
                 .policy
                 .pointer("/receipt/required/3")
                 .and_then(|value| value.as_str()),
             Some("role_worker")
         );
         assert_eq!(
-            report.admissions[1]
+            report.admissions[2]
                 .policy
                 .pointer("/receipt/missing")
                 .and_then(|value| value.as_array())
@@ -8955,16 +9160,16 @@ mod tests {
             .as_ref()
             .expect("issue trace should be present");
         assert_eq!(trace.current_round, 1);
-        assert_eq!(trace.packet_count, 3);
-        assert_eq!(trace.admission_count, 3);
+        assert_eq!(trace.packet_count, 4);
+        assert_eq!(trace.admission_count, 4);
         assert_eq!(trace.verdict_count, 1);
-        assert_eq!(trace.round_packet_count, 3);
-        assert_eq!(trace.round_admission_count, 3);
+        assert_eq!(trace.round_packet_count, 4);
+        assert_eq!(trace.round_admission_count, 4);
         assert_eq!(trace.round_evidence_count, 3);
         assert_eq!(trace.round_verdict_count, 1);
-        assert_eq!(trace.receipt_required_count, 11);
+        assert_eq!(trace.receipt_required_count, 14);
         assert_eq!(trace.receipt_missing_count, 0);
-        assert_eq!(trace.round_receipt_required_count, 11);
+        assert_eq!(trace.round_receipt_required_count, 14);
         assert_eq!(trace.round_receipt_missing_count, 0);
         assert_eq!(trace.role_worker_count, 3);
         assert_eq!(trace.role_worker_ok_count, 3);
@@ -9254,7 +9459,7 @@ mod tests {
         assert_eq!(doctor_report.health, "ok");
         assert_eq!(doctor_report.status, "kept");
         assert_eq!(doctor_report.decision.as_deref(), Some("keep"));
-        assert_eq!(doctor_report.counts.round_packet_count, 3);
+        assert_eq!(doctor_report.counts.round_packet_count, 4);
         assert_eq!(doctor_report.counts.round_role_worker_ok_count, 3);
         assert_eq!(doctor_report.counts.round_receipt_missing_count, 0);
         assert_eq!(doctor_report.counts.round_worker_duration_ms, 0);
@@ -10045,7 +10250,7 @@ mod tests {
         .expect("blocked loop should still return a report");
 
         assert_eq!(report.contract.status, "blocked");
-        assert_eq!(report.contract.active_phase, "explorer");
+        assert_eq!(report.contract.active_phase, "kernel");
         assert_eq!(report.verdicts.len(), 1);
         assert_eq!(report.verdicts[0].decision, "blocked");
         assert_eq!(
@@ -10068,34 +10273,62 @@ mod tests {
             .as_ref()
             .expect("blocked issue should include doctor summary");
         assert_eq!(issue_doctor.health, "blocked");
-        assert!(issue_doctor
-            .missing_receipts
-            .iter()
-            .any(|receipt| receipt == "role_worker"));
+        assert!(issue_doctor.missing_receipts.is_empty());
         assert!(report
             .issues
             .first()
             .expect("issue should exist")
             .comments
             .iter()
-            .any(|comment| comment.body.contains("role_worker")));
+            .any(|comment| comment.body.contains("runtime_policy_ready failed")));
         assert_eq!(report.admissions.len(), 1);
         assert_eq!(report.admissions[0].result, "rejected");
-        assert!(report.admissions[0].reason.contains("role_worker"));
+        assert!(report.admissions[0]
+            .reason
+            .contains("runtime_policy_ready failed"));
         assert_eq!(
             report.admissions[0]
                 .policy
-                .pointer("/receipt/missing/0")
+                .pointer("/gate/name")
                 .and_then(|value| value.as_str()),
-            Some("role_worker")
+            Some("runtime_policy_ready")
+        );
+        assert_eq!(
+            report.admissions[0]
+                .policy
+                .pointer("/gate/passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            report.admissions[0]
+                .policy
+                .pointer("/receipt/missing")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
         );
         assert_eq!(report.packets.len(), 1);
         assert_eq!(
             report.packets[0]
                 .payload
-                .pointer("/body/role_worker/ok")
+                .get("object_kind")
+                .and_then(|value| value.as_str()),
+            Some("PREFLIGHT_PACKET")
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/runtime_policy/supported")
                 .and_then(|value| value.as_bool()),
             Some(false)
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/runtime_policy/blocker")
+                .and_then(|value| value.as_str()),
+            Some("runtime.unsupported")
         );
         let evidence_report = super::evidence_report(&store, created.contract.id)
             .expect("blocked evidence report should resolve");
@@ -10104,13 +10337,13 @@ mod tests {
             .iter()
             .find(|evidence| evidence.kind == "admission_rejection")
             .expect("admission rejection evidence should be summarized");
-        assert_eq!(blocked_evidence.blocked_phase.as_deref(), Some("explorer"));
-        assert_eq!(blocked_evidence.missing_receipts, vec!["role_worker"]);
-        assert_eq!(blocked_evidence.worker_kind.as_deref(), Some("unsupported"));
-        assert_eq!(blocked_evidence.worker_ok, Some(false));
-        assert_eq!(blocked_evidence.worker_timeout_secs, Some(5));
-        assert_eq!(blocked_evidence.worker_attempt_count, Some(0));
-        assert_eq!(blocked_evidence.worker_max_attempts, Some(2));
+        assert_eq!(blocked_evidence.blocked_phase.as_deref(), Some("kernel"));
+        assert!(blocked_evidence.missing_receipts.is_empty());
+        assert_eq!(blocked_evidence.worker_kind, None);
+        assert_eq!(blocked_evidence.worker_ok, None);
+        assert_eq!(blocked_evidence.worker_timeout_secs, None);
+        assert_eq!(blocked_evidence.worker_attempt_count, None);
+        assert_eq!(blocked_evidence.worker_max_attempts, None);
         assert_eq!(blocked_evidence.worker_retry_exhausted, None);
         assert!(blocked_evidence
             .operator_options
@@ -10122,14 +10355,8 @@ mod tests {
         assert_eq!(doctor_report.status, "blocked");
         assert_eq!(doctor_report.issue_status.as_deref(), Some("Blocked"));
         assert_eq!(doctor_report.decision.as_deref(), Some("blocked"));
-        assert!(doctor_report
-            .missing_receipts
-            .iter()
-            .any(|receipt| receipt == "role_worker"));
-        assert!(doctor_report
-            .worker_failures
-            .iter()
-            .any(|failure| failure.contains("worker=unsupported")));
+        assert!(doctor_report.missing_receipts.is_empty());
+        assert!(doctor_report.worker_failures.is_empty());
         assert!(doctor_report
             .next_actions
             .iter()
@@ -11487,7 +11714,7 @@ mod tests {
         assert_eq!(retry_trace.round_verdict_count, 0);
         assert_eq!(retry_trace.round_receipt_required_count, 0);
         assert_eq!(retry_trace.round_receipt_missing_count, 0);
-        assert_eq!(retry_trace.role_worker_count, 1);
+        assert_eq!(retry_trace.role_worker_count, 0);
         assert_eq!(retry_trace.role_worker_ok_count, 0);
         assert_eq!(retry_trace.round_role_worker_count, 0);
         assert_eq!(retry_trace.round_role_worker_ok_count, 0);
