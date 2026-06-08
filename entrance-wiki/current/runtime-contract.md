@@ -315,6 +315,9 @@ used by the CLI and Panel, including Developer/Reviewer verdicts and the
 `entrance_review_queue` and `entrance://review-queue` expose only `Blocked` and
 `Needs Review` issues, with reviewer decision, reason code, human options,
 actions, blockers, latest comment, and recent evidence summaries.
+The Electron Panel mirrors that same decision surface as a Review Queue band
+above the status board, using the existing issue actions for retry, review,
+cancel, comment, detail focus, and evidence focus.
 
 ## Config And Data
 

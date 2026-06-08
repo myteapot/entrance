@@ -884,6 +884,11 @@ export default function App() {
   const selectedIssueDoctor = createMemo(() => selectedIssueCard()?.doctor ?? null);
   const issueCardsForStatus = (statusName: string) =>
     (issueCards() ?? []).filter((card) => card.issue.status === statusName);
+  const reviewQueueCards = createMemo(() =>
+    (issueCards() ?? []).filter((card) =>
+      card.issue.status === "Blocked" || card.issue.status === "Needs Review",
+    ),
+  );
   const connectorQueueIssues = createMemo(() => connectorQueue()?.issues ?? []);
   const connectorQueueProviders = createMemo(() => connectorQueue()?.providers ?? []);
   const connectorPublishQueue = createMemo(() => {
@@ -2001,6 +2006,25 @@ export default function App() {
     if (trace.audit_passed === null) return "audit pending";
     return trace.audit_passed ? "audit ok" : `audit fail ${trace.audit_failed_count}`;
   };
+
+  const reviewQueueDecisionLabel = (card: IssueCard) =>
+    card.trace?.last_decision
+      ? `${card.trace.last_decision}${card.trace.reason_code ? ` / ${card.trace.reason_code}` : ""}`
+      : card.issue.status;
+
+  const reviewQueueBlockerLabel = (card: IssueCard) => {
+    const doctor = card.doctor;
+    if (!doctor) return "doctor pending";
+    const blockers = [
+      ...doctor.failed_checks,
+      ...doctor.audit_failure_details,
+      ...doctor.missing_receipts.map((receipt) => `missing ${receipt}`),
+      ...doctor.worker_failures,
+    ];
+    return blockers.length ? compactText(blockers.join(", "), 96) : doctor.health;
+  };
+
+  const reviewQueueEvidence = (card: IssueCard) => card.trace?.evidence.slice(-3) ?? [];
 
   const stageWorkerLabel = (stage: NonNullable<IssueCard["trace"]>["stages"][number]) => {
     if (!stage.worker_kind) return "worker pending";
@@ -3176,6 +3200,102 @@ export default function App() {
               <article class="panel panel--board">
                 <p class="panel-kicker">Issues</p>
                 <h3>Status board</h3>
+                <div class="review-queue" data-testid="review-queue">
+                  <div class="review-queue-head">
+                    <div>
+                      <strong>Review queue</strong>
+                      <span>
+                        {reviewQueueCards().length
+                          ? `${reviewQueueCards().length} need decision`
+                          : "clear"}
+                      </span>
+                    </div>
+                    <span>Blocked / Needs Review</span>
+                  </div>
+                  {reviewQueueCards().length ? (
+                    <div class="review-queue-list">
+                      {reviewQueueCards().map((card) => (
+                        <div
+                          class="review-queue-item"
+                          data-testid={`review-queue-issue-${card.issue.id}`}
+                        >
+                          <div class="review-queue-item-head">
+                            <div>
+                              <strong>#{card.issue.id}</strong>
+                              <span>{card.issue.title}</span>
+                            </div>
+                            <span class="trace-pill trace-pill--warn">{card.issue.status}</span>
+                          </div>
+                          <div class="trace-strip">
+                            <span class="trace-pill">R {card.trace?.current_round ?? "?"}</span>
+                            <span class="trace-pill">{reviewQueueDecisionLabel(card)}</span>
+                            <span class="trace-pill">{reviewQueueBlockerLabel(card)}</span>
+                            {card.doctor ? (
+                              <span class="trace-pill">{doctorWorkerLabel(card.doctor)}</span>
+                            ) : null}
+                            {card.doctor ? (
+                              <span class="trace-pill">{doctorReceiptLabel(card.doctor)}</span>
+                            ) : null}
+                          </div>
+                          <p class="muted">{card.issue.summary ?? card.doctor?.summary ?? "Decision pending"}</p>
+                          {reviewQueueEvidence(card).length ? (
+                            <div class="review-queue-evidence">
+                              {reviewQueueEvidence(card).map((evidence) => (
+                                <button
+                                  type="button"
+                                  data-testid={`review-queue-evidence-${card.issue.id}-${evidence.id}`}
+                                  title={evidence.summary}
+                                  onClick={() => focusEvidence(card.issue.id, evidence.id)}
+                                >
+                                  {evidence.stage_role ?? evidence.kind} E#{evidence.id}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                          <div class="record-actions">
+                            {issueDecisionActions(card).map((action) => (
+                              <button
+                                type="button"
+                                aria-label={
+                                  action.action === "retry"
+                                    ? issueRuntimeActionAriaLabel(card, true, "review queue")
+                                    : `${action.label} issue #${card.issue.id} from review queue`
+                                }
+                                data-testid={`review-queue-action-${action.action}-${card.issue.id}`}
+                                disabled={issueOptionDisabled(card, action)}
+                                onClick={() => runIssueAction(card, action)}
+                                {...issueActionButtonAttrs(action)}
+                              >
+                                {issueDecisionButtonLabel(card, action)}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              aria-label={`Comment on issue #${card.issue.id} from review queue`}
+                              data-testid={`review-queue-action-comment-${card.issue.id}`}
+                              disabled={Boolean(issuePendingLabel(card.issue.id))}
+                              onClick={() => openIssueComment(card.issue.id, "board")}
+                              {...issueActionButtonAttrs(issueActionByName(card, "comment"))}
+                            >
+                              Comment
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Show issue #${card.issue.id} details from review queue`}
+                              data-testid={`review-queue-action-details-${card.issue.id}`}
+                              onClick={() => {
+                                setSelectedIssueId(card.issue.id);
+                                revealIssueDetail();
+                              }}
+                            >
+                              Details
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
                 <div class="connector-queue" data-testid="connector-publish-queue">
                   <div>
                     <strong>Connector queue</strong>

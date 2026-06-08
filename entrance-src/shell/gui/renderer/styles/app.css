@@ -311,6 +311,73 @@
   margin-top: 0;
 }
 
+.review-queue {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 193, 7, 0.26);
+  border-radius: 8px;
+  background: rgba(255, 193, 7, 0.055);
+}
+
+.review-queue-head,
+.review-queue-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.review-queue-head div,
+.review-queue-item-head div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.review-queue-head span,
+.review-queue-item-head span {
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.review-queue-list {
+  display: grid;
+  gap: 10px;
+}
+
+.review-queue-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.028);
+  min-width: 0;
+}
+
+.review-queue-item p {
+  margin: 0;
+}
+
+.review-queue-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-queue-evidence button {
+  padding: 5px 8px;
+  border: 1px solid rgba(121, 215, 167, 0.22);
+  border-radius: 8px;
+  background: rgba(121, 215, 167, 0.08);
+  color: var(--text);
+  font-size: 0.72rem;
+}
+
 .empty-state {
   display: grid;
   gap: 10px;

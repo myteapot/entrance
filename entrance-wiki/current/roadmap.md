@@ -21,7 +21,9 @@ Entrance has reached a local MVP unit:
   commenting on, reading, prompting issue-bound loops, and listing the
   `Blocked`/`Needs Review` review queue.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
-  summaries, and human retry/review/cancel options.
+  summaries, and human retry/review/cancel options. The Panel also has a
+  Review Queue band that lifts `Blocked` and `Needs Review` issues above the
+  board with verdict reason, blockers, recent evidence, and decision actions.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -63,8 +65,9 @@ multi-agent runtime/compiler product.
 
 ### P1: Loop dashboard
 
-- Turn the current Panel issue board into a real loop dashboard: round timeline,
-  role lanes, packet/admission/evidence/verdict grouping, and retry lineage.
+- Extend the current Panel Review Queue and issue board into a real loop
+  dashboard: round timeline, role lanes, packet/admission/evidence/verdict
+  grouping, and retry lineage.
 - Add focused evidence drill-down views so operators can inspect transcripts,
   failed checks, connector receipts, and human decisions without reading raw
   JSON first.
