@@ -42,6 +42,12 @@ Entrance has reached a local MVP unit:
   Evidence Manifest block. It exposes payload, worker receipt, transcript
   excerpt, artifact/path entries, digest coverage, path verification state,
   resources, and next actions.
+- Issue activity timeline is now a first-class issue-first control-plane
+  contract through `entrance hive issue timeline <issue_id>`,
+  `entrance://issues/{issue_id}/timeline`, and the Panel selected-issue
+  Activity Timeline block. It combines issue creation, typed comments, stage
+  evidence, verdicts, operator decisions, blockers, linked resources, and next
+  actions in one chronological feed.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
 - Worker lifecycle is now a first-class observable contract through
@@ -67,7 +73,7 @@ Entrance has reached a local MVP unit:
   copied into the receipt for audit context. `entrance_issue_control` and
   `entrance://issues/{issue_id}/control` now expose a single issue control
   packet with status, action call templates, blockers, runtime preflight
-  summary, worker lifecycle summary, recent evidence, operator events,
+  summary, worker lifecycle summary, timeline resource, recent evidence, operator events,
   confirmation receipts, and actor identity context. The actor identity policy
   resource documents self-reported MCP actors and local Panel audit actors with
   `verified=false`.
@@ -114,6 +120,10 @@ Entrance has reached a local MVP unit:
   `hive_loop_evidence_manifest` report and renders evidence coverage,
   payload/receipt/artifact entries, digest prefixes, path verification state,
   and copyable next actions.
+- The Panel selected-issue detail now consumes the daemon
+  `hive_issue_timeline` report and renders Activity Timeline with comments,
+  evidence, verdicts, operator decisions, blockers, linked ids, and copyable
+  next actions.
 - The Panel selected-issue detail now consumes the daemon
   `hive_loop_runtime_preflight` report and renders Runtime Preflight state,
   route, object kind, gate result, runtime policy/probe, blockers, failures,
@@ -172,6 +182,9 @@ multi-agent runtime/compiler product.
   reports: full transcript expansion, durable remote receipt archives, real
   artifact manifest generation/content verification, payload schema diffing,
   and blocker decision workflow.
+- Productize the current Activity Timeline beyond the minimum report: filters,
+  round grouping, remote issue comment mapping, item permalinks, and inline
+  blocker/action decisions.
 - Reduce repeated status chips and make the primary next action obvious for
   `Todo`, `Running`, `Blocked`, `Needs Review`, and `Done` issues.
 

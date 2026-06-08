@@ -99,6 +99,7 @@ type IssueCard = {
     title: string;
     status: string;
     summary: string | null;
+    created_at: string;
     updated_at: string;
   };
   comments: Array<{
@@ -952,6 +953,60 @@ type EvidenceManifestEntry = {
   details: unknown;
 };
 
+type IssueTimelineReport = {
+  schema_version: string;
+  issue: IssueCard["issue"];
+  loop_id: number | null;
+  timeline_state: string;
+  summary: string;
+  counts: {
+    item_count: number;
+    comment_count: number;
+    evidence_count: number;
+    verdict_count: number;
+    operator_event_count: number;
+    blocker_count: number;
+    receipt_issue_count: number;
+  };
+  items: IssueTimelineItem[];
+  resources: {
+    issue: string;
+    issue_control: string;
+    issue_timeline: string;
+    loop_dashboard: string | null;
+    evidence_drilldown: string | null;
+    evidence_manifest: string | null;
+    runtime_preflight: string | null;
+    worker_lifecycle: string | null;
+    review_queue: string;
+  };
+  next_actions: string[];
+};
+
+type IssueTimelineItem = {
+  id: string;
+  sequence: number;
+  timestamp: string;
+  source: string;
+  event_kind: string;
+  actor: string;
+  round: number | null;
+  status: string | null;
+  phase: string | null;
+  title: string;
+  summary: string;
+  body_excerpt: string | null;
+  schema_version: string | null;
+  comment_id: number | null;
+  evidence_id: number | null;
+  verdict_id: number | null;
+  action: string | null;
+  decision: string | null;
+  blocker: string | null;
+  linked_resource: string | null;
+  details: unknown;
+};
+
 type RuntimePreflightReport = {
   schema_version: string;
   loop_id: number;
@@ -1378,6 +1433,30 @@ export default function App() {
     return cards.find((card) => card.issue.id === issueId) ?? cards[0];
   });
   const selectedIssueDoctor = createMemo(() => selectedIssueCard()?.doctor ?? null);
+  const selectedIssueTimelineKey = createMemo(() => {
+    const card = selectedIssueCard();
+    if (!card) return null;
+    return [
+      card.issue.id,
+      card.issue.updated_at,
+      card.comments.length,
+      card.trace?.current_round ?? 0,
+      card.trace?.evidence_count ?? 0,
+      card.trace?.verdict_count ?? 0,
+      card.trace?.last_operator_event?.id ?? 0,
+    ].join(":");
+  });
+  const [selectedIssueTimeline] = createResource(selectedIssueTimelineKey, async (key) => {
+    if (!key) return null;
+    const issueId = Number.parseInt(key.split(":")[0], 10);
+    if (!Number.isFinite(issueId)) return null;
+    return bridge.invoke<IssueTimelineReport>("hive_issue_timeline", { issueId });
+  });
+  const selectedIssueActivityTimeline = createMemo(() => {
+    const timeline = selectedIssueTimeline();
+    const issueId = selectedIssueCard()?.issue.id;
+    return timeline && timeline.issue.id === issueId ? timeline : null;
+  });
   const selectedIssueDashboardKey = createMemo(() => {
     const card = selectedIssueCard();
     if (!card?.issue.loop_id) return null;
@@ -2905,6 +2984,38 @@ export default function App() {
   const evidenceManifestEntrySizeLabel = (entry: EvidenceManifestEntry) =>
     entry.size_bytes == null ? null : `${entry.size_bytes} bytes`;
 
+  const issueTimelineTone = (state: string) =>
+    state === "closed" ? "ok" : state === "open" || state === "running" ? "pending" : "warn";
+
+  const issueTimelineStateLabel = (state: string) =>
+    ({
+      closed: "closed",
+      open: "open",
+      running: "running",
+      needs_human: "needs human",
+      observing: "observing",
+    })[state] ?? state;
+
+  const issueTimelineCountsLabel = (timeline: IssueTimelineReport) =>
+    `items ${timeline.counts.item_count} / comments ${timeline.counts.comment_count} / evidence ${timeline.counts.evidence_count} / verdicts ${timeline.counts.verdict_count}`;
+
+  const issueTimelineItemTone = (item: IssueTimelineItem) =>
+    item.blocker || item.status === "blocked" || item.status === "failed" ? "warn" : "ok";
+
+  const issueTimelineItemMeta = (item: IssueTimelineItem) =>
+    [
+      item.source,
+      item.round == null ? null : `r${item.round}`,
+      item.phase,
+      item.status,
+      item.decision ? `decision ${item.decision}` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+  const issueTimelineTimeLabel = (item: IssueTimelineItem) =>
+    item.timestamp ? item.timestamp.replace("T", " ").replace("Z", "") : `#${item.sequence}`;
+
   const evidenceItemTone = (item: EvidenceDrilldownItem) =>
     item.blocker || item.admission_result === "rejected" || item.worker?.ok === false
       ? "warn"
@@ -4236,6 +4347,113 @@ export default function App() {
                             )}
                           </Show>
                         ) : null}
+                        <Show
+                          when={selectedIssueActivityTimeline()}
+                          keyed
+                          fallback={
+                            <div
+                              class="worker-lifecycle issue-timeline worker-lifecycle--pending"
+                              data-testid={`issue-timeline-detail-${card.issue.id}`}
+                            >
+                              <div class="stage-row-head">
+                                <strong>Activity Timeline</strong>
+                                <span>{selectedIssueTimeline.loading ? "loading" : "pending"}</span>
+                              </div>
+                              <div class="trace-strip">
+                                <span class="trace-pill">issue #{card.issue.id}</span>
+                                <span class="trace-pill">issue_timeline.v1</span>
+                              </div>
+                            </div>
+                          }
+                        >
+                          {(timeline) => (
+                            <div
+                              class={`worker-lifecycle issue-timeline worker-lifecycle--${issueTimelineTone(
+                                timeline.timeline_state,
+                              )}`}
+                              data-testid={`issue-timeline-detail-${card.issue.id}`}
+                            >
+                              <div class="stage-row-head">
+                                <strong>Activity Timeline</strong>
+                                <span>{issueTimelineStateLabel(timeline.timeline_state)}</span>
+                              </div>
+                              <p>{timeline.summary}</p>
+                              <div class="trace-strip">
+                                <span class="trace-pill">{schemaLabel(timeline.schema_version)}</span>
+                                <span class="trace-pill">issue #{timeline.issue.id}</span>
+                                {timeline.loop_id ? (
+                                  <span class="trace-pill">loop #{timeline.loop_id}</span>
+                                ) : null}
+                                <span class="trace-pill">{issueTimelineCountsLabel(timeline)}</span>
+                                <span
+                                  class={
+                                    timeline.counts.blocker_count || timeline.counts.receipt_issue_count
+                                      ? "trace-pill trace-pill--warn"
+                                      : "trace-pill"
+                                  }
+                                >
+                                  blockers {timeline.counts.blocker_count}
+                                </span>
+                                <span class="trace-pill">operator {timeline.counts.operator_event_count}</span>
+                              </div>
+                              <div class="worker-lifecycle-roles issue-timeline-items">
+                                {timeline.items.slice(-8).map((item) => (
+                                  <div
+                                    class={`worker-lifecycle-role worker-lifecycle-role--${issueTimelineItemTone(
+                                      item,
+                                    )}`}
+                                    data-testid={`issue-timeline-item-${card.issue.id}-${item.id}`}
+                                  >
+                                    <div class="stage-row-head">
+                                      <strong>{item.title}</strong>
+                                      <span>{issueTimelineTimeLabel(item)}</span>
+                                    </div>
+                                    <p>{item.summary}</p>
+                                    <div class="trace-strip">
+                                      <span class="trace-pill">{issueTimelineItemMeta(item)}</span>
+                                      <span class="trace-pill">{item.event_kind}</span>
+                                      {item.schema_version ? (
+                                        <span class="trace-pill">{schemaLabel(item.schema_version)}</span>
+                                      ) : null}
+                                      {item.comment_id ? (
+                                        <span class="trace-pill">comment #{item.comment_id}</span>
+                                      ) : null}
+                                      {item.evidence_id ? (
+                                        <span class="trace-pill">evidence #{item.evidence_id}</span>
+                                      ) : null}
+                                      {item.verdict_id ? (
+                                        <span class="trace-pill">verdict #{item.verdict_id}</span>
+                                      ) : null}
+                                      {item.blocker ? (
+                                        <span class="trace-pill trace-pill--warn">{item.blocker}</span>
+                                      ) : null}
+                                    </div>
+                                    {item.body_excerpt ? (
+                                      <code class="evidence-excerpt">{item.body_excerpt}</code>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                              {timeline.next_actions.length ? (
+                                <div class="doctor-actions">
+                                  {timeline.next_actions.slice(0, 2).map((action, index) => (
+                                    <div class="doctor-action-row">
+                                      <code>{action}</code>
+                                      <button
+                                        type="button"
+                                        aria-label={`Copy issue timeline action ${action}`}
+                                        data-testid={`issue-timeline-action-copy-${card.issue.id}-${index}`}
+                                        onClick={() => void copyDoctorAction(action)}
+                                      >
+                                        Copy
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+                        </Show>
                         <Show when={selectedIssueDoctor()} keyed>
                           {(doctor) => (
                             <div class={`doctor-summary doctor-summary--${doctorHealthTone(doctor.health)}`}>

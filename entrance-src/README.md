@@ -96,8 +96,8 @@ loop control-plane view with issue state, kernel preflight, Explorer/Developer/
 Reviewer lanes, reviewer budget, human decision actions, health, round
 packet/admission/evidence/verdict grouping, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/dashboard`, and the Panel selected issue renders it
-above Evidence Drilldown, Evidence Manifest, Runtime Preflight, and Worker
-Lifecycle.
+above Evidence Drilldown, Evidence Manifest, Activity Timeline, Runtime
+Preflight, and Worker Lifecycle.
 `hive loop evidence-drilldown <id>` exposes
 `entrance.hive.evidence_drilldown.v1`, a focused evidence control-plane view
 with worker receipts, transcript/payload excerpts, remote connector receipt
@@ -111,6 +111,11 @@ payload, worker receipt, transcript excerpt, artifact/path entries, digest
 coverage, path verification state, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/evidence-manifest`, and the Panel selected issue
 renders it below Evidence Drilldown.
+`hive issue timeline <id>` exposes `entrance.hive.issue_timeline.v1`, an
+issue-first activity feed with issue creation, typed comments, stage evidence,
+verdicts, operator decisions, blockers, linked resources, and next actions; MCP
+exposes it as `entrance://issues/{issue_id}/timeline`, and the Panel selected
+issue renders it below Evidence Manifest.
 `hive loop preflight <id>` exposes the same boundary as
 `entrance.hive.runtime_preflight.v1`, including policy, probe, current
 admission, blocker, failures, and next actions; MCP exposes it as
@@ -154,6 +159,9 @@ decision context without opening raw SQLite rows first.
 `hive loop evidence-manifest <id>` returns the manifest report for operators
 who need to audit evidence coverage, receipt/payload digests, artifact/path
 entries, and local path verification state.
+`hive issue timeline <id>` returns the issue activity feed for operators who
+need to read comments, evidence, verdicts, operator decisions, blockers, and
+linked loop resources in one chronological control-plane view.
 `hive loop audit <id>` returns a compiler-style audit over the SQLite ledger
 schema, loop contract, active policies, runtime policy, stage sequence, stage
 evidence, typed packets, packet sequence, admission receipts, worker receipts,

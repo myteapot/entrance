@@ -39,6 +39,7 @@ const RUNTIME_PREFLIGHT_SCHEMA_VERSION: &str = "entrance.hive.runtime_preflight.
 const LOOP_DASHBOARD_SCHEMA_VERSION: &str = "entrance.hive.loop_dashboard.v1";
 const EVIDENCE_DRILLDOWN_SCHEMA_VERSION: &str = "entrance.hive.evidence_drilldown.v1";
 const EVIDENCE_MANIFEST_SCHEMA_VERSION: &str = "entrance.hive.evidence_manifest.v1";
+const ISSUE_TIMELINE_SCHEMA_VERSION: &str = "entrance.hive.issue_timeline.v1";
 pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
@@ -1077,6 +1078,68 @@ pub struct IssueCard {
     pub actions: Vec<IssueAction>,
     pub trace: Option<IssueTraceSummary>,
     pub doctor: Option<IssueDoctorSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineReport {
+    pub schema_version: String,
+    pub issue: HiveIssue,
+    pub loop_id: Option<i64>,
+    pub timeline_state: String,
+    pub summary: String,
+    pub counts: IssueTimelineCounts,
+    pub items: Vec<IssueTimelineItem>,
+    pub resources: IssueTimelineResources,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineCounts {
+    pub item_count: usize,
+    pub comment_count: usize,
+    pub evidence_count: usize,
+    pub verdict_count: usize,
+    pub operator_event_count: usize,
+    pub blocker_count: usize,
+    pub receipt_issue_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineItem {
+    pub id: String,
+    pub sequence: usize,
+    pub timestamp: String,
+    pub source: String,
+    pub event_kind: String,
+    pub actor: String,
+    pub round: Option<i64>,
+    pub status: Option<String>,
+    pub phase: Option<String>,
+    pub title: String,
+    pub summary: String,
+    pub body_excerpt: Option<String>,
+    pub schema_version: Option<String>,
+    pub comment_id: Option<i64>,
+    pub evidence_id: Option<i64>,
+    pub verdict_id: Option<i64>,
+    pub action: Option<String>,
+    pub decision: Option<String>,
+    pub blocker: Option<String>,
+    pub linked_resource: Option<String>,
+    pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineResources {
+    pub issue: String,
+    pub issue_control: String,
+    pub issue_timeline: String,
+    pub loop_dashboard: Option<String>,
+    pub evidence_drilldown: Option<String>,
+    pub evidence_manifest: Option<String>,
+    pub runtime_preflight: Option<String>,
+    pub worker_lifecycle: Option<String>,
+    pub review_queue: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7602,6 +7665,393 @@ pub fn issue(store: &Store, issue_id: i64) -> Result<IssueCard> {
     issue_card(store, issue_id)
 }
 
+pub fn issue_timeline(store: &Store, issue_id: i64) -> Result<IssueTimelineReport> {
+    let card = issue_card(store, issue_id)?;
+    let mut items = Vec::new();
+    let mut sequence = 0usize;
+    items.push(issue_timeline_issue_created_item(
+        &card.issue,
+        &mut sequence,
+    ));
+
+    for comment in &card.comments {
+        items.push(issue_timeline_comment_item(
+            &card.issue,
+            comment,
+            &mut sequence,
+        ));
+    }
+
+    if let Some(loop_id) = card.issue.loop_id {
+        let stages = store.list_hive_loop_stages(loop_id)?;
+        let stage_roles = stage_role_map(&stages);
+        for evidence in store.list_hive_loop_evidence(loop_id)? {
+            let summary = issue_evidence_summary(&evidence, &stage_roles);
+            items.push(issue_timeline_evidence_item(
+                &card.issue,
+                &evidence,
+                &summary,
+                &mut sequence,
+            ));
+        }
+        for verdict in store.list_hive_loop_verdicts(loop_id)? {
+            items.push(issue_timeline_verdict_item(
+                &card.issue,
+                &verdict,
+                &mut sequence,
+            ));
+        }
+    }
+
+    items.sort_by(|left, right| {
+        left.timestamp
+            .cmp(&right.timestamp)
+            .then_with(|| left.sequence.cmp(&right.sequence))
+    });
+    for (index, item) in items.iter_mut().enumerate() {
+        item.sequence = index + 1;
+    }
+    let counts = issue_timeline_counts(&items);
+    let timeline_state = issue_timeline_state(&card.issue);
+    let summary = issue_timeline_summary(&card.issue, &timeline_state, &counts);
+    let next_actions = issue_timeline_next_actions(&card);
+    Ok(IssueTimelineReport {
+        schema_version: ISSUE_TIMELINE_SCHEMA_VERSION.to_string(),
+        issue: card.issue.clone(),
+        loop_id: card.issue.loop_id,
+        timeline_state,
+        summary,
+        counts,
+        items,
+        resources: issue_timeline_resources(&card.issue),
+        next_actions,
+    })
+}
+
+fn issue_timeline_issue_created_item(issue: &HiveIssue, sequence: &mut usize) -> IssueTimelineItem {
+    *sequence += 1;
+    IssueTimelineItem {
+        id: format!("issue-{}-created", issue.id),
+        sequence: *sequence,
+        timestamp: issue.created_at.clone(),
+        source: "issue".to_string(),
+        event_kind: "issue_created".to_string(),
+        actor: "kernel".to_string(),
+        round: None,
+        status: Some(issue.status.clone()),
+        phase: None,
+        title: format!("Issue #{} created", issue.id),
+        summary: issue
+            .summary
+            .clone()
+            .unwrap_or_else(|| "Issue created.".to_string()),
+        body_excerpt: None,
+        schema_version: None,
+        comment_id: None,
+        evidence_id: None,
+        verdict_id: None,
+        action: None,
+        decision: None,
+        blocker: None,
+        linked_resource: Some(format!("entrance://issues/{}", issue.id)),
+        details: serde_json::json!({
+            "title": issue.title.clone(),
+            "created_at": issue.created_at.clone(),
+            "updated_at": issue.updated_at.clone()
+        }),
+    }
+}
+
+fn issue_timeline_comment_item(
+    issue: &HiveIssue,
+    comment: &HiveComment,
+    sequence: &mut usize,
+) -> IssueTimelineItem {
+    *sequence += 1;
+    let schema = schema_version(&comment.payload);
+    let event_kind = issue_timeline_comment_kind(schema.as_deref(), &comment.payload);
+    let action = string_at(&comment.payload, "/action");
+    let round = comment
+        .payload
+        .pointer("/round")
+        .or_else(|| comment.payload.pointer("/next_round"))
+        .and_then(|value| value.as_i64());
+    let evidence_id = comment
+        .payload
+        .pointer("/evidence_id")
+        .and_then(|value| value.as_i64());
+    IssueTimelineItem {
+        id: format!("comment-{}", comment.id),
+        sequence: *sequence,
+        timestamp: comment.created_at.clone(),
+        source: "comment".to_string(),
+        event_kind: event_kind.clone(),
+        actor: comment.author.clone(),
+        round,
+        status: string_at(&comment.payload, "/status").or_else(|| Some(issue.status.clone())),
+        phase: string_at(&comment.payload, "/phase")
+            .or_else(|| string_at(&comment.payload, "/stage_role")),
+        title: issue_timeline_comment_title(comment, &event_kind, action.as_deref()),
+        summary: truncate_text(&comment.body, 180),
+        body_excerpt: Some(truncate_text(&comment.body, 520)),
+        schema_version: schema,
+        comment_id: Some(comment.id),
+        evidence_id,
+        verdict_id: None,
+        action,
+        decision: None,
+        blocker: string_at(&comment.payload, "/blocker"),
+        linked_resource: Some(format!("entrance://issues/{}/timeline", issue.id)),
+        details: serde_json::json!({
+            "payload_top_level_keys": top_level_keys(&comment.payload),
+            "payload_excerpt": json_excerpt(&comment.payload, 520),
+            "confirmation_receipt_schema": comment.payload.pointer("/confirmation_receipt/schema_version").and_then(|value| value.as_str())
+        }),
+    }
+}
+
+fn issue_timeline_evidence_item(
+    issue: &HiveIssue,
+    evidence: &HiveLoopEvidence,
+    summary: &IssueEvidenceSummary,
+    sequence: &mut usize,
+) -> IssueTimelineItem {
+    *sequence += 1;
+    let blocker = evidence_item_blocker(evidence, summary);
+    let actor = summary
+        .operator_author
+        .clone()
+        .or_else(|| summary.stage_role.clone())
+        .unwrap_or_else(|| "hive".to_string());
+    IssueTimelineItem {
+        id: format!("evidence-{}", evidence.id),
+        sequence: *sequence,
+        timestamp: evidence.created_at.clone(),
+        source: "evidence".to_string(),
+        event_kind: evidence.kind.clone(),
+        actor,
+        round: Some(evidence.round),
+        status: summary.admission_result.clone().or_else(|| {
+            summary
+                .worker_ok
+                .map(|ok| if ok { "ok" } else { "failed" }.to_string())
+        }),
+        phase: summary
+            .blocked_phase
+            .clone()
+            .or_else(|| summary.stage_role.clone()),
+        title: format!(
+            "Evidence #{} {} {}",
+            evidence.id,
+            summary.stage_role.as_deref().unwrap_or("kernel"),
+            evidence.kind
+        ),
+        summary: evidence.summary.clone(),
+        body_excerpt: summary
+            .transcript_excerpt
+            .clone()
+            .or_else(|| Some(json_excerpt(&evidence.payload, 520))),
+        schema_version: summary.schema_version.clone(),
+        comment_id: evidence
+            .payload
+            .pointer("/issue/comment_id")
+            .and_then(|value| value.as_i64()),
+        evidence_id: Some(evidence.id),
+        verdict_id: None,
+        action: summary
+            .operator_action
+            .clone()
+            .or_else(|| summary.worker_action.clone()),
+        decision: None,
+        blocker,
+        linked_resource: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/evidence-drilldown")),
+        details: serde_json::json!({
+            "kind": evidence.kind.clone(),
+            "worker_kind": summary.worker_kind.clone(),
+            "worker_mode": summary.worker_mode.clone(),
+            "worker_ok": summary.worker_ok,
+            "receipt_ok": summary.worker_receipt_ok,
+            "receipt_errors": summary.worker_receipt_errors.clone(),
+            "missing_receipts": summary.missing_receipts.clone(),
+            "top_level_keys": top_level_keys(&evidence.payload)
+        }),
+    }
+}
+
+fn issue_timeline_verdict_item(
+    issue: &HiveIssue,
+    verdict: &HiveLoopVerdict,
+    sequence: &mut usize,
+) -> IssueTimelineItem {
+    *sequence += 1;
+    IssueTimelineItem {
+        id: format!("verdict-{}", verdict.id),
+        sequence: *sequence,
+        timestamp: verdict.created_at.clone(),
+        source: "verdict".to_string(),
+        event_kind: "verdict".to_string(),
+        actor: "reviewer".to_string(),
+        round: Some(verdict.round),
+        status: Some(verdict.decision.clone()),
+        phase: Some("reviewer".to_string()),
+        title: format!("Verdict #{} {}", verdict.id, verdict.decision),
+        summary: verdict.summary.clone(),
+        body_excerpt: Some(json_excerpt(&verdict.evidence, 520)),
+        schema_version: schema_version(&verdict.evidence),
+        comment_id: None,
+        evidence_id: verdict
+            .evidence
+            .pointer("/reviewer_evidence_id")
+            .and_then(|value| value.as_i64()),
+        verdict_id: Some(verdict.id),
+        action: None,
+        decision: Some(verdict.decision.clone()),
+        blocker: verdict
+            .evidence
+            .pointer("/blocker")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        linked_resource: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/dashboard")),
+        details: serde_json::json!({
+            "score_vector": score_vector(&verdict.score),
+            "reason_code": verdict.evidence.pointer("/reason_code").and_then(|value| value.as_str()),
+            "human_options": verdict.evidence.pointer("/human_options").cloned().unwrap_or_else(|| serde_json::json!([]))
+        }),
+    }
+}
+
+fn issue_timeline_comment_kind(schema: Option<&str>, payload: &serde_json::Value) -> String {
+    match schema {
+        Some(OPERATOR_DECISION_SCHEMA_VERSION) => "operator_decision".to_string(),
+        Some(OPERATOR_COMMENT_SCHEMA_VERSION) => "operator_comment".to_string(),
+        Some(SYSTEM_COMMENT_SCHEMA_VERSION) => {
+            if payload.get("stage_role").is_some() || payload.get("evidence_id").is_some() {
+                "stage_comment".to_string()
+            } else {
+                "system_comment".to_string()
+            }
+        }
+        Some(value) => value.rsplit('.').next().unwrap_or("comment").to_string(),
+        None => "comment".to_string(),
+    }
+}
+
+fn issue_timeline_comment_title(
+    comment: &HiveComment,
+    event_kind: &str,
+    action: Option<&str>,
+) -> String {
+    match action {
+        Some(action) => format!("{} {}", comment.author, action),
+        None => format!("{} {}", comment.author, event_kind.replace('_', " ")),
+    }
+}
+
+fn issue_timeline_counts(items: &[IssueTimelineItem]) -> IssueTimelineCounts {
+    let comment_count = items.iter().filter(|item| item.source == "comment").count();
+    let evidence_count = items
+        .iter()
+        .filter(|item| item.source == "evidence")
+        .count();
+    let verdict_count = items.iter().filter(|item| item.source == "verdict").count();
+    let operator_event_count = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.event_kind.as_str(),
+                "operator_comment" | "operator_decision"
+            ) || item.actor == "human"
+                || item.actor == "operator"
+        })
+        .count();
+    let blocker_count = items.iter().filter(|item| item.blocker.is_some()).count();
+    let receipt_issue_count = items
+        .iter()
+        .filter(|item| {
+            item.details
+                .pointer("/receipt_errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|values| !values.is_empty())
+                || item
+                    .details
+                    .pointer("/missing_receipts")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|values| !values.is_empty())
+        })
+        .count();
+    IssueTimelineCounts {
+        item_count: items.len(),
+        comment_count,
+        evidence_count,
+        verdict_count,
+        operator_event_count,
+        blocker_count,
+        receipt_issue_count,
+    }
+}
+
+fn issue_timeline_state(issue: &HiveIssue) -> String {
+    match issue.status.as_str() {
+        "Blocked" | "Needs Review" => "needs_human".to_string(),
+        "Running" => "running".to_string(),
+        "Done" | "Canceled" => "closed".to_string(),
+        "Todo" => "open".to_string(),
+        _ => "observing".to_string(),
+    }
+}
+
+fn issue_timeline_summary(issue: &HiveIssue, state: &str, counts: &IssueTimelineCounts) -> String {
+    format!(
+        "Issue #{} timeline is {state}: {} items, {} comments, {} evidence rows, {} verdicts, {} operator events.",
+        issue.id,
+        counts.item_count,
+        counts.comment_count,
+        counts.evidence_count,
+        counts.verdict_count,
+        counts.operator_event_count
+    )
+}
+
+fn issue_timeline_resources(issue: &HiveIssue) -> IssueTimelineResources {
+    IssueTimelineResources {
+        issue: format!("entrance://issues/{}", issue.id),
+        issue_control: format!("entrance://issues/{}/control", issue.id),
+        issue_timeline: format!("entrance://issues/{}/timeline", issue.id),
+        loop_dashboard: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/dashboard")),
+        evidence_drilldown: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/evidence-drilldown")),
+        evidence_manifest: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/evidence-manifest")),
+        runtime_preflight: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/runtime-preflight")),
+        worker_lifecycle: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/worker-lifecycle")),
+        review_queue: "entrance://review-queue".to_string(),
+    }
+}
+
+fn issue_timeline_next_actions(card: &IssueCard) -> Vec<String> {
+    let mut actions = vec![
+        format!("entrance hive issue timeline {}", card.issue.id),
+        format!("entrance hive issue show {} --compact", card.issue.id),
+    ];
+    if let Some(loop_id) = card.issue.loop_id {
+        actions.push(format!("entrance hive loop dashboard {loop_id}"));
+    }
+    actions.extend(card.actions.iter().map(|action| action.command.clone()));
+    actions
+}
+
 pub fn issue_mirror(store: &Store, issue_id: i64) -> Result<IssueMirrorReport> {
     let card = issue_card(store, issue_id)?;
     let loop_contract = card
@@ -11673,6 +12123,40 @@ mod tests {
             .get("schema_version")
             .and_then(|value| value.as_str())
             == Some(SYSTEM_COMMENT_SCHEMA_VERSION)));
+        let issue_timeline = super::issue_timeline(&store, report.issues[0].issue.id)
+            .expect("issue timeline should resolve");
+        assert_eq!(issue_timeline.schema_version, ISSUE_TIMELINE_SCHEMA_VERSION);
+        assert_eq!(issue_timeline.timeline_state, "closed");
+        assert_eq!(
+            issue_timeline.counts.comment_count,
+            report.issues[0].comments.len()
+        );
+        assert_eq!(issue_timeline.counts.evidence_count, 3);
+        assert_eq!(issue_timeline.counts.verdict_count, 1);
+        assert_eq!(issue_timeline.counts.blocker_count, 0);
+        assert_eq!(
+            issue_timeline.resources.issue_timeline,
+            format!("entrance://issues/{}/timeline", report.issues[0].issue.id)
+        );
+        assert!(issue_timeline.items.iter().any(|item| {
+            item.source == "comment"
+                && item.event_kind == "stage_comment"
+                && item.evidence_id == Some(2)
+        }));
+        assert!(issue_timeline.items.iter().any(|item| {
+            item.source == "evidence"
+                && item.event_kind == "execution_packet"
+                && item.actor == "developer"
+                && item.status.as_deref() == Some("admitted")
+        }));
+        assert!(issue_timeline.items.iter().any(|item| {
+            item.source == "verdict"
+                && item.decision.as_deref() == Some("keep")
+                && item.phase.as_deref() == Some("reviewer")
+        }));
+        assert!(issue_timeline.next_actions.iter().any(|action| {
+            action == &format!("entrance hive issue timeline {}", report.issues[0].issue.id)
+        }));
         let issue_doctor = report.issues[0]
             .doctor
             .as_ref()

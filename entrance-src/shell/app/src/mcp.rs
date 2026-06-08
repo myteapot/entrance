@@ -715,6 +715,7 @@ fn issue_control_packet(card: &IssueCard) -> serde_json::Value {
         "resources": {
             "issue": format!("entrance://issues/{}", card.issue.id),
             "control": format!("entrance://issues/{}/control", card.issue.id),
+            "timeline": format!("entrance://issues/{}/timeline", card.issue.id),
             "loop_dashboard": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/dashboard")),
             "evidence_drilldown": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/evidence-drilldown")),
             "evidence_manifest": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/evidence-manifest")),
@@ -1060,6 +1061,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
             &format!("Issue #{} control: {}", card.issue.id, card.issue.title),
             "One issue control packet with actions, blockers, receipts, and human decision boundaries.",
         ));
+        resources.push(resource_spec(
+            &format!("entrance://issues/{}/timeline", card.issue.id),
+            &format!("Issue #{} timeline: {}", card.issue.id, card.issue.title),
+            "One issue activity timeline with comments, evidence, verdicts, operator decisions, blockers, and linked resources.",
+        ));
     }
     for contract in services.hive.loop_list()? {
         resources.push(resource_spec(
@@ -1104,6 +1110,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://issues/{issue_id}/control",
                 "name": "Entrance issue control by id",
                 "description": "Read one issue control packet with actions, blockers, receipts, and human decision boundaries.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://issues/{issue_id}/timeline",
+                "name": "Entrance issue timeline by id",
+                "description": "Read one issue activity timeline with comments, evidence, verdicts, operator decisions, blockers, and linked resources.",
                 "mimeType": "application/json"
             },
             {
@@ -1229,6 +1241,16 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
                     format!("invalid Entrance issue control resource URI `{value}`")
                 })?;
             issue_control_packet(&services.hive.issue_report(issue_id)?)
+        }
+        value if value.starts_with("entrance://issues/") && value.ends_with("/timeline") => {
+            let issue_id = value
+                .trim_start_matches("entrance://issues/")
+                .trim_end_matches("/timeline")
+                .parse::<i64>()
+                .with_context(|| {
+                    format!("invalid Entrance issue timeline resource URI `{value}`")
+                })?;
+            serde_json::to_value(services.hive.issue_timeline(issue_id)?)?
         }
         value if value.starts_with("entrance://issues/") => {
             let issue_id = value
@@ -2026,6 +2048,12 @@ mod tests {
         );
         assert_eq!(
             packet
+                .pointer("/resources/timeline")
+                .and_then(|value| value.as_str()),
+            Some("entrance://issues/42/timeline")
+        );
+        assert_eq!(
+            packet
                 .pointer("/resources/runtime_preflight")
                 .and_then(|value| value.as_str()),
             Some("entrance://loops/7/runtime-preflight")
@@ -2063,6 +2091,7 @@ mod tests {
 
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/control"));
+        assert!(uri_templates.contains(&"entrance://issues/{issue_id}/timeline"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/dashboard"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/evidence-manifest"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/runtime-preflight"));

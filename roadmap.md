@@ -12,6 +12,7 @@ Last updated: 2026-06-09
 - 本轮继续新增 evidence drilldown 最小切片：CLI `hive loop evidence-drilldown <id>`、daemon `hive_loop_evidence_drilldown`、MCP `entrance://loops/{loop_id}/evidence-drilldown`、Panel selected issue 的 Evidence Drilldown block，展示 worker receipt、transcript/payload excerpt、remote receipt 摘要、artifact/path hint、payload key diff、blocker 和 blocker-bound decision surface。
 - 本轮继续把 Evidence Drilldown blocker 绑定到 issue action contract：evidence-level blocker 和 Reviewer budget fallback 的 loop-level blocker 都会暴露 primary action、retry/review/cancel/comment command、confirmation policy 和 review queue/policy resource。
 - 本轮继续新增 evidence manifest 最小切片：CLI `hive loop evidence-manifest <id>`、daemon `hive_loop_evidence_manifest`、MCP `entrance://loops/{loop_id}/evidence-manifest`、Panel selected issue 的 Evidence Manifest block，展示 payload/receipt/transcript/artifact entries、digest coverage、path verification state 和 next actions。
+- 本轮继续新增 issue activity timeline 最小切片：CLI `hive issue timeline <id>`、daemon `hive_issue_timeline`、MCP `entrance://issues/{issue_id}/timeline`、Panel selected issue 的 Activity Timeline block，把 issue creation、comments、stage evidence、verdict、operator decision、blocker 和 linked resources 放进同一条 issue-first feed。
 
 ## 还没做完
 
@@ -19,6 +20,7 @@ Last updated: 2026-06-09
 - 把 Evidence Drilldown/Manifest 产品化：完整 transcript 展开、真实远端 receipt 归档、真实 artifact manifest 生成/内容校验、payload schema diff、更完整的 blocker decision workflow。
 - Productize MCP：真实客户端配置、协议兼容测试、verified actor identity、权限边界、远程 connector 绑定。
 - Productize Linear/GitHub connector：真实 token 验证、状态映射、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
+- Productize issue timeline：筛选/折叠、按 round 分组、远端 issue comment 映射、timeline item permalink、blocker/action inline decision。
 - Hardening workers：sandbox、环境脱敏、heartbeat、resume/cancel/replacement、timeout recovery、跨进程 durable failure attribution。
 - Reviewer gates 继续加强：目标漂移检测、score vector 计算、keep/reject/block 证据要求，以及需要人类偏好时的选项生成。
 - 正式 compiler IR：从 archive 中提升为 current truth，并把 loop contract、packet、receipt、evidence、verdict、policy registry lifecycle 变成版本化 runtime 对象。

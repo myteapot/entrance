@@ -203,6 +203,13 @@ replacement, and isolation are still future runtime-hardening work.
 Operator comments and decisions are summarized into a current-round operator trail plus
 total operator event counts, making human retry, review, cancel, and comment
 actions visible without opening the raw evidence stream.
+`entrance hive issue timeline <issue_id>` exposes the issue-first activity feed
+as `entrance.hive.issue_timeline.v1`. The report combines issue creation,
+typed comments, stage evidence, verdicts, operator decisions, blockers, linked
+resources, and next actions into one chronological control-plane view. MCP
+clients can read the same report through
+`entrance://issues/{issue_id}/timeline`, and the Panel selected-issue detail
+renders it as Activity Timeline below Evidence Manifest.
 Issue human options are status-aware: `Blocked` issues can retry, request
 review, or cancel; `Needs Review` issues can retry or cancel; `Todo` issues can
 be canceled before running; terminal human-canceled issues only allow comments.
@@ -405,9 +412,11 @@ single issue as `entrance.mcp.issue_control.v1`, aggregating state, action call
 templates, MCP permissions, blockers, recent evidence, operator events, and
 operator confirmation receipts so agents do not have to infer the control
 surface from raw issue JSON. The control packet now includes `loop_dashboard`,
-`evidence_drilldown`, `evidence_manifest`, `runtime_preflight`, and
+`evidence_drilldown`, `evidence_manifest`, `timeline`, `runtime_preflight`, and
 `worker_lifecycle` resource pointers plus compact runtime preflight and worker
-lifecycle summaries. The full `entrance.hive.loop_dashboard.v1` report gives
+lifecycle summaries. The full `entrance.hive.issue_timeline.v1` report gives
+agents an issue-first activity feed before they inspect lower-level resources;
+the full `entrance.hive.loop_dashboard.v1` report gives
 agents one loop-level control view before they inspect lower-level resources;
 the full `entrance.hive.evidence_drilldown.v1` report exposes worker receipts,
 transcript/payload excerpts, remote receipt summaries, artifact/path hints,
