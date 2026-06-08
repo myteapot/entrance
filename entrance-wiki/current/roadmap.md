@@ -108,6 +108,14 @@ Entrance has reached a local MVP unit:
   confirmation receipts, and actor identity context. The actor identity policy
   resource documents self-reported MCP actors and local Panel audit actors with
   `verified=false`.
+- MCP now also exposes a loop-level Reviewer control packet through
+  `entrance_loop_control` and `entrance://loops/{loop_id}/control`. It
+  aggregates Loop Dashboard, Evidence Drilldown, Evidence Manifest, Runtime
+  Preflight, Worker Lifecycle, Reviewer gate surface, score vector, 3-round
+  invalid fallback budget, human decision boundary, exact issue action options,
+  and links back to issue control, transition policy, and timeline resources.
+  `entrance_loop_review` prompts agents to judge keep/reject/needs-review/block
+  only from the recorded packet, not by implementing in the Reviewer lane.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -229,8 +237,9 @@ multi-agent runtime/compiler product.
 - Productize the MCP stdio surface: client config docs, stronger protocol
   tests, real auth/identity policy on top of the local tool-permission
   registry, verified actor identity mapping beyond self-reported author and
-  `initialize.clientInfo`, connector control/queue/plan/execute readability in
-  real clients, and compatibility checks against real MCP clients.
+  `initialize.clientInfo`, loop control / reviewer prompt / connector
+  control/queue/plan/execute readability in real clients, and compatibility
+  checks against real MCP clients.
 - Add verified operator identity for local Panel/daemon decisions beyond the
   current `local-hive-panel` audit context.
 - Add live token-backed GitHub and Linear validation runs, including safe

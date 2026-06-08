@@ -25,17 +25,18 @@ Last updated: 2026-06-09
 - 本轮继续把 connector queue 直接暴露到 MCP：新增 `entrance_connector_queue` tool、`entrance://connectors/queue` resource、`entrance://connectors/queue/{provider}` resource template/provider resource，并把 single issue control packet 指回全局 queue 与当前 provider queue。
 - 本轮继续把 MCP connector queue 从只读推进到可确认执行：新增 `entrance_connector_publish_plan` / `entrance_connector_roundtrip_plan` tools 与 `entrance://connectors/publish-plan{/{provider}}`、`entrance://connectors/roundtrip-plan{/{provider}}` resources；新增 `entrance_connector_publish_execute` / `entrance_connector_roundtrip_execute` human-decision tools，要求 `human_confirmed=true` 和当前 `plan_id`，并把 MCP confirmation receipt 写入 connector execution comment/evidence payload。
 - 本轮继续把 connector queue 合成 MCP 决策面：新增 `entrance_connector_control` tool、`entrance://connectors/control{/{provider}}` resource/template 和 `entrance_connector_decision` prompt，把 queue counts、publish/roundtrip plan、blockers、A/B/C human options、exact tool call 和 confirmation policy 聚合成一份 `entrance.mcp.connector_control.v1` control packet。
+- 本轮继续把 loop 观察面合成 MCP Reviewer 控制包：新增 `entrance_loop_control` tool、`entrance://loops/{loop_id}/control` resource/template 和 `entrance_loop_review` prompt，把 loop dashboard、evidence drilldown、evidence manifest、runtime preflight、worker lifecycle、Reviewer gate surface、score vector、3 轮 invalid fallback budget、human decision boundary 和 exact issue action options 聚合成一份 `entrance.mcp.loop_control.v1` control packet。
 
 ## 还没做完
 
 - 把 `runtime_preflight.v1` 扩展成完整 capability preview：sandbox scope、connector readiness、artifact capture、人类偏好边界，而不仅是 runtime support/probe。
 - 把 Evidence Drilldown/Manifest 产品化：完整 transcript 展开、真实远端 receipt 归档、真实 artifact manifest 生成/内容校验、payload schema diff、更完整的 blocker decision workflow。
-- Productize MCP：真实客户端配置、协议兼容测试、verified actor identity、权限边界、远程 connector 绑定，以及 connector control/queue/plan/execute 在真实 MCP 客户端里的兼容性/可读性验证。
+- Productize MCP：真实客户端配置、协议兼容测试、verified actor identity、权限边界、远程 connector 绑定，以及 loop control / reviewer prompt / connector control / queue / plan / execute 在真实 MCP 客户端里的兼容性/可读性验证。
 - Productize Linear/GitHub connector：真实 token 验证、Linear workflow discovery/migration、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
 - Productize issue timeline：筛选/折叠、远端 issue comment 映射、inline decision 的操作后刷新状态、receipt drilldown 和更强的 blocked action provenance。
 - Productize issue transition policy：当前已经有 kernel registry/report snapshot/audit 绑定、execution-time transition admission receipt、Panel 操作后 selected issue control surface 刷新、系统化状态机矩阵测试、provider status mapping policy 和 Linear configured stateId mapping；还缺版本迁移、状态映射 discovery/migration 和更完整的 policy lifecycle。
 - Hardening workers：sandbox、环境脱敏、heartbeat、resume/cancel/replacement、timeout recovery、跨进程 durable failure attribution。
-- Reviewer gates 继续加强：目标漂移检测、score vector 计算、keep/reject/block 证据要求，以及需要人类偏好时的选项生成。
+- Reviewer gates 继续加强：当前 `entrance.mcp.loop_control.v1` 已聚合 Reviewer gate surface、score vector、证据资源和 fallback budget；还缺更强目标漂移检测、真实 score vector 计算、keep/reject/block 证据要求，以及需要人类偏好时的选项生成。
 - 正式 compiler IR：从 archive 中提升为 current truth，并把 loop contract、packet、receipt、evidence、verdict、policy registry lifecycle 变成版本化 runtime 对象。
 
 ## 下一轮建议

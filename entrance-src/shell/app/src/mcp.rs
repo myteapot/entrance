@@ -24,6 +24,7 @@ const MCP_TOOL_PERMISSION_SCHEMA_VERSION: &str = "entrance.mcp.tool_permission.v
 const MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION: &str =
     "entrance.mcp.tool_permission_registry.v1";
 const MCP_ISSUE_CONTROL_SCHEMA_VERSION: &str = "entrance.mcp.issue_control.v1";
+const MCP_LOOP_CONTROL_SCHEMA_VERSION: &str = "entrance.mcp.loop_control.v1";
 const MCP_CONNECTOR_CONTROL_SCHEMA_VERSION: &str = "entrance.mcp.connector_control.v1";
 const MCP_WORKER_LIFECYCLE_SUMMARY_SCHEMA_VERSION: &str =
     "entrance.mcp.worker_lifecycle_summary.v1";
@@ -34,6 +35,7 @@ const MCP_TOOL_NAMES: &[&str] = &[
     "entrance_issue_list",
     "entrance_issue_show",
     "entrance_issue_control",
+    "entrance_loop_control",
     "entrance_connector_queue",
     "entrance_connector_control",
     "entrance_connector_publish_plan",
@@ -280,6 +282,12 @@ fn prompt_specs() -> Vec<serde_json::Value> {
             ],
         ),
         prompt_spec(
+            "entrance_loop_review",
+            "Review an Entrance loop",
+            "Read one loop control packet and prepare a Reviewer verdict or human decision options from gates, score vector, evidence, and fallback budget.",
+            vec![prompt_arg("loop_id", "Entrance loop id.", true)],
+        ),
+        prompt_spec(
             "entrance_blocker_decision",
             "Prepare a blocked issue decision",
             "Summarize a Blocked or Needs Review issue into human options before retry/review/cancel.",
@@ -333,6 +341,7 @@ fn get_prompt(services: &AppServices, params: &serde_json::Value) -> Result<serd
     match name {
         "entrance_loop_contract" => prompt_loop_contract(&args),
         "entrance_issue_advance" => prompt_issue_advance(services, &args),
+        "entrance_loop_review" => prompt_loop_review(services, &args),
         "entrance_blocker_decision" => prompt_blocker_decision(services, &args),
         "entrance_connector_decision" => prompt_connector_decision(services, &args),
         other => anyhow::bail!("unknown Entrance prompt `{other}`"),
@@ -371,6 +380,21 @@ fn prompt_issue_advance(
     ))
 }
 
+fn prompt_loop_review(
+    services: &AppServices,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let loop_id = integer_arg(args, "loop_id")?;
+    let loop_resource = loop_control_prompt_resource(services, loop_id)?;
+    let text = format!(
+        "You are the Entrance Reviewer for loop #{loop_id}. Read entrance://loops/{loop_id}/control, entrance://policy/mcp-permissions, and the attached loop control packet before judging.\n\nRules:\n1. Do not implement, edit files, or advance the Developer lane from this prompt.\n2. Judge only from recorded gate results, score vector, evidence receipts, runtime preflight, worker lifecycle, and target drift signals in the packet.\n3. Produce one recommendation: keep, reject, needs-review, or blocked. Include failed gates, missing receipts, evidence links, and the smallest next action.\n4. If the Reviewer invalid budget is exhausted after 3 rounds and the candidate is still invalid, treat Blocked as the correct fallback and present human options instead of retrying automatically.\n5. Do not set human_confirmed=true unless a human explicitly chooses an option."
+    );
+    Ok(prompt_result(
+        "Review one Entrance loop through the transparent Reviewer contract.",
+        vec![prompt_text_message("user", text), loop_resource],
+    ))
+}
+
 fn prompt_blocker_decision(
     services: &AppServices,
     args: &serde_json::Value,
@@ -401,6 +425,22 @@ fn prompt_connector_decision(
         "Prepare human connector publish/roundtrip options.",
         vec![prompt_text_message("user", text), connector_resource],
     ))
+}
+
+fn loop_control_prompt_resource(services: &AppServices, loop_id: i64) -> Result<serde_json::Value> {
+    let uri = loop_control_resource_uri(loop_id);
+    let report = loop_control_packet(services, loop_id)?;
+    Ok(serde_json::json!({
+        "role": "user",
+        "content": {
+            "type": "resource",
+            "resource": {
+                "uri": uri,
+                "mimeType": "application/json",
+                "text": serde_json::to_string_pretty(&report)?
+            }
+        }
+    }))
 }
 
 fn connector_control_prompt_resource(
@@ -494,6 +534,18 @@ fn tool_specs() -> Vec<serde_json::Value> {
                     "issue_id": { "type": "integer", "description": "Issue id." }
                 },
                 "required": ["issue_id"]
+            }),
+        ),
+        tool_spec(
+            "entrance_loop_control",
+            "Read an Entrance loop control packet",
+            "Read one loop as a Reviewer-ready control packet with dashboard, evidence, runtime preflight, worker lifecycle, gates, fallback budget, and human decision boundaries.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "integer", "description": "Loop id." }
+                },
+                "required": ["loop_id"]
             }),
         ),
         tool_spec(
@@ -744,6 +796,7 @@ fn call_tool(
         Some("entrance_issue_list") => tool_issue_list(services, &args),
         Some("entrance_issue_show") => tool_issue_show(services, &args),
         Some("entrance_issue_control") => tool_issue_control(services, &args),
+        Some("entrance_loop_control") => tool_loop_control(services, &args),
         Some("entrance_connector_queue") => tool_connector_queue(services, &args),
         Some("entrance_connector_control") => tool_connector_control(services, &args),
         Some("entrance_connector_publish_plan") => tool_connector_publish_plan(services, &args),
@@ -807,6 +860,14 @@ fn tool_issue_control(
     let issue_id = integer_arg(args, "issue_id")?;
     let card = services.hive.issue_report(issue_id)?;
     Ok(issue_control_packet_for_services(services, &card))
+}
+
+fn tool_loop_control(
+    services: &AppServices,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let loop_id = integer_arg(args, "loop_id")?;
+    loop_control_packet(services, loop_id)
 }
 
 fn tool_connector_queue(
@@ -881,6 +942,334 @@ fn tool_connector_roundtrip_execute(
             session,
         )),
     )
+}
+
+fn loop_control_packet(services: &AppServices, loop_id: i64) -> Result<serde_json::Value> {
+    let dashboard = serde_json::to_value(services.hive.loop_dashboard(loop_id)?)?;
+    let evidence_drilldown = serde_json::to_value(services.hive.loop_evidence_drilldown(loop_id)?)?;
+    let evidence_manifest = serde_json::to_value(services.hive.loop_evidence_manifest(loop_id)?)?;
+    let runtime_preflight = serde_json::to_value(services.hive.loop_runtime_preflight(loop_id)?)?;
+    let worker_lifecycle = serde_json::to_value(services.hive.loop_worker_lifecycle(loop_id)?)?;
+    Ok(loop_control_packet_from_reports(
+        loop_id,
+        dashboard,
+        evidence_drilldown,
+        evidence_manifest,
+        runtime_preflight,
+        worker_lifecycle,
+    ))
+}
+
+fn loop_control_packet_from_reports(
+    loop_id: i64,
+    dashboard: serde_json::Value,
+    evidence_drilldown: serde_json::Value,
+    evidence_manifest: serde_json::Value,
+    runtime_preflight: serde_json::Value,
+    worker_lifecycle: serde_json::Value,
+) -> serde_json::Value {
+    let issue_id = json_i64(
+        &dashboard,
+        &[
+            "/issue/id",
+            "/issue_id",
+            "/state/issue_id",
+            "/resources/issue_id",
+        ],
+    )
+    .or_else(|| json_i64(&worker_lifecycle, &["/issue_id"]));
+    let issue_status = json_string(
+        &dashboard,
+        &[
+            "/issue/status",
+            "/human_decision/issue_status",
+            "/issue_status",
+        ],
+    )
+    .or_else(|| json_string(&worker_lifecycle, &["/issue_status"]));
+    let current_round = json_i64(&dashboard, &["/current_round"])
+        .or_else(|| json_i64(&worker_lifecycle, &["/current_round"]));
+    let reviewer_decision = json_string(
+        &dashboard,
+        &[
+            "/reviewer/decision",
+            "/rounds/0/decision",
+            "/human_decision/decision",
+        ],
+    )
+    .or_else(|| json_string(&worker_lifecycle, &["/current/decision"]));
+    let reviewer_reason_code = json_string(&dashboard, &["/reviewer/reason_code"])
+        .or_else(|| json_string(&dashboard, &["/rounds/0/reason_code"]));
+    let reviewer_invalid_rounds_used =
+        json_i64(&dashboard, &["/reviewer/reviewer_invalid_rounds_used"]).or_else(|| {
+            json_i64(
+                &worker_lifecycle,
+                &["/current/reviewer_invalid_rounds_used"],
+            )
+        });
+    let reviewer_invalid_round_budget =
+        json_i64(&dashboard, &["/reviewer/reviewer_invalid_round_budget"]).or_else(|| {
+            json_i64(
+                &worker_lifecycle,
+                &["/policy/reviewer_invalid_round_budget"],
+            )
+        });
+    let reviewer_invalid_budget_exhausted =
+        json_bool(&dashboard, &["/reviewer/reviewer_invalid_budget_exhausted"])
+            .or_else(|| {
+                json_bool(
+                    &worker_lifecycle,
+                    &["/current/reviewer_invalid_budget_exhausted"],
+                )
+            })
+            .unwrap_or(false);
+    let needs_human_decision = json_bool(&dashboard, &["/human_decision/required"])
+        .unwrap_or_else(|| matches!(issue_status.as_deref(), Some("Blocked" | "Needs Review")));
+    let primary_action = loop_control_primary_action(
+        issue_status.as_deref(),
+        needs_human_decision,
+        reviewer_invalid_budget_exhausted,
+    );
+    let dashboard_resource = format!("entrance://loops/{loop_id}/dashboard");
+    let evidence_drilldown_resource = format!("entrance://loops/{loop_id}/evidence-drilldown");
+    let evidence_manifest_resource = format!("entrance://loops/{loop_id}/evidence-manifest");
+    let runtime_preflight_resource = format!("entrance://loops/{loop_id}/runtime-preflight");
+    let worker_lifecycle_resource = format!("entrance://loops/{loop_id}/worker-lifecycle");
+    let issue_resource = issue_id.map(|id| format!("entrance://issues/{id}"));
+    let issue_control_resource = issue_id.map(|id| format!("entrance://issues/{id}/control"));
+    let transition_policy_resource =
+        issue_id.map(|id| format!("entrance://issues/{id}/transition-policy"));
+    let timeline_resource = issue_id.map(|id| format!("entrance://issues/{id}/timeline"));
+
+    serde_json::json!({
+        "schema_version": MCP_LOOP_CONTROL_SCHEMA_VERSION,
+        "loop_id": loop_id,
+        "state": {
+            "issue_id": issue_id,
+            "issue_status": issue_status,
+            "loop_status": json_string(&dashboard, &["/status"]).or_else(|| json_string(&worker_lifecycle, &["/status"])),
+            "active_phase": json_string(&dashboard, &["/active_phase"]).or_else(|| json_string(&worker_lifecycle, &["/active_phase"])),
+            "current_round": current_round,
+            "dashboard_state": json_string(&dashboard, &["/dashboard_state"]),
+            "lifecycle_state": json_string(&worker_lifecycle, &["/lifecycle_state"]),
+            "runtime_preflight_state": json_string(&runtime_preflight, &["/preflight_state"]),
+            "evidence_manifest_state": json_string(&evidence_manifest, &["/manifest_state"]),
+            "reviewer_decision": reviewer_decision,
+            "reviewer_reason_code": reviewer_reason_code,
+            "reviewer_invalid_rounds_used": reviewer_invalid_rounds_used,
+            "reviewer_invalid_round_budget": reviewer_invalid_round_budget,
+            "reviewer_invalid_budget_exhausted": reviewer_invalid_budget_exhausted,
+            "fallback_status": json_string(&dashboard, &["/reviewer/fallback_status"]).or_else(|| json_string(&worker_lifecycle, &["/policy/fallback_status"])),
+            "needs_human_decision": needs_human_decision,
+            "primary_action": primary_action
+        },
+        "reviewer_gate_surface": {
+            "role": "Reviewer",
+            "allowed_decisions": ["keep", "reject", "needs-review", "blocked"],
+            "gates": {
+                "runtime_preflight": {
+                    "resource": runtime_preflight_resource,
+                    "state": json_string(&runtime_preflight, &["/preflight_state"]),
+                    "gate": json_string(&runtime_preflight, &["/policy/gate", "/current/gate"]),
+                    "passed": json_bool(&runtime_preflight, &["/current/gate_passed"])
+                },
+                "worker_lifecycle": {
+                    "resource": worker_lifecycle_resource,
+                    "state": json_string(&worker_lifecycle, &["/lifecycle_state"]),
+                    "expected_roles": json_clone(&worker_lifecycle, &["/policy/expected_roles"]),
+                    "observed_roles": json_clone(&worker_lifecycle, &["/current/observed_roles"]),
+                    "missing_roles": json_clone(&worker_lifecycle, &["/current/missing_roles"]),
+                    "failures": json_clone(&worker_lifecycle, &["/failures"])
+                },
+                "evidence_manifest": {
+                    "resource": evidence_manifest_resource,
+                    "state": json_string(&evidence_manifest, &["/manifest_state"]),
+                    "coverage": json_clone(&evidence_manifest, &["/coverage"])
+                }
+            },
+            "score_vector": json_clone(&dashboard, &["/reviewer/score_vector"]).unwrap_or_else(|| serde_json::json!([])),
+            "evidence_links": {
+                "dashboard": dashboard_resource,
+                "evidence_drilldown": evidence_drilldown_resource,
+                "evidence_manifest": evidence_manifest_resource,
+                "runtime_preflight": runtime_preflight_resource,
+                "worker_lifecycle": worker_lifecycle_resource
+            },
+            "target_drift_check": {
+                "state": "shallow",
+                "source": "dashboard.reviewer.reason_code and evidence summaries",
+                "note": "Full semantic target-drift scoring is still roadmap work."
+            },
+            "budget_policy": {
+                "invalid_round_budget": reviewer_invalid_round_budget,
+                "invalid_rounds_used": reviewer_invalid_rounds_used,
+                "exhausted": reviewer_invalid_budget_exhausted,
+                "fallback_status": "Blocked"
+            }
+        },
+        "human_decision_boundary": {
+            "required": needs_human_decision,
+            "issue_status": issue_status,
+            "actions": json_clone(&dashboard, &["/human_decision/actions"]).unwrap_or_else(|| serde_json::json!([])),
+            "options": json_clone(&dashboard, &["/human_decision/options"]).unwrap_or_else(|| serde_json::json!([])),
+            "confirmation_arg": "human_confirmed",
+            "policy_resource": "entrance://policy/mcp-permissions",
+            "review_queue_resource": "entrance://review-queue",
+            "instruction": "Do not set human_confirmed=true until a human chooses retry, request-review, or cancel."
+        },
+        "operator_decision_surface": {
+            "primary_action": primary_action,
+            "options": loop_control_decision_options(issue_id, needs_human_decision, reviewer_invalid_budget_exhausted),
+            "blocked_fallback": {
+                "condition": "Reviewer rejects or keeps finding the candidate invalid after the 3-round invalid budget is exhausted.",
+                "status": "Blocked",
+                "active": reviewer_invalid_budget_exhausted
+            }
+        },
+        "reports": {
+            "dashboard": dashboard,
+            "evidence_drilldown": evidence_drilldown,
+            "evidence_manifest": evidence_manifest,
+            "runtime_preflight": runtime_preflight,
+            "worker_lifecycle": worker_lifecycle
+        },
+        "mcp_policy": {
+            "loop_control": mcp_tool_permission("entrance_loop_control"),
+            "issue_run": mcp_tool_permission("entrance_issue_run"),
+            "issue_retry": mcp_tool_permission("entrance_issue_retry"),
+            "issue_decide": mcp_tool_permission("entrance_issue_decide")
+        },
+        "resources": {
+            "loop_control": loop_control_resource_uri(loop_id),
+            "dashboard": dashboard_resource,
+            "evidence_drilldown": evidence_drilldown_resource,
+            "evidence_manifest": evidence_manifest_resource,
+            "runtime_preflight": runtime_preflight_resource,
+            "worker_lifecycle": worker_lifecycle_resource,
+            "issue": issue_resource,
+            "issue_control": issue_control_resource,
+            "transition_policy": transition_policy_resource,
+            "timeline": timeline_resource,
+            "review_queue": "entrance://review-queue",
+            "permissions": "entrance://policy/mcp-permissions",
+            "actor_identity": "entrance://policy/actor-identity"
+        }
+    })
+}
+
+fn loop_control_primary_action(
+    issue_status: Option<&str>,
+    needs_human_decision: bool,
+    reviewer_invalid_budget_exhausted: bool,
+) -> &'static str {
+    if reviewer_invalid_budget_exhausted || needs_human_decision {
+        "human_decision"
+    } else if issue_status == Some("Todo") {
+        "issue_run"
+    } else {
+        "inspect"
+    }
+}
+
+fn loop_control_decision_options(
+    issue_id: Option<i64>,
+    needs_human_decision: bool,
+    reviewer_invalid_budget_exhausted: bool,
+) -> serde_json::Value {
+    let Some(issue_id) = issue_id else {
+        return serde_json::json!([
+            {
+                "key": "A",
+                "label": "inspect loop resources",
+                "enabled": true,
+                "summary": "No bound issue was found; inspect the loop reports before choosing an issue action."
+            }
+        ]);
+    };
+    let human_action_enabled = needs_human_decision || reviewer_invalid_budget_exhausted;
+    serde_json::json!([
+        {
+            "key": "A",
+            "label": "retry with changed boundary",
+            "enabled": human_action_enabled,
+            "summary": "Ask a human to retry only after narrowing the failed assumption or boundary.",
+            "tool": "entrance_issue_retry",
+            "call": if human_action_enabled {
+                serde_json::json!({
+                    "name": "entrance_issue_retry",
+                    "arguments": {
+                        "issue_id": issue_id,
+                        "body": "Retry with a narrowed boundary or corrected assumption.",
+                        "human_confirmed": true
+                    }
+                })
+            } else {
+                serde_json::Value::Null
+            }
+        },
+        {
+            "key": "B",
+            "label": "request human review",
+            "enabled": human_action_enabled,
+            "summary": "Use when preference, scope, or external data is needed.",
+            "tool": "entrance_issue_decide",
+            "call": if human_action_enabled {
+                serde_json::json!({
+                    "name": "entrance_issue_decide",
+                    "arguments": {
+                        "issue_id": issue_id,
+                        "action": "request-review",
+                        "body": "Human review requested by Reviewer.",
+                        "human_confirmed": true
+                    }
+                })
+            } else {
+                serde_json::Value::Null
+            }
+        },
+        {
+            "key": "C",
+            "label": "keep blocked",
+            "enabled": true,
+            "summary": "Do not advance automatically; preserve the Blocked/Needs Review issue surface for a human decision.",
+            "resources": {
+                "issue_control": format!("entrance://issues/{issue_id}/control"),
+                "review_queue": "entrance://review-queue"
+            }
+        }
+    ])
+}
+
+fn loop_control_resource_uri(loop_id: i64) -> String {
+    format!("entrance://loops/{loop_id}/control")
+}
+
+fn json_string(value: &serde_json::Value, pointers: &[&str]) -> Option<String> {
+    pointers.iter().find_map(|pointer| {
+        value
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn json_i64(value: &serde_json::Value, pointers: &[&str]) -> Option<i64> {
+    pointers
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(|value| value.as_i64()))
+}
+
+fn json_bool(value: &serde_json::Value, pointers: &[&str]) -> Option<bool> {
+    pointers
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(|value| value.as_bool()))
+}
+
+fn json_clone(value: &serde_json::Value, pointers: &[&str]) -> Option<serde_json::Value> {
+    pointers
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).cloned())
 }
 
 fn connector_control_packet(
@@ -1269,6 +1658,7 @@ fn issue_control_packet_with_connector(
             "control": format!("entrance://issues/{}/control", card.issue.id),
             "transition_policy": format!("entrance://issues/{}/transition-policy", card.issue.id),
             "timeline": format!("entrance://issues/{}/timeline", card.issue.id),
+            "loop_control": card.issue.loop_id.map(loop_control_resource_uri),
             "loop_dashboard": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/dashboard")),
             "evidence_drilldown": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/evidence-drilldown")),
             "evidence_manifest": card.issue.loop_id.map(|loop_id| format!("entrance://loops/{loop_id}/evidence-manifest")),
@@ -1687,6 +2077,11 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
     }
     for contract in services.hive.loop_list()? {
         resources.push(resource_spec(
+            &loop_control_resource_uri(contract.id),
+            &format!("Loop #{} control", contract.id),
+            "One Reviewer-ready loop control packet with dashboard, evidence, runtime preflight, worker lifecycle, gates, fallback budget, and human decision boundaries.",
+        ));
+        resources.push(resource_spec(
             &format!("entrance://loops/{}/dashboard", contract.id),
             &format!("Loop #{} dashboard", contract.id),
             "One loop dashboard report with issue state, kernel preflight, agents, reviewer verdict, human decision surface, blockers, and next actions.",
@@ -1770,6 +2165,12 @@ fn resource_templates() -> serde_json::Value {
                 "uriTemplate": "entrance://issues/{issue_id}/timeline/items/{item_id}",
                 "name": "Entrance issue timeline item by id",
                 "description": "Read one permalinked timeline item with context, neighboring items, round group, and linked evidence or receipt.",
+                "mimeType": "application/json"
+            },
+            {
+                "uriTemplate": "entrance://loops/{loop_id}/control",
+                "name": "Entrance loop control by id",
+                "description": "Read a Reviewer-ready loop control packet with dashboard, evidence, runtime preflight, worker lifecycle, gates, fallback budget, and human decision boundaries.",
                 "mimeType": "application/json"
             },
             {
@@ -1862,6 +2263,14 @@ fn read_resource(services: &AppServices, params: &serde_json::Value) -> Result<s
         "entrance://policy/mcp-permissions" => mcp_permission_policy(),
         "entrance://policy/actor-identity" => mcp_actor_identity_policy(),
         "entrance://schema/status" => serde_json::to_value(services.kernel.store.schema_status()?)?,
+        value if value.starts_with("entrance://loops/") && value.ends_with("/control") => {
+            let loop_id = value
+                .trim_start_matches("entrance://loops/")
+                .trim_end_matches("/control")
+                .parse::<i64>()
+                .with_context(|| format!("invalid Entrance loop control resource URI `{value}`"))?;
+            loop_control_packet(services, loop_id)?
+        }
         value if value.starts_with("entrance://loops/") && value.ends_with("/dashboard") => {
             let loop_id = value
                 .trim_start_matches("entrance://loops/")
@@ -2133,6 +2542,24 @@ fn mcp_tool_permission(tool: &str) -> serde_json::Value {
                 "loop/trace/evidence/doctor",
                 "policy/action_permission",
                 "operator_confirmation_receipt",
+            ],
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        ),
+        "entrance_loop_control" => (
+            "read",
+            "loop.control",
+            vec![
+                "loop/dashboard",
+                "loop/evidence_drilldown",
+                "loop/evidence_manifest",
+                "loop/runtime_preflight",
+                "loop/worker_lifecycle",
+                "issue/status/comment",
+                "reviewer/verdict",
+                "policy/action_permission",
             ],
             Vec::new(),
             None,
@@ -2669,11 +3096,12 @@ mod tests {
     use super::{
         append_human_confirmation_note, connector_control_packet_from_reports,
         ensure_connector_execute_confirmed, ensure_human_confirmed, initialize_result,
-        issue_control_packet, issue_control_packet_with_connector, mcp_client_identity,
-        mcp_human_confirmation_receipt, mcp_permission_policy, prompt_loop_contract, prompt_specs,
-        resource_templates, tool_specs, McpSession, MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION,
-        MCP_CONNECTOR_CONTROL_SCHEMA_VERSION, MCP_FALLBACK_PROTOCOL_VERSION,
-        MCP_ISSUE_CONTROL_SCHEMA_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
+        issue_control_packet, issue_control_packet_with_connector,
+        loop_control_packet_from_reports, mcp_client_identity, mcp_human_confirmation_receipt,
+        mcp_permission_policy, prompt_loop_contract, prompt_specs, resource_templates, tool_specs,
+        McpSession, MCP_ACTOR_IDENTITY_POLICY_SCHEMA_VERSION, MCP_CONNECTOR_CONTROL_SCHEMA_VERSION,
+        MCP_FALLBACK_PROTOCOL_VERSION, MCP_ISSUE_CONTROL_SCHEMA_VERSION,
+        MCP_LOOP_CONTROL_SCHEMA_VERSION, MCP_PERMISSION_POLICY_SCHEMA_VERSION,
         MCP_TOOL_PERMISSION_REGISTRY_SCHEMA_VERSION, MCP_TOOL_PERMISSION_SCHEMA_VERSION,
     };
     use entrance_core::{HiveComment, HiveIssue};
@@ -2721,6 +3149,7 @@ mod tests {
 
         assert!(names.contains(&"entrance_issue_list"));
         assert!(names.contains(&"entrance_issue_control"));
+        assert!(names.contains(&"entrance_loop_control"));
         assert!(names.contains(&"entrance_connector_queue"));
         assert!(names.contains(&"entrance_connector_control"));
         assert!(names.contains(&"entrance_connector_publish_plan"));
@@ -2881,6 +3310,12 @@ mod tests {
         );
         assert_eq!(
             packet
+                .pointer("/resources/loop_control")
+                .and_then(|value| value.as_str()),
+            Some("entrance://loops/7/control")
+        );
+        assert_eq!(
+            packet
                 .pointer("/resources/runtime_preflight")
                 .and_then(|value| value.as_str()),
             Some("entrance://loops/7/runtime-preflight")
@@ -2903,6 +3338,158 @@ mod tests {
         assert!(packet
             .get("worker_lifecycle")
             .is_some_and(|value| value.is_null()));
+    }
+
+    #[test]
+    fn loop_control_packet_exposes_reviewer_surface() {
+        let dashboard = serde_json::json!({
+            "schema_version": "entrance.hive.loop_dashboard.v1",
+            "loop_id": 7,
+            "issue": {
+                "id": 42,
+                "status": "Blocked",
+                "title": "Loop #7: blocked issue"
+            },
+            "status": "blocked",
+            "active_phase": "review",
+            "current_round": 3,
+            "runtime": "local",
+            "dashboard_state": "needs_human_decision",
+            "reviewer": {
+                "decision": "blocked",
+                "reason_code": "review_budget_exhausted",
+                "score_vector": [{
+                    "name": "gates",
+                    "score": 0.0,
+                    "summary": "Reviewer rejected the candidate."
+                }],
+                "reviewer_invalid_rounds_used": 3,
+                "reviewer_invalid_round_budget": 3,
+                "reviewer_invalid_budget_exhausted": true,
+                "fallback_status": "Blocked"
+            },
+            "human_decision": {
+                "required": true,
+                "issue_status": "Blocked",
+                "options": ["Retry with narrower scope"],
+                "actions": [{
+                    "action": "retry",
+                    "label": "Retry",
+                    "command": "entrance hive issue retry-run 42 --body <note> --human-confirmed --compact"
+                }]
+            }
+        });
+        let evidence_drilldown = serde_json::json!({
+            "schema_version": "entrance.hive.evidence_drilldown.v1",
+            "loop_id": 7,
+            "blockers": ["missing reviewer receipt"]
+        });
+        let evidence_manifest = serde_json::json!({
+            "schema_version": "entrance.hive.evidence_manifest.v1",
+            "loop_id": 7,
+            "manifest_state": "ok",
+            "coverage": {
+                "evidence_count": 3,
+                "receipt_count": 3,
+                "digest_count": 6
+            }
+        });
+        let runtime_preflight = serde_json::json!({
+            "schema_version": "entrance.hive.runtime_preflight.v1",
+            "loop_id": 7,
+            "preflight_state": "admitted",
+            "policy": {
+                "gate": "runtime_policy_ready"
+            },
+            "current": {
+                "gate_passed": true
+            }
+        });
+        let worker_lifecycle = serde_json::json!({
+            "schema_version": "entrance.hive.worker_lifecycle.v1",
+            "loop_id": 7,
+            "issue_id": 42,
+            "issue_status": "Blocked",
+            "lifecycle_state": "blocked",
+            "policy": {
+                "expected_roles": ["explorer", "developer", "reviewer"],
+                "reviewer_invalid_round_budget": 3,
+                "fallback_status": "Blocked"
+            },
+            "current": {
+                "round": 3,
+                "decision": "blocked",
+                "observed_roles": ["explorer", "developer", "reviewer"],
+                "missing_roles": [],
+                "reviewer_invalid_rounds_used": 3,
+                "reviewer_invalid_budget_exhausted": true
+            },
+            "failures": []
+        });
+
+        let packet = loop_control_packet_from_reports(
+            7,
+            dashboard,
+            evidence_drilldown,
+            evidence_manifest,
+            runtime_preflight,
+            worker_lifecycle,
+        );
+
+        assert_eq!(
+            packet
+                .get("schema_version")
+                .and_then(|value| value.as_str()),
+            Some(MCP_LOOP_CONTROL_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            packet
+                .pointer("/state/primary_action")
+                .and_then(|value| value.as_str()),
+            Some("human_decision")
+        );
+        assert_eq!(
+            packet
+                .pointer("/state/reviewer_invalid_budget_exhausted")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            packet
+                .pointer("/reviewer_gate_surface/allowed_decisions/0")
+                .and_then(|value| value.as_str()),
+            Some("keep")
+        );
+        assert_eq!(
+            packet
+                .pointer("/reviewer_gate_surface/budget_policy/fallback_status")
+                .and_then(|value| value.as_str()),
+            Some("Blocked")
+        );
+        assert_eq!(
+            packet
+                .pointer("/human_decision_boundary/required")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            packet
+                .pointer("/operator_decision_surface/blocked_fallback/active")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            packet
+                .pointer("/resources/loop_control")
+                .and_then(|value| value.as_str()),
+            Some("entrance://loops/7/control")
+        );
+        assert_eq!(
+            packet
+                .pointer("/mcp_policy/loop_control/operation")
+                .and_then(|value| value.as_str()),
+            Some("loop.control")
+        );
     }
 
     #[test]
@@ -3131,6 +3718,7 @@ mod tests {
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/transition-policy"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/timeline"));
         assert!(uri_templates.contains(&"entrance://issues/{issue_id}/timeline/items/{item_id}"));
+        assert!(uri_templates.contains(&"entrance://loops/{loop_id}/control"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/dashboard"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/evidence-manifest"));
         assert!(uri_templates.contains(&"entrance://loops/{loop_id}/runtime-preflight"));
@@ -3420,6 +4008,7 @@ mod tests {
 
         assert!(names.contains(&"entrance_loop_contract"));
         assert!(names.contains(&"entrance_issue_advance"));
+        assert!(names.contains(&"entrance_loop_review"));
         assert!(names.contains(&"entrance_blocker_decision"));
         assert!(names.contains(&"entrance_connector_decision"));
     }
