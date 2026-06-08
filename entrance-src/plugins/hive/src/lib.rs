@@ -40,13 +40,15 @@ pub use loop_control::{
     IssueTimelineCounts, IssueTimelineDecisionAction, IssueTimelineDecisionReceipt,
     IssueTimelineHumanDecision, IssueTimelineItem, IssueTimelineItemReport,
     IssueTimelineItemResources, IssueTimelineReport, IssueTimelineResources,
-    IssueTimelineRoundGroup, IssueTransitionConfirmationPolicy, IssueTransitionPolicyAction,
-    IssueTransitionPolicyBlockedAction, IssueTransitionPolicyReport,
-    IssueTransitionPolicyResources, IssueTransitionReviewerBudget, OperatorConfirmationActor,
-    OperatorConfirmationClient, OperatorConfirmationReceipt, PolicyGateSpec, PolicyRegistryReport,
-    CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
-    OPERATOR_ACTION_CONFIRMATION_ARG, OPERATOR_ACTION_POLICY_SCHEMA_VERSION,
-    OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+    IssueTimelineRoundGroup, IssueTransitionActionPolicySpec, IssueTransitionConfirmationPolicy,
+    IssueTransitionConfirmationSpec, IssueTransitionPolicyAction,
+    IssueTransitionPolicyBlockedAction, IssueTransitionPolicyRegistry, IssueTransitionPolicyReport,
+    IssueTransitionPolicyResources, IssueTransitionReviewerBudget,
+    IssueTransitionReviewerFallbackPolicy, IssueTransitionStateClassSpec,
+    OperatorConfirmationActor, OperatorConfirmationClient, OperatorConfirmationReceipt,
+    PolicyGateSpec, PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE,
+    CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND, OPERATOR_ACTION_CONFIRMATION_ARG,
+    OPERATOR_ACTION_POLICY_SCHEMA_VERSION, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};

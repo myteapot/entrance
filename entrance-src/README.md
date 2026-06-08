@@ -114,8 +114,8 @@ renders it below Evidence Drilldown.
 `hive issue transition-policy <id>` exposes
 `entrance.hive.issue_transition_policy.v1`, an issue-level status transition
 contract with the current state class, allowed actions, blocked actions,
-confirmation requirements, Reviewer fallback budget, linked resources, and next
-actions; MCP exposes it as
+confirmation requirements, Reviewer fallback budget, an embedded snapshot of the
+kernel issue transition policy registry, linked resources, and next actions; MCP exposes it as
 `entrance://issues/{issue_id}/transition-policy`, and the Panel selected issue
 renders it before Loop Dashboard.
 `hive issue timeline <id>` exposes `entrance.hive.issue_timeline.v1`, an
@@ -153,8 +153,11 @@ the same health line so operators can see whether the local ledger structure is
 ready before trusting loop evidence.
 `hive policy registry` exposes the typed gate registry plus runtime worker
 policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
-required worker receipt fields, role binding, connector retry budgets, and the
-connector admission required-check contract. The compact policy and connector
+required worker receipt fields, role binding, the issue status transition
+registry, connector retry budgets, and the connector admission required-check
+contract. The issue transition registry includes state classes, allowed actions,
+confirmation requirements, command templates, and the 3-round Reviewer fallback
+policy used by `hive issue transition-policy`. The compact policy and connector
 registry surfaces include both the `required_checks` compatibility list and a
 structured `check_registry` with each check's severity, owner, required evidence,
 and summary. Actual connector admission check rows inherit the same metadata so
@@ -177,7 +180,9 @@ entries, and local path verification state.
 `hive issue transition-policy <id>` returns the issue status transition policy
 for operators or MCP clients that need to know which actions are allowed,
 which actions are blocked, which actions require confirmation receipts, and
-whether the Reviewer invalid-round fallback budget is exhausted.
+whether the Reviewer invalid-round fallback budget is exhausted. The full report
+embeds the active issue transition registry snapshot so operators can compare a
+specific issue surface against the kernel policy that produced it.
 `hive issue timeline <id>` returns the issue activity feed for operators who
 need to read comments, evidence, verdicts, operator decisions, blockers, and
 linked loop resources in one chronological control-plane view, with round
@@ -210,7 +215,10 @@ worker bindings, evidence counts, runtime readiness, and admission-rejection
 evidence/admission/packet links. The
 issue surface check verifies issue status, typed comments, operator
 comment/decision evidence, and the author/action/body bindings between evidence
-and its linked comment. Runtime policy checks the
+and its linked comment. The issue transition policy check verifies the issue
+action surface against the kernel transition registry, including allowed/blocked
+action coverage, confirmation contract fields, and the Reviewer fallback budget.
+Runtime policy checks the
 current round so a successful retry can replace a previously blocked runtime
 attempt.
 `hive loop doctor <id>` is the first CLI stop after a run: it combines trace and

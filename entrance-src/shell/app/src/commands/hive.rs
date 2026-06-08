@@ -1341,6 +1341,37 @@ fn compact_policy_registry(report: &PolicyRegistryReport) -> serde_json::Value {
             },
             "retry": report.connector.retry.iter().map(compact_connector_retry_policy).collect::<Vec<_>>()
         },
+        "issue_transitions": {
+            "schema_version": report.issue_transitions.schema_version.as_str(),
+            "owner": report.issue_transitions.owner.as_str(),
+            "scope": report.issue_transitions.scope.as_str(),
+            "resource_template": report.issue_transitions.resource_template.as_str(),
+            "state_classes": report.issue_transitions.state_classes.iter().map(|state| serde_json::json!({
+                "class": state.class.as_str(),
+                "statuses": state.statuses.iter().map(String::as_str).collect::<Vec<_>>(),
+                "terminal": state.terminal,
+                "human_decision_required": state.human_decision_required
+            })).collect::<Vec<_>>(),
+            "actions": report.issue_transitions.actions.iter().map(|action| serde_json::json!({
+                "action": action.action.as_str(),
+                "gate": action.gate.as_str(),
+                "from_statuses": action.from_statuses.iter().map(String::as_str).collect::<Vec<_>>(),
+                "to_status": action.to_status.as_str(),
+                "requires_confirmation": action.requires_confirmation
+            })).collect::<Vec<_>>(),
+            "confirmation": {
+                "required_actions": report.issue_transitions.confirmation.required_actions.iter().map(String::as_str).collect::<Vec<_>>(),
+                "confirmation_arg": report.issue_transitions.confirmation.confirmation_arg.as_str(),
+                "receipt_schema": report.issue_transitions.confirmation.receipt_schema.as_str(),
+                "policy_schema_version": report.issue_transitions.confirmation.policy_schema_version.as_str()
+            },
+            "reviewer_fallback": {
+                "trigger_decision": report.issue_transitions.reviewer_fallback.trigger_decision.as_str(),
+                "invalid_round_budget": report.issue_transitions.reviewer_fallback.invalid_round_budget,
+                "fallback_status": report.issue_transitions.reviewer_fallback.fallback_status.as_str(),
+                "human_decision_statuses": report.issue_transitions.reviewer_fallback.human_decision_statuses.iter().map(String::as_str).collect::<Vec<_>>()
+            }
+        },
         "runtime": {
             "supported": report.runtime.supported.iter().map(|runtime| serde_json::json!({
                 "name": runtime.name.as_str(),
@@ -10696,6 +10727,16 @@ fn compact_issue_transition_policy(report: &IssueTransitionPolicyReport) -> serd
             "hint": action.hint
         })).collect::<Vec<_>>(),
         "confirmation": report.confirmation,
+        "registry": {
+            "schema_version": report.registry.schema_version.as_str(),
+            "owner": report.registry.owner.as_str(),
+            "scope": report.registry.scope.as_str(),
+            "action_count": report.registry.actions.len(),
+            "reviewer_fallback": {
+                "invalid_round_budget": report.registry.reviewer_fallback.invalid_round_budget,
+                "fallback_status": report.registry.reviewer_fallback.fallback_status.as_str()
+            }
+        },
         "reviewer_budget": report.reviewer_budget,
         "resources": report.resources,
         "next_actions": report.next_actions.iter().take(5).collect::<Vec<_>>()

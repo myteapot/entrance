@@ -196,6 +196,59 @@ pub struct ConnectorPolicyRegistry {
     pub retry: Vec<ConnectorRetryPolicySpec>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueTransitionPolicyRegistry {
+    pub schema_version: String,
+    pub owner: String,
+    pub scope: String,
+    pub state_classes: Vec<IssueTransitionStateClassSpec>,
+    pub actions: Vec<IssueTransitionActionPolicySpec>,
+    pub confirmation: IssueTransitionConfirmationSpec,
+    pub reviewer_fallback: IssueTransitionReviewerFallbackPolicy,
+    pub resource_template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueTransitionStateClassSpec {
+    pub class: String,
+    pub statuses: Vec<String>,
+    pub terminal: bool,
+    pub human_decision_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueTransitionActionPolicySpec {
+    pub action: String,
+    pub label: String,
+    pub from_statuses: Vec<String>,
+    pub to_status: String,
+    pub gate: String,
+    pub source: String,
+    pub input: String,
+    pub destructive: bool,
+    pub requires_confirmation: bool,
+    pub runtime_required: bool,
+    pub command_template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueTransitionConfirmationSpec {
+    pub required_actions: Vec<String>,
+    pub confirmation_arg: String,
+    pub receipt_schema: String,
+    pub policy_schema_version: String,
+    pub policy_resource: String,
+    pub actor_identity_resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueTransitionReviewerFallbackPolicy {
+    pub trigger_decision: String,
+    pub invalid_round_budget: i64,
+    pub fallback_status: String,
+    pub human_decision_statuses: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorRetryPolicySpec {
     pub schema_version: String,
@@ -428,6 +481,7 @@ pub struct PolicyRegistryReport {
     pub gates: Vec<PolicyGateSpec>,
     pub runtime: RuntimePolicyRegistry,
     pub connector: ConnectorPolicyRegistry,
+    pub issue_transitions: IssueTransitionPolicyRegistry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1089,6 +1143,7 @@ pub struct IssueTransitionPolicyReport {
     pub loop_id: Option<i64>,
     pub policy_owner: String,
     pub policy_scope: String,
+    pub registry: IssueTransitionPolicyRegistry,
     pub state_class: String,
     pub human_decision_required: bool,
     pub summary: String,
@@ -2048,6 +2103,7 @@ pub fn policy_registry() -> PolicyRegistryReport {
             .collect(),
         runtime: runtime_policy_registry(),
         connector: connector_policy_registry(),
+        issue_transitions: issue_transition_policy_registry(),
     }
 }
 
@@ -2169,6 +2225,174 @@ fn connector_policy_registry() -> ConnectorPolicyRegistry {
         admission: connector_admission_policy_spec(),
         retry: connector_retry_policies(),
     }
+}
+
+fn issue_transition_policy_registry() -> IssueTransitionPolicyRegistry {
+    IssueTransitionPolicyRegistry {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        owner: "hive-kernel".to_string(),
+        scope: "issue.status.transition".to_string(),
+        state_classes: vec![
+            issue_transition_state_class_spec("runnable", &["Todo"], false, false),
+            issue_transition_state_class_spec("running", &["Doing"], false, false),
+            issue_transition_state_class_spec(
+                "needs_human",
+                &["Blocked", "Needs Review"],
+                false,
+                true,
+            ),
+            issue_transition_state_class_spec("terminal", &["Done", "Canceled"], true, false),
+        ],
+        actions: vec![
+            issue_transition_action_policy_spec(
+                "run",
+                "Run",
+                &["Todo"],
+                "runtime_verdict: Done | Blocked | Needs Review | Canceled",
+                "status_todo_and_loop_bound",
+                "runtime",
+                "none",
+                false,
+                false,
+                true,
+                "entrance hive issue run {issue_id} --runtime {runtime} --compact",
+            ),
+            issue_transition_action_policy_spec(
+                "comment",
+                "Comment",
+                &[
+                    "Todo",
+                    "Doing",
+                    "Blocked",
+                    "Needs Review",
+                    "Done",
+                    "Canceled",
+                ],
+                "same_status",
+                "issue_exists",
+                "human_options",
+                "body",
+                false,
+                false,
+                false,
+                "entrance hive issue comment {issue_id} --body <text> --compact",
+            ),
+            issue_transition_action_policy_spec(
+                "retry",
+                "Retry",
+                &["Blocked", "Needs Review", "Canceled"],
+                "Todo, then runtime_verdict",
+                "human_confirmed_retry_boundary",
+                "human_options",
+                "note",
+                false,
+                true,
+                true,
+                "entrance hive issue retry-run {issue_id} --body <note> --compact",
+            ),
+            issue_transition_action_policy_spec(
+                "request-review",
+                "Review",
+                &["Blocked"],
+                "Needs Review",
+                "human_confirmed_review_boundary",
+                "human_options",
+                "note",
+                false,
+                true,
+                false,
+                "entrance hive issue decide {issue_id} request-review --body <note> --compact",
+            ),
+            issue_transition_action_policy_spec(
+                "cancel",
+                "Cancel",
+                &["Todo", "Blocked", "Needs Review"],
+                "Canceled",
+                "human_confirmed_cancel_boundary",
+                "human_options",
+                "note",
+                true,
+                true,
+                false,
+                "entrance hive issue decide {issue_id} cancel --body <note> --compact",
+            ),
+        ],
+        confirmation: IssueTransitionConfirmationSpec {
+            required_actions: vec![
+                "cancel".to_string(),
+                "request-review".to_string(),
+                "retry".to_string(),
+            ],
+            confirmation_arg: OPERATOR_ACTION_CONFIRMATION_ARG.to_string(),
+            receipt_schema: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
+            policy_schema_version: OPERATOR_ACTION_POLICY_SCHEMA_VERSION.to_string(),
+            policy_resource: "entrance://policy/mcp-permissions".to_string(),
+            actor_identity_resource: "entrance://policy/actor-identity".to_string(),
+        },
+        reviewer_fallback: IssueTransitionReviewerFallbackPolicy {
+            trigger_decision: "reject".to_string(),
+            invalid_round_budget: REVIEWER_INVALID_ROUND_BUDGET,
+            fallback_status: "Blocked".to_string(),
+            human_decision_statuses: vec!["Blocked".to_string(), "Needs Review".to_string()],
+        },
+        resource_template: "entrance://issues/{issue_id}/transition-policy".to_string(),
+    }
+}
+
+fn issue_transition_state_class_spec(
+    class: &str,
+    statuses: &[&str],
+    terminal: bool,
+    human_decision_required: bool,
+) -> IssueTransitionStateClassSpec {
+    IssueTransitionStateClassSpec {
+        class: class.to_string(),
+        statuses: statuses
+            .iter()
+            .map(|status| (*status).to_string())
+            .collect(),
+        terminal,
+        human_decision_required,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn issue_transition_action_policy_spec(
+    action: &str,
+    label: &str,
+    from_statuses: &[&str],
+    to_status: &str,
+    gate: &str,
+    source: &str,
+    input: &str,
+    destructive: bool,
+    requires_confirmation: bool,
+    runtime_required: bool,
+    command_template: &str,
+) -> IssueTransitionActionPolicySpec {
+    IssueTransitionActionPolicySpec {
+        action: action.to_string(),
+        label: label.to_string(),
+        from_statuses: from_statuses
+            .iter()
+            .map(|status| (*status).to_string())
+            .collect(),
+        to_status: to_status.to_string(),
+        gate: gate.to_string(),
+        source: source.to_string(),
+        input: input.to_string(),
+        destructive,
+        requires_confirmation,
+        runtime_required,
+        command_template: command_template.to_string(),
+    }
+}
+
+fn issue_transition_action_policy(action: &str) -> Option<IssueTransitionActionPolicySpec> {
+    issue_transition_policy_registry()
+        .actions
+        .into_iter()
+        .find(|policy| policy.action == action)
 }
 
 fn connector_admission_policy_spec() -> ConnectorAdmissionPolicySpec {
@@ -3642,6 +3866,7 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         &evidence,
     ));
     let issue_surface = issue_surface_audit(store, &contract, &issues, &evidence)?;
+    let issue_transition_policy_errors = issue_transition_policy_audit_errors(store, &issues)?;
 
     let mut stage_evidence_errors = stage_evidence_audit_errors(&contract, &stages, &evidence);
     stage_evidence_errors.extend(evidence_worker_policy_audit_errors(&stages, &evidence));
@@ -3776,6 +4001,20 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
                 "comment_count": issue_surface.comment_count,
                 "operator_evidence_count": issue_surface.operator_evidence_count,
                 "issue_surface_errors": issue_surface.errors
+            }),
+        ),
+        audit_check(
+            "issue_transition_policy",
+            issue_transition_policy_errors.is_empty(),
+            format!(
+                "{} linked issues inspected against status transition policy; {} transition policy issues.",
+                issues.len(),
+                issue_transition_policy_errors.len()
+            ),
+            serde_json::json!({
+                "registry_owner": issue_transition_policy_registry().owner,
+                "registry_scope": issue_transition_policy_registry().scope,
+                "issue_transition_policy_errors": issue_transition_policy_errors
             }),
         ),
     ];
@@ -7099,6 +7338,168 @@ fn issue_surface_audit(
     Ok(audit)
 }
 
+fn issue_transition_policy_audit_errors(
+    store: &Store,
+    issues: &[HiveIssue],
+) -> Result<Vec<serde_json::Value>> {
+    let registry = issue_transition_policy_registry();
+    let registry_actions = registry
+        .actions
+        .iter()
+        .map(|action| action.action.clone())
+        .collect::<BTreeSet<_>>();
+    let mut errors = Vec::new();
+
+    for issue in issues {
+        let trace = match issue
+            .loop_id
+            .map(|loop_id| issue_trace_summary_without_audit(store, loop_id, Some(issue)))
+            .transpose()
+        {
+            Ok(trace) => trace,
+            Err(error) => {
+                errors.push(serde_json::json!({
+                    "issue_id": issue.id,
+                    "scope": "issue_transition_policy",
+                    "errors": ["trace.load"],
+                    "error": error.to_string()
+                }));
+                continue;
+            }
+        };
+        let actions = issue_actions(issue, trace.as_ref(), None);
+        let state_class = issue_transition_state_class(issue).to_string();
+        let allowed_actions = actions
+            .iter()
+            .map(|action| issue_transition_policy_action(issue, action))
+            .collect::<Vec<_>>();
+        let blocked_actions = issue_transition_blocked_actions(issue, &actions);
+        let confirmation = issue_transition_confirmation_policy(&actions);
+        let reviewer_budget = trace
+            .as_ref()
+            .map(issue_transition_reviewer_budget_from_trace);
+
+        let mut issue_errors = Vec::new();
+        if !registry
+            .state_classes
+            .iter()
+            .any(|state| state.class == state_class && state.statuses.contains(&issue.status))
+        {
+            issue_errors.push("state_class".to_string());
+        }
+        let allowed = allowed_actions
+            .iter()
+            .map(|action| action.action.action.clone())
+            .collect::<BTreeSet<_>>();
+        let blocked = blocked_actions
+            .iter()
+            .map(|action| action.action.clone())
+            .collect::<BTreeSet<_>>();
+        let union = allowed.union(&blocked).cloned().collect::<BTreeSet<_>>();
+        if union != registry_actions {
+            issue_errors.push("action.coverage".to_string());
+        }
+        if !allowed
+            .intersection(&blocked)
+            .collect::<Vec<_>>()
+            .is_empty()
+        {
+            issue_errors.push("action.overlap".to_string());
+        }
+        for action in &allowed_actions {
+            issue_errors.extend(
+                issue_transition_allowed_action_policy_errors(issue, action, &registry)
+                    .into_iter()
+                    .map(|field| format!("allowed.{}.{}", action.action.action, field)),
+            );
+        }
+        for action in &blocked_actions {
+            if !registry_actions.contains(&action.action) {
+                issue_errors.push(format!("blocked.{}.unknown", action.action));
+            }
+        }
+        if confirmation.confirmation_arg != registry.confirmation.confirmation_arg {
+            issue_errors.push("confirmation.arg".to_string());
+        }
+        if confirmation.receipt_schema != registry.confirmation.receipt_schema {
+            issue_errors.push("confirmation.receipt_schema".to_string());
+        }
+        if confirmation.policy_schema_version != registry.confirmation.policy_schema_version {
+            issue_errors.push("confirmation.policy_schema_version".to_string());
+        }
+        if let Some(budget) = reviewer_budget.as_ref() {
+            if budget.reviewer_invalid_round_budget
+                != registry.reviewer_fallback.invalid_round_budget
+            {
+                issue_errors.push("reviewer_budget.invalid_round_budget".to_string());
+            }
+            if budget.fallback_status != registry.reviewer_fallback.fallback_status {
+                issue_errors.push("reviewer_budget.fallback_status".to_string());
+            }
+        }
+
+        if !issue_errors.is_empty() {
+            issue_errors.sort();
+            issue_errors.dedup();
+            errors.push(serde_json::json!({
+                "issue_id": issue.id,
+                "status": issue.status,
+                "state_class": state_class,
+                "allowed_actions": allowed,
+                "blocked_actions": blocked,
+                "errors": issue_errors
+            }));
+        }
+    }
+
+    Ok(errors)
+}
+
+fn issue_transition_allowed_action_policy_errors(
+    issue: &HiveIssue,
+    action: &IssueTransitionPolicyAction,
+    registry: &IssueTransitionPolicyRegistry,
+) -> Vec<String> {
+    let Some(policy) = registry
+        .actions
+        .iter()
+        .find(|policy| policy.action == action.action.action)
+    else {
+        return vec!["unknown".to_string()];
+    };
+    let mut errors = Vec::new();
+    if !policy.from_statuses.contains(&issue.status) {
+        errors.push("from_status".to_string());
+    }
+    if action.gate != policy.gate {
+        errors.push("gate".to_string());
+    }
+    if action.requires_human != policy.requires_confirmation {
+        errors.push("requires_human".to_string());
+    }
+    if action.action.label != policy.label {
+        errors.push("label".to_string());
+    }
+    if action.action.input != policy.input {
+        errors.push("input".to_string());
+    }
+    if action.action.destructive != policy.destructive {
+        errors.push("destructive".to_string());
+    }
+    if action.action.confirmation_required != policy.requires_confirmation {
+        errors.push("confirmation_required".to_string());
+    }
+    let expected_to_status = if policy.to_status == "same_status" {
+        issue.status.clone()
+    } else {
+        policy.to_status.clone()
+    };
+    if action.to_status.as_deref() != Some(expected_to_status.as_str()) {
+        errors.push("to_status".to_string());
+    }
+    errors
+}
+
 fn issue_status_for_contract_status(status: &str) -> Option<&'static str> {
     match status {
         "todo" => Some("Todo"),
@@ -7164,13 +7565,11 @@ fn issue_action_field_errors(
     expected_actions: &[String],
     errors: &mut Vec<String>,
 ) {
+    let policy = issue_transition_action_policy(&action.action);
     if action.schema_version != ISSUE_ACTION_SCHEMA_VERSION {
         errors.push("action.schema_version".to_string());
     }
-    if !matches!(
-        action.action.as_str(),
-        "run" | "comment" | "retry" | "request-review" | "cancel"
-    ) {
+    if policy.is_none() {
         errors.push("action.name".to_string());
     }
     if !expected_actions
@@ -7179,14 +7578,7 @@ fn issue_action_field_errors(
     {
         errors.push("action.unexpected".to_string());
     }
-    let expected_label = match action.action.as_str() {
-        "run" => Some("Run"),
-        "comment" => Some("Comment"),
-        "retry" => Some("Retry"),
-        "request-review" => Some("Review"),
-        "cancel" => Some("Cancel"),
-        _ => None,
-    };
+    let expected_label = policy.as_ref().map(|policy| policy.label.as_str());
     if expected_label.is_some_and(|label| action.label != label) {
         errors.push("action.label".to_string());
     }
@@ -7198,19 +7590,20 @@ fn issue_action_field_errors(
     if action.source != expected_source {
         errors.push("action.source".to_string());
     }
-    let expected_input = match action.action.as_str() {
-        "run" => Some("none"),
-        "comment" => Some("body"),
-        "retry" | "request-review" | "cancel" => Some("note"),
-        _ => None,
-    };
+    let expected_input = policy.as_ref().map(|policy| policy.input.as_str());
     if expected_input.is_some_and(|input| action.input != input) {
         errors.push("action.input".to_string());
     }
-    if action.destructive != (action.action == "cancel") {
+    if policy
+        .as_ref()
+        .is_some_and(|policy| action.destructive != policy.destructive)
+    {
         errors.push("action.destructive".to_string());
     }
-    let confirmation_required = issue_action_requires_confirmation(&action.action);
+    let confirmation_required = policy
+        .as_ref()
+        .map(|policy| policy.requires_confirmation)
+        .unwrap_or_else(|| issue_action_requires_confirmation(&action.action));
     if action.confirmation_required != confirmation_required {
         errors.push("action.confirmation_required".to_string());
     }
@@ -7838,6 +8231,7 @@ pub fn issue_transition_policy(
     issue_id: i64,
 ) -> Result<IssueTransitionPolicyReport> {
     let card = issue_card(store, issue_id)?;
+    let registry = issue_transition_policy_registry();
     let lifecycle = card
         .issue
         .loop_id
@@ -7876,8 +8270,9 @@ pub fn issue_transition_policy(
         schema_version: ISSUE_TRANSITION_POLICY_SCHEMA_VERSION.to_string(),
         issue: card.issue.clone(),
         loop_id: card.issue.loop_id,
-        policy_owner: "hive-kernel".to_string(),
-        policy_scope: "issue.status.transition".to_string(),
+        policy_owner: registry.owner.clone(),
+        policy_scope: registry.scope.clone(),
+        registry,
         state_class,
         human_decision_required,
         summary,
@@ -8724,35 +9119,32 @@ fn issue_transition_policy_action(
     issue: &HiveIssue,
     action: &IssueAction,
 ) -> IssueTransitionPolicyAction {
+    let policy = issue_transition_action_policy(&action.action);
     IssueTransitionPolicyAction {
         action: action.clone(),
         from_status: issue.status.clone(),
-        to_status: issue_transition_action_to_status(issue, action),
-        gate: issue_transition_action_gate(action).to_string(),
+        to_status: issue_transition_action_to_status(issue, action, policy.as_ref()),
+        gate: policy
+            .as_ref()
+            .map(|policy| policy.gate.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
         requires_human: action.confirmation_required,
         rationale: issue_transition_action_rationale(issue, action),
     }
 }
 
-fn issue_transition_action_to_status(issue: &HiveIssue, action: &IssueAction) -> Option<String> {
-    match action.action.as_str() {
-        "run" => Some("runtime_verdict: Done | Blocked | Needs Review | Canceled".to_string()),
-        "comment" => Some(issue.status.clone()),
-        "retry" => Some("Todo, then runtime_verdict".to_string()),
-        "request-review" => Some("Needs Review".to_string()),
-        "cancel" => Some("Canceled".to_string()),
-        _ => None,
-    }
-}
-
-fn issue_transition_action_gate(action: &IssueAction) -> &'static str {
-    match action.action.as_str() {
-        "run" => "status_todo_and_loop_bound",
-        "comment" => "issue_exists",
-        "retry" => "human_confirmed_retry_boundary",
-        "request-review" => "human_confirmed_review_boundary",
-        "cancel" => "human_confirmed_cancel_boundary",
-        _ => "unknown",
+fn issue_transition_action_to_status(
+    issue: &HiveIssue,
+    action: &IssueAction,
+    policy: Option<&IssueTransitionActionPolicySpec>,
+) -> Option<String> {
+    let Some(policy) = policy else {
+        return None;
+    };
+    if action.action == "comment" && policy.to_status == "same_status" {
+        Some(issue.status.clone())
+    } else {
+        Some(policy.to_status.clone())
     }
 }
 
@@ -8880,6 +9272,7 @@ fn issue_transition_blocked_action(
 fn issue_transition_confirmation_policy(
     actions: &[IssueAction],
 ) -> IssueTransitionConfirmationPolicy {
+    let registry = issue_transition_policy_registry();
     let mut required_actions = actions
         .iter()
         .filter(|action| action.confirmation_required)
@@ -8890,12 +9283,12 @@ fn issue_transition_confirmation_policy(
     IssueTransitionConfirmationPolicy {
         required: !required_actions.is_empty(),
         required_actions,
-        confirmation_arg: OPERATOR_ACTION_CONFIRMATION_ARG.to_string(),
-        receipt_schema: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
-        policy_schema_version: OPERATOR_ACTION_POLICY_SCHEMA_VERSION.to_string(),
-        policy_resource: "entrance://policy/mcp-permissions".to_string(),
+        confirmation_arg: registry.confirmation.confirmation_arg,
+        receipt_schema: registry.confirmation.receipt_schema,
+        policy_schema_version: registry.confirmation.policy_schema_version,
+        policy_resource: registry.confirmation.policy_resource,
         review_queue_resource: "entrance://review-queue".to_string(),
-        actor_identity_resource: "entrance://policy/actor-identity".to_string(),
+        actor_identity_resource: registry.confirmation.actor_identity_resource,
     }
 }
 
@@ -8903,18 +9296,54 @@ fn issue_transition_reviewer_budget(
     lifecycle: &HiveLoopWorkerLifecycleReport,
     trace: Option<&IssueTraceSummary>,
 ) -> IssueTransitionReviewerBudget {
+    let registry = issue_transition_policy_registry();
     IssueTransitionReviewerBudget {
         current_round: lifecycle.current_round,
         reviewer_invalid_rounds_used: lifecycle.current.reviewer_invalid_rounds_used,
-        reviewer_invalid_round_budget: lifecycle.policy.reviewer_invalid_round_budget,
+        reviewer_invalid_round_budget: registry.reviewer_fallback.invalid_round_budget,
         reviewer_invalid_budget_exhausted: lifecycle.current.reviewer_invalid_budget_exhausted,
-        fallback_status: lifecycle.policy.fallback_status.clone(),
+        fallback_status: registry.reviewer_fallback.fallback_status,
         current_decision: lifecycle
             .current
             .decision
             .clone()
             .or_else(|| trace.and_then(|trace| trace.last_decision.clone())),
         reason_code: trace.and_then(|trace| trace.reason_code.clone()),
+    }
+}
+
+fn issue_transition_reviewer_budget_from_trace(
+    trace: &IssueTraceSummary,
+) -> IssueTransitionReviewerBudget {
+    let registry = issue_transition_policy_registry();
+    let current_decision = trace
+        .rounds
+        .iter()
+        .find(|round| round.round == trace.current_round)
+        .and_then(|round| round.decision.clone())
+        .or_else(|| trace.last_decision.clone());
+    let reviewer_invalid_rounds_used = match current_decision.as_deref() {
+        Some("reject") => trace
+            .current_round
+            .min(registry.reviewer_fallback.invalid_round_budget),
+        Some("blocked")
+            if trace.current_round >= registry.reviewer_fallback.invalid_round_budget =>
+        {
+            registry.reviewer_fallback.invalid_round_budget
+        }
+        _ => 0,
+    };
+    let reviewer_invalid_budget_exhausted = reviewer_invalid_rounds_used
+        >= registry.reviewer_fallback.invalid_round_budget
+        && current_decision.as_deref() == Some("blocked");
+    IssueTransitionReviewerBudget {
+        current_round: trace.current_round,
+        reviewer_invalid_rounds_used,
+        reviewer_invalid_round_budget: registry.reviewer_fallback.invalid_round_budget,
+        reviewer_invalid_budget_exhausted,
+        fallback_status: registry.reviewer_fallback.fallback_status,
+        current_decision,
+        reason_code: trace.reason_code.clone(),
     }
 }
 
@@ -12183,6 +12612,49 @@ mod tests {
             MAX_WORKER_TIMEOUT_SECS
         );
         assert_eq!(registry.runtime.worker.max_attempts, MAX_WORKER_ATTEMPTS);
+        assert_eq!(
+            registry.issue_transitions.schema_version,
+            POLICY_SCHEMA_VERSION
+        );
+        assert_eq!(registry.issue_transitions.owner, "hive-kernel");
+        assert_eq!(registry.issue_transitions.scope, "issue.status.transition");
+        assert_eq!(
+            registry
+                .issue_transitions
+                .actions
+                .iter()
+                .map(|action| action.action.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run", "comment", "retry", "request-review", "cancel"]
+        );
+        let retry_transition = registry
+            .issue_transitions
+            .actions
+            .iter()
+            .find(|action| action.action == "retry")
+            .expect("retry transition policy should be registered");
+        assert_eq!(retry_transition.gate, "human_confirmed_retry_boundary");
+        assert_eq!(retry_transition.input, "note");
+        assert!(retry_transition.requires_confirmation);
+        assert_eq!(
+            registry.issue_transitions.confirmation.required_actions,
+            vec!["cancel", "request-review", "retry"]
+        );
+        assert_eq!(
+            registry
+                .issue_transitions
+                .reviewer_fallback
+                .invalid_round_budget,
+            REVIEWER_INVALID_ROUND_BUDGET
+        );
+        assert_eq!(
+            registry.issue_transitions.reviewer_fallback.fallback_status,
+            "Blocked"
+        );
+        assert_eq!(
+            registry.issue_transitions.resource_template,
+            "entrance://issues/{issue_id}/transition-policy"
+        );
         let codex_runtime = registry
             .runtime
             .supported
@@ -12296,6 +12768,31 @@ mod tests {
         assert!(policy_check
             .details
             .pointer("/policy_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.is_empty()));
+        let transition_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "issue_transition_policy")
+            .expect("issue transition policy check should exist");
+        assert!(transition_check.passed);
+        assert_eq!(
+            transition_check
+                .details
+                .pointer("/registry_owner")
+                .and_then(|value| value.as_str()),
+            Some("hive-kernel")
+        );
+        assert_eq!(
+            transition_check
+                .details
+                .pointer("/registry_scope")
+                .and_then(|value| value.as_str()),
+            Some("issue.status.transition")
+        );
+        assert!(transition_check
+            .details
+            .pointer("/issue_transition_policy_errors")
             .and_then(|value| value.as_array())
             .is_some_and(|errors| errors.is_empty()));
 
@@ -13367,6 +13864,20 @@ mod tests {
                 && check
                     .details
                     .pointer("/issue_surface_errors")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|errors| errors.is_empty())
+        }));
+        assert!(audit_report.checks.iter().any(|check| {
+            check.name == "issue_transition_policy"
+                && check.passed
+                && check
+                    .details
+                    .pointer("/registry_owner")
+                    .and_then(|value| value.as_str())
+                    == Some("hive-kernel")
+                && check
+                    .details
+                    .pointer("/issue_transition_policy_errors")
                     .and_then(|value| value.as_array())
                     .is_some_and(|errors| errors.is_empty())
         }));
@@ -15595,6 +16106,32 @@ mod tests {
         assert_eq!(
             blocked_policy.schema_version,
             ISSUE_TRANSITION_POLICY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            blocked_policy.registry.schema_version,
+            POLICY_SCHEMA_VERSION
+        );
+        assert_eq!(blocked_policy.policy_owner, blocked_policy.registry.owner);
+        assert_eq!(blocked_policy.policy_scope, blocked_policy.registry.scope);
+        assert_eq!(
+            blocked_policy
+                .registry
+                .actions
+                .iter()
+                .map(|action| action.action.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run", "comment", "retry", "request-review", "cancel"]
+        );
+        assert_eq!(
+            blocked_policy
+                .registry
+                .reviewer_fallback
+                .invalid_round_budget,
+            REVIEWER_INVALID_ROUND_BUDGET
+        );
+        assert_eq!(
+            blocked_policy.registry.reviewer_fallback.fallback_status,
+            "Blocked"
         );
         assert_eq!(blocked_policy.state_class, "needs_human");
         assert!(blocked_policy.human_decision_required);

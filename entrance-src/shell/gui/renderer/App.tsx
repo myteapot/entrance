@@ -241,6 +241,22 @@ type IssueTransitionPolicyReport = {
   loop_id: number | null;
   policy_owner: string;
   policy_scope: string;
+  registry: {
+    schema_version: string;
+    owner: string;
+    scope: string;
+    actions: Array<{
+      action: string;
+      gate: string;
+      from_statuses: string[];
+      to_status: string;
+      requires_confirmation: boolean;
+    }>;
+    reviewer_fallback: {
+      invalid_round_budget: number;
+      fallback_status: string;
+    };
+  };
   state_class: string;
   human_decision_required: boolean;
   summary: string;
@@ -4047,6 +4063,7 @@ export default function App() {
                               <p>{policy.summary}</p>
                               <div class="trace-strip">
                                 <span class="trace-pill">{schemaLabel(policy.schema_version)}</span>
+                                <span class="trace-pill">{schemaLabel(policy.registry.schema_version)}</span>
                                 <span class="trace-pill">{policy.policy_owner}</span>
                                 <span class="trace-pill">{policy.policy_scope}</span>
                                 <span

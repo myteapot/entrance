@@ -14,6 +14,7 @@ Last updated: 2026-06-09
 - 本轮继续新增 evidence manifest 最小切片：CLI `hive loop evidence-manifest <id>`、daemon `hive_loop_evidence_manifest`、MCP `entrance://loops/{loop_id}/evidence-manifest`、Panel selected issue 的 Evidence Manifest block，展示 payload/receipt/transcript/artifact entries、digest coverage、path verification state 和 next actions。
 - 本轮继续把 issue activity timeline 推进成 issue-first 控制面：`hive issue timeline <id>` / `hive issue timeline-item <id> <item-id>` / `hive_issue_timeline` / `entrance://issues/{issue_id}/timeline` / `entrance://issues/{issue_id}/timeline/items/{item_id}` / Panel Activity Timeline 现在会暴露 round groups、item permalink、Blocked/Needs Review human decision surface、primary action、retry/review/cancel/comment command、operator confirmation receipt provenance、confirmation policy 和 issue-control/review-queue resource。
 - 本轮继续新增 issue transition policy 最小切片：CLI `hive issue transition-policy <id>`、daemon `hive_issue_transition_policy`、MCP `entrance://issues/{issue_id}/transition-policy`、MCP issue control packet resource pointer、Panel selected issue 的 Transition Policy block，用一份 `entrance.hive.issue_transition_policy.v1` 汇总当前 state class、allowed/blocked actions、confirmation receipt contract、Reviewer fallback budget、policy owner/scope 和 linked resources。
+- 本轮继续把 issue transition policy 绑定到 kernel policy registry：`hive policy registry --compact` 现在暴露 `issue_transitions` registry，`issue_transition_policy.v1` report 嵌入 registry snapshot，`hive loop audit` 增加 `issue_transition_policy` check 来校验 allowed/blocked action coverage、confirmation contract 和 Reviewer fallback budget。
 
 ## 还没做完
 
@@ -22,11 +23,11 @@ Last updated: 2026-06-09
 - Productize MCP：真实客户端配置、协议兼容测试、verified actor identity、权限边界、远程 connector 绑定。
 - Productize Linear/GitHub connector：真实 token 验证、状态映射、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
 - Productize issue timeline：筛选/折叠、远端 issue comment 映射、inline decision 的操作后刷新状态、receipt drilldown 和更强的 blocked action provenance。
-- Productize issue transition policy：把当前派生 report 升级为真正的状态转换 policy registry 对象，加入版本迁移、策略 owner、状态机测试、Panel 操作后刷新和远端 issue 状态映射。
+- Productize issue transition policy：当前已经有 kernel registry/report snapshot/audit 绑定；还缺版本迁移、状态机测试、Panel 操作后刷新、远端 issue 状态映射和更完整的 policy lifecycle。
 - Hardening workers：sandbox、环境脱敏、heartbeat、resume/cancel/replacement、timeout recovery、跨进程 durable failure attribution。
 - Reviewer gates 继续加强：目标漂移检测、score vector 计算、keep/reject/block 证据要求，以及需要人类偏好时的选项生成。
 - 正式 compiler IR：从 archive 中提升为 current truth，并把 loop contract、packet、receipt、evidence、verdict、policy registry lifecycle 变成版本化 runtime 对象。
 
 ## 下一轮建议
 
-优先把 issue transition policy 从派生报告推进成真正的 kernel policy registry 对象，同时把 issue timeline inline decision、Evidence Drilldown/Manifest 接到真实 agent/connector 产物：操作后刷新、receipt drilldown、真实 artifact manifest 生成与内容校验、完整 transcript 展开、blocker decision workflow。
+优先把 issue transition policy 补到状态机测试和远端状态映射，同时把 issue timeline inline decision、Evidence Drilldown/Manifest 接到真实 agent/connector 产物：操作后刷新、receipt drilldown、真实 artifact manifest 生成与内容校验、完整 transcript 展开、blocker decision workflow。
