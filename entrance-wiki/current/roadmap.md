@@ -16,6 +16,9 @@ Entrance has reached a local MVP unit:
 - The built-in `local-hive-panel` is now the default in-process
   issue/status/comment surface. It reports current local issues without
   requiring an external mirror file.
+- `entrance mcp stdio` now exposes the local Hive issue/status/comment kernel
+  as a minimal MCP tool/resource surface for creating, running, retrying,
+  commenting on, and reading issue-bound loops.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options.
 
@@ -26,6 +29,9 @@ multi-agent runtime/compiler product.
 
 ### P0: External issue surfaces
 
+- Productize the MCP stdio surface: client config docs, prompts where useful,
+  stronger protocol tests, clearer auth/permission policy, and compatibility
+  checks against real MCP clients.
 - Make `file:` and `remote-fixture:` connector roundtrips the default external
   dry-run demo path, with one clear CLI command and one clear Panel action.
 - Add live token-backed GitHub and Linear validation runs, including safe

@@ -26,6 +26,7 @@ cargo run -p entrance-app --bin entrance -- hive issue connector-admission 1 --c
 cargo run -p entrance-app --bin entrance -- hive issue decide 1 request-review --body "Need human call"
 cargo run -p entrance-app --bin entrance -- hive schema --compact
 cargo run -p entrance-app --bin entrance -- launcher list
+cargo run -p entrance-app --bin entrance -- mcp stdio
 ```
 
 `hive loop demo` is the default MVP bootstrap path: it fills in a demo contract,
@@ -255,6 +256,49 @@ response per line. The HTTP daemon exposes:
 
 - `GET /health`
 - `POST /invoke`
+
+## MCP Stdio
+
+```bash
+cargo run -p entrance-app --bin entrance -- mcp stdio
+```
+
+The MCP stdio surface accepts newline-delimited JSON-RPC 2.0 messages and
+returns one JSON-RPC response per line. It is the first local MCP-native control
+surface for the Hive kernel, not a separate remote MCP service.
+
+Supported methods:
+
+- `initialize`, `notifications/initialized`, and `ping`
+- `tools/list`
+- `tools/call`
+- `resources/list`
+- `resources/read`
+- `resources/templates/list`
+
+Issue tools:
+
+- `entrance_issue_list`
+- `entrance_issue_show`
+- `entrance_issue_comment`
+- `entrance_loop_create`
+- `entrance_issue_run`
+- `entrance_issue_retry`
+- `entrance_issue_decide`
+
+Resources:
+
+- `entrance://status`
+- `entrance://issues`
+- `entrance://issues/{issue_id}`
+- `entrance://policy/registry`
+- `entrance://schema/status`
+
+`entrance_loop_create` creates an issue-bound
+`Explorer -> Developer -> Reviewer` contract. `entrance_issue_run` and
+`entrance_issue_retry` advance the linked loop through the same Hive runtime
+used by the CLI and Panel, including Developer/Reviewer verdicts and the
+3-round reviewer-invalid fallback to `Blocked`.
 
 ## Config And Data
 

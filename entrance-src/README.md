@@ -334,7 +334,7 @@ Rust · Electron · SolidJS · SQLite · TOML
 
 ## 当前阶段 / Status
 
-**V2 Microkernel Preview** — CLI、daemon bridge 和 Electron GUI 共用同一套 Rust runtime。当前没有独立 MCP server；外部集成应先走 daemon stdio/http invoke 协议。
+**V2 Microkernel Preview** — CLI、daemon bridge、MCP stdio surface 和 Electron GUI 共用同一套 Rust runtime。`entrance mcp stdio` 已经暴露最小 issue/status/comment tool/resource 面，适合本地 MCP 客户端试跑 Hive loop；daemon stdio/http 仍是 GUI 和自动化调用的主桥接协议。
 
 ---
 

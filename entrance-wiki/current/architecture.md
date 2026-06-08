@@ -12,8 +12,8 @@ Entrance V2 is a compact Rust workspace with one binary and three plugin crates.
   callbacks, and review state.
 - `entrance-src/plugins/launcher/`: local app indexing, search, pinning, and
   launch dispatch.
-- `entrance-src/shell/app/`: the only Rust binary, exposing CLI and daemon
-  transports.
+- `entrance-src/shell/app/`: the only Rust binary, exposing CLI, daemon
+  transports, and the MCP stdio issue surface.
 - `entrance-src/shell/gui/`: Electron + SolidJS frontend that invokes
   `entrance daemon`.
 
@@ -25,6 +25,9 @@ those paths, but they are archive-only context.
 
 ## Runtime Boundary
 
-External callers should use `entrance daemon` over stdio or
-`entrance daemon http` over loopback HTTP. There is no standalone MCP server in
-the active V2 shape.
+External GUI and automation callers should use `entrance daemon` over stdio or
+`entrance daemon http` over loopback HTTP. MCP clients can use
+`entrance mcp stdio`, which is implemented inside the same `shell/app` binary
+and exposes the local Hive issue/status/comment kernel as tools and resources.
+There is still no separate `shell/mcp/` package or remote MCP service in the
+active V2 shape.

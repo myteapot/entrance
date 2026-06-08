@@ -7,4 +7,5 @@ pub enum Command {
     Launcher(Vec<String>),
     DaemonStdio,
     DaemonHttp,
+    McpStdio,
 }

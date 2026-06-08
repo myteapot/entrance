@@ -14,6 +14,8 @@ pub fn parse(args: &[String]) -> Result<Command> {
         [command, subcommand] if command == "daemon" && subcommand == "http" => {
             Ok(Command::DaemonHttp)
         }
+        [command] if command == "mcp" => Ok(Command::McpStdio),
+        [command, subcommand] if command == "mcp" && subcommand == "stdio" => Ok(Command::McpStdio),
         [command, rest @ ..] if command == "drawer" => Ok(Command::Drawer(rest.to_vec())),
         [command, rest @ ..] if command == "hive" => Ok(Command::Hive(rest.to_vec())),
         [command, rest @ ..] if command == "launcher" => Ok(Command::Launcher(rest.to_vec())),
@@ -31,7 +33,7 @@ mod tests {
     use crate::command::Command;
 
     #[test]
-    fn daemon_subcommands_are_the_only_bridge_entrypoints() {
+    fn daemon_and_mcp_stdio_are_bridge_entrypoints() {
         assert!(matches!(
             parse(&["daemon".to_string()]).unwrap(),
             Command::DaemonStdio
@@ -44,6 +46,13 @@ mod tests {
             parse(&["daemon".to_string(), "http".to_string()]).unwrap(),
             Command::DaemonHttp
         ));
-        assert!(parse(&["mcp".to_string(), "stdio".to_string()]).is_err());
+        assert!(matches!(
+            parse(&["mcp".to_string()]).unwrap(),
+            Command::McpStdio
+        ));
+        assert!(matches!(
+            parse(&["mcp".to_string(), "stdio".to_string()]).unwrap(),
+            Command::McpStdio
+        ));
     }
 }
