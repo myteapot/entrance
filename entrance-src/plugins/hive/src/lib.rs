@@ -37,12 +37,13 @@ pub use loop_control::{
     HiveLoopWorkerLifecyclePolicy, HiveLoopWorkerLifecycleReport, HiveLoopWorkerLifecycleRound,
     HiveLoopWorkerLifecycleWorker, IssueAction, IssueCard, IssueCommentRequest,
     IssueDecisionRequest, IssueDoctorSummary, IssueMirrorReport, IssueRunRequest,
-    IssueTimelineCounts, IssueTimelineDecisionAction, IssueTimelineHumanDecision,
-    IssueTimelineItem, IssueTimelineReport, IssueTimelineResources, IssueTimelineRoundGroup,
-    OperatorConfirmationActor, OperatorConfirmationClient, OperatorConfirmationReceipt,
-    PolicyGateSpec, PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE,
-    CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND, OPERATOR_ACTION_CONFIRMATION_ARG,
-    OPERATOR_ACTION_POLICY_SCHEMA_VERSION, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+    IssueTimelineCounts, IssueTimelineDecisionAction, IssueTimelineDecisionReceipt,
+    IssueTimelineHumanDecision, IssueTimelineItem, IssueTimelineReport, IssueTimelineResources,
+    IssueTimelineRoundGroup, OperatorConfirmationActor, OperatorConfirmationClient,
+    OperatorConfirmationReceipt, PolicyGateSpec, PolicyRegistryReport,
+    CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+    OPERATOR_ACTION_CONFIRMATION_ARG, OPERATOR_ACTION_POLICY_SCHEMA_VERSION,
+    OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};

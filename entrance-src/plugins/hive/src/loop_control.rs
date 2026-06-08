@@ -1090,6 +1090,7 @@ pub struct IssueTimelineReport {
     pub counts: IssueTimelineCounts,
     pub rounds: Vec<IssueTimelineRoundGroup>,
     pub human_decision: IssueTimelineHumanDecision,
+    pub decision_receipts: Vec<IssueTimelineDecisionReceipt>,
     pub items: Vec<IssueTimelineItem>,
     pub resources: IssueTimelineResources,
     pub next_actions: Vec<String>,
@@ -1104,6 +1105,7 @@ pub struct IssueTimelineCounts {
     pub operator_event_count: usize,
     pub blocker_count: usize,
     pub receipt_issue_count: usize,
+    pub decision_receipt_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1130,6 +1132,8 @@ pub struct IssueTimelineHumanDecision {
     pub issue_status: Option<String>,
     pub primary_action: Option<String>,
     pub actions: Vec<IssueTimelineDecisionAction>,
+    pub receipt_count: usize,
+    pub last_receipt: Option<IssueTimelineDecisionReceipt>,
     pub policy_resource: String,
     pub review_queue_resource: String,
     pub issue_control_resource: String,
@@ -1143,6 +1147,29 @@ pub struct IssueTimelineDecisionAction {
     pub recommended: bool,
     pub operator_option: Option<String>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueTimelineDecisionReceipt {
+    pub id: String,
+    pub source: String,
+    pub timestamp: String,
+    pub round: Option<i64>,
+    pub action: Option<String>,
+    pub author: Option<String>,
+    pub comment_id: Option<i64>,
+    pub evidence_id: Option<i64>,
+    pub receipt_schema_version: Option<String>,
+    pub receipt_source: Option<String>,
+    pub policy_schema_version: Option<String>,
+    pub confirmation_arg: Option<String>,
+    pub human_confirmed: Option<bool>,
+    pub client_name: Option<String>,
+    pub actor_label: Option<String>,
+    pub actor_trust: Option<String>,
+    pub note_excerpt: Option<String>,
+    pub linked_resource: String,
+    pub details: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7723,14 +7750,16 @@ pub fn issue_timeline(store: &Store, issue_id: i64) -> Result<IssueTimelineRepor
         ));
     }
 
+    let mut loop_evidence = Vec::new();
     if let Some(loop_id) = card.issue.loop_id {
         let stages = store.list_hive_loop_stages(loop_id)?;
         let stage_roles = stage_role_map(&stages);
-        for evidence in store.list_hive_loop_evidence(loop_id)? {
+        loop_evidence = store.list_hive_loop_evidence(loop_id)?;
+        for evidence in &loop_evidence {
             let summary = issue_evidence_summary(&evidence, &stage_roles);
             items.push(issue_timeline_evidence_item(
                 &card.issue,
-                &evidence,
+                evidence,
                 &summary,
                 &mut sequence,
             ));
@@ -7754,9 +7783,11 @@ pub fn issue_timeline(store: &Store, issue_id: i64) -> Result<IssueTimelineRepor
     }
     let counts = issue_timeline_counts(&items);
     let rounds = issue_timeline_round_groups(&items);
+    let decision_receipts =
+        issue_timeline_decision_receipts(&card.issue, &card.comments, &loop_evidence);
     let timeline_state = issue_timeline_state(&card.issue);
     let summary = issue_timeline_summary(&card.issue, &timeline_state, &counts, &rounds);
-    let human_decision = issue_timeline_human_decision(&card, &items);
+    let human_decision = issue_timeline_human_decision(&card, &items, &decision_receipts);
     let next_actions = issue_timeline_next_actions(&card);
     Ok(IssueTimelineReport {
         schema_version: ISSUE_TIMELINE_SCHEMA_VERSION.to_string(),
@@ -7767,6 +7798,7 @@ pub fn issue_timeline(store: &Store, issue_id: i64) -> Result<IssueTimelineRepor
         counts,
         rounds,
         human_decision,
+        decision_receipts,
         items,
         resources: issue_timeline_resources(&card.issue),
         next_actions,
@@ -8028,6 +8060,15 @@ fn issue_timeline_counts(items: &[IssueTimelineItem]) -> IssueTimelineCounts {
                     .is_some_and(|values| !values.is_empty())
         })
         .count();
+    let decision_receipt_count = items
+        .iter()
+        .filter(|item| {
+            item.details
+                .pointer("/confirmation_receipt_schema")
+                .and_then(|value| value.as_str())
+                .is_some()
+        })
+        .count();
     IssueTimelineCounts {
         item_count: items.len(),
         comment_count,
@@ -8036,6 +8077,7 @@ fn issue_timeline_counts(items: &[IssueTimelineItem]) -> IssueTimelineCounts {
         operator_event_count,
         blocker_count,
         receipt_issue_count,
+        decision_receipt_count,
     }
 }
 
@@ -8155,9 +8197,165 @@ fn issue_timeline_summary(
     )
 }
 
+fn issue_timeline_decision_receipts(
+    issue: &HiveIssue,
+    comments: &[HiveComment],
+    evidence: &[HiveLoopEvidence],
+) -> Vec<IssueTimelineDecisionReceipt> {
+    let mut evidence_by_comment_id = HashMap::new();
+    for row in evidence
+        .iter()
+        .filter(|row| row.kind == "operator_decision")
+    {
+        if let Some(comment_id) = row
+            .payload
+            .pointer("/issue/comment_id")
+            .and_then(|value| value.as_i64())
+        {
+            evidence_by_comment_id.insert(comment_id, row);
+        }
+    }
+
+    let mut seen_evidence_ids = BTreeSet::new();
+    let mut receipts = Vec::new();
+    for comment in comments {
+        let Some(receipt) = comment.payload.get("confirmation_receipt") else {
+            continue;
+        };
+        let evidence_row = evidence_by_comment_id.get(&comment.id).copied();
+        if let Some(row) = evidence_row {
+            seen_evidence_ids.insert(row.id);
+        }
+        receipts.push(issue_timeline_comment_decision_receipt(
+            issue,
+            comment,
+            receipt,
+            evidence_row,
+        ));
+    }
+
+    for row in evidence
+        .iter()
+        .filter(|row| row.kind == "operator_decision")
+    {
+        if seen_evidence_ids.contains(&row.id) {
+            continue;
+        }
+        let Some(receipt) = row.payload.pointer("/operator/confirmation_receipt") else {
+            continue;
+        };
+        receipts.push(issue_timeline_evidence_decision_receipt(
+            issue, row, receipt,
+        ));
+    }
+
+    receipts.sort_by(|left, right| {
+        left.timestamp
+            .cmp(&right.timestamp)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    receipts
+}
+
+fn issue_timeline_comment_decision_receipt(
+    issue: &HiveIssue,
+    comment: &HiveComment,
+    receipt: &serde_json::Value,
+    evidence: Option<&HiveLoopEvidence>,
+) -> IssueTimelineDecisionReceipt {
+    let evidence_id = evidence.map(|row| row.id);
+    IssueTimelineDecisionReceipt {
+        id: format!("comment-{}-receipt", comment.id),
+        source: if evidence_id.is_some() {
+            "comment+evidence".to_string()
+        } else {
+            "comment".to_string()
+        },
+        timestamp: comment.created_at.clone(),
+        round: comment
+            .payload
+            .pointer("/next_round")
+            .or_else(|| comment.payload.pointer("/round"))
+            .and_then(|value| value.as_i64()),
+        action: string_at(&comment.payload, "/action").or_else(|| string_at(receipt, "/action")),
+        author: Some(comment.author.clone()).or_else(|| string_at(receipt, "/author")),
+        comment_id: Some(comment.id),
+        evidence_id,
+        receipt_schema_version: string_at(receipt, "/schema_version"),
+        receipt_source: string_at(receipt, "/source"),
+        policy_schema_version: string_at(receipt, "/policy_schema_version"),
+        confirmation_arg: string_at(receipt, "/confirmation_arg"),
+        human_confirmed: receipt
+            .pointer("/human_confirmed")
+            .and_then(|value| value.as_bool()),
+        client_name: string_at(receipt, "/client/name"),
+        actor_label: string_at(receipt, "/actor/label"),
+        actor_trust: string_at(receipt, "/actor/trust"),
+        note_excerpt: string_at(&comment.payload, "/note")
+            .filter(|note| !note.trim().is_empty())
+            .map(|note| truncate_text(&note, 180)),
+        linked_resource: issue
+            .loop_id
+            .filter(|_| evidence_id.is_some())
+            .map(|loop_id| format!("entrance://loops/{loop_id}/evidence-drilldown"))
+            .unwrap_or_else(|| format!("entrance://issues/{}/timeline", issue.id)),
+        details: serde_json::json!({
+            "comment_payload_schema": schema_version(&comment.payload),
+            "evidence_id": evidence_id,
+            "receipt_marker": receipt.pointer("/marker").and_then(|value| value.as_str()),
+            "receipt_actor_verified": receipt.pointer("/actor/verified").and_then(|value| value.as_bool())
+        }),
+    }
+}
+
+fn issue_timeline_evidence_decision_receipt(
+    issue: &HiveIssue,
+    evidence: &HiveLoopEvidence,
+    receipt: &serde_json::Value,
+) -> IssueTimelineDecisionReceipt {
+    IssueTimelineDecisionReceipt {
+        id: format!("evidence-{}-receipt", evidence.id),
+        source: "evidence".to_string(),
+        timestamp: evidence.created_at.clone(),
+        round: Some(evidence.round),
+        action: string_at(&evidence.payload, "/operator/action")
+            .or_else(|| string_at(receipt, "/action")),
+        author: string_at(&evidence.payload, "/operator/author")
+            .or_else(|| string_at(receipt, "/author")),
+        comment_id: evidence
+            .payload
+            .pointer("/issue/comment_id")
+            .and_then(|value| value.as_i64()),
+        evidence_id: Some(evidence.id),
+        receipt_schema_version: string_at(receipt, "/schema_version"),
+        receipt_source: string_at(receipt, "/source"),
+        policy_schema_version: string_at(receipt, "/policy_schema_version"),
+        confirmation_arg: string_at(receipt, "/confirmation_arg"),
+        human_confirmed: receipt
+            .pointer("/human_confirmed")
+            .and_then(|value| value.as_bool()),
+        client_name: string_at(receipt, "/client/name"),
+        actor_label: string_at(receipt, "/actor/label"),
+        actor_trust: string_at(receipt, "/actor/trust"),
+        note_excerpt: string_at(&evidence.payload, "/operator/note")
+            .filter(|note| !note.trim().is_empty())
+            .map(|note| truncate_text(&note, 180)),
+        linked_resource: issue
+            .loop_id
+            .map(|loop_id| format!("entrance://loops/{loop_id}/evidence-drilldown"))
+            .unwrap_or_else(|| format!("entrance://issues/{}/timeline", issue.id)),
+        details: serde_json::json!({
+            "evidence_kind": evidence.kind.clone(),
+            "receipt_marker": receipt.pointer("/marker").and_then(|value| value.as_str()),
+            "receipt_actor_verified": receipt.pointer("/actor/verified").and_then(|value| value.as_bool())
+        }),
+    }
+}
+
 fn issue_timeline_human_decision(
     card: &IssueCard,
     items: &[IssueTimelineItem],
+    decision_receipts: &[IssueTimelineDecisionReceipt],
 ) -> IssueTimelineHumanDecision {
     let issue_status = Some(card.issue.status.clone());
     let required = matches!(card.issue.status.as_str(), "Blocked" | "Needs Review");
@@ -8220,6 +8418,8 @@ fn issue_timeline_human_decision(
         issue_status,
         primary_action: primary_action.clone(),
         actions,
+        receipt_count: decision_receipts.len(),
+        last_receipt: decision_receipts.last().cloned(),
         policy_resource: "entrance://policy/mcp-permissions".to_string(),
         review_queue_resource: "entrance://review-queue".to_string(),
         issue_control_resource: format!("entrance://issues/{}/control", card.issue.id),
@@ -14997,6 +15197,45 @@ mod tests {
                 && evidence.payload.pointer("/operator/confirmation_receipt")
                     == Some(&serde_json::to_value(&review_receipt).expect("receipt should encode"))
         }));
+        let review_timeline =
+            super::issue_timeline(&store, issue_id).expect("review timeline should resolve");
+        assert_eq!(review_timeline.timeline_state, "needs_human");
+        assert_eq!(review_timeline.counts.decision_receipt_count, 1);
+        assert_eq!(review_timeline.decision_receipts.len(), 1);
+        let timeline_receipt = review_timeline
+            .decision_receipts
+            .first()
+            .expect("review timeline should expose decision receipt");
+        assert_eq!(timeline_receipt.action.as_deref(), Some("request-review"));
+        assert_eq!(timeline_receipt.author.as_deref(), Some("human"));
+        assert_eq!(timeline_receipt.source, "comment+evidence");
+        assert_eq!(
+            timeline_receipt.comment_id,
+            Some(review_card.comments.last().unwrap().id)
+        );
+        assert!(timeline_receipt.evidence_id.is_some());
+        assert_eq!(
+            timeline_receipt.receipt_schema_version.as_deref(),
+            Some(OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION)
+        );
+        assert_eq!(timeline_receipt.receipt_source.as_deref(), Some("mcp"));
+        assert_eq!(timeline_receipt.human_confirmed, Some(true));
+        assert_eq!(
+            timeline_receipt.actor_trust.as_deref(),
+            Some("self_reported")
+        );
+        assert!(timeline_receipt
+            .linked_resource
+            .contains("/evidence-drilldown"));
+        assert_eq!(review_timeline.human_decision.receipt_count, 1);
+        assert_eq!(
+            review_timeline
+                .human_decision
+                .last_receipt
+                .as_ref()
+                .and_then(|receipt| receipt.action.as_deref()),
+            Some("request-review")
+        );
         let review_trace = review_card
             .trace
             .as_ref()

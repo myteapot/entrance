@@ -462,6 +462,7 @@ async function main() {
     issue_timeline_round_visible: Boolean(detailQuery('[data-testid^="issue-timeline-round-"]')),
     issue_timeline_round_group_visible: detailText.includes('round 1') && detailText.includes('comments') && detailText.includes('verdicts 1'),
     issue_timeline_decision_chip_visible: detailText.includes('decision comment'),
+    issue_timeline_receipt_chip_visible: detailText.includes('receipts 0'),
     issue_timeline_in_view: (() => {
       const timeline = detailQuery('[data-testid^="issue-timeline-detail-"]');
       if (!timeline) return false;

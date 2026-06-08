@@ -967,9 +967,11 @@ type IssueTimelineReport = {
     operator_event_count: number;
     blocker_count: number;
     receipt_issue_count: number;
+    decision_receipt_count: number;
   };
   rounds: IssueTimelineRoundGroup[];
   human_decision: IssueTimelineHumanDecision;
+  decision_receipts: IssueTimelineDecisionReceipt[];
   items: IssueTimelineItem[];
   resources: {
     issue: string;
@@ -1012,11 +1014,35 @@ type IssueTimelineHumanDecision = {
     operator_option: string | null;
     reason: string;
   }>;
+  receipt_count: number;
+  last_receipt: IssueTimelineDecisionReceipt | null;
   policy_resource: string;
   review_queue_resource: string;
   issue_control_resource: string;
   confirmation_arg: string;
   summary: string;
+};
+
+type IssueTimelineDecisionReceipt = {
+  id: string;
+  source: string;
+  timestamp: string;
+  round: number | null;
+  action: string | null;
+  author: string | null;
+  comment_id: number | null;
+  evidence_id: number | null;
+  receipt_schema_version: string | null;
+  receipt_source: string | null;
+  policy_schema_version: string | null;
+  confirmation_arg: string | null;
+  human_confirmed: boolean | null;
+  client_name: string | null;
+  actor_label: string | null;
+  actor_trust: string | null;
+  note_excerpt: string | null;
+  linked_resource: string;
+  details: unknown;
 };
 
 type IssueTimelineItem = {
@@ -3058,6 +3084,31 @@ export default function App() {
   const issueTimelineDecisionLabel = (decision: IssueTimelineHumanDecision) =>
     `decision ${decision.primary_action ?? "comment"}`;
 
+  const issueTimelineReceiptTone = (receipt: IssueTimelineDecisionReceipt) =>
+    receipt.human_confirmed === false || !receipt.receipt_schema_version ? "warn" : "ok";
+
+  const issueTimelineReceiptLabel = (receipt: IssueTimelineDecisionReceipt) =>
+    [
+      receipt.action ?? "decision",
+      receipt.receipt_source ?? receipt.source,
+      receipt.author,
+      receipt.round == null ? null : `r${receipt.round}`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+  const issueTimelineReceiptMeta = (receipt: IssueTimelineDecisionReceipt) =>
+    [
+      receipt.comment_id ? `comment #${receipt.comment_id}` : null,
+      receipt.evidence_id ? `evidence #${receipt.evidence_id}` : null,
+      receipt.actor_label ? `actor ${receipt.actor_label}` : null,
+      receipt.actor_trust,
+      receipt.client_name ? `client ${receipt.client_name}` : null,
+      receipt.human_confirmed === true ? "confirmed" : "unconfirmed",
+    ]
+      .filter(Boolean)
+      .join(" ");
+
   const issueTimelineItemTone = (item: IssueTimelineItem) =>
     item.blocker || item.status === "blocked" || item.status === "failed" ? "warn" : "ok";
 
@@ -4464,6 +4515,16 @@ export default function App() {
                                 >
                                   {issueTimelineDecisionLabel(timeline.human_decision)}
                                 </span>
+                                <span
+                                  class={
+                                    timeline.human_decision.required &&
+                                    !timeline.counts.decision_receipt_count
+                                      ? "trace-pill trace-pill--warn"
+                                      : "trace-pill"
+                                  }
+                                >
+                                  receipts {timeline.decision_receipts.length}
+                                </span>
                               </div>
                               {timeline.rounds.length ? (
                                 <div class="worker-lifecycle-roles issue-timeline-rounds">
@@ -4533,6 +4594,38 @@ export default function App() {
                                       ))}
                                     </div>
                                   </div>
+                                </div>
+                              ) : null}
+                              {timeline.decision_receipts.length ? (
+                                <div class="worker-lifecycle-roles issue-timeline-receipts">
+                                  {timeline.decision_receipts.slice(-3).map((receipt) => (
+                                    <div
+                                      class={`worker-lifecycle-role worker-lifecycle-role--${issueTimelineReceiptTone(
+                                        receipt,
+                                      )}`}
+                                      data-testid={`issue-timeline-receipt-${card.issue.id}-${receipt.id}`}
+                                    >
+                                      <div class="stage-row-head">
+                                        <strong>{issueTimelineReceiptLabel(receipt)}</strong>
+                                        <span>{receipt.human_confirmed ? "confirmed" : "pending"}</span>
+                                      </div>
+                                      <p>{receipt.note_excerpt ?? receipt.linked_resource}</p>
+                                      <div class="trace-strip">
+                                        <span class="trace-pill">{receipt.source}</span>
+                                        {receipt.receipt_schema_version ? (
+                                          <span class="trace-pill">
+                                            {schemaLabel(receipt.receipt_schema_version)}
+                                          </span>
+                                        ) : null}
+                                        {receipt.policy_schema_version ? (
+                                          <span class="trace-pill">
+                                            {schemaLabel(receipt.policy_schema_version)}
+                                          </span>
+                                        ) : null}
+                                        <span class="trace-pill">{issueTimelineReceiptMeta(receipt)}</span>
+                                      </div>
+                                    </div>
+                                  ))}
                                 </div>
                               ) : null}
                               <div class="worker-lifecycle-roles issue-timeline-items">
