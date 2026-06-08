@@ -115,9 +115,15 @@ renders it below Evidence Drilldown.
 `entrance.hive.issue_transition_policy.v1`, an issue-level status transition
 contract with the current state class, allowed actions, blocked actions,
 confirmation requirements, Reviewer fallback budget, an embedded snapshot of the
-kernel issue transition policy registry, linked resources, and next actions; MCP exposes it as
-`entrance://issues/{issue_id}/transition-policy`, and the Panel selected issue
-renders it before Loop Dashboard.
+kernel issue transition policy registry, linked resources, and next actions; MCP
+exposes it as `entrance://issues/{issue_id}/transition-policy`, and the Panel
+selected issue renders it before Loop Dashboard. `hive issue comment`,
+`hive issue decide`, `hive issue run`, and `hive issue retry-run` now pass
+through the same transition registry at execution time and record
+`entrance.hive.issue_transition_admission.v1` receipts in operator
+comment/decision payloads. CLI `retry`, `request-review`, and `cancel`
+transitions require `--human-confirmed`; MCP and Panel use their existing
+typed confirmation receipts.
 `hive issue timeline <id>` exposes `entrance.hive.issue_timeline.v1`, an
 issue-first activity feed with issue creation, typed comments, stage evidence,
 verdicts, operator decisions, blockers, linked resources, round groups, item
@@ -215,9 +221,10 @@ worker bindings, evidence counts, runtime readiness, and admission-rejection
 evidence/admission/packet links. The
 issue surface check verifies issue status, typed comments, operator
 comment/decision evidence, and the author/action/body bindings between evidence
-and its linked comment. The issue transition policy check verifies the issue
-action surface against the kernel transition registry, including allowed/blocked
-action coverage, confirmation contract fields, and the Reviewer fallback budget.
+and its linked comment, including transition admission receipt bindings. The
+issue transition policy check verifies the issue action surface against the
+kernel transition registry, including allowed/blocked action coverage,
+confirmation contract fields, and the Reviewer fallback budget.
 Runtime policy checks the
 current round so a successful retry can replace a previously blocked runtime
 attempt.
@@ -347,9 +354,9 @@ exhausted automatic attempt.
 Admission gates reject failed worker receipts, so a role worker with `ok=false`
 blocks at the compiler boundary instead of being treated as valid evidence.
 `hive loop run` is idempotent for non-`todo` contracts; use
-`hive issue retry-run <id>` to record a retry decision and immediately run the
-linked loop. `hive issue run <id>` runs a `Todo` issue without requiring the
-operator to look up its loop id.
+`hive issue retry-run <id> --human-confirmed` to record a retry decision and
+immediately run the linked loop. `hive issue run <id>` runs a `Todo` issue
+without requiring the operator to look up its loop id.
 Issue cards expose round-aware trace chips so a retry shows the new current
 round separately from the loop's accumulated history. They also expose an
 operator trail derived from typed `operator_comment` and `operator_decision`

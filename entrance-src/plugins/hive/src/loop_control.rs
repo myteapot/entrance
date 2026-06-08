@@ -42,6 +42,8 @@ const EVIDENCE_MANIFEST_SCHEMA_VERSION: &str = "entrance.hive.evidence_manifest.
 const ISSUE_TIMELINE_SCHEMA_VERSION: &str = "entrance.hive.issue_timeline.v1";
 const ISSUE_TIMELINE_ITEM_SCHEMA_VERSION: &str = "entrance.hive.issue_timeline_item.v1";
 const ISSUE_TRANSITION_POLICY_SCHEMA_VERSION: &str = "entrance.hive.issue_transition_policy.v1";
+const ISSUE_TRANSITION_ADMISSION_SCHEMA_VERSION: &str =
+    "entrance.hive.issue_transition_admission.v1";
 pub const CONNECTOR_MIRROR_RECEIPT_GATE: &str = "connector_mirror_receipt_current";
 pub const CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND: &str = "ISSUE_MIRROR_SYNC_RECEIPT";
 const VERDICT_SCORE_METRICS: &[&str] = &[
@@ -1611,6 +1613,23 @@ pub struct OperatorConfirmationActor {
     pub verified: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueTransitionAdmissionReceipt {
+    pub schema_version: String,
+    pub policy_schema_version: String,
+    pub policy_owner: String,
+    pub policy_scope: String,
+    pub policy_resource: String,
+    pub transition_policy_resource: String,
+    pub action: String,
+    pub gate: String,
+    pub result: String,
+    pub from_status: String,
+    pub to_status: Option<String>,
+    pub requires_confirmation: bool,
+    pub allowed_actions: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IssueDecisionAction {
     Retry,
@@ -2288,7 +2307,7 @@ fn issue_transition_policy_registry() -> IssueTransitionPolicyRegistry {
                 false,
                 true,
                 true,
-                "entrance hive issue retry-run {issue_id} --body <note> --compact",
+                "entrance hive issue retry-run {issue_id} --body <note> --human-confirmed --compact",
             ),
             issue_transition_action_policy_spec(
                 "request-review",
@@ -2301,7 +2320,7 @@ fn issue_transition_policy_registry() -> IssueTransitionPolicyRegistry {
                 false,
                 true,
                 false,
-                "entrance hive issue decide {issue_id} request-review --body <note> --compact",
+                "entrance hive issue decide {issue_id} request-review --body <note> --human-confirmed --compact",
             ),
             issue_transition_action_policy_spec(
                 "cancel",
@@ -2314,7 +2333,7 @@ fn issue_transition_policy_registry() -> IssueTransitionPolicyRegistry {
                 true,
                 true,
                 false,
-                "entrance hive issue decide {issue_id} cancel --body <note> --compact",
+                "entrance hive issue decide {issue_id} cancel --body <note> --human-confirmed --compact",
             ),
         ],
         confirmation: IssueTransitionConfirmationSpec {
@@ -4620,7 +4639,7 @@ fn doctor_next_actions(
             if let Some(issue_id) = issue_id {
                 actions.push(retry_run_command(issue_id, runtime));
                 actions.push(format!(
-                    "entrance hive issue decide {issue_id} request-review --body <note> --compact"
+                    "entrance hive issue decide {issue_id} request-review --body <note> --human-confirmed --compact"
                 ));
             }
         }
@@ -5612,10 +5631,10 @@ fn audit_check(
 fn retry_run_command(issue_id: i64, runtime: &str) -> String {
     if runtime == "codex" {
         return format!(
-            "entrance hive issue retry-run {issue_id} --body <note> --runtime codex --worker-attempts 2 --compact"
+            "entrance hive issue retry-run {issue_id} --body <note> --human-confirmed --runtime codex --worker-attempts 2 --compact"
         );
     }
-    format!("entrance hive issue retry-run {issue_id} --body <note> --compact")
+    format!("entrance hive issue retry-run {issue_id} --body <note> --human-confirmed --compact")
 }
 
 fn stage_sequence_audit_errors(
@@ -7665,6 +7684,7 @@ fn issue_action_field_errors(
                 .command
                 .starts_with(&format!("entrance hive issue retry-run {}", issue.id))
                 || !action.command.contains("--body <note>")
+                || !action.command.contains("--human-confirmed")
                 || !action.command.contains("--compact")
             {
                 errors.push("action.command".to_string());
@@ -7682,7 +7702,7 @@ fn issue_action_field_errors(
             }
             if action.command
                 != format!(
-                    "entrance hive issue decide {} request-review --body <note> --compact",
+                    "entrance hive issue decide {} request-review --body <note> --human-confirmed --compact",
                     issue.id
                 )
             {
@@ -7695,7 +7715,7 @@ fn issue_action_field_errors(
             }
             if action.command
                 != format!(
-                    "entrance hive issue decide {} cancel --body <note> --compact",
+                    "entrance hive issue decide {} cancel --body <note> --human-confirmed --compact",
                     issue.id
                 )
             {
@@ -7741,6 +7761,14 @@ fn issue_comment_audit_error(
             errors.extend(system_comment_audit_errors(comment, issue, evidence));
         }
         Some(OPERATOR_COMMENT_SCHEMA_VERSION) => {
+            match comment.payload.get("transition_admission") {
+                Some(admission) => errors.extend(issue_transition_admission_audit_errors(
+                    admission,
+                    Some("comment"),
+                    Some(false),
+                )),
+                None => errors.push("comment.transition_admission".to_string()),
+            }
             if !evidence.iter().any(|row| {
                 row.kind == "operator_comment"
                     && row
@@ -7761,12 +7789,22 @@ fn issue_comment_audit_error(
             if action.is_none() {
                 errors.push("comment.payload.action".to_string());
             }
+            match comment.payload.get("transition_admission") {
+                Some(admission) => errors.extend(issue_transition_admission_audit_errors(
+                    admission,
+                    action.as_deref(),
+                    Some(true),
+                )),
+                None => errors.push("comment.transition_admission".to_string()),
+            }
             if let Some(receipt) = comment.payload.get("confirmation_receipt") {
                 errors.extend(operator_confirmation_receipt_audit_errors(
                     receipt,
                     action.as_deref(),
                     &comment.author,
                 ));
+            } else {
+                errors.push("comment.confirmation_receipt.missing".to_string());
             }
             if !evidence.iter().any(|row| {
                 row.kind == "operator_decision"
@@ -7988,6 +8026,84 @@ fn operator_confirmation_receipt_audit_errors(
     errors
 }
 
+fn issue_transition_admission_audit_errors(
+    admission: &serde_json::Value,
+    action: Option<&str>,
+    requires_confirmation: Option<bool>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if admission
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        != Some(ISSUE_TRANSITION_ADMISSION_SCHEMA_VERSION)
+    {
+        errors.push("transition_admission.schema_version".to_string());
+    }
+    if admission
+        .get("policy_schema_version")
+        .and_then(|value| value.as_str())
+        != Some(POLICY_SCHEMA_VERSION)
+    {
+        errors.push("transition_admission.policy_schema_version".to_string());
+    }
+    if admission
+        .get("policy_owner")
+        .and_then(|value| value.as_str())
+        != Some("hive-kernel")
+    {
+        errors.push("transition_admission.policy_owner".to_string());
+    }
+    if admission
+        .get("policy_scope")
+        .and_then(|value| value.as_str())
+        != Some("issue.status.transition")
+    {
+        errors.push("transition_admission.policy_scope".to_string());
+    }
+    if admission.get("action").and_then(|value| value.as_str()) != action {
+        errors.push("transition_admission.action".to_string());
+    }
+    if admission
+        .get("gate")
+        .and_then(|value| value.as_str())
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        errors.push("transition_admission.gate".to_string());
+    }
+    if admission.get("result").and_then(|value| value.as_str()) != Some("admitted") {
+        errors.push("transition_admission.result".to_string());
+    }
+    if admission
+        .get("from_status")
+        .and_then(|value| value.as_str())
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        errors.push("transition_admission.from_status".to_string());
+    }
+    if let Some(expected) = requires_confirmation {
+        if admission
+            .get("requires_confirmation")
+            .and_then(|value| value.as_bool())
+            != Some(expected)
+        {
+            errors.push("transition_admission.requires_confirmation".to_string());
+        }
+    }
+    if !admission
+        .get("allowed_actions")
+        .and_then(|value| value.as_array())
+        .is_some_and(|values| {
+            !values.is_empty()
+                && values
+                    .iter()
+                    .all(|value| value.as_str().is_some_and(|item| !item.trim().is_empty()))
+        })
+    {
+        errors.push("transition_admission.allowed_actions".to_string());
+    }
+    errors
+}
+
 fn operator_evidence_audit_error(
     row: &HiveLoopEvidence,
     issues: &[HiveIssue],
@@ -8071,6 +8187,20 @@ fn operator_evidence_audit_error(
             errors.push("evidence.comment_loop_binding".to_string());
         }
         if row.kind == "operator_comment" {
+            if comment.payload.get("transition_admission")
+                != row.payload.get("transition_admission")
+            {
+                errors.push("evidence.transition_admission_binding".to_string());
+            }
+            if let Some(admission) = row.payload.get("transition_admission") {
+                errors.extend(issue_transition_admission_audit_errors(
+                    admission,
+                    Some("comment"),
+                    Some(false),
+                ));
+            } else {
+                errors.push("evidence.transition_admission".to_string());
+            }
             if comment
                 .payload
                 .get("round")
@@ -8119,6 +8249,11 @@ fn operator_evidence_audit_error(
             {
                 errors.push("evidence.confirmation_receipt_binding".to_string());
             }
+            if comment.payload.get("transition_admission")
+                != row.payload.get("transition_admission")
+            {
+                errors.push("evidence.transition_admission_binding".to_string());
+            }
             if comment
                 .payload
                 .get("next_round")
@@ -8129,6 +8264,15 @@ fn operator_evidence_audit_error(
             }
             match evidence_action.map(parse_issue_decision_action) {
                 Some(Ok(action)) => {
+                    if let Some(admission) = row.payload.get("transition_admission") {
+                        errors.extend(issue_transition_admission_audit_errors(
+                            admission,
+                            Some(action.as_str()),
+                            Some(true),
+                        ));
+                    } else {
+                        errors.push("evidence.transition_admission".to_string());
+                    }
                     if row
                         .payload
                         .pointer("/issue/to_status")
@@ -9205,8 +9349,12 @@ fn issue_transition_blocked_action(
             } else {
                 format!("`run` requires a loop-bound issue; issue #{} has no loop.", issue.id)
             },
-            hint: matches!(issue.status.as_str(), "Blocked" | "Needs Review")
-                .then(|| format!("Use `entrance hive issue retry-run {} --body <note> --compact`.", issue.id)),
+            hint: matches!(issue.status.as_str(), "Blocked" | "Needs Review").then(|| {
+                format!(
+                    "Use `entrance hive issue retry-run {} --body <note> --human-confirmed --compact`.",
+                    issue.id
+                )
+            }),
         },
         "comment" => IssueTransitionPolicyBlockedAction {
             action: action.to_string(),
@@ -9515,6 +9663,8 @@ pub fn add_comment(store: &Store, request: IssueCommentRequest) -> Result<IssueC
         .map(|loop_id| store.get_hive_loop_contract(loop_id))
         .transpose()?
         .flatten();
+    let transition_admission = issue_transition_admission(store, &issue, "comment")?;
+    let transition_admission_value = serde_json::to_value(&transition_admission)?;
     let comment_id = store.insert_hive_comment(HiveCommentCreate {
         issue_id: request.issue_id,
         author: author.clone(),
@@ -9525,10 +9675,18 @@ pub fn add_comment(store: &Store, request: IssueCommentRequest) -> Result<IssueC
             "loop_id": issue.loop_id,
             "round": contract.as_ref().map(|contract| contract.current_round),
             "status": issue.status,
-            "phase": contract.as_ref().map(|contract| contract.active_phase.as_str())
+            "phase": contract.as_ref().map(|contract| contract.active_phase.as_str()),
+            "transition_admission": transition_admission_value
         }),
     })?;
-    record_operator_comment_evidence(store, &issue, comment_id, &author, &body)?;
+    record_operator_comment_evidence(
+        store,
+        &issue,
+        comment_id,
+        &author,
+        &body,
+        &transition_admission,
+    )?;
 
     issue_card_from_issue(store, issue)
 }
@@ -9538,10 +9696,17 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
     let issue = store
         .get_hive_issue(request.issue_id)?
         .with_context(|| format!("unknown hive issue `{}`", request.issue_id))?;
-    ensure_issue_decision_allowed(store, &issue, action)?;
+    let transition_admission = issue_transition_admission(store, &issue, action.as_str())?;
     let author = default_text(request.author, "human");
     let note = request.body.as_deref().unwrap_or_default().trim();
-    if let Some(receipt) = request.confirmation_receipt.as_ref() {
+    let receipt = request.confirmation_receipt.as_ref();
+    if transition_admission.requires_confirmation && receipt.is_none() {
+        anyhow::bail!(
+            "issue transition `{}` requires an operator confirmation receipt; use MCP/Panel human_confirmed=true or pass --human-confirmed from the CLI",
+            action.as_str()
+        );
+    }
+    if let Some(receipt) = receipt {
         ensure_operator_confirmation_receipt(receipt, action, &author)?;
     }
     let confirmation_receipt = request
@@ -9549,6 +9714,7 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
         .as_ref()
         .map(serde_json::to_value)
         .transpose()?;
+    let transition_admission_value = serde_json::to_value(&transition_admission)?;
     let mut next_round = None;
 
     if let Some(loop_id) = issue.loop_id {
@@ -9580,7 +9746,8 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
         "action": action.as_str(),
         "loop_id": issue.loop_id,
         "next_round": next_round,
-        "note": note
+        "note": note,
+        "transition_admission": transition_admission_value
     });
     if let Some(receipt) = confirmation_receipt.as_ref() {
         comment_payload["confirmation_receipt"] = receipt.clone();
@@ -9602,13 +9769,14 @@ pub fn decide_issue(store: &Store, request: IssueDecisionRequest) -> Result<Issu
         &issue_summary,
         &comment_body,
         confirmation_receipt.as_ref(),
+        &transition_admission,
     )?;
 
     issue_card(store, issue.id)
 }
 
 pub fn run_issue(store: &Store, request: IssueRunRequest) -> Result<HiveLoopReport> {
-    let issue = store
+    let mut issue = store
         .get_hive_issue(request.issue_id)?
         .with_context(|| format!("unknown hive issue `{}`", request.issue_id))?;
     let loop_id = issue
@@ -9626,13 +9794,20 @@ pub fn run_issue(store: &Store, request: IssueRunRequest) -> Result<HiveLoopRepo
                 confirmation_receipt: request.confirmation_receipt.clone(),
             },
         )?;
-    } else if issue.status != "Todo" {
-        anyhow::bail!(
-            "hive issue run requires issue #{} to be `Todo`; current status is `{}`. Use `hive issue retry-run {}` to record a retry decision first.",
-            issue.id,
-            issue.status,
-            issue.id
-        );
+        issue = store
+            .get_hive_issue(request.issue_id)?
+            .with_context(|| format!("unknown hive issue `{}`", request.issue_id))?;
+    }
+    if let Err(error) = issue_transition_admission(store, &issue, "run") {
+        if !request.retry {
+            anyhow::bail!(
+                "hive issue run requires issue #{} to be admitted for `run`; current status is `{}`. Use `hive issue retry-run {}` to record a retry decision first. Policy admission: {error}",
+                issue.id,
+                issue.status,
+                issue.id
+            );
+        }
+        return Err(error);
     }
 
     run(
@@ -9647,29 +9822,60 @@ pub fn run_issue(store: &Store, request: IssueRunRequest) -> Result<HiveLoopRepo
     )
 }
 
-fn ensure_issue_decision_allowed(
+fn issue_transition_admission(
     store: &Store,
     issue: &HiveIssue,
-    action: IssueDecisionAction,
-) -> Result<()> {
-    let options = issue
+    action: &str,
+) -> Result<IssueTransitionAdmissionReceipt> {
+    let trace = issue
         .loop_id
-        .map(|loop_id| {
-            issue_trace_summary(store, loop_id, Some(issue)).map(|trace| trace.human_options)
-        })
-        .transpose()?
-        .unwrap_or_else(|| issue_human_options(Some(issue), &[], &[]));
-    if options.iter().any(|option| option == action.as_str()) {
-        return Ok(());
+        .map(|loop_id| issue_trace_summary_without_audit(store, loop_id, Some(issue)))
+        .transpose()?;
+    let actions = issue_actions(issue, trace.as_ref(), None);
+    let allowed_actions = actions
+        .iter()
+        .map(|action| action.action.clone())
+        .collect::<Vec<_>>();
+    let Some(issue_action) = actions.iter().find(|candidate| candidate.action == action) else {
+        let blocked_actions = issue_transition_blocked_actions(issue, &actions)
+            .into_iter()
+            .map(|blocked| blocked.action)
+            .collect::<Vec<_>>();
+        anyhow::bail!(
+            "issue transition `{action}` is not admitted when issue #{} is `{}`; allowed actions: {}; blocked actions: {}",
+            issue.id,
+            issue.status,
+            allowed_actions.join(", "),
+            blocked_actions.join(", ")
+        );
+    };
+    let registry = issue_transition_policy_registry();
+    let policy_action = issue_transition_policy_action(issue, issue_action);
+    let policy_errors =
+        issue_transition_allowed_action_policy_errors(issue, &policy_action, &registry);
+    if !policy_errors.is_empty() {
+        anyhow::bail!(
+            "issue transition `{action}` failed policy admission for issue #{}: {}",
+            issue.id,
+            policy_errors.join(", ")
+        );
     }
 
-    anyhow::bail!(
-        "issue decision `{}` is not allowed when issue #{} is `{}`; allowed options: {}",
-        action.as_str(),
-        issue.id,
-        issue.status,
-        options.join(", ")
-    )
+    Ok(IssueTransitionAdmissionReceipt {
+        schema_version: ISSUE_TRANSITION_ADMISSION_SCHEMA_VERSION.to_string(),
+        policy_schema_version: registry.schema_version,
+        policy_owner: registry.owner,
+        policy_scope: registry.scope,
+        policy_resource: "entrance://policy/registry".to_string(),
+        transition_policy_resource: format!("entrance://issues/{}/transition-policy", issue.id),
+        action: action.to_string(),
+        gate: policy_action.gate,
+        result: "admitted".to_string(),
+        from_status: policy_action.from_status,
+        to_status: policy_action.to_status,
+        requires_confirmation: policy_action.requires_human,
+        allowed_actions,
+    })
 }
 
 fn record_operator_decision_evidence(
@@ -9683,6 +9889,7 @@ fn record_operator_decision_evidence(
     summary: &str,
     comment_body: &str,
     confirmation_receipt: Option<&serde_json::Value>,
+    transition_admission: &IssueTransitionAdmissionReceipt,
 ) -> Result<()> {
     let Some(loop_id) = issue.loop_id else {
         return Ok(());
@@ -9715,7 +9922,8 @@ fn record_operator_decision_evidence(
             "action": action.as_str(),
             "note": note,
             "comment_body": comment_body
-        }
+        },
+        "transition_admission": serde_json::to_value(transition_admission)?
     });
     if let Some(receipt) = confirmation_receipt {
         payload["operator"]["confirmation_receipt"] = receipt.clone();
@@ -9810,6 +10018,7 @@ fn record_operator_comment_evidence(
     comment_id: i64,
     author: &str,
     body: &str,
+    transition_admission: &IssueTransitionAdmissionReceipt,
 ) -> Result<()> {
     let Some(loop_id) = issue.loop_id else {
         return Ok(());
@@ -9842,7 +10051,8 @@ fn record_operator_comment_evidence(
             "operator": {
                 "author": author,
                 "comment_body": body
-            }
+            },
+            "transition_admission": serde_json::to_value(transition_admission)?
         }),
     })?;
     Ok(())
@@ -9955,7 +10165,7 @@ fn issue_actions(
                 "request-review",
                 "Review",
                 format!(
-                    "entrance hive issue decide {} request-review --body <note> --compact",
+                    "entrance hive issue decide {} request-review --body <note> --human-confirmed --compact",
                     issue.id
                 ),
                 source,
@@ -9967,7 +10177,7 @@ fn issue_actions(
                 "cancel",
                 "Cancel",
                 format!(
-                    "entrance hive issue decide {} cancel --body <note> --compact",
+                    "entrance hive issue decide {} cancel --body <note> --human-confirmed --compact",
                     issue.id
                 ),
                 source,
@@ -10052,7 +10262,9 @@ fn issue_retry_action_command(
         })
         .unwrap_or_else(|| match runtime {
             Some(runtime) => retry_run_command(issue_id, runtime),
-            None => format!("entrance hive issue retry-run {issue_id} --body <note> --compact"),
+            None => format!(
+                "entrance hive issue retry-run {issue_id} --body <note> --human-confirmed --compact"
+            ),
         })
 }
 
@@ -12482,6 +12694,29 @@ mod tests {
 
     use super::*;
 
+    fn test_confirmation_receipt(action: &str, author: &str) -> OperatorConfirmationReceipt {
+        OperatorConfirmationReceipt {
+            schema_version: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
+            source: "test".to_string(),
+            policy_schema_version: OPERATOR_ACTION_POLICY_SCHEMA_VERSION.to_string(),
+            confirmation_arg: OPERATOR_ACTION_CONFIRMATION_ARG.to_string(),
+            human_confirmed: true,
+            action: action.to_string(),
+            author: author.to_string(),
+            marker: format!(
+                "Test confirmation: human_confirmed=true; action={action}; author={author}; policy={OPERATOR_ACTION_POLICY_SCHEMA_VERSION}"
+            ),
+            client: None,
+            actor: Some(OperatorConfirmationActor {
+                id: format!("test:{author}"),
+                label: author.to_string(),
+                source: "test".to_string(),
+                trust: "test_fixture".to_string(),
+                verified: false,
+            }),
+        }
+    }
+
     #[test]
     fn policy_registry_and_loop_policies_expose_typed_gate_specs() {
         let registry = policy_registry();
@@ -14174,11 +14409,11 @@ mod tests {
     fn doctor_retry_action_uses_more_attempts_for_codex() {
         assert_eq!(
             retry_run_command(7, "codex"),
-            "entrance hive issue retry-run 7 --body <note> --runtime codex --worker-attempts 2 --compact"
+            "entrance hive issue retry-run 7 --body <note> --human-confirmed --runtime codex --worker-attempts 2 --compact"
         );
         assert_eq!(
             retry_run_command(7, "local"),
-            "entrance hive issue retry-run 7 --body <note> --compact"
+            "entrance hive issue retry-run 7 --body <note> --human-confirmed --compact"
         );
     }
 
@@ -14929,7 +15164,7 @@ mod tests {
             .any(|action| action.contains("issue retry-run")));
         assert!(doctor_report.next_actions.iter().any(|action| action
             == &format!(
-                "entrance hive issue decide {} request-review --body <note> --compact",
+                "entrance hive issue decide {} request-review --body <note> --human-confirmed --compact",
                 doctor_report
                     .issue_id
                     .expect("blocked doctor should have issue")
@@ -16301,6 +16536,38 @@ mod tests {
                 && comment.payload.get("confirmation_receipt")
                     == Some(&serde_json::to_value(&review_receipt).expect("receipt should encode"))
         }));
+        let review_decision_comment = review_card
+            .comments
+            .iter()
+            .find(|comment| {
+                comment
+                    .payload
+                    .get("action")
+                    .and_then(|value| value.as_str())
+                    == Some("request-review")
+            })
+            .expect("review decision comment should be visible");
+        assert_eq!(
+            review_decision_comment
+                .payload
+                .pointer("/transition_admission/schema_version")
+                .and_then(|value| value.as_str()),
+            Some(ISSUE_TRANSITION_ADMISSION_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            review_decision_comment
+                .payload
+                .pointer("/transition_admission/action")
+                .and_then(|value| value.as_str()),
+            Some("request-review")
+        );
+        assert_eq!(
+            review_decision_comment
+                .payload
+                .pointer("/transition_admission/requires_confirmation")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
         let review_evidence = store
             .list_hive_loop_evidence(created.contract.id)
             .expect("loop evidence should list");
@@ -16318,6 +16585,11 @@ mod tests {
                     == Some("request-review")
                 && evidence.payload.pointer("/operator/confirmation_receipt")
                     == Some(&serde_json::to_value(&review_receipt).expect("receipt should encode"))
+                && evidence
+                    .payload
+                    .pointer("/transition_admission/action")
+                    .and_then(|value| value.as_str())
+                    == Some("request-review")
         }));
         let review_timeline =
             super::issue_timeline(&store, issue_id).expect("review timeline should resolve");
@@ -16415,7 +16687,7 @@ mod tests {
                 action: "retry".to_string(),
                 author: "human".to_string(),
                 body: None,
-                confirmation_receipt: None,
+                confirmation_receipt: Some(test_confirmation_receipt("retry", "human")),
             },
         )
         .expect("issue should retry");
@@ -16473,7 +16745,7 @@ mod tests {
                 action: "cancel".to_string(),
                 author: "human".to_string(),
                 body: None,
-                confirmation_receipt: None,
+                confirmation_receipt: Some(test_confirmation_receipt("cancel", "human")),
             },
         )
         .expect("issue should cancel");
@@ -16567,7 +16839,7 @@ mod tests {
         assert!(retry_after_cancel
             .expect_err("human-canceled issue should not retry")
             .to_string()
-            .contains("not allowed"));
+            .contains("not admitted"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -16672,7 +16944,7 @@ mod tests {
                 retry: true,
                 author: "human".to_string(),
                 body: Some("Retry with local runtime".to_string()),
-                confirmation_receipt: None,
+                confirmation_receipt: Some(test_confirmation_receipt("retry", "human")),
             },
         )
         .expect("retry-run should record decision and execute");
@@ -16790,6 +17062,27 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some(blocked.contract.active_phase.as_str())
         );
+        assert_eq!(
+            operator_comment
+                .payload
+                .pointer("/transition_admission/schema_version")
+                .and_then(|value| value.as_str()),
+            Some(ISSUE_TRANSITION_ADMISSION_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            operator_comment
+                .payload
+                .pointer("/transition_admission/action")
+                .and_then(|value| value.as_str()),
+            Some("comment")
+        );
+        assert_eq!(
+            operator_comment
+                .payload
+                .pointer("/transition_admission/requires_confirmation")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
 
         let evidence = store
             .list_hive_loop_evidence(created.contract.id)
@@ -16833,6 +17126,13 @@ mod tests {
                 .pointer("/loop/phase")
                 .and_then(|value| value.as_str()),
             Some(blocked.contract.active_phase.as_str())
+        );
+        assert_eq!(
+            comment_evidence
+                .payload
+                .pointer("/transition_admission/action")
+                .and_then(|value| value.as_str()),
+            Some("comment")
         );
         let evidence_report = super::evidence_report(&store, created.contract.id)
             .expect("evidence report should resolve");

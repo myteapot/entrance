@@ -2023,7 +2023,9 @@ mod tests {
                 schema_version: "entrance.hive.issue_action.v1".to_string(),
                 action: "retry".to_string(),
                 label: "Retry".to_string(),
-                command: "entrance hive issue retry-run 42 --body <note> --compact".to_string(),
+                command:
+                    "entrance hive issue retry-run 42 --body <note> --human-confirmed --compact"
+                        .to_string(),
                 source: "human_options".to_string(),
                 input: "note".to_string(),
                 destructive: false,

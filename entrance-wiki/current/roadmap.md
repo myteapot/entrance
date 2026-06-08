@@ -65,6 +65,13 @@ Entrance has reached a local MVP unit:
   a registry snapshot, and `entrance hive loop audit <loop_id>` includes an
   `issue_transition_policy` check for allowed/blocked action coverage,
   confirmation contract drift, and Reviewer fallback budget drift.
+- Issue/status/comment execution now goes through transition admission. Local
+  `entrance hive issue comment`, `issue decide`, `issue run`, and `issue
+  retry-run` paths consult the kernel transition registry before mutating issue
+  state, write `entrance.hive.issue_transition_admission.v1` receipts into
+  operator comment/decision payloads, and require explicit CLI
+  `--human-confirmed` for retry/review/cancel transitions. Issue surface audit
+  verifies transition admission receipt shape and comment/evidence binding.
 - Reviewer fallback has a first budget rule: if a candidate is still rejected at
   or after 3 rounds, the issue moves to `Blocked` for human decision.
 - Worker lifecycle is now a first-class observable contract through
@@ -191,9 +198,10 @@ multi-agent runtime/compiler product.
   schemas as first-class runtime objects.
 - Make policy registry changes explicit and auditable, including admission gate
   versions, owner, required evidence, and migration behavior.
-- Productize the current `issue_transition_policy.v1` registry/report/audit
-  binding with version migration, state machine tests, Panel refresh after
-  actions, stronger policy lifecycle semantics, and remote issue status mapping.
+- Productize the current `issue_transition_policy.v1`
+  registry/report/audit/admission binding with version migration, systematic
+  state machine tests, Panel refresh after actions, stronger policy lifecycle
+  semantics, and remote issue status mapping.
 - Extend the new runtime preflight admission into a fuller capability preview:
   sandbox scope, connector readiness, artifact capture expectations, and human
   preference boundaries before any agent worker is spawned. Current

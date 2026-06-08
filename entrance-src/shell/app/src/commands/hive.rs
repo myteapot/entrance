@@ -13,8 +13,11 @@ use entrance_hive::{
     ConnectorRetryPolicySpec, HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck,
     HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopReport, HiveLoopRunRequest, IssueAction,
     IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport, IssueRunRequest,
-    IssueTransitionPolicyReport, PolicyGateSpec, PolicyRegistryReport, ReviewDecision,
+    IssueTransitionPolicyReport, OperatorConfirmationActor, OperatorConfirmationClient,
+    OperatorConfirmationReceipt, PolicyGateSpec, PolicyRegistryReport, ReviewDecision,
     CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
+    OPERATOR_ACTION_CONFIRMATION_ARG, OPERATOR_ACTION_POLICY_SCHEMA_VERSION,
+    OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 use reqwest::Method;
 use sha2::{Digest, Sha256};
@@ -80,7 +83,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
     match args {
         [] => {
             println!(
-                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive schema [--compact]\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop demo [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop evidence-drilldown <id>\n  entrance hive loop evidence-manifest <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop dashboard <id>\n  entrance hive loop preflight <id>\n  entrance hive loop worker-lifecycle <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector fixture-demo [--review-surface remote-fixture:<key>] [--no-record] [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue transition-policy <id> [--compact]\n  entrance hive issue timeline <id>\n  entrance hive issue timeline-item <id> <item-id>\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
+                "Usage:\n  entrance hive list\n  entrance hive summary\n  entrance hive schema [--compact]\n  entrance hive dispatch --title <text> [--project <path>] [--summary <text>]\n  entrance hive engine <id>\n  entrance hive callback <id> <status> [summary]\n  entrance hive review <id> <approve|return|integrate>\n  entrance hive loop demo [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop start --title <text> --goal <text> [--runtime local|codex] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop create --title <text> --goal <text> [--runtime local|codex] [--compact]\n  entrance hive loop run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive loop show <id>\n  entrance hive loop trace <id>\n  entrance hive loop evidence <id>\n  entrance hive loop evidence-drilldown <id>\n  entrance hive loop evidence-manifest <id>\n  entrance hive loop audit <id> [--compact]\n  entrance hive loop doctor <id>\n  entrance hive loop dashboard <id>\n  entrance hive loop preflight <id>\n  entrance hive loop worker-lifecycle <id>\n  entrance hive loop policies <id>\n  entrance hive loop list\n  entrance hive policy registry [--compact]\n  entrance hive connector registry [--compact]\n  entrance hive connector fixture-demo [--review-surface remote-fixture:<key>] [--no-record] [--compact]\n  entrance hive connector queue [--provider <name>] [--compact]\n  entrance hive connector publish-plan [--provider <name>] [--compact]\n  entrance hive connector publish-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive connector roundtrip-plan [--provider <name>] [--compact]\n  entrance hive connector roundtrip-execute --plan-id <sha256> [--provider <name>] [--compact]\n  entrance hive issue list [--compact]\n  entrance hive issue show <id> [--compact]\n  entrance hive issue transition-policy <id> [--compact]\n  entrance hive issue timeline <id>\n  entrance hive issue timeline-item <id> <item-id>\n  entrance hive issue connector-admission <id> [--path <path>] [--compact]\n  entrance hive issue mirror <id> [--compact]\n  entrance hive issue mirror-sync <id> [--out <path>]\n  entrance hive issue mirror-publish <id> [--path <path>] [--compact]\n  entrance hive issue mirror-status <id> [--path <path>] [--compact]\n  entrance hive issue mirror-verify <id> [--path <path>]\n  entrance hive issue mirror-audit <id> [--path <path>] [--compact]\n  entrance hive issue mirror-readback <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-admit <id> [--path <path>] [--record] [--compact]\n  entrance hive issue mirror-roundtrip <id> [--path <path>] [--no-record] [--compact]\n  entrance hive issue comment <id> --body <text> [--compact]\n  entrance hive issue decide <id> <retry|request-review|cancel> --human-confirmed [--body <text>] [--compact]\n  entrance hive issue run <id> [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]\n  entrance hive issue retry-run <id> --human-confirmed [--body <text>] [--runtime local|codex] [--decision keep|reject|needs-review|blocked] [--worker-timeout-secs <n>] [--worker-attempts <n>] [--compact]"
             );
             Ok(())
         }
@@ -473,12 +476,17 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             }
         }
         [scope, action, id, decision, rest @ ..] if scope == "issue" && action == "decide" => {
+            let author = flag_value(rest, "--author").unwrap_or("human").to_string();
             let card = services.hive.issue_decide(IssueDecisionRequest {
                 issue_id: id.parse::<i64>()?,
                 action: decision.to_string(),
-                author: flag_value(rest, "--author").unwrap_or("human").to_string(),
+                author: author.clone(),
                 body: flag_value(rest, "--body").map(ToOwned::to_owned),
-                confirmation_receipt: None,
+                confirmation_receipt: cli_human_confirmation_receipt(
+                    decision,
+                    &author,
+                    flag_present(rest, "--human-confirmed"),
+                ),
             })?;
             if flag_present(rest, "--compact") {
                 print_json(&compact_issue_detail_with_connector_status(services, &card))
@@ -490,6 +498,7 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
             if scope == "issue" && (action == "run" || action == "retry-run") =>
         {
             let issue_id = id.parse::<i64>()?;
+            let author = flag_value(rest, "--author").unwrap_or("human").to_string();
             let report = services.hive.issue_run(IssueRunRequest {
                 issue_id,
                 runtime: flag_value(rest, "--runtime").map(ToOwned::to_owned),
@@ -501,9 +510,17 @@ pub fn run(services: &AppServices, args: &[String]) -> Result<()> {
                     .map(str::parse)
                     .transpose()?,
                 retry: action == "retry-run",
-                author: flag_value(rest, "--author").unwrap_or("human").to_string(),
+                author: author.clone(),
                 body: flag_value(rest, "--body").map(ToOwned::to_owned),
-                confirmation_receipt: None,
+                confirmation_receipt: (action == "retry-run")
+                    .then(|| {
+                        cli_human_confirmation_receipt(
+                            "retry",
+                            &author,
+                            flag_present(rest, "--human-confirmed"),
+                        )
+                    })
+                    .flatten(),
             })?;
             if flag_present(rest, "--compact") {
                 let card = services.hive.issue_report(issue_id)?;
@@ -524,6 +541,37 @@ fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 
 fn flag_present(args: &[String], flag: &str) -> bool {
     args.iter().any(|value| value == flag)
+}
+
+fn cli_human_confirmation_receipt(
+    action: &str,
+    author: &str,
+    human_confirmed: bool,
+) -> Option<OperatorConfirmationReceipt> {
+    human_confirmed.then(|| OperatorConfirmationReceipt {
+        schema_version: OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION.to_string(),
+        source: "cli".to_string(),
+        policy_schema_version: OPERATOR_ACTION_POLICY_SCHEMA_VERSION.to_string(),
+        confirmation_arg: OPERATOR_ACTION_CONFIRMATION_ARG.to_string(),
+        human_confirmed: true,
+        action: action.to_string(),
+        author: author.to_string(),
+        marker: format!(
+            "CLI confirmation: human_confirmed=true; action={action}; author={author}; policy={OPERATOR_ACTION_POLICY_SCHEMA_VERSION}"
+        ),
+        client: Some(OperatorConfirmationClient {
+            name: "entrance-cli".to_string(),
+            version: None,
+            source: "cli".to_string(),
+        }),
+        actor: Some(OperatorConfirmationActor {
+            id: format!("cli:{author}"),
+            label: author.to_string(),
+            source: "author_arg".to_string(),
+            trust: "local_cli_audit".to_string(),
+            verified: false,
+        }),
+    })
 }
 
 struct LoopStartOutcome {
@@ -1022,10 +1070,10 @@ fn compact_loop_start_recovery_summary(
         issue_id.map(|id| {
             if runtime == Some("codex") {
                 format!(
-                    "entrance hive issue retry-run {id} --body <note> --runtime codex --worker-attempts 2 --compact"
+                    "entrance hive issue retry-run {id} --body <note> --human-confirmed --runtime codex --worker-attempts 2 --compact"
                 )
             } else {
-                format!("entrance hive issue retry-run {id} --body <note> --compact")
+                format!("entrance hive issue retry-run {id} --body <note> --human-confirmed --compact")
             }
         })
     });
@@ -10853,7 +10901,8 @@ mod tests {
             next_actions: vec![
                 "entrance hive loop audit 3 --compact".to_string(),
                 "entrance hive loop evidence 3".to_string(),
-                "entrance hive issue retry-run 7 --body <note> --compact".to_string(),
+                "entrance hive issue retry-run 7 --body <note> --human-confirmed --compact"
+                    .to_string(),
             ],
             runtime: "codex".to_string(),
             current_round: 2,
@@ -11803,7 +11852,7 @@ mod tests {
             summary
                 .pointer("/commands/retry")
                 .and_then(|value| value.as_str()),
-            Some("entrance hive issue retry-run 9 --body <note> --runtime codex --worker-attempts 2 --compact")
+            Some("entrance hive issue retry-run 9 --body <note> --human-confirmed --runtime codex --worker-attempts 2 --compact")
         );
         assert_eq!(
             summary
@@ -11833,7 +11882,7 @@ mod tests {
             summary
                 .pointer("/recovery/retry_command")
                 .and_then(|value| value.as_str()),
-            Some("entrance hive issue retry-run 9 --body <note> --runtime codex --worker-attempts 2 --compact")
+            Some("entrance hive issue retry-run 9 --body <note> --human-confirmed --runtime codex --worker-attempts 2 --compact")
         );
     }
 
@@ -11866,7 +11915,7 @@ mod tests {
                     "next_actions": [
                         "entrance hive loop evidence 3",
                         "entrance hive loop doctor 3",
-                        "entrance hive issue retry-run 7 --body <note> --runtime codex --worker-attempts 2 --compact"
+                        "entrance hive issue retry-run 7 --body <note> --human-confirmed --runtime codex --worker-attempts 2 --compact"
                     ]
                 },
                 "trace": {
@@ -11922,7 +11971,7 @@ mod tests {
             summary
                 .pointer("/recovery/retry_command")
                 .and_then(|value| value.as_str()),
-            Some("entrance hive issue retry-run 7 --body <note> --runtime codex --worker-attempts 2 --compact")
+            Some("entrance hive issue retry-run 7 --body <note> --human-confirmed --runtime codex --worker-attempts 2 --compact")
         );
         assert_eq!(
             summary
@@ -12095,17 +12144,17 @@ mod tests {
                 test_issue_action(
                     "retry",
                     "Retry",
-                    "entrance hive issue retry-run 7 --body <note> --compact",
+                    "entrance hive issue retry-run 7 --body <note> --human-confirmed --compact",
                 ),
                 test_issue_action(
                     "request-review",
                     "Review",
-                    "entrance hive issue decide 7 request-review --body <note> --compact",
+                    "entrance hive issue decide 7 request-review --body <note> --human-confirmed --compact",
                 ),
                 test_issue_action(
                     "cancel",
                     "Cancel",
-                    "entrance hive issue decide 7 cancel --body <note> --compact",
+                    "entrance hive issue decide 7 cancel --body <note> --human-confirmed --compact",
                 ),
             ],
             trace: None,
@@ -12153,7 +12202,7 @@ mod tests {
             blocked
                 .pointer("/issues/0/actions/1/command")
                 .and_then(|value| value.as_str()),
-            Some("entrance hive issue retry-run 7 --body <note> --compact")
+            Some("entrance hive issue retry-run 7 --body <note> --human-confirmed --compact")
         );
         assert_eq!(
             blocked
@@ -12165,13 +12214,13 @@ mod tests {
             blocked
                 .pointer("/issues/0/actions/2/command")
                 .and_then(|value| value.as_str()),
-            Some("entrance hive issue decide 7 request-review --body <note> --compact")
+            Some("entrance hive issue decide 7 request-review --body <note> --human-confirmed --compact")
         );
         assert_eq!(
             blocked
                 .pointer("/issues/0/actions/3/command")
                 .and_then(|value| value.as_str()),
-            Some("entrance hive issue decide 7 cancel --body <note> --compact")
+            Some("entrance hive issue decide 7 cancel --body <note> --human-confirmed --compact")
         );
         assert_eq!(
             blocked
@@ -12227,7 +12276,7 @@ mod tests {
                 test_issue_action(
                     "retry",
                     "Retry",
-                    "entrance hive issue retry-run 7 --body <note> --compact",
+                    "entrance hive issue retry-run 7 --body <note> --human-confirmed --compact",
                 ),
             ],
             trace: None,
@@ -12249,7 +12298,7 @@ mod tests {
             detail
                 .pointer("/issue/actions/1/command")
                 .and_then(|value| value.as_str()),
-            Some("entrance hive issue retry-run 7 --body <note> --compact")
+            Some("entrance hive issue retry-run 7 --body <note> --human-confirmed --compact")
         );
     }
 
