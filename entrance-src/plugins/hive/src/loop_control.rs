@@ -205,6 +205,7 @@ pub struct IssueTransitionPolicyRegistry {
     pub scope: String,
     pub state_classes: Vec<IssueTransitionStateClassSpec>,
     pub actions: Vec<IssueTransitionActionPolicySpec>,
+    pub state_machine: Vec<IssueTransitionStateMachineSpec>,
     pub confirmation: IssueTransitionConfirmationSpec,
     pub reviewer_fallback: IssueTransitionReviewerFallbackPolicy,
     pub resource_template: String,
@@ -231,6 +232,31 @@ pub struct IssueTransitionActionPolicySpec {
     pub requires_confirmation: bool,
     pub runtime_required: bool,
     pub command_template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueTransitionStateMachineSpec {
+    pub status: String,
+    pub state_class: String,
+    pub terminal: bool,
+    pub human_decision_required: bool,
+    pub allowed_actions: Vec<IssueTransitionStateMachineActionSpec>,
+    pub blocked_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueTransitionStateMachineActionSpec {
+    pub action: String,
+    pub label: String,
+    pub to_status: String,
+    pub gate: String,
+    pub source: String,
+    pub input: String,
+    pub destructive: bool,
+    pub requires_confirmation: bool,
+    pub runtime_required: bool,
+    pub command_template: String,
+    pub condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2247,95 +2273,101 @@ fn connector_policy_registry() -> ConnectorPolicyRegistry {
 }
 
 fn issue_transition_policy_registry() -> IssueTransitionPolicyRegistry {
+    let state_classes = vec![
+        issue_transition_state_class_spec("runnable", &["Todo"], false, false),
+        issue_transition_state_class_spec("running", &["Doing"], false, false),
+        issue_transition_state_class_spec("needs_human", &["Blocked", "Needs Review"], false, true),
+        issue_transition_state_class_spec("terminal", &["Done", "Canceled"], true, false),
+    ];
+    let actions = vec![
+        issue_transition_action_policy_spec(
+            "run",
+            "Run",
+            &["Todo"],
+            "runtime_verdict: Done | Blocked | Needs Review | Canceled",
+            "status_todo_and_loop_bound",
+            "runtime",
+            "none",
+            false,
+            false,
+            true,
+            "entrance hive issue run {issue_id} --runtime {runtime} --compact",
+        ),
+        issue_transition_action_policy_spec(
+            "comment",
+            "Comment",
+            &[
+                "Todo",
+                "Doing",
+                "Blocked",
+                "Needs Review",
+                "Done",
+                "Canceled",
+            ],
+            "same_status",
+            "issue_exists",
+            "human_options",
+            "body",
+            false,
+            false,
+            false,
+            "entrance hive issue comment {issue_id} --body <text> --compact",
+        ),
+        issue_transition_action_policy_spec(
+            "retry",
+            "Retry",
+            &["Blocked", "Needs Review", "Canceled"],
+            "Todo, then runtime_verdict",
+            "human_confirmed_retry_boundary",
+            "human_options",
+            "note",
+            false,
+            true,
+            true,
+            "entrance hive issue retry-run {issue_id} --body <note> --human-confirmed --compact",
+        ),
+        issue_transition_action_policy_spec(
+            "request-review",
+            "Review",
+            &["Blocked"],
+            "Needs Review",
+            "human_confirmed_review_boundary",
+            "human_options",
+            "note",
+            false,
+            true,
+            false,
+            "entrance hive issue decide {issue_id} request-review --body <note> --human-confirmed --compact",
+        ),
+        issue_transition_action_policy_spec(
+            "cancel",
+            "Cancel",
+            &["Todo", "Blocked", "Needs Review"],
+            "Canceled",
+            "human_confirmed_cancel_boundary",
+            "human_options",
+            "note",
+            true,
+            true,
+            false,
+            "entrance hive issue decide {issue_id} cancel --body <note> --human-confirmed --compact",
+        ),
+    ];
+    let reviewer_fallback = IssueTransitionReviewerFallbackPolicy {
+        trigger_decision: "reject".to_string(),
+        invalid_round_budget: REVIEWER_INVALID_ROUND_BUDGET,
+        fallback_status: "Blocked".to_string(),
+        human_decision_statuses: vec!["Blocked".to_string(), "Needs Review".to_string()],
+    };
+    let state_machine =
+        issue_transition_state_machine_specs(&state_classes, &actions, &reviewer_fallback);
     IssueTransitionPolicyRegistry {
         schema_version: POLICY_SCHEMA_VERSION.to_string(),
         owner: "hive-kernel".to_string(),
         scope: "issue.status.transition".to_string(),
-        state_classes: vec![
-            issue_transition_state_class_spec("runnable", &["Todo"], false, false),
-            issue_transition_state_class_spec("running", &["Doing"], false, false),
-            issue_transition_state_class_spec(
-                "needs_human",
-                &["Blocked", "Needs Review"],
-                false,
-                true,
-            ),
-            issue_transition_state_class_spec("terminal", &["Done", "Canceled"], true, false),
-        ],
-        actions: vec![
-            issue_transition_action_policy_spec(
-                "run",
-                "Run",
-                &["Todo"],
-                "runtime_verdict: Done | Blocked | Needs Review | Canceled",
-                "status_todo_and_loop_bound",
-                "runtime",
-                "none",
-                false,
-                false,
-                true,
-                "entrance hive issue run {issue_id} --runtime {runtime} --compact",
-            ),
-            issue_transition_action_policy_spec(
-                "comment",
-                "Comment",
-                &[
-                    "Todo",
-                    "Doing",
-                    "Blocked",
-                    "Needs Review",
-                    "Done",
-                    "Canceled",
-                ],
-                "same_status",
-                "issue_exists",
-                "human_options",
-                "body",
-                false,
-                false,
-                false,
-                "entrance hive issue comment {issue_id} --body <text> --compact",
-            ),
-            issue_transition_action_policy_spec(
-                "retry",
-                "Retry",
-                &["Blocked", "Needs Review", "Canceled"],
-                "Todo, then runtime_verdict",
-                "human_confirmed_retry_boundary",
-                "human_options",
-                "note",
-                false,
-                true,
-                true,
-                "entrance hive issue retry-run {issue_id} --body <note> --human-confirmed --compact",
-            ),
-            issue_transition_action_policy_spec(
-                "request-review",
-                "Review",
-                &["Blocked"],
-                "Needs Review",
-                "human_confirmed_review_boundary",
-                "human_options",
-                "note",
-                false,
-                true,
-                false,
-                "entrance hive issue decide {issue_id} request-review --body <note> --human-confirmed --compact",
-            ),
-            issue_transition_action_policy_spec(
-                "cancel",
-                "Cancel",
-                &["Todo", "Blocked", "Needs Review"],
-                "Canceled",
-                "human_confirmed_cancel_boundary",
-                "human_options",
-                "note",
-                true,
-                true,
-                false,
-                "entrance hive issue decide {issue_id} cancel --body <note> --human-confirmed --compact",
-            ),
-        ],
+        state_classes,
+        actions,
+        state_machine,
         confirmation: IssueTransitionConfirmationSpec {
             required_actions: vec![
                 "cancel".to_string(),
@@ -2348,13 +2380,99 @@ fn issue_transition_policy_registry() -> IssueTransitionPolicyRegistry {
             policy_resource: "entrance://policy/mcp-permissions".to_string(),
             actor_identity_resource: "entrance://policy/actor-identity".to_string(),
         },
-        reviewer_fallback: IssueTransitionReviewerFallbackPolicy {
-            trigger_decision: "reject".to_string(),
-            invalid_round_budget: REVIEWER_INVALID_ROUND_BUDGET,
-            fallback_status: "Blocked".to_string(),
-            human_decision_statuses: vec!["Blocked".to_string(), "Needs Review".to_string()],
-        },
+        reviewer_fallback,
         resource_template: "entrance://issues/{issue_id}/transition-policy".to_string(),
+    }
+}
+
+fn issue_transition_state_machine_specs(
+    state_classes: &[IssueTransitionStateClassSpec],
+    actions: &[IssueTransitionActionPolicySpec],
+    reviewer_fallback: &IssueTransitionReviewerFallbackPolicy,
+) -> Vec<IssueTransitionStateMachineSpec> {
+    state_classes
+        .iter()
+        .flat_map(|state| {
+            state.statuses.iter().map(|status| {
+                let allowed = issue_transition_state_machine_action_names(status)
+                    .into_iter()
+                    .filter_map(|action| {
+                        actions
+                            .iter()
+                            .find(|policy| policy.action == action)
+                            .map(|policy| issue_transition_state_machine_action(status, policy))
+                    })
+                    .collect::<Vec<_>>();
+                let allowed_names = allowed
+                    .iter()
+                    .map(|action| action.action.as_str())
+                    .collect::<BTreeSet<_>>();
+                let blocked_actions = actions
+                    .iter()
+                    .filter(|policy| !allowed_names.contains(policy.action.as_str()))
+                    .map(|policy| policy.action.clone())
+                    .collect::<Vec<_>>();
+                IssueTransitionStateMachineSpec {
+                    status: status.clone(),
+                    state_class: state.class.clone(),
+                    terminal: state.terminal,
+                    human_decision_required: state.human_decision_required
+                        || reviewer_fallback.human_decision_statuses.contains(status),
+                    allowed_actions: allowed,
+                    blocked_actions,
+                }
+            })
+        })
+        .collect()
+}
+
+fn issue_transition_state_machine_action_names(status: &str) -> Vec<&'static str> {
+    match status {
+        "Todo" => vec!["run", "comment", "cancel"],
+        "Doing" => vec!["comment"],
+        "Blocked" => vec!["comment", "retry", "request-review", "cancel"],
+        "Needs Review" => vec!["comment", "retry", "cancel"],
+        "Done" => vec!["comment"],
+        "Canceled" => vec!["comment", "retry"],
+        _ => vec!["comment"],
+    }
+}
+
+fn issue_transition_state_machine_action(
+    status: &str,
+    policy: &IssueTransitionActionPolicySpec,
+) -> IssueTransitionStateMachineActionSpec {
+    let to_status = if policy.to_status == "same_status" {
+        status.to_string()
+    } else {
+        policy.to_status.clone()
+    };
+    IssueTransitionStateMachineActionSpec {
+        action: policy.action.clone(),
+        label: policy.label.clone(),
+        to_status,
+        gate: policy.gate.clone(),
+        source: policy.source.clone(),
+        input: policy.input.clone(),
+        destructive: policy.destructive,
+        requires_confirmation: policy.requires_confirmation,
+        runtime_required: policy.runtime_required,
+        command_template: policy.command_template.clone(),
+        condition: issue_transition_state_machine_condition(status, policy),
+    }
+}
+
+fn issue_transition_state_machine_condition(
+    status: &str,
+    policy: &IssueTransitionActionPolicySpec,
+) -> Option<String> {
+    match (status, policy.action.as_str()) {
+        ("Todo", "run") => Some("requires loop-bound issue".to_string()),
+        ("Canceled", "retry") => Some(
+            "only when the runtime verdict still exposes retry; human-canceled issues are comment-only"
+                .to_string(),
+        ),
+        _ => None,
     }
 }
 
@@ -12717,6 +12835,64 @@ mod tests {
         }
     }
 
+    fn test_issue_with_status(status: &str, loop_id: Option<i64>) -> HiveIssue {
+        HiveIssue {
+            id: 42,
+            loop_id,
+            title: format!("{status} issue"),
+            status: status.to_string(),
+            summary: None,
+            created_at: "2026-06-09T00:00:00Z".to_string(),
+            updated_at: "2026-06-09T00:00:00Z".to_string(),
+        }
+    }
+
+    fn test_operator_evidence(action: &str) -> IssueEvidenceSummary {
+        IssueEvidenceSummary {
+            id: 1,
+            round: 1,
+            stage_role: None,
+            kind: "operator_decision".to_string(),
+            summary: format!("operator {action}"),
+            schema_version: Some(OPERATOR_DECISION_SCHEMA_VERSION.to_string()),
+            admission_result: None,
+            blocked_phase: None,
+            missing_receipts: Vec::new(),
+            packet_envelope_errors: Vec::new(),
+            operator_options: Vec::new(),
+            operator_author: Some("human".to_string()),
+            operator_action: Some(action.to_string()),
+            worker_kind: None,
+            worker_mode: None,
+            worker_ok: None,
+            worker_receipt_ok: None,
+            worker_timed_out: None,
+            worker_status: None,
+            worker_duration_ms: None,
+            worker_timeout_secs: None,
+            worker_attempt_count: None,
+            worker_max_attempts: None,
+            worker_retry_exhausted: None,
+            worker_command: None,
+            worker_cwd: None,
+            worker_action: None,
+            worker_evidence_summary: None,
+            worker_gate_count: None,
+            worker_receipt_errors: Vec::new(),
+            transcript_excerpt: None,
+        }
+    }
+
+    fn issue_action_names(actions: &[IssueAction]) -> Vec<String> {
+        actions.iter().map(|action| action.action.clone()).collect()
+    }
+
+    fn state_machine_action_names(
+        actions: &[IssueTransitionStateMachineActionSpec],
+    ) -> Vec<String> {
+        actions.iter().map(|action| action.action.clone()).collect()
+    }
+
     #[test]
     fn policy_registry_and_loop_policies_expose_typed_gate_specs() {
         let registry = policy_registry();
@@ -13059,6 +13235,231 @@ mod tests {
                     .any(|field| field.as_str() == Some("gate.expected_object_kind"))))));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_transition_state_machine_exposes_registry_backed_status_matrix() {
+        let registry = issue_transition_policy_registry();
+        assert_eq!(
+            registry
+                .state_machine
+                .iter()
+                .map(|state| state.status.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Todo",
+                "Doing",
+                "Blocked",
+                "Needs Review",
+                "Done",
+                "Canceled"
+            ]
+        );
+        let registry_actions = registry
+            .actions
+            .iter()
+            .map(|action| action.action.clone())
+            .collect::<BTreeSet<_>>();
+        let cases = [
+            (
+                "Todo",
+                "runnable",
+                false,
+                false,
+                vec!["run", "comment", "cancel"],
+                vec!["retry", "request-review"],
+            ),
+            (
+                "Doing",
+                "running",
+                false,
+                false,
+                vec!["comment"],
+                vec!["run", "retry", "request-review", "cancel"],
+            ),
+            (
+                "Blocked",
+                "needs_human",
+                false,
+                true,
+                vec!["comment", "retry", "request-review", "cancel"],
+                vec!["run"],
+            ),
+            (
+                "Needs Review",
+                "needs_human",
+                false,
+                true,
+                vec!["comment", "retry", "cancel"],
+                vec!["run", "request-review"],
+            ),
+            (
+                "Done",
+                "terminal",
+                true,
+                false,
+                vec!["comment"],
+                vec!["run", "retry", "request-review", "cancel"],
+            ),
+            (
+                "Canceled",
+                "terminal",
+                true,
+                false,
+                vec!["comment", "retry"],
+                vec!["run", "request-review", "cancel"],
+            ),
+        ];
+
+        for (status, class, terminal, human_required, allowed, blocked) in cases {
+            let state = registry
+                .state_machine
+                .iter()
+                .find(|state| state.status == status)
+                .expect("state machine row should exist");
+            assert_eq!(state.state_class, class);
+            assert_eq!(state.terminal, terminal);
+            assert_eq!(state.human_decision_required, human_required);
+            assert_eq!(state_machine_action_names(&state.allowed_actions), allowed);
+            assert_eq!(state.blocked_actions, blocked);
+
+            let allowed_set = state
+                .allowed_actions
+                .iter()
+                .map(|action| action.action.clone())
+                .collect::<BTreeSet<_>>();
+            let blocked_set = state
+                .blocked_actions
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            assert!(allowed_set.is_disjoint(&blocked_set));
+            assert_eq!(
+                allowed_set
+                    .union(&blocked_set)
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+                registry_actions
+            );
+
+            for action in &state.allowed_actions {
+                let policy = registry
+                    .actions
+                    .iter()
+                    .find(|policy| policy.action == action.action)
+                    .expect("allowed state-machine action should be in registry");
+                assert!(policy.from_statuses.contains(&state.status));
+                assert_eq!(action.label, policy.label);
+                assert_eq!(action.gate, policy.gate);
+                assert_eq!(action.requires_confirmation, policy.requires_confirmation);
+                assert_eq!(action.runtime_required, policy.runtime_required);
+            }
+        }
+
+        let todo_run = registry
+            .state_machine
+            .iter()
+            .find(|state| state.status == "Todo")
+            .and_then(|state| {
+                state
+                    .allowed_actions
+                    .iter()
+                    .find(|action| action.action == "run")
+            })
+            .expect("Todo should expose conditional run");
+        assert_eq!(
+            todo_run.condition.as_deref(),
+            Some("requires loop-bound issue")
+        );
+        let canceled_retry = registry
+            .state_machine
+            .iter()
+            .find(|state| state.status == "Canceled")
+            .and_then(|state| {
+                state
+                    .allowed_actions
+                    .iter()
+                    .find(|action| action.action == "retry")
+            })
+            .expect("Canceled should document retryable runtime rejection");
+        assert!(canceled_retry
+            .condition
+            .as_deref()
+            .is_some_and(|condition| condition.contains("runtime verdict")));
+    }
+
+    #[test]
+    fn issue_transition_state_machine_matches_status_action_surface() {
+        let registry = issue_transition_policy_registry();
+        let cases = [
+            ("Todo", vec!["run", "comment", "cancel"]),
+            ("Doing", vec!["comment"]),
+            (
+                "Blocked",
+                vec!["comment", "retry", "request-review", "cancel"],
+            ),
+            ("Needs Review", vec!["comment", "retry", "cancel"]),
+            ("Done", vec!["comment"]),
+            ("Canceled", vec!["comment"]),
+        ];
+
+        for (status, expected_actions) in cases {
+            let issue = test_issue_with_status(status, Some(7));
+            let actions = issue_actions(&issue, None, None);
+            assert_eq!(issue_action_names(&actions), expected_actions);
+
+            let allowed = actions
+                .iter()
+                .map(|action| issue_transition_policy_action(&issue, action))
+                .collect::<Vec<_>>();
+            for action in &allowed {
+                assert_eq!(
+                    issue_transition_allowed_action_policy_errors(&issue, action, &registry),
+                    Vec::<String>::new()
+                );
+            }
+            let blocked = issue_transition_blocked_actions(&issue, &actions);
+            let allowed_set = actions
+                .iter()
+                .map(|action| action.action.clone())
+                .collect::<BTreeSet<_>>();
+            let blocked_set = blocked
+                .iter()
+                .map(|action| action.action.clone())
+                .collect::<BTreeSet<_>>();
+            let registry_set = registry
+                .actions
+                .iter()
+                .map(|action| action.action.clone())
+                .collect::<BTreeSet<_>>();
+            assert!(allowed_set.is_disjoint(&blocked_set));
+            assert_eq!(
+                allowed_set
+                    .union(&blocked_set)
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+                registry_set
+            );
+        }
+
+        let todo_without_loop = test_issue_with_status("Todo", None);
+        assert_eq!(
+            issue_action_names(&issue_actions(&todo_without_loop, None, None)),
+            vec!["comment", "cancel"]
+        );
+        let canceled = test_issue_with_status("Canceled", Some(7));
+        assert_eq!(
+            issue_human_options(Some(&canceled), &option_list(&["comment", "retry"]), &[]),
+            option_list(&["comment", "retry"])
+        );
+        assert_eq!(
+            issue_human_options(
+                Some(&canceled),
+                &option_list(&["comment", "retry"]),
+                &[test_operator_evidence("cancel")]
+            ),
+            option_list(&["comment"])
+        );
     }
 
     #[test]

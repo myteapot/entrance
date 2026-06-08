@@ -165,8 +165,12 @@ policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
 required worker receipt fields, role binding, the issue status transition
 registry, connector retry budgets, and the connector admission required-check
 contract. The issue transition registry includes state classes, allowed actions,
-confirmation requirements, command templates, and the 3-round Reviewer fallback
-policy used by `hive issue transition-policy`. The compact policy and connector
+confirmation requirements, command templates, a serialized status state machine,
+and the 3-round Reviewer fallback policy used by `hive issue transition-policy`.
+The state machine covers `Todo`, `Doing`, `Blocked`, `Needs Review`, `Done`, and
+`Canceled`, including allowed/blocked actions, gates, confirmation requirements,
+terminal/human-decision classes, loop-bound `run`, and retryable runtime-rejected
+`Canceled` behavior. The compact policy and connector
 registry surfaces include both the `required_checks` compatibility list and a
 structured `check_registry` with each check's severity, owner, required evidence,
 and summary. Actual connector admission check rows inherit the same metadata so

@@ -1407,6 +1407,21 @@ fn compact_policy_registry(report: &PolicyRegistryReport) -> serde_json::Value {
                 "to_status": action.to_status.as_str(),
                 "requires_confirmation": action.requires_confirmation
             })).collect::<Vec<_>>(),
+            "state_machine": report.issue_transitions.state_machine.iter().map(|state| serde_json::json!({
+                "status": state.status.as_str(),
+                "state_class": state.state_class.as_str(),
+                "terminal": state.terminal,
+                "human_decision_required": state.human_decision_required,
+                "allowed_actions": state.allowed_actions.iter().map(|action| serde_json::json!({
+                    "action": action.action.as_str(),
+                    "to_status": action.to_status.as_str(),
+                    "gate": action.gate.as_str(),
+                    "requires_confirmation": action.requires_confirmation,
+                    "runtime_required": action.runtime_required,
+                    "condition": action.condition.as_deref()
+                })).collect::<Vec<_>>(),
+                "blocked_actions": state.blocked_actions.iter().map(String::as_str).collect::<Vec<_>>()
+            })).collect::<Vec<_>>(),
             "confirmation": {
                 "required_actions": report.issue_transitions.confirmation.required_actions.iter().map(String::as_str).collect::<Vec<_>>(),
                 "confirmation_arg": report.issue_transitions.confirmation.confirmation_arg.as_str(),

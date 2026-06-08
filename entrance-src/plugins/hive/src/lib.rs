@@ -45,6 +45,7 @@ pub use loop_control::{
     IssueTransitionPolicyAction, IssueTransitionPolicyBlockedAction, IssueTransitionPolicyRegistry,
     IssueTransitionPolicyReport, IssueTransitionPolicyResources, IssueTransitionReviewerBudget,
     IssueTransitionReviewerFallbackPolicy, IssueTransitionStateClassSpec,
+    IssueTransitionStateMachineActionSpec, IssueTransitionStateMachineSpec,
     OperatorConfirmationActor, OperatorConfirmationClient, OperatorConfirmationReceipt,
     PolicyGateSpec, PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE,
     CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND, OPERATOR_ACTION_CONFIRMATION_ARG,

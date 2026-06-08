@@ -65,6 +65,13 @@ Entrance has reached a local MVP unit:
   a registry snapshot, and `entrance hive loop audit <loop_id>` includes an
   `issue_transition_policy` check for allowed/blocked action coverage,
   confirmation contract drift, and Reviewer fallback budget drift.
+- The issue transition registry now includes a serialized state machine matrix
+  for `Todo`, `Doing`, `Blocked`, `Needs Review`, `Done`, and `Canceled`.
+  `entrance hive policy registry --compact` and the MCP policy registry expose
+  each state's allowed/blocked actions, gates, confirmation requirements,
+  terminal/human-decision class, loop-bound `run` condition, and retryable
+  runtime-rejected `Canceled` condition. Hive unit tests now verify that the
+  real issue action surface stays aligned with that matrix.
 - Issue/status/comment execution now goes through transition admission. Local
   `entrance hive issue comment`, `issue decide`, `issue run`, and `issue
   retry-run` paths consult the kernel transition registry before mutating issue
@@ -205,9 +212,8 @@ multi-agent runtime/compiler product.
 - Make policy registry changes explicit and auditable, including admission gate
   versions, owner, required evidence, and migration behavior.
 - Productize the current `issue_transition_policy.v1`
-  registry/report/audit/admission binding with version migration, systematic
-  state machine tests, stronger policy lifecycle semantics, and remote issue
-  status mapping.
+  registry/report/audit/admission/state-machine binding with version migration,
+  stronger policy lifecycle semantics, and remote issue status mapping.
 - Extend the new runtime preflight admission into a fuller capability preview:
   sandbox scope, connector readiness, artifact capture expectations, and human
   preference boundaries before any agent worker is spawned. Current
