@@ -196,6 +196,7 @@ pub struct ConnectorPolicyRegistry {
     pub schema_version: String,
     pub admission: ConnectorAdmissionPolicySpec,
     pub retry: Vec<ConnectorRetryPolicySpec>,
+    pub status_mappings: Vec<ConnectorStatusMappingPolicySpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -290,6 +291,28 @@ pub struct ConnectorRetryPolicySpec {
     pub rate_limit_http_statuses: Vec<u16>,
     pub rate_limit_headers: Vec<String>,
     pub no_immediate_retry_checks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorStatusMappingPolicySpec {
+    pub schema_version: String,
+    pub provider: String,
+    pub transport: String,
+    pub status_source: String,
+    pub write_strategy: String,
+    pub readback_strategy: String,
+    pub mappings: Vec<ConnectorStatusMappingSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorStatusMappingSpec {
+    pub hive_status: String,
+    pub remote_state: Option<String>,
+    pub remote_state_reason: Option<String>,
+    pub remote_state_type: Option<String>,
+    pub remote_status_marker: Option<String>,
+    pub readback_check: String,
+    pub notes: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -402,6 +425,14 @@ struct LoopPolicySpec {
 
 const CURRENT_LOOP_ROLES: &[&str] = &["explorer", "developer", "reviewer"];
 const LEGACY_LOOP_ROLES: &[&str] = &["explorer", "doer", "evaluator"];
+const ISSUE_STATUSES: &[&str] = &[
+    "Todo",
+    "Doing",
+    "Blocked",
+    "Needs Review",
+    "Done",
+    "Canceled",
+];
 const REVIEWER_INVALID_ROUND_BUDGET: i64 = 3;
 
 const CURRENT_LOOP_POLICIES: &[LoopPolicySpec] = &[
@@ -2269,6 +2300,7 @@ fn connector_policy_registry() -> ConnectorPolicyRegistry {
         schema_version: POLICY_SCHEMA_VERSION.to_string(),
         admission: connector_admission_policy_spec(),
         retry: connector_retry_policies(),
+        status_mappings: connector_status_mapping_policies(),
     }
 }
 
@@ -2581,6 +2613,41 @@ pub fn connector_retry_policy_for_provider(provider: &str) -> Option<ConnectorRe
         .find(|policy| policy.provider == provider)
 }
 
+pub fn connector_status_mapping_policy_for_provider(
+    provider: &str,
+) -> Option<ConnectorStatusMappingPolicySpec> {
+    connector_status_mapping_policies()
+        .into_iter()
+        .find(|policy| policy.provider == provider)
+}
+
+pub fn connector_status_mapping_for_provider(
+    provider: &str,
+    hive_status: &str,
+) -> Option<ConnectorStatusMappingSpec> {
+    connector_status_mapping_policy_for_provider(provider).and_then(|policy| {
+        policy
+            .mappings
+            .into_iter()
+            .find(|mapping| mapping.hive_status == hive_status)
+    })
+}
+
+pub fn connector_github_issue_state(status: &str) -> &'static str {
+    match status {
+        "Done" | "Canceled" => "closed",
+        _ => "open",
+    }
+}
+
+pub fn connector_github_issue_state_reason(status: &str) -> Option<&'static str> {
+    match status {
+        "Done" => Some("completed"),
+        "Canceled" => Some("not_planned"),
+        _ => None,
+    }
+}
+
 fn connector_retry_policies() -> Vec<ConnectorRetryPolicySpec> {
     vec![
         connector_retry_policy_spec(
@@ -2619,6 +2686,112 @@ fn connector_retry_policies() -> Vec<ConnectorRetryPolicySpec> {
             ],
         ),
     ]
+}
+
+fn connector_status_mapping_policies() -> Vec<ConnectorStatusMappingPolicySpec> {
+    vec![
+        connector_status_mapping_policy_spec(
+            "remote-fixture",
+            "file",
+            "exact_status_field",
+            "status_field_equals_hive_status",
+        ),
+        connector_github_status_mapping_policy(),
+        connector_linear_status_mapping_policy(),
+    ]
+}
+
+fn connector_status_mapping_policy_spec(
+    provider: &str,
+    transport: &str,
+    write_strategy: &str,
+    readback_strategy: &str,
+) -> ConnectorStatusMappingPolicySpec {
+    ConnectorStatusMappingPolicySpec {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        provider: provider.to_string(),
+        transport: transport.to_string(),
+        status_source: "hive_issue.status".to_string(),
+        write_strategy: write_strategy.to_string(),
+        readback_strategy: readback_strategy.to_string(),
+        mappings: ISSUE_STATUSES
+            .iter()
+            .map(|status| ConnectorStatusMappingSpec {
+                hive_status: (*status).to_string(),
+                remote_state: Some((*status).to_string()),
+                remote_state_reason: None,
+                remote_state_type: None,
+                remote_status_marker: None,
+                readback_check: "remote_status".to_string(),
+                notes: "Remote status field must equal the Hive issue status.".to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn connector_github_status_mapping_policy() -> ConnectorStatusMappingPolicySpec {
+    ConnectorStatusMappingPolicySpec {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        provider: "github".to_string(),
+        transport: "rest".to_string(),
+        status_source: "hive_issue.status".to_string(),
+        write_strategy: "issue_state_and_state_reason".to_string(),
+        readback_strategy: "state_and_state_reason_match".to_string(),
+        mappings: ISSUE_STATUSES
+            .iter()
+            .map(|status| ConnectorStatusMappingSpec {
+                hive_status: (*status).to_string(),
+                remote_state: Some(connector_github_issue_state(status).to_string()),
+                remote_state_reason: connector_github_issue_state_reason(status)
+                    .map(str::to_string),
+                remote_state_type: None,
+                remote_status_marker: None,
+                readback_check: "remote_status".to_string(),
+                notes: match *status {
+                    "Done" => {
+                        "Done closes the GitHub issue with state_reason=completed.".to_string()
+                    }
+                    "Canceled" => "Canceled closes the GitHub issue with state_reason=not_planned."
+                        .to_string(),
+                    _ => "Non-terminal Hive statuses keep the GitHub issue open.".to_string(),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn connector_linear_status_mapping_policy() -> ConnectorStatusMappingPolicySpec {
+    ConnectorStatusMappingPolicySpec {
+        schema_version: POLICY_SCHEMA_VERSION.to_string(),
+        provider: "linear".to_string(),
+        transport: "graphql".to_string(),
+        status_source: "hive_issue.status".to_string(),
+        write_strategy: "description_status_marker_until_state_id_mapping".to_string(),
+        readback_strategy: "state_name_or_description_status_marker".to_string(),
+        mappings: ISSUE_STATUSES
+            .iter()
+            .map(|status| ConnectorStatusMappingSpec {
+                hive_status: (*status).to_string(),
+                remote_state: Some((*status).to_string()),
+                remote_state_reason: None,
+                remote_state_type: connector_linear_state_type(status).map(str::to_string),
+                remote_status_marker: Some(format!("Status: {status}")),
+                readback_check: "remote_status".to_string(),
+                notes: "Linear state id mapping is not configured yet, so write/readback use the mirrored description status marker and accept matching state names when present.".to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn connector_linear_state_type(status: &str) -> Option<&'static str> {
+    match status {
+        "Todo" => Some("unstarted"),
+        "Doing" => Some("started"),
+        "Blocked" | "Needs Review" => Some("backlog"),
+        "Done" => Some("completed"),
+        "Canceled" => Some("canceled"),
+        _ => None,
+    }
 }
 
 fn connector_retry_policy_spec(
@@ -12998,6 +13171,38 @@ mod tests {
             .expect("Linear retry policy should be registered");
         assert_eq!(linear_retry.transport, "graphql");
         assert!(linear_retry.rate_limit_http_statuses.contains(&429));
+        assert_eq!(
+            registry
+                .connector
+                .status_mappings
+                .iter()
+                .map(|policy| policy.provider.as_str())
+                .collect::<Vec<_>>(),
+            vec!["remote-fixture", "github", "linear"]
+        );
+        let github_mapping = connector_status_mapping_for_provider("github", "Canceled")
+            .expect("GitHub canceled mapping should exist");
+        assert_eq!(github_mapping.remote_state.as_deref(), Some("closed"));
+        assert_eq!(
+            github_mapping.remote_state_reason.as_deref(),
+            Some("not_planned")
+        );
+        let linear_mapping = connector_status_mapping_for_provider("linear", "Blocked")
+            .expect("Linear blocked mapping should exist");
+        assert_eq!(linear_mapping.remote_state.as_deref(), Some("Blocked"));
+        assert_eq!(
+            linear_mapping.remote_status_marker.as_deref(),
+            Some("Status: Blocked")
+        );
+        assert_eq!(linear_mapping.remote_state_type.as_deref(), Some("backlog"));
+        let fixture_mapping = connector_status_mapping_for_provider("remote-fixture", "Done")
+            .expect("fixture mapping should exist");
+        assert_eq!(fixture_mapping.remote_state.as_deref(), Some("Done"));
+        assert_eq!(connector_github_issue_state("Done"), "closed");
+        assert_eq!(
+            connector_github_issue_state_reason("Done"),
+            Some("completed")
+        );
         let connector_registry = connector_registry();
         assert!(connector_registry
             .provider_admissions

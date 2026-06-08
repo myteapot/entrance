@@ -163,20 +163,24 @@ ready before trusting loop evidence.
 `hive policy registry` exposes the typed gate registry plus runtime worker
 policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
 required worker receipt fields, role binding, the issue status transition
-registry, connector retry budgets, and the connector admission required-check
-contract. The issue transition registry includes state classes, allowed actions,
-confirmation requirements, command templates, a serialized status state machine,
-and the 3-round Reviewer fallback policy used by `hive issue transition-policy`.
+registry, connector retry budgets, connector status mapping policies, and the
+connector admission required-check contract. The issue transition registry
+includes state classes, allowed actions, confirmation requirements, command
+templates, a serialized status state machine, and the 3-round Reviewer fallback
+policy used by `hive issue transition-policy`.
 The state machine covers `Todo`, `Doing`, `Blocked`, `Needs Review`, `Done`, and
 `Canceled`, including allowed/blocked actions, gates, confirmation requirements,
 terminal/human-decision classes, loop-bound `run`, and retryable runtime-rejected
-`Canceled` behavior. The compact policy and connector
-registry surfaces include both the `required_checks` compatibility list and a
-structured `check_registry` with each check's severity, owner, required evidence,
-and summary. Actual connector admission check rows inherit the same metadata so
-CLI and Panel surfaces can tie failed checks back to their policy owner and
-evidence contract. `hive loop policies <id>` shows the active policy rows loaded
-into a specific loop contract.
+`Canceled` behavior. The compact policy and connector registry surfaces include
+the remote-fixture/GitHub/Linear status mapping policies, both the
+`required_checks` compatibility list, and a structured `check_registry` with each
+check's severity, owner, required evidence, and summary. GitHub maps Hive
+statuses to issue state/state_reason; Linear currently maps Hive statuses
+through a state-name/status-marker readback strategy until workspace state-id
+mapping is configured. Actual connector admission check rows inherit the same
+metadata so CLI and Panel surfaces can tie failed checks back to their policy
+owner and evidence contract. `hive loop policies <id>` shows the active policy
+rows loaded into a specific loop contract.
 `hive loop trace <id>` returns the compact round-aware health view, including
 the reviewer score vector and current-round worker duration/timeout totals,
 without packet transcripts.
@@ -294,12 +298,14 @@ queue, so invalid targets are visible without opening raw JSON.
 The same queue and publish-plan surfaces now include
 `entrance.hive.connector_remote_write_plan.v1`: a typed request envelope that
 spells out the provider, remote object kind, auth expectation, source issue,
-planned HTTP/GraphQL/file operations, receipt schema, readback schema, and
-publish blockers. GitHub plans produce REST issue/comment operations, Linear
-plans produce GraphQL issue/comment operations, and unsupported or inactive
-providers stay blocked at the plan boundary. The Panel renders these envelopes
-as remote write-plan chips so operators can see the planned remote request
-without treating it as an executed third-party write.
+policy-backed status mapping, planned HTTP/GraphQL/file operations, receipt
+schema, readback schema, and publish blockers. GitHub plans produce REST
+issue/comment operations with mapped issue state/state_reason, Linear plans
+produce GraphQL issue/comment operations with a status marker in the issue
+description, and unsupported or inactive providers stay blocked at the plan
+boundary. The Panel renders these envelopes as remote write-plan chips so
+operators can see the planned remote request without treating it as an executed
+third-party write.
 `hive connector registry --compact` exposes
 active/planned issue-surface providers, provider-specific admission status, and
 the connector admission gate, while `hive issue
@@ -338,14 +344,18 @@ or readback retry/rate-limit signals without opening raw CLI JSON; selected
 issue detail can expand those diagnostics into per-attempt HTTP status,
 failed-check, retry reason, and backoff rows. The same GitHub/Linear retry budget
 is exposed through `hive policy registry --compact` and embedded in active remote
-contracts. Connector admission previews include a `retry_policy_bound` check that
-compares observed write/readback attempt counts with that active budget before a
-remote issue surface can be admitted, and `hive policy registry --compact`
-exposes the same check name inside the connector admission `required_checks`
-compatibility list plus the structured `check_registry` contract; actual
-admission check rows include the matched owner, severity, required evidence, and
-policy summary. Production drift handling, richer Linear state mapping,
-real-token coverage, and configurable/adaptive retry policy are still pending.
+contracts. The same policy registry also exposes provider status mappings, and
+remote write/readback reports carry the selected mapping so `remote_status`
+checks explain whether they are comparing GitHub state/state_reason, Linear
+state name, or a Linear status marker. Connector admission previews include a
+`retry_policy_bound` check that compares observed write/readback attempt counts
+with that active budget before a remote issue surface can be admitted, and
+`hive policy registry --compact` exposes the same check name inside the
+connector admission `required_checks` compatibility list plus the structured
+`check_registry` contract; actual admission check rows include the matched
+owner, severity, required evidence, and policy summary. Production drift
+handling, configurable Linear workflow state mapping, real-token coverage, and
+configurable/adaptive retry policy are still pending.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in

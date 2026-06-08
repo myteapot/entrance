@@ -8,11 +8,14 @@ use std::{
 use anyhow::{bail, Context, Result};
 use entrance_core::{HiveCommentCreate, HiveLoopEvidenceCreate, StoreSchemaStatus};
 use entrance_hive::{
-    connector_retry_policy_for_provider, ConnectorAdmissionCheckSpec,
+    connector_github_issue_state, connector_github_issue_state_reason,
+    connector_retry_policy_for_provider, connector_status_mapping_for_provider,
+    connector_status_mapping_policy_for_provider, ConnectorAdmissionCheckSpec,
     ConnectorProviderAdmissionSpec, ConnectorProviderSpec, ConnectorRegistryReport,
-    ConnectorRetryPolicySpec, HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck,
-    HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopReport, HiveLoopRunRequest, IssueAction,
-    IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport, IssueRunRequest,
+    ConnectorRetryPolicySpec, ConnectorStatusMappingPolicySpec, ConnectorStatusMappingSpec,
+    HiveCallbackRequest, HiveDispatchRequest, HiveLoopAuditCheck, HiveLoopAuditReport,
+    HiveLoopCreateRequest, HiveLoopReport, HiveLoopRunRequest, IssueAction, IssueCard,
+    IssueCommentRequest, IssueDecisionRequest, IssueMirrorReport, IssueRunRequest,
     IssueTransitionPolicyReport, OperatorConfirmationActor, OperatorConfirmationClient,
     OperatorConfirmationReceipt, PolicyGateSpec, PolicyRegistryReport, ReviewDecision,
     CONNECTOR_MIRROR_RECEIPT_GATE, CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND,
@@ -1387,7 +1390,8 @@ fn compact_policy_registry(report: &PolicyRegistryReport) -> serde_json::Value {
                 "check_registry": report.connector.admission.check_registry.iter().map(compact_connector_admission_check_spec).collect::<Vec<_>>(),
                 "dry_run_command": report.connector.admission.dry_run_command.as_str()
             },
-            "retry": report.connector.retry.iter().map(compact_connector_retry_policy).collect::<Vec<_>>()
+            "retry": report.connector.retry.iter().map(compact_connector_retry_policy).collect::<Vec<_>>(),
+            "status_mappings": report.connector.status_mappings.iter().map(compact_connector_status_mapping_policy).collect::<Vec<_>>()
         },
         "issue_transitions": {
             "schema_version": report.issue_transitions.schema_version.as_str(),
@@ -1468,6 +1472,32 @@ fn compact_connector_retry_policy(policy: &ConnectorRetryPolicySpec) -> serde_js
     })
 }
 
+fn compact_connector_status_mapping_policy(
+    policy: &ConnectorStatusMappingPolicySpec,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": policy.schema_version.as_str(),
+        "provider": policy.provider.as_str(),
+        "transport": policy.transport.as_str(),
+        "status_source": policy.status_source.as_str(),
+        "write_strategy": policy.write_strategy.as_str(),
+        "readback_strategy": policy.readback_strategy.as_str(),
+        "mappings": policy.mappings.iter().map(compact_connector_status_mapping).collect::<Vec<_>>()
+    })
+}
+
+fn compact_connector_status_mapping(mapping: &ConnectorStatusMappingSpec) -> serde_json::Value {
+    serde_json::json!({
+        "hive_status": mapping.hive_status.as_str(),
+        "remote_state": mapping.remote_state.as_deref(),
+        "remote_state_reason": mapping.remote_state_reason.as_deref(),
+        "remote_state_type": mapping.remote_state_type.as_deref(),
+        "remote_status_marker": mapping.remote_status_marker.as_deref(),
+        "readback_check": mapping.readback_check.as_str(),
+        "notes": mapping.notes.as_str()
+    })
+}
+
 fn compact_connector_admission_check_spec(spec: &ConnectorAdmissionCheckSpec) -> serde_json::Value {
     serde_json::json!({
         "name": spec.name.as_str(),
@@ -1492,6 +1522,22 @@ fn connector_remote_retry_policy(provider_name: &str) -> ConnectorRetryPolicySpe
         rate_limit_headers: vec!["retry-after".to_string()],
         no_immediate_retry_checks: vec!["remote_rate_limited".to_string()],
     })
+}
+
+fn connector_remote_status_mapping(provider_name: &str, hive_status: &str) -> serde_json::Value {
+    connector_status_mapping_for_provider(provider_name, hive_status)
+        .map(|mapping| compact_connector_status_mapping(&mapping))
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "hive_status": hive_status,
+                "remote_state": hive_status,
+                "remote_state_reason": serde_json::Value::Null,
+                "remote_state_type": serde_json::Value::Null,
+                "remote_status_marker": serde_json::Value::Null,
+                "readback_check": "remote_status",
+                "notes": "No provider-specific status mapping policy is registered; fallback uses the Hive status as the remote state."
+            })
+        })
 }
 
 fn github_retry_policy() -> ConnectorRetryPolicySpec {
@@ -4659,6 +4705,8 @@ fn connector_remote_readback_report(
     let remote_status_current = remote_mirror
         .map(|remote| remote.issue.status == mirror.issue.status)
         .unwrap_or(false);
+    let status_mapping =
+        connector_remote_status_mapping(&provider.name, mirror.issue.status.as_str());
     let remote_comment_surface_current = remote_mirror
         .map(|remote| issue_mirror_comment_surface_current(mirror, remote))
         .unwrap_or(false);
@@ -4688,6 +4736,7 @@ fn connector_remote_readback_report(
             "Remote issue status matches the current Hive issue status.",
             remote_status_current,
             serde_json::json!({
+                "mapping": status_mapping,
                 "current": mirror.issue.status.as_str(),
                 "remote": remote_mirror.map(|remote| remote.issue.status.as_str())
             }),
@@ -4882,6 +4931,7 @@ fn connector_github_remote_readback_report(
     let expected_body = connector_remote_issue_body(&source_issue);
     let expected_state = connector_github_issue_state(&mirror.issue.status);
     let expected_state_reason = connector_github_issue_state_reason(&mirror.issue.status);
+    let status_mapping = connector_remote_status_mapping("github", &mirror.issue.status);
     let expected_comment = mirror
         .comments
         .last()
@@ -5001,6 +5051,7 @@ fn connector_github_remote_readback_report(
             "GitHub issue state matches the current Hive issue status.",
             remote_status_current,
             serde_json::json!({
+                "mapping": status_mapping,
                 "expected_state": expected_state,
                 "expected_state_reason": expected_state_reason,
                 "remote_state": remote_state,
@@ -5234,9 +5285,22 @@ fn connector_linear_remote_readback_report(
         linear_readback_comments_contain_body(comments_summary, expected)
     });
     let expected_status = mirror.issue.status.as_str();
-    let remote_status_current = remote_state_name == Some(expected_status)
-        || remote_body
-            .map(|body| body.contains(&format!("Status: {expected_status}")))
+    let status_mapping = connector_remote_status_mapping("linear", expected_status);
+    let expected_remote_state = status_mapping
+        .pointer("/remote_state")
+        .and_then(|value| value.as_str());
+    let expected_status_marker = status_mapping
+        .pointer("/remote_status_marker")
+        .and_then(|value| value.as_str());
+    let remote_status_current = expected_remote_state
+        .map(|state| remote_state_name == Some(state))
+        .unwrap_or(false)
+        || expected_status_marker
+            .map(|marker| {
+                remote_body
+                    .map(|body| body.contains(marker))
+                    .unwrap_or(false)
+            })
             .unwrap_or(false);
     let remote_issue_body_current =
         remote_title == Some(expected_title) && remote_body == Some(expected_body.as_str());
@@ -5327,9 +5391,16 @@ fn connector_linear_remote_readback_report(
             "Linear issue state or mirrored description matches the current Hive issue status.",
             remote_status_current,
             serde_json::json!({
+                "mapping": status_mapping,
                 "expected_status": expected_status,
+                "expected_remote_state": expected_remote_state,
+                "expected_status_marker": expected_status_marker,
                 "remote_state_name": remote_state_name,
-                "description_status_marker": remote_body.map(|body| body.contains(&format!("Status: {expected_status}")))
+                "description_status_marker": expected_status_marker.map(|marker| {
+                    remote_body
+                        .map(|body| body.contains(marker))
+                        .unwrap_or(false)
+                })
             }),
         ),
         readback_check(
@@ -7599,6 +7670,9 @@ fn compact_connector_remote_contract(
             "comment_source": "hive_issue.comments",
             "comment_mode": "upsert_latest_comment_by_issue_stable_marker"
         },
+        "status_mapping": connector_status_mapping_policy_for_provider(&provider.name)
+            .as_ref()
+            .map(compact_connector_status_mapping_policy),
         "target": {
             "schema_version": CONNECTOR_REMOTE_TARGET_SCHEMA_VERSION,
             "review_surface": "provider-specific issue target",
@@ -7942,6 +8016,10 @@ fn connector_remote_write_plan(
         blockers.push("remote_target_invalid".to_string());
     }
     let source = connector_remote_write_source(issue);
+    let source_status = issue
+        .pointer("/status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Todo");
     let operations = match provider.name.as_str() {
         "github" => connector_github_remote_write_operations(remote_target, issue),
         "linear" => connector_linear_remote_write_operations(remote_target, issue),
@@ -7962,6 +8040,7 @@ fn connector_remote_write_plan(
         "auth": connector_remote_write_auth_plan(provider),
         "remote_target": remote_target,
         "source": source,
+        "status_mapping": connector_remote_status_mapping(&provider.name, source_status),
         "operations": operations,
         "receipt_schema_version": CONNECTOR_REMOTE_WRITE_RECEIPT_SCHEMA_VERSION,
         "readback_schema_version": CONNECTOR_REMOTE_READBACK_SCHEMA_VERSION
@@ -8054,8 +8133,14 @@ fn connector_github_remote_write_operations(
         .pointer("/status")
         .and_then(|value| value.as_str())
         .unwrap_or("Todo");
-    let state = connector_github_issue_state(status);
-    let state_reason = connector_github_issue_state_reason(status);
+    let status_mapping = connector_remote_status_mapping("github", status);
+    let state = status_mapping
+        .pointer("/remote_state")
+        .and_then(|value| value.as_str())
+        .unwrap_or_else(|| connector_github_issue_state(status));
+    let state_reason = status_mapping
+        .pointer("/remote_state_reason")
+        .and_then(|value| value.as_str());
     let method = if issue_number.is_some() {
         "PATCH"
     } else {
@@ -8115,7 +8200,8 @@ fn connector_github_remote_write_operations(
             "url": empty_str_none(api_url),
             "headers": connector_github_headers(),
             "body": body,
-            "source": "hive_issue.status_title_summary"
+            "source": "hive_issue.status_title_summary",
+            "status_mapping": status_mapping
     })];
     if let Some(comment_operation) = comment_operation {
         operations.push(comment_operation);
@@ -8135,6 +8221,11 @@ fn connector_linear_remote_write_operations(
         .pointer("/api_url")
         .and_then(|value| value.as_str())
         .unwrap_or("https://api.linear.app/graphql");
+    let status = issue
+        .pointer("/status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Todo");
+    let status_mapping = connector_remote_status_mapping("linear", status);
     let idempotency_key = connector_remote_issue_idempotency_key("linear", issue);
     serde_json::json!([
         {
@@ -8168,10 +8259,7 @@ fn connector_linear_remote_write_operations(
                 }
             },
             "source": "hive_issue.status_title_summary",
-            "status_mapping": {
-                "strategy": "description_status_marker_until_state_mapping",
-                "source_status": issue.pointer("/status").and_then(|value| value.as_str())
-            }
+            "status_mapping": status_mapping
         },
         {
             "kind": "upsert_latest_comment",
@@ -8250,21 +8338,6 @@ fn connector_linear_headers() -> Vec<&'static str> {
         "Content-Type: application/json",
         "Authorization: Bearer <redacted>",
     ]
-}
-
-fn connector_github_issue_state(status: &str) -> &'static str {
-    match status {
-        "Done" | "Canceled" => "closed",
-        _ => "open",
-    }
-}
-
-fn connector_github_issue_state_reason(status: &str) -> Option<&'static str> {
-    match status {
-        "Done" => Some("completed"),
-        "Canceled" => Some("not_planned"),
-        _ => None,
-    }
 }
 
 fn connector_remote_issue_body(issue: &serde_json::Value) -> String {
@@ -10857,7 +10930,7 @@ mod tests {
         compact_issue_mirror_sync, compact_issue_mirror_verify,
         compact_linear_issue_mirror_readback, compact_local_panel_issue_mirror_publish,
         compact_local_panel_issue_mirror_readback, compact_loop_audit, compact_loop_start_summary,
-        compact_store_schema_status, connector_admission_check_failed,
+        compact_policy_registry, compact_store_schema_status, connector_admission_check_failed,
         connector_admission_preview_checks, connector_fixture_demo_request,
         connector_github_remote_comment_body, connector_issue_writer_blockers,
         connector_linear_remote_comment_body, connector_remote_issue_body,
@@ -11048,6 +11121,60 @@ mod tests {
                 .pointer("/provider_admissions/0/check_registry/6/required_evidence/0")
                 .and_then(|value| value.as_str()),
             Some("connector_remote_contract.retry")
+        );
+    }
+
+    #[test]
+    fn compact_policy_registry_exposes_connector_status_mappings() {
+        let compact = compact_policy_registry(&entrance_hive::policy_registry());
+
+        assert_eq!(
+            compact
+                .pointer("/connector/status_mappings/1/provider")
+                .and_then(|value| value.as_str()),
+            Some("github")
+        );
+        assert_eq!(
+            compact
+                .pointer("/connector/status_mappings/1/write_strategy")
+                .and_then(|value| value.as_str()),
+            Some("issue_state_and_state_reason")
+        );
+        assert_eq!(
+            compact
+                .pointer("/connector/status_mappings/1/mappings/5/hive_status")
+                .and_then(|value| value.as_str()),
+            Some("Canceled")
+        );
+        assert_eq!(
+            compact
+                .pointer("/connector/status_mappings/1/mappings/5/remote_state")
+                .and_then(|value| value.as_str()),
+            Some("closed")
+        );
+        assert_eq!(
+            compact
+                .pointer("/connector/status_mappings/1/mappings/5/remote_state_reason")
+                .and_then(|value| value.as_str()),
+            Some("not_planned")
+        );
+        assert_eq!(
+            compact
+                .pointer("/connector/status_mappings/2/provider")
+                .and_then(|value| value.as_str()),
+            Some("linear")
+        );
+        assert_eq!(
+            compact
+                .pointer("/connector/status_mappings/2/readback_strategy")
+                .and_then(|value| value.as_str()),
+            Some("state_name_or_description_status_marker")
+        );
+        assert_eq!(
+            compact
+                .pointer("/connector/status_mappings/2/mappings/2/remote_status_marker")
+                .and_then(|value| value.as_str()),
+            Some("Status: Blocked")
         );
     }
 
@@ -13204,6 +13331,21 @@ mod tests {
             Some("completed")
         );
         assert_eq!(
+            plan.pointer("/status_mapping/hive_status")
+                .and_then(|value| value.as_str()),
+            Some("Done")
+        );
+        assert_eq!(
+            plan.pointer("/status_mapping/remote_state")
+                .and_then(|value| value.as_str()),
+            Some("closed")
+        );
+        assert_eq!(
+            plan.pointer("/operations/0/status_mapping/remote_state_reason")
+                .and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
             plan.pointer("/operations/1/kind")
                 .and_then(|value| value.as_str()),
             Some("upsert_latest_comment")
@@ -13282,6 +13424,18 @@ mod tests {
                 .pointer("/operations/1/graphql/variables/id")
                 .and_then(|value| value.as_str()),
             Some("<lookup.issue.id>")
+        );
+        assert_eq!(
+            linear_plan
+                .pointer("/status_mapping/remote_status_marker")
+                .and_then(|value| value.as_str()),
+            Some("Status: Done")
+        );
+        assert_eq!(
+            linear_plan
+                .pointer("/operations/1/status_mapping/readback_check")
+                .and_then(|value| value.as_str()),
+            Some("remote_status")
         );
         assert_eq!(
             linear_plan

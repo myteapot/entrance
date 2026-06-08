@@ -16,10 +16,13 @@ pub use dispatch::DispatchSummary;
 pub use engine::{EngineEvent, EngineReport};
 pub use http::{HiveCallback, HiveCallbackRequest};
 pub use loop_control::{
-    connector_retry_policy_for_provider, ConnectorAdmissionCheckSpec, ConnectorAdmissionPolicySpec,
-    ConnectorPolicyRegistry, ConnectorProviderAdmissionSpec, ConnectorProviderSpec,
-    ConnectorRegistryReport, ConnectorRetryPolicySpec, HiveLoopAuditCheck, HiveLoopAuditReport,
-    HiveLoopCreateRequest, HiveLoopDashboardAgent, HiveLoopDashboardComment,
+    connector_github_issue_state, connector_github_issue_state_reason,
+    connector_retry_policy_for_provider, connector_status_mapping_for_provider,
+    connector_status_mapping_policy_for_provider, policy_registry, ConnectorAdmissionCheckSpec,
+    ConnectorAdmissionPolicySpec, ConnectorPolicyRegistry, ConnectorProviderAdmissionSpec,
+    ConnectorProviderSpec, ConnectorRegistryReport, ConnectorRetryPolicySpec,
+    ConnectorStatusMappingPolicySpec, ConnectorStatusMappingSpec, HiveLoopAuditCheck,
+    HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDashboardAgent, HiveLoopDashboardComment,
     HiveLoopDashboardHealth, HiveLoopDashboardHumanDecision, HiveLoopDashboardKernel,
     HiveLoopDashboardReport, HiveLoopDashboardResources, HiveLoopDashboardReviewer,
     HiveLoopDashboardRound, HiveLoopDashboardRoundAdmission, HiveLoopDashboardRoundEvidence,
