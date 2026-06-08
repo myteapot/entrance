@@ -160,6 +160,12 @@ Entrance has reached a local MVP unit:
   `hive_loop_worker_lifecycle` report and renders Worker Lifecycle state,
   expected role lanes, observed worker receipts, round chips, fallback budget,
   timeout/failure summaries, and copyable next actions.
+- State-changing Panel actions now refresh the selected issue control surfaces
+  after the board refresh. Create, run, retry, review, cancel, comment, issue
+  mirror sync/publish/verify/readback/admit/roundtrip, connector
+  publish/roundtrip execute, and fixture demo paths force a fresh read of the
+  selected issue Transition Policy, Loop Dashboard, Evidence Drilldown, Evidence
+  Manifest, Activity Timeline, Runtime Preflight, and Worker Lifecycle.
 
 This is usable as a local control-plane prototype, but it is not yet the final
 multi-agent runtime/compiler product.
@@ -200,8 +206,8 @@ multi-agent runtime/compiler product.
   versions, owner, required evidence, and migration behavior.
 - Productize the current `issue_transition_policy.v1`
   registry/report/audit/admission binding with version migration, systematic
-  state machine tests, Panel refresh after actions, stronger policy lifecycle
-  semantics, and remote issue status mapping.
+  state machine tests, stronger policy lifecycle semantics, and remote issue
+  status mapping.
 - Extend the new runtime preflight admission into a fuller capability preview:
   sandbox scope, connector readiness, artifact capture expectations, and human
   preference boundaries before any agent worker is spawned. Current

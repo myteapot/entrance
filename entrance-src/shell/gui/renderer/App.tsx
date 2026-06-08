@@ -1509,6 +1509,7 @@ export default function App() {
   const [loopWorkerTimeoutSecs, setLoopWorkerTimeoutSecs] = createSignal("");
   const [loopWorkerAttempts, setLoopWorkerAttempts] = createSignal("");
   const [selectedIssueId, setSelectedIssueId] = createSignal<number | null>(null);
+  const [selectedIssueRefreshNonce, setSelectedIssueRefreshNonce] = createSignal(0);
   const [selectedEvidenceId, setSelectedEvidenceId] = createSignal<number | null>(null);
   const [activeCommentComposer, setActiveCommentComposer] =
     createSignal<ActiveCommentComposer | null>(null);
@@ -1579,6 +1580,7 @@ export default function App() {
       card.trace?.evidence_count ?? 0,
       card.trace?.verdict_count ?? 0,
       card.trace?.last_operator_event?.id ?? 0,
+      selectedIssueRefreshNonce(),
     ].join(":");
   });
   const [selectedIssueTimeline] = createResource(selectedIssueTimelineKey, async (key) => {
@@ -1603,6 +1605,7 @@ export default function App() {
       card.trace?.current_round ?? 0,
       card.trace?.last_decision ?? "pending",
       card.trace?.reason_code ?? "none",
+      selectedIssueRefreshNonce(),
     ].join(":");
   });
   const [selectedTransitionPolicy] = createResource(selectedIssueTransitionKey, async (key) => {
@@ -1626,6 +1629,7 @@ export default function App() {
       card.trace?.last_decision ?? "pending",
       card.trace?.last_admission_passed ?? "pending",
       card.trace?.round_role_worker_count ?? 0,
+      selectedIssueRefreshNonce(),
     ].join(":");
   });
   const [selectedLoopDashboard] = createResource(selectedIssueDashboardKey, async (key) => {
@@ -1649,6 +1653,7 @@ export default function App() {
       card.trace?.evidence_count ?? 0,
       card.trace?.round_evidence_count ?? 0,
       card.trace?.last_operator_event?.id ?? 0,
+      selectedIssueRefreshNonce(),
     ].join(":");
   });
   const [selectedEvidenceDrilldown] = createResource(selectedIssueEvidenceKey, async (key) => {
@@ -1682,6 +1687,7 @@ export default function App() {
       card.trace?.current_round ?? 0,
       card.trace?.admission_count ?? 0,
       card.trace?.last_admission_passed ?? "pending",
+      selectedIssueRefreshNonce(),
     ].join(":");
   });
   const [selectedRuntimePreflight] = createResource(selectedIssuePreflightKey, async (key) => {
@@ -1704,6 +1710,7 @@ export default function App() {
       card.trace?.current_round ?? 0,
       card.trace?.evidence_count ?? 0,
       card.trace?.role_worker_count ?? 0,
+      selectedIssueRefreshNonce(),
     ].join(":");
   });
   const [selectedWorkerLifecycle] = createResource(selectedIssueLifecycleKey, async (key) => {
@@ -2034,11 +2041,18 @@ export default function App() {
       refetchLauncher(),
     ]);
   };
+  const refreshSelectedIssueSurfaces = (issueId: number | null | undefined = selectedIssueId()) => {
+    const selected = selectedIssueId();
+    if (selected !== null && (issueId === null || issueId === undefined || selected === issueId)) {
+      setSelectedIssueRefreshNonce((current) => current + 1);
+    }
+  };
   const refetchLoopSurfaces = async () => {
     await Promise.all([refetchHiveLoops(), refetchIssueCards(), refetchConnectorQueue(), refetchStatus()]);
   };
-  const refetchIssueCardsQuietly = () => {
-    void Promise.all([refetchIssueCards(), refetchConnectorQueue()]).catch(() => undefined);
+  const refetchIssueControlSurfaces = async (issueId: number | null | undefined = selectedIssueId()) => {
+    await refetchLoopSurfaces();
+    refreshSelectedIssueSurfaces(issueId);
   };
   const pollLoopSurfaces = () => {
     void refetchLoopSurfaces().catch(() => undefined);
@@ -2094,7 +2108,7 @@ export default function App() {
         ? "Loop contract created."
         : `Loop contract created as issue #${createdIssueId}.`,
     );
-    await refetchLoopSurfaces();
+    await refetchIssueControlSurfaces(createdIssueId);
     if (createdIssueId !== null) {
       revealIssueDetail();
     }
@@ -2189,7 +2203,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} sync failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
-      refetchIssueCardsQuietly();
+      await refetchIssueControlSurfaces(card.issue.id);
     }
   };
   const publishIssueMirror = async (card: IssueCard) => {
@@ -2216,7 +2230,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} publish failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
-      refetchIssueCardsQuietly();
+      await refetchIssueControlSurfaces(card.issue.id);
     }
   };
   const planConnectorPublish = async () => {
@@ -2264,7 +2278,7 @@ export default function App() {
       setBanner(`Connector publish execute failed: ${actionErrorMessage(error)}`);
     } finally {
       setConnectorPublishAction(null);
-      await Promise.all([refetchIssueCards(), refetchConnectorQueue()]);
+      await refetchIssueControlSurfaces(selectedIssueId());
     }
   };
   const planConnectorRoundtrip = async () => {
@@ -2313,7 +2327,7 @@ export default function App() {
       setBanner(`Connector roundtrip execute failed: ${actionErrorMessage(error)}`);
     } finally {
       setConnectorRoundtripAction(null);
-      await Promise.all([refetchIssueCards(), refetchConnectorQueue()]);
+      await refetchIssueControlSurfaces(selectedIssueId());
     }
   };
   const verifyIssueMirror = async (card: IssueCard) => {
@@ -2333,7 +2347,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} verify failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
-      refetchIssueCardsQuietly();
+      await refetchIssueControlSurfaces(card.issue.id);
     }
   };
   const readbackIssueMirror = async (card: IssueCard) => {
@@ -2360,7 +2374,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} readback failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
-      refetchIssueCardsQuietly();
+      await refetchIssueControlSurfaces(card.issue.id);
     }
   };
   const admitIssueMirror = async (card: IssueCard) => {
@@ -2389,7 +2403,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} admission failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
-      refetchIssueCardsQuietly();
+      await refetchIssueControlSurfaces(card.issue.id);
     }
   };
   const roundtripIssueMirror = async (card: IssueCard) => {
@@ -2418,7 +2432,7 @@ export default function App() {
       setBanner(`Issue #${card.issue.id} roundtrip failed: ${actionErrorMessage(error)}`);
     } finally {
       setPendingIssue(card.issue.id, null);
-      await Promise.all([refetchIssueCards(), refetchConnectorQueue()]);
+      await refetchIssueControlSurfaces(card.issue.id);
     }
   };
   const workerLimitRunArgs = (): LoopRunArgs => {
@@ -2543,14 +2557,14 @@ export default function App() {
       const issue = report.issues[0];
       if (!issue) throw new Error("Demo loop did not create an issue.");
       setSelectedIssueId(issue.issue.id);
-      await refetchLoopSurfaces();
+      await refetchIssueControlSurfaces(issue.issue.id);
       await withLoopProgressPolling(bridge.invoke("hive_issue_run", {
         issueId: issue.issue.id,
         ...runArgs,
       }));
       const loopId = issue.issue.loop_id ?? report.contract?.id;
       setBanner(loopId ? `Demo loop #${loopId} finished.` : "Demo loop finished.");
-      await refetchLoopSurfaces();
+      await refetchIssueControlSurfaces(issue.issue.id);
       revealIssueDetail();
     } catch (error) {
       setBanner(`Demo loop failed: ${actionErrorMessage(error)}`);
@@ -2584,7 +2598,7 @@ export default function App() {
           ? `Remote fixture roundtrip complete${remoteLabel}: ${stageLabel}${evidenceLabel}`
           : `Remote fixture roundtrip blocked: ${stageLabel}${evidenceLabel}`,
       );
-      await refetchLoopSurfaces();
+      await refetchIssueControlSurfaces(report.issue_id);
       revealIssueDetail();
     } catch (error) {
       setBanner(`Remote fixture demo failed: ${actionErrorMessage(error)}`);
@@ -2604,7 +2618,7 @@ export default function App() {
         runtime: loop.runtime || runArgs.runtime,
       }));
       setBanner(`Loop #${loop.id} finished.`);
-      await refetchLoopSurfaces();
+      await refetchIssueControlSurfaces(selectedIssueId());
     } catch (error) {
       setBanner(`Loop #${loop.id} failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -2622,7 +2636,7 @@ export default function App() {
         ...issueRunArgs(card),
       }));
       setBanner(`Loop #${card.issue.loop_id} finished.`);
-      await refetchLoopSurfaces();
+      await refetchIssueControlSurfaces(card.issue.id);
     } catch (error) {
       setBanner(`Loop #${card.issue.loop_id} failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -2643,7 +2657,7 @@ export default function App() {
       });
       clearIssueComposer(issueId);
       setBanner(`Issue #${issueId} ${issueActionLabel(action)}.`);
-      await refetchLoopSurfaces();
+      await refetchIssueControlSurfaces(issueId);
     } catch (error) {
       setBanner(`Issue #${issueId} failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -2665,7 +2679,7 @@ export default function App() {
       }));
       clearIssueComposer(card.issue.id);
       setBanner(`Issue #${card.issue.id} retried.`);
-      await refetchLoopSurfaces();
+      await refetchIssueControlSurfaces(card.issue.id);
     } catch (error) {
       setBanner(`Issue #${card.issue.id} retry failed: ${actionErrorMessage(error)}`);
     } finally {
@@ -2718,7 +2732,7 @@ export default function App() {
       setCommentBody("");
       setActiveCommentComposer(null);
       setBanner(`Commented on issue #${issueId}.`);
-      await refetchIssueCards();
+      await refetchIssueControlSurfaces(issueId);
     } catch (error) {
       setBanner(`Comment failed: ${actionErrorMessage(error)}`);
     } finally {
