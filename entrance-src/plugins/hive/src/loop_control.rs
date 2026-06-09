@@ -5512,14 +5512,23 @@ fn runtime_capability_preview(
     runtime_blocker: Option<&str>,
     connectors: &ConnectorsConfig,
 ) -> HiveLoopRuntimeCapabilityPreview {
-    let worker_spawn_ready = selected_policy.is_some()
+    let runtime_ready = selected_policy.is_some()
         && runtime_probe
             .get("ok")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-    let worker_spawn_blockers = runtime_blocker
+    let connector_readiness =
+        runtime_connector_readiness_preview(&contract.review_surface, connectors);
+    let mut worker_spawn_blockers = runtime_blocker
         .map(|blocker| vec![blocker.to_string()])
         .unwrap_or_default();
+    worker_spawn_blockers.extend(
+        connector_readiness
+            .blockers
+            .iter()
+            .map(|blocker| format!("connector.{blocker}")),
+    );
+    let worker_spawn_ready = runtime_ready && connector_readiness.external_surface_ready;
     let worker_mode = selected_policy.map(|policy| policy.mode.clone());
 
     HiveLoopRuntimeCapabilityPreview {
@@ -5535,10 +5544,7 @@ fn runtime_capability_preview(
         worker_mode,
         sandbox: runtime_sandbox_preview(selected_policy),
         artifact_capture: runtime_artifact_capture_preview(contract.id, selected_policy),
-        connector_readiness: runtime_connector_readiness_preview(
-            &contract.review_surface,
-            connectors,
-        ),
+        connector_readiness,
         human_boundary: runtime_human_boundary_preview(
             &contract.review_surface,
             &contract.autonomy_level,
@@ -5762,7 +5768,7 @@ fn runtime_preflight_state(
     if current.is_some_and(|current| current.result.as_deref() == Some("admitted")) {
         return "admitted";
     }
-    if contract.status == "todo" && preview.supported && preview.probe_ok {
+    if contract.status == "todo" && preview.capability_preview.worker_spawn_ready {
         return "ready";
     }
     if contract.status == "todo" {
@@ -5802,6 +5808,11 @@ fn runtime_preflight_failures(
             .any(|failure| failure == "runtime.probe_failed")
     {
         failures.push("runtime.probe_failed".to_string());
+    }
+    for blocker in &preview.capability_preview.worker_spawn_blockers {
+        if !failures.iter().any(|failure| failure == blocker) {
+            failures.push(blocker.clone());
+        }
     }
     failures
 }
@@ -12402,7 +12413,12 @@ fn typed_packet_payload(
 
 fn receipt_requirements_for_packet(object_kind: &str) -> Vec<&'static str> {
     match object_kind {
-        "PREFLIGHT_PACKET" => vec!["runtime", "runtime_probe", "runtime_policy"],
+        "PREFLIGHT_PACKET" => vec![
+            "runtime",
+            "runtime_probe",
+            "runtime_policy",
+            "capability_preview",
+        ],
         "EXPLORATION_PACKET" => vec!["candidate", "constraints", "role_worker"],
         "EXECUTION_PACKET" => vec!["runtime_probe", "runtime_worker", "artifact", "role_worker"],
         "VERDICT_PACKET" => vec!["decision", "summary", "score", "role_worker"],
@@ -12414,9 +12430,14 @@ fn gate_spec(gate: &str) -> Option<GateSpec> {
     match gate {
         "runtime_policy_ready" => Some(GateSpec {
             name: "runtime_policy_ready",
-            description: "Kernel preflight must prove the selected runtime is supported and probe-ready before spawning agent workers.",
+            description: "Kernel preflight must prove the selected runtime and external control surface capability are ready before spawning agent workers.",
             expected_object_kind: Some("PREFLIGHT_PACKET"),
-            required_receipts: &["runtime", "runtime_probe", "runtime_policy"],
+            required_receipts: &[
+                "runtime",
+                "runtime_probe",
+                "runtime_policy",
+                "capability_preview",
+            ],
             check: GateCheck::RuntimePolicyReady,
         }),
         "candidate_receipts_present" => Some(GateSpec {
@@ -12603,6 +12624,10 @@ fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
                     .pointer("/runtime_probe/ok")
                     .and_then(|value| value.as_bool())
                     == Some(true)
+                && body
+                    .pointer("/capability_preview/worker_spawn_ready")
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
         }
         GateCheck::ExternalReceiptCurrent => receipt_requirements_satisfied(payload),
     }
@@ -12637,7 +12662,16 @@ fn gate_failure_reason(gate: &str, payload: &serde_json::Value) -> String {
                 .pointer("/runtime_probe/ok")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false);
-            format!("{gate} failed: runtime={runtime} supported={supported} probe_ok={probe_ok}")
+            let capability_ready = body
+                .pointer("/capability_preview/worker_spawn_ready")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let capability_blockers =
+                string_array_at(body, "/capability_preview/worker_spawn_blockers");
+            format!(
+                "{gate} failed: runtime={runtime} supported={supported} probe_ok={probe_ok} capability_ready={capability_ready} capability_blockers={}",
+                capability_blockers.join(",")
+            )
         } else {
             format!("{gate} failed")
         }
@@ -12809,6 +12843,8 @@ fn runtime_preflight_payload(
         blocker,
         connectors,
     );
+    let capability_ready = capability_preview.worker_spawn_ready;
+    let capability_blockers = capability_preview.worker_spawn_blockers.clone();
 
     serde_json::json!({
         "runtime": runtime,
@@ -12820,6 +12856,8 @@ fn runtime_preflight_payload(
             "supported": supported_runtime.is_some(),
             "probe_ok": probe_ok,
             "blocker": blocker,
+            "capability_ready": capability_ready,
+            "capability_blockers": capability_blockers,
             "supported_runtimes": registry
                 .supported
                 .iter()
@@ -13722,7 +13760,12 @@ mod tests {
                 .as_ref()
                 .expect("preflight gate spec should exist")
                 .required_receipts,
-            vec!["runtime", "runtime_probe", "runtime_policy"]
+            vec![
+                "runtime",
+                "runtime_probe",
+                "runtime_policy",
+                "capability_preview"
+            ]
         );
         assert_eq!(
             report.policies[1]
@@ -14567,6 +14610,101 @@ mod tests {
     }
 
     #[test]
+    fn runtime_preflight_blocks_unready_connector_before_workers_spawn() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-runtime-capability-block-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Blocked capability preview".to_string(),
+                goal: "Block until Linear connector is configured".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: "linear:ENT-404".to_string(),
+                autonomy_level: "run-approved-candidates".to_string(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+
+        let preflight = runtime_preflight(&store, created.contract.id)
+            .expect("runtime preflight should resolve before run");
+        assert_eq!(preflight.preflight_state, "blocked");
+        assert!(preflight.preview.supported);
+        assert!(preflight.preview.probe_ok);
+        assert!(!preflight.preview.capability_preview.worker_spawn_ready);
+        assert_eq!(
+            preflight
+                .preview
+                .capability_preview
+                .connector_readiness
+                .provider,
+            "linear"
+        );
+        assert!(preflight
+            .preview
+            .capability_preview
+            .worker_spawn_blockers
+            .iter()
+            .any(|blocker| blocker == "connector.provider_not_active"));
+        assert!(preflight
+            .preview
+            .capability_preview
+            .worker_spawn_blockers
+            .iter()
+            .any(|blocker| blocker == "connector.connector_not_configured"));
+
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: Some(5),
+                worker_attempts: Some(1),
+            },
+        )
+        .expect("unready connector should return a blocked report");
+
+        assert_eq!(report.contract.status, "blocked");
+        assert_eq!(report.contract.active_phase, "kernel");
+        assert_eq!(report.packets.len(), 1);
+        assert_eq!(report.admissions.len(), 1);
+        assert_eq!(report.admissions[0].result, "rejected");
+        assert!(report.admissions[0]
+            .reason
+            .contains("capability_ready=false"));
+        assert!(report.admissions[0]
+            .reason
+            .contains("connector.provider_not_active"));
+        assert_eq!(report.issues[0].issue.status, "Blocked");
+        assert!(report.stages.iter().all(|stage| stage.role == "kernel"));
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/runtime_policy/capability_ready")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/capability_preview/connector_readiness/provider")
+                .and_then(|value| value.as_str()),
+            Some("linear")
+        );
+    }
+
+    #[test]
     fn local_loop_records_stages_evidence_verdict_and_issue() {
         let root = std::env::temp_dir().join(format!(
             "entrance-hive-loop-test-{}",
@@ -14667,6 +14805,13 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("Blocked")
         );
+        assert!(report.packets[0]
+            .payload
+            .get("receipt_requirements")
+            .and_then(|value| value.as_array())
+            .is_some_and(|receipts| receipts
+                .iter()
+                .any(|receipt| receipt.as_str() == Some("capability_preview"))));
         assert_eq!(
             report.packets[1]
                 .payload
@@ -14810,9 +14955,9 @@ mod tests {
         assert_eq!(trace.round_admission_count, 4);
         assert_eq!(trace.round_evidence_count, 3);
         assert_eq!(trace.round_verdict_count, 1);
-        assert_eq!(trace.receipt_required_count, 14);
+        assert_eq!(trace.receipt_required_count, 15);
         assert_eq!(trace.receipt_missing_count, 0);
-        assert_eq!(trace.round_receipt_required_count, 14);
+        assert_eq!(trace.round_receipt_required_count, 15);
         assert_eq!(trace.round_receipt_missing_count, 0);
         assert_eq!(trace.role_worker_count, 3);
         assert_eq!(trace.role_worker_ok_count, 3);

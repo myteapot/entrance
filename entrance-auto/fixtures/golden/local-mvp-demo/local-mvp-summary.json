@@ -11,7 +11,7 @@
     "health": "ok",
     "worker_ok": 3,
     "workers": 3,
-    "receipt_required": 14,
+    "receipt_required": 15,
     "receipt_missing": 0
   },
   "roles": [

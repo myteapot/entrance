@@ -154,6 +154,10 @@ human confirmation boundaries, worker context, current admission, blocker,
 failures, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/runtime-preflight`, and the Panel selected issue
 renders the same capability preview before Worker Lifecycle.
+The `runtime_policy_ready` admission gate requires this capability preview to
+report `worker_spawn_ready=true`, so a loop targeting an unconfigured external
+review surface is blocked at the kernel instead of starting
+Explorer/Developer/Reviewer workers without an observable issue board.
 Add `--compact` to `hive loop create` to print the linked issue card and next
 actions instead of the full empty loop report. Add `--compact` to `hive loop run`
 to print the Doctor summary after execution instead of the full packet/evidence

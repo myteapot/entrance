@@ -97,6 +97,10 @@ connector config, human confirmation boundaries, and worker context requirements
 before any agent worker is spawned. The report only treats a preflight packet
 from the current round as the current observation, so a retry into a new round
 is not polluted by an older blocked preflight.
+The `runtime_policy_ready` gate now checks that capability preview as part of
+admission: unsupported runtimes, failed runtime probes, or unready configured
+connector review surfaces reject the `PREFLIGHT_PACKET`, move the linked issue
+to `Blocked`, and stop before Explorer/Developer/Reviewer workers are spawned.
 The same report is available to MCP clients as
 `entrance://loops/{loop_id}/runtime-preflight`; MCP issue control packets also
 include a compact runtime preflight summary with gate, route, state, blocker,

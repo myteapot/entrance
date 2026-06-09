@@ -31,10 +31,11 @@ Last updated: 2026-06-09
 - 本轮继续把 MCP-native surface 纳入协议级 smoke：`run-mcp-stdio-smoke.mjs` 现在通过真实 newline-delimited JSON-RPC stdio 调 `initialize`、tools/prompts/resources、MCP create/run loop、`entrance_loop_control`、loop control resource、loop review prompt、connector queue/control/decision prompt、digest-bound roundtrip plan/execute，并验证未确认 retry 和 connector roundtrip 都会被拒绝。
 - 本轮把 `runtime_preflight.v1` 扩展为最小 capability preview：`PREFLIGHT_PACKET`、CLI/MCP/Panel 现在暴露 worker spawn readiness、sandbox scope、artifact capture mode、connector readiness、human confirmation boundary 和 worker context，并由 MCP smoke 与 Panel screenshot workflow 验证。
 - 本轮继续把 capability preview 接到真实 connector config：产品路径的 `loop_run`、`loop_runtime_preflight`、`loop_dashboard` 现在使用 `HivePlugin` 持有的 `entrance.toml` connector 配置，所以 Linear/GitHub/file 的 active/configured/readiness 会在 worker spawn 前进入 `PREFLIGHT_PACKET` 和 runtime preflight report。
+- 本轮继续把 capability preview 纳入 runtime admission：`runtime_policy_ready` 现在要求 `worker_spawn_ready=true`，所以 runtime 可用但 Linear/GitHub review surface 未配置时，kernel 会直接产生 `Blocked` issue，不会启动 Explorer/Developer/Reviewer worker。
 
 ## 还没做完
 
-- Productize `runtime_capability_preview.v1`：当前还是可观察 preview；还缺把 capability 变成可版本化、可迁移、可强制执行的 gate，并补齐真实 sandbox、artifact capture/archive、live Linear/GitHub workflow discovery 和人类偏好策略。
+- Productize `runtime_capability_preview.v1`：当前已能阻止 unready connector worker spawn；还缺把 capability 变成可版本化、可迁移的完整 policy lifecycle，并补齐真实 sandbox、artifact capture/archive、live Linear/GitHub workflow discovery 和人类偏好策略。
 - 把 Evidence Drilldown/Manifest 产品化：完整 transcript 展开、真实远端 receipt 归档、真实 artifact manifest 生成/内容校验、payload schema diff、更完整的 blocker decision workflow。
 - Productize MCP：当前已有本地 stdio JSON-RPC smoke；还缺真实客户端配置、named MCP client 兼容测试、verified actor identity、权限边界、远程 connector 绑定，以及 loop control / reviewer prompt / connector control / queue / plan / execute 在真实 MCP 客户端里的兼容性/可读性验证。
 - Productize Linear/GitHub connector：真实 token 验证、Linear workflow discovery/migration、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
