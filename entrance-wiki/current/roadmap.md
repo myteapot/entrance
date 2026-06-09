@@ -118,6 +118,12 @@ Entrance has reached a local MVP unit:
   and links back to issue control, transition policy, and timeline resources.
   `entrance_loop_review` prompts agents to judge keep/reject/needs-review/block
   only from the recorded packet, not by implementing in the Reviewer lane.
+- Reviewer score/gate output now has an MVP ledger-derived assessment: stage
+  completeness, runtime readiness, prior evidence presence, and admission
+  integrity are computed from current-round stages, worker receipts, evidence,
+  admissions, and missing receipts. A `keep` verdict is forced to `reject` when
+  those ledger gates are incomplete. Target drift and richer quality metrics are
+  still future Reviewer-hardening work.
 - The same loop-level control packet is now available through local CLI
   `entrance hive loop control <loop_id>`, daemon command `hive_loop_control`,
   and the Panel selected issue Reviewer Control block, so local operators and

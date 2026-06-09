@@ -524,8 +524,30 @@ struct TypedVerdict {
     summary: String,
     runtime_ready: bool,
     evidence_count: usize,
+    assessment: ReviewerGateAssessment,
     reviewer_invalid_rounds_used: i64,
     reviewer_invalid_budget_exhausted: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ReviewerGateAssessment {
+    stage_completeness: f64,
+    runtime_readiness: f64,
+    evidence_presence: f64,
+    admission_integrity: f64,
+    three_stages_recorded: bool,
+    evidence_recorded: bool,
+    runtime_ready: bool,
+    admissions_clean: bool,
+    review_gates_passed: bool,
+    observed_stage_roles: Vec<String>,
+    missing_stage_roles: Vec<String>,
+    current_round_admission_count: usize,
+    rejected_admission_count: usize,
+    receipt_missing_count: usize,
+    prior_stage_evidence_count: usize,
+    expected_prior_stage_evidence_count: usize,
+    failure_reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2095,16 +2117,29 @@ pub fn run_with_config(
         &prior_verdicts,
         contract.current_round.saturating_sub(1),
     );
+    let stages = store.list_hive_loop_stages(contract.id)?;
+    let packets = store.list_hive_loop_packets(contract.id)?;
+    let admissions = store.list_hive_loop_admissions(contract.id)?;
     let round_stage_evidence_count = evidence
         .iter()
         .filter(|row| row.round == contract.current_round && stage_bound_evidence_kind(&row.kind))
         .count();
+    let reviewer_assessment = reviewer_gate_assessment(
+        &contract,
+        runtime_ready,
+        &stages,
+        &evidence,
+        &packets,
+        &admissions,
+        &reviewer_worker,
+    );
     let typed_verdict = build_verdict(
         decision_override,
         runtime_ready,
         runtime_failure,
         &runtime,
         round_stage_evidence_count,
+        reviewer_assessment,
         prior_reviewer_invalid_rounds,
     );
     let reviewer_stage = insert_stage(
@@ -2120,9 +2155,11 @@ pub fn run_with_config(
             "decision": typed_verdict.decision.as_str(),
             "role_worker": reviewer_worker,
             "gates": {
-                "three_stages_recorded": true,
-                "evidence_recorded": round_stage_evidence_count > 0,
-                "runtime_ready": typed_verdict.runtime_ready
+                "three_stages_recorded": typed_verdict.assessment.three_stages_recorded,
+                "evidence_recorded": typed_verdict.assessment.evidence_recorded,
+                "runtime_ready": typed_verdict.runtime_ready,
+                "admissions_clean": typed_verdict.assessment.admissions_clean,
+                "review_gates_passed": typed_verdict.assessment.review_gates_passed
             }
         }),
     )?;
@@ -12090,9 +12127,132 @@ impl VerdictDecision {
     }
 }
 
+fn reviewer_gate_assessment(
+    contract: &HiveLoopContract,
+    runtime_ready: bool,
+    stages: &[HiveLoopStage],
+    evidence: &[HiveLoopEvidence],
+    packets: &[HiveLoopPacket],
+    admissions: &[HiveLoopAdmission],
+    reviewer_worker: &serde_json::Value,
+) -> ReviewerGateAssessment {
+    let mut observed_stage_roles = stages
+        .iter()
+        .filter(|stage| stage.round == contract.current_round)
+        .filter(|stage| CURRENT_LOOP_ROLES.contains(&stage.role.as_str()))
+        .map(|stage| stage.role.clone())
+        .collect::<BTreeSet<_>>();
+    if reviewer_worker.get("role").and_then(|value| value.as_str()) == Some("reviewer") {
+        observed_stage_roles.insert("reviewer".to_string());
+    }
+    let observed_stage_roles = observed_stage_roles.into_iter().collect::<Vec<_>>();
+    let missing_stage_roles = CURRENT_LOOP_ROLES
+        .iter()
+        .filter(|role| {
+            !observed_stage_roles
+                .iter()
+                .any(|observed| observed.as_str() == **role)
+        })
+        .map(|role| (*role).to_string())
+        .collect::<Vec<_>>();
+    let stage_completeness = bounded_ratio(observed_stage_roles.len(), CURRENT_LOOP_ROLES.len());
+    let prior_stage_evidence_count = evidence
+        .iter()
+        .filter(|row| row.round == contract.current_round)
+        .filter(|row| matches!(row.kind.as_str(), "exploration_packet" | "execution_packet"))
+        .count();
+    let expected_prior_stage_evidence_count = 2;
+    let evidence_presence = bounded_ratio(
+        prior_stage_evidence_count,
+        expected_prior_stage_evidence_count,
+    );
+    let packet_rounds = packets
+        .iter()
+        .map(|packet| (packet.id, packet.round))
+        .collect::<HashMap<_, _>>();
+    let current_admissions = admissions
+        .iter()
+        .filter(|admission| {
+            packet_rounds
+                .get(&admission.packet_id)
+                .is_some_and(|round| *round == contract.current_round)
+        })
+        .collect::<Vec<_>>();
+    let current_round_admission_count = current_admissions.len();
+    let rejected_admission_count = current_admissions
+        .iter()
+        .filter(|admission| admission.result != "admitted")
+        .count();
+    let receipt_missing_count = current_admissions
+        .iter()
+        .map(|admission| receipt_array_len(&admission.policy, "/receipt/missing"))
+        .sum();
+    let clean_admission_count = current_admissions
+        .iter()
+        .filter(|admission| admission.result == "admitted")
+        .filter(|admission| receipt_array_len(&admission.policy, "/receipt/missing") == 0)
+        .count();
+    let admission_integrity = bounded_ratio(clean_admission_count, current_round_admission_count);
+    let runtime_readiness = if runtime_ready { 1.0 } else { 0.0 };
+    let three_stages_recorded = missing_stage_roles.is_empty();
+    let evidence_recorded = prior_stage_evidence_count >= expected_prior_stage_evidence_count;
+    let admissions_clean = current_round_admission_count > 0
+        && rejected_admission_count == 0
+        && receipt_missing_count == 0;
+    let mut failure_reasons = Vec::new();
+    if !three_stages_recorded {
+        failure_reasons.push(format!(
+            "missing_stage_roles={}",
+            missing_stage_roles.join(",")
+        ));
+    }
+    if !evidence_recorded {
+        failure_reasons.push(format!(
+            "prior_stage_evidence={prior_stage_evidence_count}/{expected_prior_stage_evidence_count}"
+        ));
+    }
+    if !runtime_ready {
+        failure_reasons.push("runtime_not_ready".to_string());
+    }
+    if !admissions_clean {
+        failure_reasons.push(format!(
+            "admissions_clean=false rejected={} missing_receipts={} observed={}",
+            rejected_admission_count, receipt_missing_count, current_round_admission_count
+        ));
+    }
+    let review_gates_passed =
+        three_stages_recorded && evidence_recorded && runtime_ready && admissions_clean;
+
+    ReviewerGateAssessment {
+        stage_completeness,
+        runtime_readiness,
+        evidence_presence,
+        admission_integrity,
+        three_stages_recorded,
+        evidence_recorded,
+        runtime_ready,
+        admissions_clean,
+        review_gates_passed,
+        observed_stage_roles,
+        missing_stage_roles,
+        current_round_admission_count,
+        rejected_admission_count,
+        receipt_missing_count,
+        prior_stage_evidence_count,
+        expected_prior_stage_evidence_count,
+        failure_reasons,
+    }
+}
+
+fn bounded_ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        return 0.0;
+    }
+    ((numerator as f64) / (denominator as f64)).clamp(0.0, 1.0)
+}
+
 impl TypedVerdict {
     fn score_payload(&self) -> serde_json::Value {
-        let runtime_readiness = if self.runtime_ready { 1.0 } else { 0.0 };
         serde_json::json!({
             "schema_version": VERDICT_SCHEMA_VERSION,
             "decision": self.decision.as_str(),
@@ -12103,15 +12263,25 @@ impl TypedVerdict {
             "reviewer_invalid_round_budget": REVIEWER_INVALID_ROUND_BUDGET,
             "reviewer_invalid_budget_exhausted": self.reviewer_invalid_budget_exhausted,
             "score_vector": {
-                "stage_completeness": 1.0,
-                "runtime_readiness": runtime_readiness,
-                "evidence_presence": if self.evidence_count > 0 { 1.0 } else { 0.0 },
-                "admission_integrity": 1.0
+                "stage_completeness": self.assessment.stage_completeness,
+                "runtime_readiness": self.assessment.runtime_readiness,
+                "evidence_presence": self.assessment.evidence_presence,
+                "admission_integrity": self.assessment.admission_integrity
             },
             "gate_results": {
-                "three_stages_recorded": true,
-                "evidence_recorded": self.evidence_count > 0,
-                "runtime_ready": self.runtime_ready,
+                "three_stages_recorded": self.assessment.three_stages_recorded,
+                "evidence_recorded": self.assessment.evidence_recorded,
+                "runtime_ready": self.assessment.runtime_ready,
+                "admissions_clean": self.assessment.admissions_clean,
+                "review_gates_passed": self.assessment.review_gates_passed,
+                "observed_stage_roles": self.assessment.observed_stage_roles.clone(),
+                "missing_stage_roles": self.assessment.missing_stage_roles.clone(),
+                "current_round_admission_count": self.assessment.current_round_admission_count,
+                "rejected_admission_count": self.assessment.rejected_admission_count,
+                "receipt_missing_count": self.assessment.receipt_missing_count,
+                "prior_stage_evidence_count": self.assessment.prior_stage_evidence_count,
+                "expected_prior_stage_evidence_count": self.assessment.expected_prior_stage_evidence_count,
+                "failure_reasons": self.assessment.failure_reasons.clone(),
                 "reviewer_invalid_rounds_used": self.reviewer_invalid_rounds_used,
                 "reviewer_invalid_round_budget": REVIEWER_INVALID_ROUND_BUDGET,
                 "reviewer_invalid_budget_exhausted": self.reviewer_invalid_budget_exhausted,
@@ -12138,7 +12308,9 @@ impl TypedVerdict {
             "reason_code": self.reason_code,
             "evidence_count": self.evidence_count + 1,
             "runtime": runtime,
-            "runtime_ready": self.runtime_ready,
+            "runtime_ready": self.assessment.runtime_ready,
+            "review_gates_passed": self.assessment.review_gates_passed,
+            "review_gate_failures": self.assessment.failure_reasons.clone(),
             "reviewer_invalid_rounds_used": self.reviewer_invalid_rounds_used,
             "reviewer_invalid_round_budget": REVIEWER_INVALID_ROUND_BUDGET,
             "reviewer_invalid_budget_exhausted": self.reviewer_invalid_budget_exhausted,
@@ -12181,6 +12353,7 @@ fn build_verdict(
     runtime_failure: Option<RuntimeFailure>,
     runtime: &str,
     evidence_count: usize,
+    assessment: ReviewerGateAssessment,
     prior_reviewer_invalid_rounds: i64,
 ) -> TypedVerdict {
     if !runtime_ready {
@@ -12198,6 +12371,7 @@ fn build_verdict(
             ),
             runtime_ready,
             evidence_count,
+            assessment,
             reviewer_invalid_rounds_used: 0,
             reviewer_invalid_budget_exhausted: false,
         };
@@ -12205,9 +12379,11 @@ fn build_verdict(
 
     let current_invalid_rounds =
         (prior_reviewer_invalid_rounds + 1).min(REVIEWER_INVALID_ROUND_BUDGET);
-    if decision_override == Some(VerdictDecision::Reject)
-        && current_invalid_rounds >= REVIEWER_INVALID_ROUND_BUDGET
-    {
+    let requested_decision = decision_override.unwrap_or(VerdictDecision::Keep);
+    let forced_reject =
+        requested_decision == VerdictDecision::Keep && !assessment.review_gates_passed;
+    let invalid_decision = requested_decision == VerdictDecision::Reject || forced_reject;
+    if invalid_decision && current_invalid_rounds >= REVIEWER_INVALID_ROUND_BUDGET {
         return TypedVerdict {
             decision: VerdictDecision::Blocked,
             reason_code: "review_budget_exhausted",
@@ -12216,18 +12392,33 @@ fn build_verdict(
             ),
             runtime_ready,
             evidence_count,
+            assessment,
             reviewer_invalid_rounds_used: current_invalid_rounds,
             reviewer_invalid_budget_exhausted: true,
         };
     }
 
-    match decision_override.unwrap_or(VerdictDecision::Keep) {
+    match requested_decision {
+        VerdictDecision::Keep if forced_reject => TypedVerdict {
+            decision: VerdictDecision::Reject,
+            reason_code: "review_gates_failed",
+            summary: format!(
+                "Reviewer rejected the candidate: required ledger gates failed ({}); invalid review round {current_invalid_rounds}/{REVIEWER_INVALID_ROUND_BUDGET}.",
+                assessment.failure_reasons.join(", ")
+            ),
+            runtime_ready,
+            evidence_count,
+            assessment,
+            reviewer_invalid_rounds_used: current_invalid_rounds,
+            reviewer_invalid_budget_exhausted: false,
+        },
         VerdictDecision::Keep => TypedVerdict {
             decision: VerdictDecision::Keep,
             reason_code: "all_gates_passed",
             summary: "Reviewer kept the candidate: all MVP gates passed.".to_string(),
             runtime_ready,
             evidence_count,
+            assessment,
             reviewer_invalid_rounds_used: 0,
             reviewer_invalid_budget_exhausted: false,
         },
@@ -12239,6 +12430,7 @@ fn build_verdict(
             ),
             runtime_ready,
             evidence_count,
+            assessment,
             reviewer_invalid_rounds_used: current_invalid_rounds,
             reviewer_invalid_budget_exhausted: false,
         },
@@ -12248,6 +12440,7 @@ fn build_verdict(
             summary: "Reviewer requested human review for this candidate.".to_string(),
             runtime_ready,
             evidence_count,
+            assessment,
             reviewer_invalid_rounds_used: 0,
             reviewer_invalid_budget_exhausted: false,
         },
@@ -12257,6 +12450,7 @@ fn build_verdict(
             summary: "Reviewer blocked the candidate by operator decision.".to_string(),
             runtime_ready,
             evidence_count,
+            assessment,
             reviewer_invalid_rounds_used: 0,
             reviewer_invalid_budget_exhausted: false,
         },
@@ -15214,6 +15408,48 @@ mod tests {
         );
         assert_eq!(
             report.verdicts[0]
+                .score
+                .pointer("/score_vector/stage_completeness")
+                .and_then(|value| value.as_f64()),
+            Some(1.0)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/score_vector/evidence_presence")
+                .and_then(|value| value.as_f64()),
+            Some(1.0)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/score_vector/admission_integrity")
+                .and_then(|value| value.as_f64()),
+            Some(1.0)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/gate_results/current_round_admission_count")
+                .and_then(|value| value.as_u64()),
+            Some(3)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/gate_results/prior_stage_evidence_count")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/gate_results/review_gates_passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            report.verdicts[0]
                 .evidence
                 .get("schema_version")
                 .and_then(|value| value.as_str()),
@@ -15920,6 +16156,71 @@ mod tests {
         assert!(fields.contains(&"reason_code.binding"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reviewer_keep_requires_ledger_gate_assessment() {
+        let assessment = ReviewerGateAssessment {
+            stage_completeness: 2.0 / 3.0,
+            runtime_readiness: 1.0,
+            evidence_presence: 0.5,
+            admission_integrity: 1.0,
+            three_stages_recorded: false,
+            evidence_recorded: false,
+            runtime_ready: true,
+            admissions_clean: true,
+            review_gates_passed: false,
+            observed_stage_roles: vec!["explorer".to_string(), "developer".to_string()],
+            missing_stage_roles: vec!["reviewer".to_string()],
+            current_round_admission_count: 3,
+            rejected_admission_count: 0,
+            receipt_missing_count: 0,
+            prior_stage_evidence_count: 1,
+            expected_prior_stage_evidence_count: 2,
+            failure_reasons: vec![
+                "missing_stage_roles=reviewer".to_string(),
+                "prior_stage_evidence=1/2".to_string(),
+            ],
+        };
+
+        let verdict = build_verdict(
+            Some(VerdictDecision::Keep),
+            true,
+            None,
+            "local",
+            1,
+            assessment,
+            0,
+        );
+
+        assert_eq!(verdict.decision, VerdictDecision::Reject);
+        assert_eq!(verdict.reason_code, "review_gates_failed");
+        assert_eq!(verdict.reviewer_invalid_rounds_used, 1);
+        let score = verdict.score_payload();
+        assert_eq!(
+            score
+                .pointer("/score_vector/stage_completeness")
+                .and_then(|value| value.as_f64()),
+            Some(2.0 / 3.0)
+        );
+        assert_eq!(
+            score
+                .pointer("/score_vector/evidence_presence")
+                .and_then(|value| value.as_f64()),
+            Some(0.5)
+        );
+        assert_eq!(
+            score
+                .pointer("/gate_results/review_gates_passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert!(score
+            .pointer("/gate_results/failure_reasons")
+            .and_then(|value| value.as_array())
+            .is_some_and(|reasons| reasons
+                .iter()
+                .any(|reason| reason.as_str() == Some("missing_stage_roles=reviewer"))));
     }
 
     #[test]

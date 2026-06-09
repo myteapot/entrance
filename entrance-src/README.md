@@ -107,6 +107,10 @@ aggregates Loop Dashboard, Evidence Drilldown, Evidence Manifest, Runtime
 Preflight, Worker Lifecycle, Reviewer gate surface, score vector, 3-round
 invalid fallback budget, human decision boundary, and exact issue action
 options; `entrance_loop_review` prompts agents to judge only from that packet.
+The Reviewer score vector is an MVP ledger-derived assessment over current-round
+stage completeness, runtime readiness, prior evidence presence, and admission
+integrity; incomplete ledger gates force a `reject` instead of allowing a
+misleading `keep`.
 The same packet is available locally through `hive loop control <id>`,
 daemon command `hive_loop_control`, and the Panel selected issue Reviewer
 Control block.
@@ -395,9 +399,9 @@ return an `{ "ok": true }` JSON receipt to be admitted.
 Unknown runtimes return a blocked verdict instead of being silently kept.
 The reviewer decision can be overridden for local simulation with
 `--decision keep|reject|needs-review|blocked`.
-At or after round 3, a reviewer `reject` falls back to `Blocked`, which keeps
-the issue actionable for a human operator instead of silently canceling an
-exhausted automatic attempt.
+After 3 consecutive invalid Reviewer verdicts in the ledger, a reviewer
+`reject` falls back to `Blocked`, which keeps the issue actionable for a human
+operator instead of silently canceling an exhausted automatic attempt.
 Admission gates reject failed worker receipts, so a role worker with `ok=false`
 blocks at the compiler boundary instead of being treated as valid evidence.
 `hive loop run` is idempotent for non-`todo` contracts; use

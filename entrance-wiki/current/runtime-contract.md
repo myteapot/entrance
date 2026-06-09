@@ -433,6 +433,11 @@ Prompts:
 used by the CLI and Panel, including Developer/Reviewer verdicts and the
 3-round reviewer-invalid fallback to `Blocked` when the verdict ledger proves
 three consecutive invalid review rounds.
+Reviewer verdict score/gate payloads are computed from the same current-round
+ledger: stage completeness, runtime readiness, prior evidence presence,
+admission integrity, missing receipts, and failure reasons. If a Reviewer tries
+to keep a candidate while those ledger gates are incomplete, the runtime records
+a `reject` verdict instead of marking the issue `Done`.
 `entrance_review_queue` and `entrance://review-queue` expose only `Blocked` and
 `Needs Review` issues, with reviewer decision, reason code, human options,
 actions, blockers, latest comment, and recent evidence summaries.
