@@ -77,7 +77,7 @@ For current product usage, commands, and architecture, start with [`entrance-src
 
 当前验证也把 loop control 纳入稳定合同：`run-local-mvp-demo.sh --verify-golden` 会比对 `loop-control-summary.json`，`capture-panel-screenshot.mjs --full-gates` 会断言 Panel Reviewer Control、`loop_control.v1`、score vector、fallback budget 和 A/B/C operator options 可见。
 
-MCP stdio 也有协议级 smoke：`entrance-auto/workflows/validation/run-mcp-stdio-smoke.mjs` 会启动真实 `entrance mcp stdio`，通过 newline-delimited JSON-RPC 调 `initialize`、tools/prompts/resource templates、MCP loop create/run、loop control tool/resource、loop review prompt，并验证未设置 `human_confirmed=true` 的 retry 会被拒绝。
+MCP stdio 也有协议级 smoke：`entrance-auto/workflows/validation/run-mcp-stdio-smoke.mjs` 会启动真实 `entrance mcp stdio`，通过 newline-delimited JSON-RPC 调 `initialize`、tools/prompts/resource templates、MCP loop create/run、loop control tool/resource、loop review prompt、connector queue/control/decision prompt 和 digest-bound connector roundtrip plan/execute，并验证未设置 `human_confirmed=true` 的 retry 或 connector roundtrip 都会被拒绝。
 
 但如果把“最小可用单元”定义为 Entrance 这个项目真正想交付的东西，也就是一个通过外部 `issue(status) + comment` 面板约束 multi-agent loop 的 compiler/runtime 控制平面，那么当前还没有完成。还差这些最小闭环能力：
 

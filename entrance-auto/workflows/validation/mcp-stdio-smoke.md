@@ -17,6 +17,12 @@ minimal MCP client:
 - read `entrance_loop_control` through both `tools/call` and
   `resources/read`;
 - fetch the loop review prompt with the loop control resource embedded;
+- create a `remote-fixture:` issue through MCP;
+- read connector queue/control and the connector decision prompt;
+- verify connector A/B/C options and digest-bound roundtrip `plan_id`;
+- verify connector roundtrip execution refuses missing `human_confirmed=true`;
+- execute the confirmed connector roundtrip and verify the queue becomes
+  current;
 - verify `entrance://policy/mcp-permissions` and
   `entrance://policy/actor-identity`;
 - verify `entrance_issue_retry` refuses execution without
@@ -45,6 +51,8 @@ By default the script writes:
 
 The report records protocol version, required tool/prompt/template presence,
 the created issue and loop ids, loop control schema, Reviewer decision, fallback
-budget, score names, A/B/C operator options, and the human-confirmation refusal
-check. Generated reports and databases are run artifacts and should stay
-ignored unless a human explicitly asks to publish a specific artifact.
+budget, score names, loop A/B/C operator options, connector A/B/C operator
+options, roundtrip completion, confirmation receipt client identity, and both
+issue retry and connector roundtrip human-confirmation refusal checks. Generated
+reports and databases are run artifacts and should stay ignored unless a human
+explicitly asks to publish a specific artifact.

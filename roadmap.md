@@ -28,7 +28,7 @@ Last updated: 2026-06-09
 - 本轮继续把 loop 观察面合成 MCP Reviewer 控制包：新增 `entrance_loop_control` tool、`entrance://loops/{loop_id}/control` resource/template 和 `entrance_loop_review` prompt，把 loop dashboard、evidence drilldown、evidence manifest、runtime preflight、worker lifecycle、Reviewer gate surface、score vector、3 轮 invalid fallback budget、human decision boundary 和 exact issue action options 聚合成一份 `entrance.mcp.loop_control.v1` control packet。
 - 本轮继续把 loop control packet 接入本地控制面：新增 CLI `hive loop control <id>`、daemon `hive_loop_control` 和 Panel selected issue 的 Reviewer Control block，让本地 Panel 与 MCP 客户端看到同一份 Reviewer gate/budget/evidence/options contract。
 - 本轮继续把 Reviewer Control 纳入自动验收：`run-local-mvp-demo.sh --verify-golden` 现在生成并比对 `loop-control-summary.json`，`capture-panel-screenshot.mjs` 会断言 Panel Reviewer Control、`loop_control.v1`、score vector、fallback budget 和 A/B/C operator options 都可见。
-- 本轮继续把 MCP-native surface 纳入协议级 smoke：新增 `run-mcp-stdio-smoke.mjs`，通过真实 newline-delimited JSON-RPC stdio 调 `initialize`、tools/prompts/resources、MCP create/run loop、`entrance_loop_control`、loop control resource、loop review prompt 和未确认 retry 拒绝路径。
+- 本轮继续把 MCP-native surface 纳入协议级 smoke：`run-mcp-stdio-smoke.mjs` 现在通过真实 newline-delimited JSON-RPC stdio 调 `initialize`、tools/prompts/resources、MCP create/run loop、`entrance_loop_control`、loop control resource、loop review prompt、connector queue/control/decision prompt、digest-bound roundtrip plan/execute，并验证未确认 retry 和 connector roundtrip 都会被拒绝。
 
 ## 还没做完
 

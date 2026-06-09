@@ -131,8 +131,11 @@ Entrance has reached a local MVP unit:
   `clientInfo`, lists tools/prompts/resource templates, creates and runs a local
   issue-bound loop through MCP tools, reads `entrance.mcp.loop_control.v1`
   through both `tools/call` and `resources/read`, fetches the loop review prompt
-  with the embedded loop control resource, and verifies retry refusal without
-  `human_confirmed=true`.
+  with the embedded loop control resource, creates a `remote-fixture:` issue
+  through MCP, verifies connector queue/control/decision prompt A/B/C options,
+  executes a digest-bound connector roundtrip only after `human_confirmed=true`,
+  verifies the connector queue becomes current, and verifies retry or connector
+  roundtrip refusal without `human_confirmed=true`.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -253,12 +256,12 @@ multi-agent runtime/compiler product.
 
 ### P0: External issue surfaces
 
-- Productize the MCP stdio surface: client config docs, stronger protocol
-  coverage beyond the local stdio smoke, real auth/identity policy on top of
-  the local tool-permission registry, verified actor identity mapping beyond
-  self-reported author and `initialize.clientInfo`, loop control / reviewer
-  prompt / connector control/queue/plan/execute readability in real clients,
-  and compatibility checks against named MCP clients.
+- Productize the MCP stdio surface: client config docs, protocol coverage beyond
+  the local stdio smoke for named clients and failure modes, real auth/identity
+  policy on top of the local tool-permission registry, verified actor identity
+  mapping beyond self-reported author and `initialize.clientInfo`, loop control /
+  reviewer prompt / connector control/queue/plan/execute readability in real
+  clients, and compatibility checks against named MCP clients.
 - Add verified operator identity for local Panel/daemon decisions beyond the
   current `local-hive-panel` audit context.
 - Add live token-backed GitHub and Linear validation runs, including safe

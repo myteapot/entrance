@@ -82,6 +82,9 @@ try {
     "entrance_loop_control",
     "entrance_review_queue",
     "entrance_connector_control",
+    "entrance_connector_queue",
+    "entrance_connector_roundtrip_plan",
+    "entrance_connector_roundtrip_execute",
   ]) {
     assert(toolNames.has(name), `tools/list missing ${name}`);
   }
@@ -225,10 +228,106 @@ try {
     "retry refusal did not name human confirmation boundary",
   );
 
+  const remoteReviewSurface = `remote-fixture:ENTRANCE-MCP-${runId.replaceAll(/[^A-Za-z0-9_-]/g, "-")}`;
+  const connectorCreateResult = await callTool(client, "entrance_loop_create", {
+    title: "MCP stdio remote fixture loop",
+    goal: "Create a remote-fixture issue surface through MCP stdio.",
+    boundary: "Use the local remote-fixture connector only.",
+    runtime: "local",
+    review_surface: remoteReviewSurface,
+    approach_space: [
+      "create remote fixture issue through MCP",
+      "read connector queue/control",
+      "execute roundtrip after human confirmation",
+    ],
+    eval_space: [
+      "connector control exposes A/B/C options",
+      "roundtrip execute requires human_confirmed",
+      "remote fixture connector becomes current",
+    ],
+  });
+  const connectorLoopId = connectorCreateResult.loop?.id;
+  const connectorIssueId = connectorCreateResult.issues?.[0]?.issue?.id ?? connectorCreateResult.issues?.[0]?.id;
+  assert(Number.isInteger(connectorLoopId), "remote fixture create did not return loop id");
+  assert(Number.isInteger(connectorIssueId), "remote fixture create did not return issue id");
+
+  const connectorQueueBefore = await callTool(client, "entrance_connector_queue", {
+    provider: "remote-fixture",
+  });
+  assert(connectorQueueBefore.schema_version === "entrance.hive.connector_queue.v1", "connector queue schema changed");
+  assert(connectorQueueBefore.provider_filter === "remote-fixture", "connector queue provider filter changed");
+  assert(connectorQueueBefore.publish_required_count >= 1, "connector queue did not require publish before roundtrip");
+  assert((connectorQueueBefore.issues ?? []).some((issue) => issue.id === connectorIssueId), "connector queue missing remote fixture issue");
+
+  const connectorControlBefore = await callTool(client, "entrance_connector_control", {
+    provider: "remote-fixture",
+  });
+  assertConnectorControlReady(connectorControlBefore);
+
+  const connectorDecisionPrompt = await client.request("prompts/get", {
+    name: "entrance_connector_decision",
+    arguments: { provider: "remote-fixture" },
+  });
+  const connectorDecisionPromptText = promptText(connectorDecisionPrompt);
+  const connectorDecisionPromptResource = promptResourceText(connectorDecisionPrompt, "entrance://connectors/control/remote-fixture");
+  assert(connectorDecisionPromptText.includes("human_confirmed=true"), "connector decision prompt missing human confirmation boundary");
+  assert(connectorDecisionPromptText.includes("plan_id"), "connector decision prompt missing plan_id boundary");
+  assert(JSON.parse(connectorDecisionPromptResource).schema_version === "entrance.mcp.connector_control.v1", "connector decision prompt missing connector control resource");
+
+  const roundtripPlan = await callTool(client, "entrance_connector_roundtrip_plan", {
+    provider: "remote-fixture",
+  });
+  assert(roundtripPlan.schema_version === "entrance.hive.connector_roundtrip_plan.v1", "connector roundtrip plan schema changed");
+  assert(roundtripPlan.provider_filter === "remote-fixture", "roundtrip plan provider filter changed");
+  assert(roundtripPlan.can_execute === true, "roundtrip plan was not executable");
+  assert(typeof roundtripPlan.plan_id === "string" && roundtripPlan.plan_id.length >= 16, "roundtrip plan missing plan_id");
+  assert((roundtripPlan.issues ?? []).some((issue) => issue.id === connectorIssueId), "roundtrip plan missing remote fixture issue");
+
+  const connectorExecuteWithoutConfirmation = await client.request("tools/call", {
+    name: "entrance_connector_roundtrip_execute",
+    arguments: {
+      provider: "remote-fixture",
+      plan_id: roundtripPlan.plan_id,
+      human_confirmed: false,
+    },
+  });
+  assert(connectorExecuteWithoutConfirmation.isError === true, "connector roundtrip without human confirmation was not refused");
+  assert(
+    connectorExecuteWithoutConfirmation.structuredContent?.error?.includes("human_confirmed=true"),
+    "connector roundtrip refusal did not name human confirmation boundary",
+  );
+
+  const roundtripExecute = await callTool(client, "entrance_connector_roundtrip_execute", {
+    provider: "remote-fixture",
+    plan_id: roundtripPlan.plan_id,
+    human_confirmed: true,
+    author: "mcp-smoke-human",
+  });
+  assert(roundtripExecute.schema_version === "entrance.hive.connector_roundtrip_execute.v1", "connector roundtrip execute schema changed");
+  assert(roundtripExecute.reason === "plan_executed", "connector roundtrip execute reason changed");
+  assert(roundtripExecute.completed_count >= 1, "connector roundtrip did not complete an issue");
+  const connectorRecord = (roundtripExecute.recorded ?? []).find((record) => record.issue_id === connectorIssueId);
+  assert(connectorRecord, "connector roundtrip did not record remote fixture issue");
+  assert(connectorRecord.operator_confirmation_receipt?.client?.name === "entrance-mcp-stdio-smoke", "connector roundtrip missing MCP client confirmation receipt");
+  assert(connectorRecord.operator_confirmation_receipt?.actor?.verified === false, "connector roundtrip receipt should remain explicitly unverified");
+
+  const connectorQueueAfter = await callTool(client, "entrance_connector_queue", {
+    provider: "remote-fixture",
+  });
+  assert(connectorQueueAfter.current_count >= 1, "connector queue did not become current after roundtrip");
+  assert(connectorQueueAfter.publish_required_count === 0, "connector queue still requires publish after roundtrip");
+
+  const connectorControlAfter = await readJsonResource(client, "entrance://connectors/control/remote-fixture");
+  assert(connectorControlAfter.schema_version === "entrance.mcp.connector_control.v1", "connector control resource schema changed");
+  assert(connectorControlAfter.state?.current_count >= 1, "connector control resource did not show current issue");
+  assert(connectorControlAfter.state?.publish_required_count === 0, "connector control resource still shows publish required");
+
   const resources = await client.request("resources/list", {});
   const resourceUris = new Set((resources.resources ?? []).map((resource) => resource.uri));
   assert(resourceUris.has(`entrance://issues/${issueId}/control`), "resources/list missing issue control after run");
   assert(resourceUris.has(`entrance://loops/${loopId}/control`), "resources/list missing loop control after run");
+  assert(resourceUris.has(`entrance://issues/${connectorIssueId}/control`), "resources/list missing remote fixture issue control");
+  assert(resourceUris.has("entrance://connectors/control/remote-fixture"), "resources/list missing remote-fixture connector control");
 
   observations.loop_control = {
     schema_version: loopControlToolResult.schema_version,
@@ -246,8 +345,37 @@ try {
   };
   observations.human_boundary = {
     retry_without_confirmation_refused: true,
+    connector_roundtrip_without_confirmation_refused: true,
     permission_policy_schema: permissions.schema_version,
     actor_identity_verified: mcpActorBinding?.verified,
+  };
+  observations.connector = {
+    provider: "remote-fixture",
+    review_surface: remoteReviewSurface,
+    issue_id: connectorIssueId,
+    loop_id: connectorLoopId,
+    queue_before: {
+      publish_required_count: connectorQueueBefore.publish_required_count,
+      current_count: connectorQueueBefore.current_count,
+    },
+    control_before: {
+      schema_version: connectorControlBefore.schema_version,
+      primary_action: connectorControlBefore.state?.primary_action,
+      publish_can_execute: connectorControlBefore.state?.publish_can_execute,
+      roundtrip_can_execute: connectorControlBefore.state?.roundtrip_can_execute,
+      option_keys: (connectorControlBefore.operator_decision_surface?.options ?? []).map((option) => option.key),
+    },
+    roundtrip: {
+      plan_id: roundtripPlan.plan_id,
+      issue_count: roundtripPlan.issue_count,
+      completed_count: roundtripExecute.completed_count,
+      receipt_client: connectorRecord.operator_confirmation_receipt?.client?.name,
+      receipt_actor_verified: connectorRecord.operator_confirmation_receipt?.actor?.verified,
+    },
+    queue_after: {
+      publish_required_count: connectorQueueAfter.publish_required_count,
+      current_count: connectorQueueAfter.current_count,
+    },
   };
 
   await client.close();
@@ -311,8 +439,9 @@ function printHelp() {
 
 Starts entrance mcp stdio from a clean app root and drives the local MCP
 JSON-RPC protocol as a client. The smoke creates and runs a local issue-bound
-loop through MCP tools, then verifies resources, prompts, permissions, loop
-control, and human-confirmation refusal behavior.`);
+loop through MCP tools, executes a confirmed remote-fixture connector roundtrip,
+then verifies resources, prompts, permissions, loop control, connector control,
+and human-confirmation refusal behavior.`);
 }
 
 function requireValue(argv, index, flag) {
@@ -512,6 +641,26 @@ function assertLoopControl(value, loopId, issueId) {
   assert(value.human_decision_boundary?.confirmation_arg === "human_confirmed", "loop control missing human confirmation arg");
 }
 
+function assertConnectorControlReady(value) {
+  assert(value.schema_version === "entrance.mcp.connector_control.v1", "connector control schema changed");
+  assert(value.provider_filter === "remote-fixture", "connector control provider filter changed");
+  assert(value.state?.provider_known === true, "connector control provider is not known");
+  assert(value.state?.publish_required_count >= 1, "connector control did not show publish-required issue");
+  assert(value.state?.needs_human_decision === true, "connector control did not expose human decision boundary");
+  assert(value.state?.roundtrip_can_execute === true, "connector control roundtrip is not executable");
+  assert(value.human_decision_boundary?.required === true, "connector control missing human decision boundary");
+  assert(value.human_decision_boundary?.confirmation_arg === "human_confirmed", "connector control missing confirmation arg");
+  assert(value.human_decision_boundary?.plan_id_arg === "plan_id", "connector control missing plan_id arg");
+  const optionKeys = new Set((value.operator_decision_surface?.options ?? []).map((option) => option.key));
+  for (const key of ["A", "B", "C"]) {
+    assert(optionKeys.has(key), `connector control missing option ${key}`);
+  }
+  const roundtripOption = (value.operator_decision_surface?.options ?? []).find((option) => option.key === "B");
+  assert(roundtripOption?.enabled === true, "connector control roundtrip option is not enabled");
+  assert(roundtripOption?.tool === "entrance_connector_roundtrip_execute", "connector control roundtrip option tool changed");
+  assert(typeof roundtripOption?.plan_id === "string" && roundtripOption.plan_id.length >= 16, "connector control roundtrip option missing plan_id");
+}
+
 function sanitizeTranscriptParams(method, params) {
   if (method === "tools/call") {
     return {
@@ -559,9 +708,20 @@ function mcpSmokeSummary(report) {
     `- Score names: ${report.observations.loop_control.score_names.join(", ")}`,
     `- Operator options: ${report.observations.loop_control.option_keys.join(", ")}`,
     "",
+    "## Connector Control",
+    "",
+    `- Provider: ${report.observations.connector.provider}`,
+    `- Remote issue: #${report.observations.connector.issue_id}`,
+    `- Publish required before: ${report.observations.connector.queue_before.publish_required_count}`,
+    `- Roundtrip executable: ${report.observations.connector.control_before.roundtrip_can_execute}`,
+    `- Roundtrip completed: ${report.observations.connector.roundtrip.completed_count}/${report.observations.connector.roundtrip.issue_count}`,
+    `- Publish required after: ${report.observations.connector.queue_after.publish_required_count}`,
+    `- Connector options: ${report.observations.connector.control_before.option_keys.join(", ")}`,
+    "",
     "## Human Boundary",
     "",
     `- Retry without confirmation refused: ${report.observations.human_boundary.retry_without_confirmation_refused}`,
+    `- Connector roundtrip without confirmation refused: ${report.observations.human_boundary.connector_roundtrip_without_confirmation_refused}`,
     `- Permission policy: ${report.observations.human_boundary.permission_policy_schema}`,
     `- Actor identity verified: ${report.observations.human_boundary.actor_identity_verified}`,
     "",

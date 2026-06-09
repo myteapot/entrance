@@ -354,8 +354,11 @@ The smoke starts `entrance mcp stdio` from a clean app root, negotiates
 `initialize` with `clientInfo`, lists tools/prompts/resource templates, creates
 and runs a local issue-bound loop through MCP tools, reads the same loop control
 packet through both `tools/call` and `resources/read`, fetches the loop review
-prompt with the embedded resource, and verifies that a retry without
-`human_confirmed=true` is refused.
+prompt with the embedded resource, creates a `remote-fixture:` issue through
+MCP, verifies connector queue/control/decision prompt A/B/C options, executes a
+digest-bound connector roundtrip only after `human_confirmed=true`, verifies the
+connector queue becomes current, and verifies that retry or connector roundtrip
+calls without `human_confirmed=true` are refused.
 
 Supported methods:
 
