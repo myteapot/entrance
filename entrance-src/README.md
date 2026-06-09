@@ -66,14 +66,10 @@ Local agent-loop MVP:
 .\entrance.exe hive loop policies 1
 .\entrance.exe hive schema --compact
 .\entrance.exe hive policy registry
-.\entrance.exe hive connector registry --compact
-.\entrance.exe hive connector queue --compact
-.\entrance.exe hive connector queue --provider remote-fixture --compact
-.\entrance.exe hive connector publish-plan --compact
-.\entrance.exe hive connector publish-execute --plan-id <sha256> --compact
 .\entrance.exe hive issue list
 .\entrance.exe hive issue show 1
-.\entrance.exe hive issue connector-admission 1 --compact
+.\entrance.exe hive issue control 1
+.\entrance.exe hive issue timeline 1
 .\entrance.exe hive issue comment 1 --body "Reviewed from the local panel"
 ```
 
@@ -82,8 +78,8 @@ runs `Explorer -> Developer -> Reviewer` with `codex` by default, then prints th
 compact loop outcome plus the daemon and dev-server commands needed to inspect
 the run in the local Panel. `hive loop start` is the custom one-command MVP path:
 it creates a linked issue loop, runs the same serial roles, then prints a compact
-outcome with issue, Doctor, evidence, stage, connector, recovery, and
-next-action summaries. When a worker times out, exhausts attempts, or misses
+outcome with issue, Doctor, evidence, stage, recovery, and next-action
+summaries. When a worker times out, exhausts attempts, or misses
 receipts, the compact recovery section surfaces failed checks, missing receipts,
 failed worker rows, and a retry command directly. `hive loop run` records the same minimal compiler path in
 SQLite: active policies, a kernel `PREFLIGHT_PACKET`, versioned typed packets,
@@ -117,9 +113,9 @@ daemon command `hive_loop_control`, and the Panel selected issue Reviewer
 Control block.
 `hive loop evidence-drilldown <id>` exposes
 `entrance.hive.evidence_drilldown.v1`, a focused evidence control-plane view
-with worker receipts, transcript/payload excerpts, remote connector receipt
-summaries, artifact/path hints, payload key diffs, blockers, blocker-bound
-decision surfaces, and next actions; MCP exposes it as
+with worker receipts, transcript/payload excerpts, artifact/path hints, payload
+key diffs, blockers, blocker-bound decision surfaces, and next actions; MCP
+exposes it as
 `entrance://loops/{loop_id}/evidence-drilldown`, and the Panel selected issue
 renders it below Loop Dashboard.
 `hive loop evidence-manifest <id>` exposes
@@ -156,15 +152,13 @@ optional decision receipt.
 `hive loop preflight <id>` exposes the same boundary as
 `entrance.hive.runtime_preflight.v1`, including policy, probe,
 `runtime_capability_preview.v1` for worker spawn readiness, sandbox scope,
-artifact capture mode, connector readiness from the current connector config,
-human confirmation boundaries, worker context, current admission, blocker,
-failures, and next actions; MCP exposes it as
+artifact capture mode, human confirmation boundaries, worker context, current
+admission, blocker, failures, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/runtime-preflight`, and the Panel selected issue
 renders the same capability preview before Worker Lifecycle.
 The `runtime_policy_ready` admission gate requires this capability preview to
-report `worker_spawn_ready=true`, so a loop targeting an unconfigured external
-review surface is blocked at the kernel instead of starting
-Explorer/Developer/Reviewer workers without an observable issue board.
+report `worker_spawn_ready=true`, so an unsupported or probe-failed runtime is
+blocked at the kernel instead of starting Explorer/Developer/Reviewer workers.
 Add `--compact` to `hive loop create` to print the linked issue card and next
 actions instead of the full empty loop report. Add `--compact` to `hive loop run`
 to print the Doctor summary after execution instead of the full packet/evidence
@@ -186,23 +180,15 @@ ready before trusting loop evidence.
 `hive policy registry` exposes the typed gate registry plus runtime worker
 policy for supported runtimes, sandbox mode, timeout bounds, attempt bounds,
 required worker receipt fields, role binding, the issue status transition
-registry, connector retry budgets, connector status mapping policies, and the
-connector admission required-check contract. The issue transition registry
+registry, and local issue transition policy. The issue transition registry
 includes state classes, allowed actions, confirmation requirements, command
 templates, a serialized status state machine, and the 3-round Reviewer fallback
 policy used by `hive issue transition-policy`.
 The state machine covers `Todo`, `Doing`, `Blocked`, `Needs Review`, `Done`, and
 `Canceled`, including allowed/blocked actions, gates, confirmation requirements,
 terminal/human-decision classes, loop-bound `run`, and retryable runtime-rejected
-`Canceled` behavior. The compact policy and connector registry surfaces include
-the `remote-fixture` status mapping policy, the connector admission
-`required_checks` compatibility list, and a structured `check_registry` with each
-check's severity, owner, required evidence, and summary. The local fixture maps
-Hive statuses through an exact status field so write/readback reports carry a
-small policy-backed `status_mapping` contract. Actual connector admission check
-rows inherit the same metadata so CLI and Panel surfaces can tie failed checks
-back to their policy owner and evidence contract. `hive loop policies <id>`
-shows the active policy rows loaded into a specific loop contract.
+`Canceled` behavior. `hive loop policies <id>` shows the active policy rows
+loaded into a specific loop contract.
 `hive loop trace <id>` returns the compact round-aware health view, including
 the reviewer score vector and current-round worker duration/timeout totals,
 without packet transcripts.
@@ -210,9 +196,9 @@ without packet transcripts.
 admission result, worker receipt, packet envelope diagnostics, missing receipts,
 operator options, and short transcript excerpts.
 `hive loop evidence-drilldown <id>` returns the richer drilldown report for
-operators who need to inspect receipt contents, payload changes, connector
-readback summaries, artifact hints, and blocker-bound retry/review/cancel
-decision context without opening raw SQLite rows first.
+operators who need to inspect receipt contents, payload changes, artifact hints,
+and blocker-bound retry/review/cancel decision context without opening raw
+SQLite rows first.
 `hive loop evidence-manifest <id>` returns the manifest report for operators
 who need to audit evidence coverage, receipt/payload digests, artifact/path
 entries, and local path verification state.
@@ -276,92 +262,14 @@ audit state into one health summary with counts, failed checks, missing
 receipts, worker failures, specific audit failure details, and suggested next
 commands.
 `hive issue comment <id> --body <text>` records a local issue comment and, when
-the issue is bound to a loop, mirrors it into the loop ledger as
+the issue is bound to a loop, records it into the loop ledger as
 `operator_comment` evidence.
-Compact issue surfaces include connector mirror status: `hive issue show
-<id> --compact` exposes the issue's `connector` block, and `hive issue list
---compact` also returns a `connector_queue` for publish-required mirrors.
-The built-in `local-hive-panel` review surface is an in-process
-issue/status/comment board: its publish/readback checks are satisfied from the
-SQLite Hive ledger, so a local Panel issue does not enter the external publish
-queue just because no mirror file exists. Use `file:` for local JSON mirror
-sync and `remote-fixture:` / `fixture:` when the loop should exercise the
-local file-backed external issue/status/comment dry-run surface.
-`hive connector queue --compact` exposes the provider-scoped publish queue,
-`hive connector queue --provider <name> --compact` narrows the queue to a
-single issue-surface provider, and `hive connector publish-plan --compact`
-produces a digest-bound two-step plan that is also bound to the provider writer
-adapter. Planned or unsupported providers expose blockers such as
-`provider_not_active` or `publish_not_supported`; when a plan is executable,
-`hive connector publish-execute --plan-id <sha256> --compact` records a typed
-connector publish execution comment/evidence on each issue and then writes local
-connector mirrors containing that receipt. Successful writes include a typed
-connector write receipt with adapter, status, comment surface, mirror digest,
-and readback command. `hive issue mirror-roundtrip <id> --compact` runs the
-issue-scoped publish -> readback -> admission path as one typed operation; when
-readback/admission observations record local comments or evidence, it republishes
-those ledger events and finishes with a final readback. `hive connector
-roundtrip-plan --compact` and `hive connector roundtrip-execute --plan-id
-<sha256> --compact` lift that operation to the current connector queue: the plan
-is digest-bound to the queued issue mirrors plus provider capabilities, and
-execution records a typed connector roundtrip comment/evidence on every issue
-before running each issue's publish/readback/admission/final-readback path. The
-built-in
-`remote-fixture:` review surface is an active file-backed remote issue API
-fixture: it emits
-`entrance.hive.connector_remote_write_receipt.v1` and verifies
-`entrance.hive.connector_remote_readback.v1` without touching a third-party
-service. `hive connector fixture-demo --compact` creates a
-`remote-fixture:ENTRANCE-DEMO` loop issue and runs the full publish ->
-readback -> admission -> final-readback path as the default external dry-run
-demo; the Electron Panel exposes the same path through `Run Fixture`.
-`remote-fixture:` also exposes `entrance.hive.connector_remote_contract.v1`,
-which defines the fixture issue object kind, write receipt schema, readback
-schema, idempotency key parts, and required pre/post-write checks before the
-local fixture writer is allowed to run.
-`entrance.hive.connector_remote_target.v1` is parsed from the issue review
-surface before publish admission. Fixture targets accept `remote-fixture:<key>`
-or `fixture:<key>`; missing targets add typed blockers such as
-`remote_target_invalid` or `fixture_target_missing` before any fixture write
-can be admitted. The Panel renders parsed targets as connector target chips on
-issue cards and the connector queue, so invalid targets are visible without
-opening raw JSON.
-The same queue and publish-plan surfaces include
-`entrance.hive.connector_remote_write_plan.v1`: a typed request envelope that
-spells out the provider, remote object kind, auth expectation, source issue,
-policy-backed status mapping, planned local fixture/file operations, receipt
-schema, readback schema, and publish blockers. Unsupported or inactive
-providers stay blocked at the plan boundary. The Panel renders these envelopes
-as remote write-plan chips so operators can see the planned request without
-treating it as an executed third-party write.
-`hive connector registry --compact` exposes
-active/planned issue-surface providers, provider-specific admission status, and
-the connector admission gate, while `hive issue
-connector-admission <id> --compact` dry-runs whether the current mirror can be
-routed to `external_issue_surface`. Admission previews include a typed check
-vector, writer adapter blockers, and any remote contract so the CLI/Panel can
-explain which provider, readback, remote-write, or retry-policy gate stopped the
-route.
-Connector provider config is read from `entrance.toml`. The current local target
-keeps only `local-hive-panel`, `file`, and `remote-fixture` providers active in
-the product registry. `[connectors.file]` can enable or disable local JSON
-mirror writes and override the file-backed mirror path through `storage`; the
-built-in fixture uses local files to simulate an external issue/status/comment
-roundtrip without third-party credentials.
-Connector publish and roundtrip execution record
-`entrance.hive.connector_remote_write_execute.v1` and
-`entrance.hive.connector_remote_write_receipt.v1` evidence when a provider has
-a remote contract. Connector status and queue reports include compact local
-remote diagnostics so the Panel can show write/readback retry or blocker
-signals without opening raw CLI JSON. The policy registry exposes provider
-status mappings and the connector admission `required_checks` list plus the
-structured `check_registry` contract; actual admission check rows include the
-matched owner, severity, required evidence, and policy summary.
-Connector admission previews include a `retry_policy_bound` compatibility check;
-with the current local fixture target this is a bounded local contract rather
-than a live third-party retry policy. Production drift handling, remote MCP
-server shape, richer external workflow discovery, and configurable/adaptive
-retry policy are still pending.
+Compact issue surfaces are local-only: `hive issue list --compact`,
+`hive issue show <id> --compact`, `hive issue control <id> --compact`, and the
+Panel all read the SQLite Hive ledger directly. The active workbench exposes
+issue status, comments, local timeline, loop control, runtime preflight, worker
+lifecycle, evidence drilldown, evidence manifest, review queue, and human
+confirmation receipts without external synchronization or provider config.
 Supported MVP runtimes are `local` and `codex`; `codex` runs a read-only
 `codex exec` worker for each `Explorer`, `Developer`, and `Reviewer` role and
 stores the worker transcript plus explicit receipt, timeout, and exit status in
@@ -455,7 +363,7 @@ Rust · Electron · SolidJS · SQLite · TOML
 
 ## 当前阶段 / Status
 
-**V2 Microkernel Preview** — CLI、daemon bridge、MCP stdio surface 和 Electron GUI 共用同一套 Rust runtime。`entrance mcp stdio` 已经暴露最小 issue/status/comment tool/resource/prompt 面，并包含 `Blocked` / `Needs Review` review queue、单 issue control packet、loop control packet、loop review prompt、connector control packet、connector decision prompt、connector queue、connector publish/roundtrip plan resources、digest-bound connector publish/roundtrip execute tools、per-tool MCP permission registry、actor identity audit policy、MCP human-confirmation policy，以及写入 operator decision 或 connector execution comment/evidence payload 的 typed confirmation receipt；connector execute 需要 `human_confirmed=true` 和当前 `plan_id`，receipt 会记录 `initialize.clientInfo` 作为自报 client identity，并记录 non-verified actor context。`entrance-auto/workflows/validation/run-mcp-stdio-smoke.mjs` 会通过真实 newline-delimited JSON-RPC stdio 验证 initialize、tools/prompts/resources、MCP create/run loop、loop control tool/resource、loop review prompt、connector queue/control/decision prompt、digest-bound connector roundtrip plan/execute，以及未确认 retry/connector roundtrip 拒绝路径。Electron Panel 也有同名 Review Queue band 和 Reviewer Control block，Panel retry/review/cancel 决策会写入 `source=panel` 的 typed confirmation receipt，并在状态变更后重新拉取 selected issue 的 Transition Policy、Reviewer Control、Loop Dashboard、Evidence Drilldown、Evidence Manifest、Activity Timeline、Runtime Preflight 和 Worker Lifecycle；Panel `Run Fixture` 和 CLI `hive connector fixture-demo --compact` 现在提供默认 `remote-fixture:` 外部 issue surface dry-run。daemon stdio/http 仍是 GUI 和自动化调用的主桥接协议。
+**V2 Microkernel Preview** — CLI、daemon bridge、MCP stdio surface 和 Electron GUI 共用同一套 Rust runtime。`entrance mcp stdio` 已经暴露本地 issue/status/comment tool/resource/prompt 面，并包含 `Blocked` / `Needs Review` review queue、单 issue control packet、loop control packet、loop review prompt、per-tool MCP permission registry、actor identity audit policy、MCP human-confirmation policy，以及写入 operator decision comment/evidence payload 的 typed confirmation receipt。`entrance-auto/workflows/validation/run-mcp-stdio-smoke.mjs` 会通过真实 newline-delimited JSON-RPC stdio 验证 initialize、tools/prompts/resources、MCP create/run loop、loop control tool/resource、loop review prompt，以及未确认 retry 拒绝路径。Electron Panel 也有同名 Review Queue band 和 Reviewer Control block，Panel retry/review/cancel 决策会写入 `source=panel` 的 typed confirmation receipt，并在状态变更后重新拉取 selected issue 的 Transition Policy、Reviewer Control、Loop Dashboard、Evidence Drilldown、Evidence Manifest、Activity Timeline、Runtime Preflight 和 Worker Lifecycle。daemon stdio/http 仍是 GUI 和自动化调用的主桥接协议。
 
 ---
 

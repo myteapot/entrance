@@ -11,8 +11,6 @@ local app root:
 - The loop-level `entrance.mcp.loop_control.v1` packet remains readable and
   exposes the Reviewer gate surface, score vector, fallback budget, human
   decision boundary, and A/B/C operator options.
-- The `remote-fixture:` external issue/status/comment dry-run reaches a current
-  connector state after publish, readback, admission, and final readback.
 - A machine-readable report and a short Markdown summary are written to ignored
   report paths.
 
@@ -55,14 +53,13 @@ By default the script writes:
 The tracked golden fixtures live under
 `entrance-auto/fixtures/golden/local-mvp-demo/`. They intentionally preserve
 stable contract fields only, such as role/stage status, reviewer decision,
-loop control state, Reviewer gates, score names, fallback budget, connector
-readiness, issue board status, and action labels. Run-specific timestamps,
-paths, ids from external services, hashes, and raw logs stay out of the
-committed fixtures.
+loop control state, Reviewer gates, score names, fallback budget, issue board
+status, and action labels. Run-specific timestamps, paths, hashes, and raw logs
+stay out of the committed fixtures.
 
-The committed workflow is reusable. The generated reports, database, connector
-mirrors, and logs are run artifacts and should stay ignored unless a human
-explicitly asks to publish a specific artifact.
+The committed workflow is reusable. The generated reports, database, and logs
+are run artifacts and should stay ignored unless a human explicitly asks to
+publish a specific artifact.
 
 ## Panel Handoff
 
@@ -86,7 +83,6 @@ entrance-auto/workflows/validation/capture-panel-screenshot.mjs --full-gates
 
 The screenshot workflow writes PNG files under `entrance-auto/screenshots/` and
 metadata/summary reports under `entrance-auto/reports/`. It validates that the
-Panel exposes the local MVP issue, the `remote-fixture:` issue, connector queue,
-`Run Fixture` actions, `Todo`/`Done` columns, Reviewer Control, the loop control
-schema, score vector, fallback budget, A/B/C operator options, and reviewer keep
-evidence.
+Panel exposes the local MVP issue, local workbench summary, `Run Fixture`
+actions, `Todo`/`Done` columns, Reviewer Control, the loop control schema, score
+vector, fallback budget, A/B/C operator options, and reviewer keep evidence.

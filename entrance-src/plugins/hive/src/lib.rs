@@ -1,63 +1,42 @@
+mod advance;
+mod audit;
+mod claim;
 mod dispatch;
 mod engine;
+mod evidence;
 mod http;
+mod kernel;
 mod loop_control;
+mod model;
+mod policy;
 mod preset;
 mod review;
+mod reviewer_semantics;
+mod runner;
+mod timeline;
+mod view;
+mod worker;
 
 use anyhow::Result;
 use entrance_core::{
-    Bus, ConnectorsConfig, HiveRun, HiveRunCreate, Plugin, PluginContext, Scheduler, Store,
-    Supervision,
+    Bus, HiveRun, HiveRunCreate, Plugin, PluginContext, Scheduler, Store, Supervision,
 };
 use serde::{Deserialize, Serialize};
 
+pub use advance::*;
+pub use audit::*;
+pub use claim::*;
 pub use dispatch::DispatchSummary;
 pub use engine::{EngineEvent, EngineReport};
+pub use evidence::*;
 pub use http::{HiveCallback, HiveCallbackRequest};
-pub use loop_control::{
-    connector_retry_policy_for_provider, connector_status_mapping_for_provider,
-    connector_status_mapping_policy_for_provider, policy_registry, ConnectorAdmissionCheckSpec,
-    ConnectorAdmissionPolicySpec, ConnectorPolicyRegistry, ConnectorProviderAdmissionSpec,
-    ConnectorProviderSpec, ConnectorRegistryReport, ConnectorRetryPolicySpec,
-    ConnectorStatusMappingPolicySpec, ConnectorStatusMappingSpec, HiveLoopAuditCheck,
-    HiveLoopAuditReport, HiveLoopCreateRequest, HiveLoopDashboardAgent, HiveLoopDashboardComment,
-    HiveLoopDashboardHealth, HiveLoopDashboardHumanDecision, HiveLoopDashboardKernel,
-    HiveLoopDashboardReport, HiveLoopDashboardResources, HiveLoopDashboardReviewer,
-    HiveLoopDashboardRound, HiveLoopDashboardRoundAdmission, HiveLoopDashboardRoundEvidence,
-    HiveLoopDashboardRoundGroups, HiveLoopDashboardRoundPacket, HiveLoopDashboardRoundVerdict,
-    HiveLoopDoctorCounts, HiveLoopDoctorReport, HiveLoopEvidenceArtifact, HiveLoopEvidenceBlocker,
-    HiveLoopEvidenceDrilldownItem, HiveLoopEvidenceDrilldownReport,
-    HiveLoopEvidenceDrilldownResources, HiveLoopEvidenceHumanDecision,
-    HiveLoopEvidenceManifestCoverage, HiveLoopEvidenceManifestEntry,
-    HiveLoopEvidenceManifestReport, HiveLoopEvidenceManifestResources, HiveLoopEvidencePayloadDiff,
-    HiveLoopEvidencePayloadInspection, HiveLoopEvidenceReceiptDrilldown,
-    HiveLoopEvidenceReceiptGate, HiveLoopEvidenceRemoteReceipt, HiveLoopEvidenceReport,
-    HiveLoopEvidenceWorkerDrilldown, HiveLoopPolicyReport, HiveLoopReport, HiveLoopRunRequest,
-    HiveLoopRuntimeArtifactCapturePreview, HiveLoopRuntimeCapabilityPreview,
-    HiveLoopRuntimeConnectorReadinessPreview, HiveLoopRuntimeHumanBoundaryPreview,
-    HiveLoopRuntimePreflightObservation, HiveLoopRuntimePreflightPolicy,
-    HiveLoopRuntimePreflightPreview, HiveLoopRuntimePreflightReport, HiveLoopRuntimeSandboxPreview,
-    HiveLoopRuntimeWorkerContextPreview, HiveLoopTraceReport, HiveLoopWorkerLifecyclePolicy,
-    HiveLoopWorkerLifecycleReport, HiveLoopWorkerLifecycleRound, HiveLoopWorkerLifecycleWorker,
-    IssueAction, IssueCard, IssueCommentRequest, IssueDecisionRequest, IssueDoctorSummary,
-    IssueMirrorReport, IssueRoundSummary, IssueRunRequest, IssueTimelineCounts,
-    IssueTimelineDecisionAction, IssueTimelineDecisionReceipt, IssueTimelineHumanDecision,
-    IssueTimelineItem, IssueTimelineItemReport, IssueTimelineItemResources, IssueTimelineReport,
-    IssueTimelineResources, IssueTimelineRoundGroup, IssueTraceSummary,
-    IssueTransitionActionPolicySpec, IssueTransitionAdmissionReceipt,
-    IssueTransitionConfirmationPolicy, IssueTransitionConfirmationSpec,
-    IssueTransitionPolicyAction, IssueTransitionPolicyBlockedAction, IssueTransitionPolicyRegistry,
-    IssueTransitionPolicyReport, IssueTransitionPolicyResources, IssueTransitionReviewerBudget,
-    IssueTransitionReviewerFallbackPolicy, IssueTransitionStateClassSpec,
-    IssueTransitionStateMachineActionSpec, IssueTransitionStateMachineSpec,
-    OperatorConfirmationActor, OperatorConfirmationClient, OperatorConfirmationReceipt,
-    PolicyGateSpec, PolicyRegistryReport, CONNECTOR_MIRROR_RECEIPT_GATE,
-    CONNECTOR_MIRROR_RECEIPT_OBJECT_KIND, OPERATOR_ACTION_CONFIRMATION_ARG,
-    OPERATOR_ACTION_POLICY_SCHEMA_VERSION, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
-};
+pub use model::*;
+pub use policy::*;
 pub use preset::{HivePreset, SoftwareEngPreset};
 pub use review::{ReviewDecision, ReviewRecord};
+pub use timeline::*;
+pub use view::*;
+pub use worker::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveDispatchRequest {
@@ -82,7 +61,6 @@ pub struct HivePlugin {
     scheduler: Scheduler,
     supervision: Supervision,
     preset: SoftwareEngPreset,
-    connectors: ConnectorsConfig,
 }
 
 impl HivePlugin {
@@ -93,7 +71,6 @@ impl HivePlugin {
             scheduler: ctx.scheduler(),
             supervision: ctx.supervision(),
             preset: SoftwareEngPreset,
-            connectors: ctx.kernel.config.connectors.clone(),
         }
     }
 
@@ -129,27 +106,23 @@ impl HivePlugin {
     }
 
     pub fn loop_create(&self, request: HiveLoopCreateRequest) -> Result<HiveLoopReport> {
-        loop_control::create(&self.store, request)
+        kernel::create(&self.store, request)
     }
 
     pub fn loop_run(&self, request: HiveLoopRunRequest) -> Result<HiveLoopReport> {
-        loop_control::run_with_config(&self.store, request, &self.connectors)
+        runner::run(&self.store, request)
     }
 
     pub fn loop_report(&self, id: i64) -> Result<HiveLoopReport> {
-        loop_control::report(&self.store, id)
+        kernel::report(&self.store, id)
     }
 
     pub fn loop_list(&self) -> Result<Vec<entrance_core::HiveLoopContract>> {
-        loop_control::list(&self.store)
+        kernel::list(&self.store)
     }
 
     pub fn policy_registry(&self) -> PolicyRegistryReport {
-        loop_control::policy_registry()
-    }
-
-    pub fn connector_registry(&self) -> ConnectorRegistryReport {
-        loop_control::connector_registry_with_config(&self.connectors)
+        policy::policy_registry()
     }
 
     pub fn loop_policies(&self, id: i64) -> Result<HiveLoopPolicyReport> {
@@ -185,11 +158,11 @@ impl HivePlugin {
     }
 
     pub fn loop_runtime_preflight(&self, id: i64) -> Result<HiveLoopRuntimePreflightReport> {
-        loop_control::runtime_preflight_with_config(&self.store, id, &self.connectors)
+        loop_control::runtime_preflight(&self.store, id)
     }
 
     pub fn loop_dashboard(&self, id: i64) -> Result<HiveLoopDashboardReport> {
-        loop_control::dashboard_with_config(&self.store, id, &self.connectors)
+        loop_control::dashboard(&self.store, id)
     }
 
     pub fn panel(&self) -> Result<Vec<IssueCard>> {
@@ -198,6 +171,10 @@ impl HivePlugin {
 
     pub fn issue_report(&self, id: i64) -> Result<IssueCard> {
         loop_control::issue(&self.store, id)
+    }
+
+    pub fn issue_claim(&self, request: IssueClaimRequest) -> Result<IssueClaimReport> {
+        claim::claim_issue(&self.store, request)
     }
 
     pub fn issue_timeline(&self, id: i64) -> Result<IssueTimelineReport> {
@@ -212,20 +189,20 @@ impl HivePlugin {
         loop_control::issue_transition_policy(&self.store, id)
     }
 
-    pub fn issue_mirror(&self, id: i64) -> Result<loop_control::IssueMirrorReport> {
-        loop_control::issue_mirror(&self.store, id)
-    }
-
     pub fn issue_comment(&self, request: IssueCommentRequest) -> Result<IssueCard> {
-        loop_control::add_comment(&self.store, request)
+        kernel::add_comment(&self.store, request)
     }
 
     pub fn issue_decide(&self, request: IssueDecisionRequest) -> Result<IssueCard> {
-        loop_control::decide_issue(&self.store, request)
+        kernel::decide_issue(&self.store, request)
     }
 
     pub fn issue_run(&self, request: IssueRunRequest) -> Result<HiveLoopReport> {
-        loop_control::run_issue(&self.store, request)
+        kernel::run_issue(&self.store, request)
+    }
+
+    pub fn issue_advance(&self, request: IssueAdvanceRequest) -> Result<IssueAdvanceReport> {
+        advance::advance_issue(&self.store, request)
     }
 
     pub fn bootstrap_run(&self, row: HiveRunCreate) -> Result<i64> {

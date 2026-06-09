@@ -143,6 +143,10 @@ CREATE TABLE IF NOT EXISTS hive_issues (
     title           TEXT NOT NULL,
     status          TEXT NOT NULL,
     summary         TEXT,
+    assignee        TEXT,
+    claim_role      TEXT,
+    claim_source    TEXT,
+    claimed_at      TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     FOREIGN KEY(loop_id) REFERENCES hive_loop_contracts(id)
@@ -194,8 +198,8 @@ CREATE INDEX IF NOT EXISTS idx_launcher_entries_normalized ON launcher_entries(n
 CREATE INDEX IF NOT EXISTS idx_bus_commands_topic_status ON bus_commands(topic, status);
 "#;
 
-const CORE_SCHEMA_VERSION: i64 = 1;
-const CORE_SCHEMA_NAME: &str = "entrance.sqlite.core.v1";
+const CORE_SCHEMA_VERSION: i64 = 2;
+const CORE_SCHEMA_NAME: &str = "entrance.sqlite.core.v2";
 
 #[derive(Debug, Clone, Copy)]
 struct TableSpec {
@@ -351,6 +355,10 @@ const CORE_TABLES: &[TableSpec] = &[
             "title",
             "status",
             "summary",
+            "assignee",
+            "claim_role",
+            "claim_source",
+            "claimed_at",
             "created_at",
             "updated_at",
         ],
@@ -743,6 +751,10 @@ pub struct HiveIssue {
     pub title: String,
     pub status: String,
     pub summary: Option<String>,
+    pub assignee: Option<String>,
+    pub claim_role: Option<String>,
+    pub claim_source: Option<String>,
+    pub claimed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -838,6 +850,7 @@ impl Store {
         let connection = Connection::open(&db_path)
             .with_context(|| format!("failed to open database at {}", db_path.display()))?;
         connection.execute_batch(CORE_SCHEMA)?;
+        ensure_hive_issue_claim_columns(&connection)?;
         let user_version = read_user_version(&connection)?;
         if user_version < CORE_SCHEMA_VERSION {
             connection.execute_batch(&format!("PRAGMA user_version = {CORE_SCHEMA_VERSION}"))?;
@@ -1365,7 +1378,7 @@ impl Store {
     pub fn list_hive_issues(&self) -> Result<Vec<HiveIssue>> {
         let connection = self.connection();
         let mut statement = connection.prepare(
-            "SELECT id, loop_id, title, status, summary, created_at, updated_at
+            "SELECT id, loop_id, title, status, summary, assignee, claim_role, claim_source, claimed_at, created_at, updated_at
              FROM hive_issues ORDER BY updated_at DESC, id DESC",
         )?;
         let rows = statement.query_map([], map_hive_issue)?;
@@ -1376,7 +1389,7 @@ impl Store {
     pub fn get_hive_issue(&self, id: i64) -> Result<Option<HiveIssue>> {
         let connection = self.connection();
         let mut statement = connection.prepare(
-            "SELECT id, loop_id, title, status, summary, created_at, updated_at
+            "SELECT id, loop_id, title, status, summary, assignee, claim_role, claim_source, claimed_at, created_at, updated_at
              FROM hive_issues WHERE id = ?1 LIMIT 1",
         )?;
         statement
@@ -1388,7 +1401,7 @@ impl Store {
     pub fn list_hive_issues_for_loop(&self, loop_id: i64) -> Result<Vec<HiveIssue>> {
         let connection = self.connection();
         let mut statement = connection.prepare(
-            "SELECT id, loop_id, title, status, summary, created_at, updated_at
+            "SELECT id, loop_id, title, status, summary, assignee, claim_role, claim_source, claimed_at, created_at, updated_at
              FROM hive_issues WHERE loop_id = ?1 ORDER BY updated_at DESC, id DESC",
         )?;
         let rows = statement.query_map(params![loop_id], map_hive_issue)?;
@@ -1408,6 +1421,24 @@ impl Store {
              SET status = ?2, summary = COALESCE(?3, summary), updated_at = ?4
              WHERE id = ?1",
             params![id, status, summary, timestamp()],
+        )?;
+        Ok(())
+    }
+
+    pub fn claim_hive_issue(
+        &self,
+        id: i64,
+        assignee: &str,
+        claim_role: &str,
+        claim_source: &str,
+    ) -> Result<()> {
+        let now = timestamp();
+        let connection = self.connection();
+        connection.execute(
+            "UPDATE hive_issues
+             SET assignee = ?2, claim_role = ?3, claim_source = ?4, claimed_at = ?5, updated_at = ?5
+             WHERE id = ?1",
+            params![id, assignee, claim_role, claim_source, now],
         )?;
         Ok(())
     }
@@ -1634,6 +1665,25 @@ fn read_user_version(connection: &Connection) -> Result<i64> {
         .context("failed to read sqlite user_version")
 }
 
+fn ensure_hive_issue_claim_columns(connection: &Connection) -> Result<()> {
+    let columns = table_columns(connection, "hive_issues")?;
+    for (name, sql_type) in [
+        ("assignee", "TEXT"),
+        ("claim_role", "TEXT"),
+        ("claim_source", "TEXT"),
+        ("claimed_at", "TEXT"),
+    ] {
+        if !columns.iter().any(|column| column == name) {
+            connection
+                .execute_batch(&format!(
+                    "ALTER TABLE hive_issues ADD COLUMN {name} {sql_type}"
+                ))
+                .with_context(|| format!("failed to add hive_issues.{name} column"))?;
+        }
+    }
+    Ok(())
+}
+
 fn schema_table_status(
     connection: &Connection,
     spec: &TableSpec,
@@ -1844,8 +1894,12 @@ fn map_hive_issue(row: &Row<'_>) -> rusqlite::Result<HiveIssue> {
         title: row.get(2)?,
         status: row.get(3)?,
         summary: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        assignee: row.get(5)?,
+        claim_role: row.get(6)?,
+        claim_source: row.get(7)?,
+        claimed_at: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 
@@ -1903,6 +1957,8 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use rusqlite::Connection;
+
     use super::{Store, CORE_SCHEMA_VERSION};
 
     fn temp_db_path(name: &str) -> std::path::PathBuf {
@@ -1936,6 +1992,57 @@ mod tests {
             .indexes
             .iter()
             .any(|index| index.name == "idx_hive_loop_evidence_loop_round" && index.present));
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn schema_v2_migrates_existing_issue_table() {
+        let db_path = temp_db_path("schema-v2-migration");
+        fs::create_dir_all(db_path.parent().expect("db path should have a parent"))
+            .expect("test db directory should be created");
+        let connection = Connection::open(&db_path).expect("legacy db should open");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE hive_issues (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    loop_id INTEGER,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    summary TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                PRAGMA user_version = 1;
+                "#,
+            )
+            .expect("legacy issue table should be created");
+        drop(connection);
+
+        let store = Store::open(&db_path).expect("store should migrate legacy db");
+        let status = store.schema_status().expect("schema status should load");
+
+        assert!(status.healthy);
+        assert_eq!(status.user_version, CORE_SCHEMA_VERSION);
+        assert!(!status
+            .missing_columns
+            .iter()
+            .any(|column| column.starts_with("hive_issues.")));
+        for column in [
+            "hive_issues.assignee",
+            "hive_issues.claim_role",
+            "hive_issues.claim_source",
+            "hive_issues.claimed_at",
+        ] {
+            assert!(
+                !status
+                    .missing_columns
+                    .iter()
+                    .any(|missing| missing == column),
+                "{column} should be migrated"
+            );
+        }
 
         let _ = fs::remove_file(db_path);
     }

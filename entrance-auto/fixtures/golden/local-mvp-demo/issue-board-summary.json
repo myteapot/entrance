@@ -1,68 +1,31 @@
 {
-  "schema_version": "entrance.auto.golden.issue_board_summary.v1",
+  "schema_version": "entrance.auto.golden.issue_board_summary.v2",
   "board_schema": "entrance.hive.issue_board.compact.v1",
-  "total": 2,
-  "columns": [
+  "counts": [
     {
-      "status": "Todo",
+      "count": 0,
+      "status": "Todo"
+    },
+    {
+      "count": 0,
+      "status": "Doing"
+    },
+    {
+      "count": 0,
+      "status": "Blocked"
+    },
+    {
+      "count": 0,
+      "status": "Needs Review"
+    },
+    {
       "count": 1,
-      "issues": [
-        {
-          "title": "Loop #2: Entrance remote fixture demo",
-          "status": "Todo",
-          "summary": "Loop contract created; waiting for Explorer.",
-          "connector_provider": "remote-fixture",
-          "connector_current": true,
-          "action_labels": [
-            "Run",
-            "Comment",
-            "Cancel"
-          ],
-          "human_options": [
-            "comment",
-            "cancel"
-          ]
-        }
-      ]
+      "status": "Done"
     },
     {
-      "status": "Doing",
       "count": 0,
-      "issues": []
-    },
-    {
-      "status": "Blocked",
-      "count": 0,
-      "issues": []
-    },
-    {
-      "status": "Needs Review",
-      "count": 0,
-      "issues": []
-    },
-    {
-      "status": "Done",
-      "count": 1,
-      "issues": [
-        {
-          "title": "Loop #1: Entrance MVP demo",
-          "status": "Done",
-          "summary": "Reviewer kept the candidate: all MVP gates passed.",
-          "connector_provider": "local-hive-panel",
-          "connector_current": true,
-          "action_labels": [
-            "Comment"
-          ],
-          "human_options": [
-            "comment"
-          ]
-        }
-      ]
-    },
-    {
-      "status": "Canceled",
-      "count": 0,
-      "issues": []
+      "status": "Canceled"
     }
-  ]
+  ],
+  "issue_count": 1
 }

@@ -4,49 +4,29 @@ Entrance V2 is a compact Rust workspace with one binary and three plugin crates.
 
 ## Active Source Shape
 
-- `entrance-src/core/`: shared runtime primitives, boot, config, store, bus,
-  versioning, filesystem, crypto, scheduler, and supervision.
-- `entrance-src/plugins/drawer/`: durable notes, memory imports, vault records,
-  organization plans, and drawer snapshots.
-- `entrance-src/plugins/hive/`: local dispatch ledger, engine reports,
-  callbacks, and review state.
-- `entrance-src/plugins/launcher/`: local app indexing, search, pinning, and
-  launch dispatch.
-- `entrance-src/shell/app/`: the only Rust binary, exposing CLI, daemon
-  transports, and the MCP stdio issue surface.
-- `entrance-src/shell/gui/`: Electron + SolidJS frontend that invokes
-  `entrance daemon`.
+- `entrance-src/core/`: shared runtime primitives, boot, config, store, bus, versioning, filesystem, crypto, scheduler, and supervision.
+- `entrance-src/plugins/drawer/`: durable notes, memory imports, vault records, organization plans, and drawer snapshots.
+- `entrance-src/plugins/hive/`: local issue/status/comment ledger, loop contracts, worker receipts, reviewer verdicts, audit state, and issue control views. Hive now has thin module boundaries for model, kernel, policy, runner, worker, evidence, audit, timeline, and view.
+- `entrance-src/plugins/launcher/`: local app indexing, search, pinning, and launch dispatch.
+- `entrance-src/shell/app/`: the only Rust binary, exposing CLI, daemon transports, and the MCP stdio issue workbench.
+- `entrance-src/shell/gui/`: Electron + SolidJS frontend that invokes `entrance daemon` and shows the local Linear-like issue board/detail surface.
 
 ## Deleted Shape
 
-Do not reintroduce `harness/`, `shell/cli/`, `shell/mcp/`,
-`hosts/desktop/tauri/`, or Tauri product code. Historical documents may mention
-those paths, but they are archive-only context.
+Do not reintroduce `harness/`, `shell/cli/`, `shell/mcp/`, `hosts/desktop/tauri/`, or Tauri product code. Historical documents may mention those paths, but they are archive-only context.
 
 ## Runtime Boundary
 
-External GUI and automation callers should use `entrance daemon` over stdio or
-`entrance daemon http` over loopback HTTP. MCP clients can use
-`entrance mcp stdio`, which is implemented inside the same `shell/app` binary
-and exposes the local Hive issue/status/comment kernel as tools, resources, and
-prompt contracts, including a `Blocked`/`Needs Review` review queue and MCP
-human-confirmation policy for retry/review/cancel decisions. It also exposes
-`entrance.mcp.issue_control.v1` through `entrance_issue_control` and
-`entrance://issues/{issue_id}/control`, giving agents a single typed packet for
-one issue's status, actions, blockers, evidence, receipts, and call templates.
-The MCP surface also exposes a local per-tool permission registry through both
-`tools/list` annotations and the policy resource, plus
-`entrance://policy/actor-identity` for self-reported MCP actors and local Panel
-audit actors. Confirmed MCP human decisions are recorded
-back into the Hive operator decision
-comment/evidence payload as typed confirmation receipts, with a readable policy
-marker still present in the note and optional `initialize.clientInfo` copied as
-self-reported client identity plus non-verified actor context. The daemon bridge
-used by the Electron Panel now records Panel retry/review/cancel decisions with
-the same typed confirmation receipt schema using `source=panel`; this is local
-audit context, not verified operator authentication. The same daemon bridge also
-exposes the `remote-fixture:` external issue surface demo used by the Panel
-`Run Fixture` action: it creates a fixture-target issue, runs the connector
-publish/readback/admission/final-readback path, and records connector evidence
-back into Hive. There is still no separate `shell/mcp/` package or remote MCP
-service in the active V2 shape.
+External GUI and automation callers should use `entrance daemon` over stdio or `entrance daemon http` over loopback HTTP. MCP clients can use `entrance mcp stdio`, implemented inside `shell/app`, which exposes local Hive issue tools/resources/prompts only.
+
+The current control plane is local and issue-first:
+
+- issue list/show/create/claim/comment/run/review/retry/decide/control;
+- loop create/run/control;
+- review queue for `Blocked` and `Needs Review`;
+- policy resources for issue transitions, MCP permissions, and actor identity;
+- Panel actions for local create/run/retry/review/cancel/comment.
+
+Retry, request-review, and cancel remain human-confirmed decision boundaries. MCP and Panel confirmations are recorded as local audit context with self-reported, non-verified actor identity.
+
+Remote synchronization, publish/readback/roundtrip, file mirrors, and external issue-surface demos are no longer part of the active architecture or user-facing runtime boundary.

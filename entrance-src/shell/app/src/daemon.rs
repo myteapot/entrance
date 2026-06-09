@@ -10,26 +10,18 @@ use axum::{
 use entrance_core::LauncherQuery;
 use entrance_drawer::VaultSecret;
 use entrance_hive::{
-    HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest, IssueCard,
-    IssueCommentRequest, IssueDecisionRequest, IssueRunRequest, OperatorConfirmationActor,
-    OperatorConfirmationClient, OperatorConfirmationReceipt, ReviewDecision,
-    OPERATOR_ACTION_CONFIRMATION_ARG, OPERATOR_ACTION_POLICY_SCHEMA_VERSION,
-    OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
+    HiveCallbackRequest, HiveDispatchRequest, HiveLoopCreateRequest, HiveLoopRunRequest,
+    IssueAdvanceRequest, IssueCard, IssueClaimRequest, IssueCommentRequest, IssueDecisionRequest,
+    IssueRunRequest, OperatorConfirmationActor, OperatorConfirmationClient,
+    OperatorConfirmationReceipt, ReviewDecision, OPERATOR_ACTION_CONFIRMATION_ARG,
+    OPERATOR_ACTION_POLICY_SCHEMA_VERSION, OPERATOR_CONFIRMATION_RECEIPT_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::{
     app::AppServices,
-    commands::hive::{
-        admit_issue_mirror_file, audit_issue_mirror_file, connector_fixture_demo_report,
-        connector_publish_plan_report, connector_queue_report, connector_roundtrip_plan_report,
-        execute_connector_publish_plan, execute_connector_roundtrip_plan,
-        issue_connector_admission_preview, issue_mirror_status, publish_issue_mirror_to_file,
-        readback_issue_mirror_file, roundtrip_issue_mirror_file, sync_issue_mirror_to_file,
-        verify_issue_mirror_file,
-    },
-    mcp::loop_control_packet,
+    mcp::{issue_control_packet, loop_control_packet},
 };
 
 const PANEL_CONFIRMATION_CLIENT_NAME: &str = "local-hive-panel";
@@ -183,38 +175,12 @@ fn cors_headers() -> [(&'static str, &'static str); 3] {
     ]
 }
 
-fn issue_cards_with_connector_status(
-    services: &AppServices,
-    cards: Vec<IssueCard>,
-) -> Result<serde_json::Value> {
-    let cards = cards
-        .into_iter()
-        .map(|card| issue_card_with_connector_status(services, card))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(serde_json::Value::Array(cards))
+fn issue_cards(cards: Vec<IssueCard>) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value(cards)?)
 }
 
-fn issue_card_with_connector_status(
-    services: &AppServices,
-    card: IssueCard,
-) -> Result<serde_json::Value> {
-    let issue_id = card.issue.id;
-    let mut card = serde_json::to_value(card)?;
-    if let Some(object) = card.as_object_mut() {
-        let connector = issue_mirror_status(services, issue_id, None).unwrap_or_else(|error| {
-            serde_json::json!({
-                "schema_version": "entrance.hive.issue_mirror_status.v1",
-                "current": false,
-                "publish_required": null,
-                "reason": "connector_status_unavailable",
-                "error": error.to_string(),
-                "issue_id": issue_id,
-                "publish_command": format!("entrance hive issue mirror-publish {} --compact", issue_id)
-            })
-        });
-        object.insert("connector".to_string(), connector);
-    }
-    Ok(card)
+fn issue_card(card: IssueCard) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value(card)?)
 }
 
 async fn handle_invoke(
@@ -585,71 +551,7 @@ async fn handle_invoke(
         }
         "hive_panel" => {
             let cards = state.services.hive.panel()?;
-            issue_cards_with_connector_status(&state.services, cards)
-        }
-        "hive_connector_registry" => Ok(serde_json::to_value(
-            state.services.hive.connector_registry(),
-        )?),
-        "hive_connector_fixture_demo" => Ok(connector_fixture_demo_report(
-            &state.services,
-            args.get("reviewSurface")
-                .or_else(|| args.get("review_surface"))
-                .and_then(|value| value.as_str()),
-            args.get("record")
-                .or_else(|| args.get("recorded"))
-                .and_then(|value| value.as_bool())
-                .unwrap_or(true),
-        )?),
-        "hive_connector_queue" => Ok(connector_queue_report(
-            &state.services,
-            args.get("provider")
-                .or_else(|| args.get("providerName"))
-                .or_else(|| args.get("provider_name"))
-                .and_then(|value| value.as_str()),
-        )?),
-        "hive_connector_publish_plan" => Ok(connector_publish_plan_report(
-            &state.services,
-            args.get("provider")
-                .or_else(|| args.get("providerName"))
-                .or_else(|| args.get("provider_name"))
-                .and_then(|value| value.as_str()),
-        )?),
-        "hive_connector_publish_execute" => {
-            let plan_id = args
-                .get("planId")
-                .or_else(|| args.get("plan_id"))
-                .and_then(|value| value.as_str())
-                .context("hive_connector_publish_execute requires `planId`")?;
-            Ok(execute_connector_publish_plan(
-                &state.services,
-                args.get("provider")
-                    .or_else(|| args.get("providerName"))
-                    .or_else(|| args.get("provider_name"))
-                    .and_then(|value| value.as_str()),
-                plan_id,
-            )?)
-        }
-        "hive_connector_roundtrip_plan" => Ok(connector_roundtrip_plan_report(
-            &state.services,
-            args.get("provider")
-                .or_else(|| args.get("providerName"))
-                .or_else(|| args.get("provider_name"))
-                .and_then(|value| value.as_str()),
-        )?),
-        "hive_connector_roundtrip_execute" => {
-            let plan_id = args
-                .get("planId")
-                .or_else(|| args.get("plan_id"))
-                .and_then(|value| value.as_str())
-                .context("hive_connector_roundtrip_execute requires `planId`")?;
-            Ok(execute_connector_roundtrip_plan(
-                &state.services,
-                args.get("provider")
-                    .or_else(|| args.get("providerName"))
-                    .or_else(|| args.get("provider_name"))
-                    .and_then(|value| value.as_str()),
-                plan_id,
-            )?)
+            issue_cards(cards)
         }
         "hive_issue_show" => {
             let issue_id = args
@@ -658,10 +560,16 @@ async fn handle_invoke(
                 .or_else(|| args.get("id"))
                 .and_then(|value| value.as_i64())
                 .context("hive_issue_show requires `issueId`")?;
-            issue_card_with_connector_status(
-                &state.services,
-                state.services.hive.issue_report(issue_id)?,
-            )
+            issue_card(state.services.hive.issue_report(issue_id)?)
+        }
+        "hive_issue_control" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_control requires `issueId`")?;
+            issue_control_packet(&state.services, issue_id)
         }
         "hive_issue_timeline" => {
             let issue_id = args
@@ -701,159 +609,29 @@ async fn handle_invoke(
                 state.services.hive.issue_transition_policy(issue_id)?,
             )?)
         }
-        "hive_issue_mirror_sync" => {
+        "hive_issue_claim" => {
             let issue_id = args
                 .get("issueId")
                 .or_else(|| args.get("issue_id"))
                 .or_else(|| args.get("id"))
                 .and_then(|value| value.as_i64())
-                .context("hive_issue_mirror_sync requires `issueId`")?;
-            Ok(sync_issue_mirror_to_file(
-                &state.services,
-                issue_id,
-                args.get("outPath")
-                    .or_else(|| args.get("out_path"))
-                    .and_then(|value| value.as_str()),
-            )?)
-        }
-        "hive_issue_connector_admission" => {
-            let issue_id = args
-                .get("issueId")
-                .or_else(|| args.get("issue_id"))
-                .or_else(|| args.get("id"))
-                .and_then(|value| value.as_i64())
-                .context("hive_issue_connector_admission requires `issueId`")?;
-            Ok(issue_connector_admission_preview(
-                &state.services,
-                issue_id,
-                args.get("path")
-                    .or_else(|| args.get("outPath"))
-                    .or_else(|| args.get("out_path"))
-                    .and_then(|value| value.as_str()),
-            )?)
-        }
-        "hive_issue_mirror_publish" => {
-            let issue_id = args
-                .get("issueId")
-                .or_else(|| args.get("issue_id"))
-                .or_else(|| args.get("id"))
-                .and_then(|value| value.as_i64())
-                .context("hive_issue_mirror_publish requires `issueId`")?;
-            Ok(publish_issue_mirror_to_file(
-                &state.services,
-                issue_id,
-                args.get("path")
-                    .or_else(|| args.get("outPath"))
-                    .or_else(|| args.get("out_path"))
-                    .and_then(|value| value.as_str()),
-            )?)
-        }
-        "hive_issue_mirror_status" => {
-            let issue_id = args
-                .get("issueId")
-                .or_else(|| args.get("issue_id"))
-                .or_else(|| args.get("id"))
-                .and_then(|value| value.as_i64())
-                .context("hive_issue_mirror_status requires `issueId`")?;
-            Ok(issue_mirror_status(
-                &state.services,
-                issue_id,
-                args.get("path")
-                    .or_else(|| args.get("outPath"))
-                    .or_else(|| args.get("out_path"))
-                    .and_then(|value| value.as_str()),
-            )?)
-        }
-        "hive_issue_mirror_verify" => {
-            let issue_id = args
-                .get("issueId")
-                .or_else(|| args.get("issue_id"))
-                .or_else(|| args.get("id"))
-                .and_then(|value| value.as_i64())
-                .context("hive_issue_mirror_verify requires `issueId`")?;
-            Ok(verify_issue_mirror_file(
-                &state.services,
-                issue_id,
-                args.get("path")
-                    .or_else(|| args.get("outPath"))
-                    .or_else(|| args.get("out_path"))
-                    .and_then(|value| value.as_str()),
-            )?)
-        }
-        "hive_issue_mirror_audit" => {
-            let issue_id = args
-                .get("issueId")
-                .or_else(|| args.get("issue_id"))
-                .or_else(|| args.get("id"))
-                .and_then(|value| value.as_i64())
-                .context("hive_issue_mirror_audit requires `issueId`")?;
-            Ok(audit_issue_mirror_file(
-                &state.services,
-                issue_id,
-                args.get("path")
-                    .or_else(|| args.get("outPath"))
-                    .or_else(|| args.get("out_path"))
-                    .and_then(|value| value.as_str()),
-            )?)
-        }
-        "hive_issue_mirror_readback" => {
-            let issue_id = args
-                .get("issueId")
-                .or_else(|| args.get("issue_id"))
-                .or_else(|| args.get("id"))
-                .and_then(|value| value.as_i64())
-                .context("hive_issue_mirror_readback requires `issueId`")?;
-            Ok(readback_issue_mirror_file(
-                &state.services,
-                issue_id,
-                args.get("path")
-                    .or_else(|| args.get("outPath"))
-                    .or_else(|| args.get("out_path"))
-                    .and_then(|value| value.as_str()),
-                args.get("record")
-                    .or_else(|| args.get("recorded"))
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false),
-            )?)
-        }
-        "hive_issue_mirror_admit" => {
-            let issue_id = args
-                .get("issueId")
-                .or_else(|| args.get("issue_id"))
-                .or_else(|| args.get("id"))
-                .and_then(|value| value.as_i64())
-                .context("hive_issue_mirror_admit requires `issueId`")?;
-            Ok(admit_issue_mirror_file(
-                &state.services,
-                issue_id,
-                args.get("path")
-                    .or_else(|| args.get("outPath"))
-                    .or_else(|| args.get("out_path"))
-                    .and_then(|value| value.as_str()),
-                args.get("record")
-                    .or_else(|| args.get("recorded"))
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false),
-            )?)
-        }
-        "hive_issue_mirror_roundtrip" => {
-            let issue_id = args
-                .get("issueId")
-                .or_else(|| args.get("issue_id"))
-                .or_else(|| args.get("id"))
-                .and_then(|value| value.as_i64())
-                .context("hive_issue_mirror_roundtrip requires `issueId`")?;
-            Ok(roundtrip_issue_mirror_file(
-                &state.services,
-                issue_id,
-                args.get("path")
-                    .or_else(|| args.get("outPath"))
-                    .or_else(|| args.get("out_path"))
-                    .and_then(|value| value.as_str()),
-                args.get("record")
-                    .or_else(|| args.get("recorded"))
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(true),
+                .context("hive_issue_claim requires `issueId`")?;
+            let agent = args
+                .get("agent")
+                .or_else(|| args.get("assignee"))
+                .and_then(|value| value.as_str())
+                .context("hive_issue_claim requires `agent`")?
+                .to_string();
+            Ok(serde_json::to_value(
+                state.services.hive.issue_claim(IssueClaimRequest {
+                    issue_id,
+                    agent,
+                    role: args
+                        .get("role")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned),
+                    source: Some("panel".to_string()),
+                })?,
             )?)
         }
         "hive_issue_comment" => {
@@ -966,6 +744,44 @@ async fn handle_invoke(
             tokio::task::spawn_blocking(move || Ok(serde_json::to_value(hive.issue_run(request)?)?))
                 .await
                 .context("hive_issue_run worker panicked")?
+        }
+        "hive_issue_advance" => {
+            let issue_id = args
+                .get("issueId")
+                .or_else(|| args.get("issue_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|value| value.as_i64())
+                .context("hive_issue_advance requires `issueId`")?;
+            let hive = state.services.hive.clone();
+            let request = IssueAdvanceRequest {
+                issue_id,
+                mode: args
+                    .get("mode")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                runtime: args
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                max_steps: args
+                    .get("maxSteps")
+                    .or_else(|| args.get("max_steps"))
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as usize),
+                worker_timeout_secs: args
+                    .get("workerTimeoutSecs")
+                    .or_else(|| args.get("worker_timeout_secs"))
+                    .and_then(|value| value.as_u64()),
+                worker_attempts: args
+                    .get("workerAttempts")
+                    .or_else(|| args.get("worker_attempts"))
+                    .and_then(|value| value.as_u64()),
+            };
+            tokio::task::spawn_blocking(move || {
+                Ok(serde_json::to_value(hive.issue_advance(request)?)?)
+            })
+            .await
+            .context("hive_issue_advance worker panicked")?
         }
         "launcher_hotkey" => Ok(serde_json::json!(state.services.launcher.hotkey())),
         "launcher_refresh" => {

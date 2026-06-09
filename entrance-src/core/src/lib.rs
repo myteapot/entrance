@@ -12,10 +12,7 @@ pub mod versioning;
 
 pub use boot::{boot, resolve_app_root, AppKernel};
 pub use bus::{Bus, BusEvent, CommandEnvelope};
-pub use config::{
-    AppConfig, ConnectorProviderConfig, ConnectorProviderStatusMappingConfig, ConnectorsConfig,
-    DrawerConfig, HiveConfig, LauncherConfig,
-};
+pub use config::{AppConfig, DrawerConfig, HiveConfig, LauncherConfig};
 pub use crypto::Crypto;
 pub use fs::{FileChange, FileSystem};
 pub use persona::{Persona, PersonaProfile};

@@ -4,6 +4,7 @@ mod command;
 mod commands;
 mod daemon;
 mod mcp;
+mod mcp_resources;
 
 use anyhow::Result;
 use command::Command;

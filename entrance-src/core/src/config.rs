@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -16,8 +15,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub hive: HiveConfig,
     #[serde(default)]
-    pub connectors: ConnectorsConfig,
-    #[serde(default)]
     pub launcher: LauncherConfig,
 }
 
@@ -27,7 +24,6 @@ impl Default for AppConfig {
             persona: "operator".to_string(),
             drawer: DrawerConfig::default(),
             hive: HiveConfig::default(),
-            connectors: ConnectorsConfig::default(),
             launcher: LauncherConfig::default(),
         }
     }
@@ -62,46 +58,6 @@ impl Default for HiveConfig {
             http_port: default_hive_http_port(),
         }
     }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ConnectorsConfig {
-    #[serde(default)]
-    pub file: ConnectorProviderConfig,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ConnectorProviderConfig {
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub auth_env: Vec<String>,
-    #[serde(default)]
-    pub review_surface_prefixes: Vec<String>,
-    #[serde(default)]
-    pub storage: Option<String>,
-    #[serde(default)]
-    pub mode: Option<String>,
-    #[serde(default)]
-    pub status_mappings: BTreeMap<String, ConnectorProviderStatusMappingConfig>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ConnectorProviderStatusMappingConfig {
-    #[serde(default)]
-    pub remote_state: Option<String>,
-    #[serde(default)]
-    pub remote_state_id: Option<String>,
-    #[serde(default)]
-    pub remote_state_reason: Option<String>,
-    #[serde(default)]
-    pub remote_state_type: Option<String>,
-    #[serde(default)]
-    pub remote_status_marker: Option<String>,
-    #[serde(default)]
-    pub readback_check: Option<String>,
-    #[serde(default)]
-    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,32 +122,6 @@ mod tests {
         let result = AppConfig::load_or_create(&path);
 
         assert!(result.is_err());
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn connector_config_parses_provider_overrides() {
-        let path = std::env::temp_dir().join(format!(
-            "entrance-connector-config-{}.toml",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::write(
-            &path,
-            r#"
-persona = "operator"
-
-[connectors.file]
-enabled = false
-"#,
-        )
-        .unwrap();
-
-        let config = AppConfig::load_or_create(&path).unwrap();
-
-        assert_eq!(config.connectors.file.enabled, Some(false));
         let _ = fs::remove_file(path);
     }
 }

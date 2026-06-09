@@ -1,45 +1,8 @@
 {
-  "schema_version": "entrance.auto.golden.local_mvp_summary.v1",
-  "local_demo_schema": "entrance.hive.loop_demo.compact.v1",
-  "ready": true,
-  "loop": {
-    "schema_version": "entrance.hive.loop_start.compact.v1",
-    "runtime": "local",
-    "status": "Done",
-    "decision": "keep",
-    "reason_code": "all_gates_passed",
-    "health": "ok",
-    "worker_ok": 3,
-    "workers": 3,
-    "receipt_required": 16,
-    "receipt_missing": 0
-  },
-  "roles": [
-    {
-      "role": "explorer",
-      "status": "done",
-      "admission": "admitted",
-      "worker_kind": "local",
-      "worker_ok": true
-    },
-    {
-      "role": "developer",
-      "status": "done",
-      "admission": "admitted",
-      "worker_kind": "local",
-      "worker_ok": true
-    },
-    {
-      "role": "reviewer",
-      "status": "done",
-      "admission": "admitted",
-      "worker_kind": "local",
-      "worker_ok": true
-    }
-  ],
-  "panel_handoff": {
-    "api_url": "http://127.0.0.1:9720",
-    "daemon_command": "entrance daemon http",
-    "dev_server_url": "http://127.0.0.1:1420/"
-  }
+  "schema_version": "entrance.auto.golden.local_mvp_summary.v2",
+  "issue_id": 1,
+  "loop_id": 1,
+  "run_schema": "entrance.hive.loop.compact.v1",
+  "loop_status": "kept",
+  "issue_status": "Done"
 }

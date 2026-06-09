@@ -433,11 +433,8 @@ async function main() {
   };
   const assertions = {
     panel_run_fixture_visible: Boolean(document.querySelector('[data-testid="panel-run-fixture-demo"]')),
-    connector_run_fixture_visible: Boolean(document.querySelector('[data-testid="connector-fixture-demo-run"]')),
     local_mvp_issue_visible: text.includes('Entrance MVP demo'),
-    remote_fixture_issue_visible: text.includes('Entrance remote fixture demo'),
-    connector_queue_visible: text.includes('Connector queue'),
-    remote_fixture_provider_visible: text.includes('remote-fixture'),
+    local_workbench_summary_visible: Boolean(document.querySelector('[data-testid="local-workbench-summary"]')),
     selected_local_mvp_detail_visible: detailText.includes('Entrance MVP demo'),
     issue_transition_policy_visible: Boolean(detailQuery('[data-testid^="issue-transition-policy-detail-"]')),
     issue_transition_policy_actions_visible: Boolean(detailQuery('[data-testid^="issue-transition-policy-action-"]')),
@@ -490,7 +487,7 @@ async function main() {
     runtime_preflight_route_visible: detailText.includes('kernel -> explorer'),
     runtime_capability_visible: Boolean(detailQuery('[data-testid^="runtime-capability-preview-"]')),
     runtime_capability_schema_visible: detailText.includes('runtime_capability_preview.v1'),
-    runtime_capability_connector_visible: detailText.includes('connector local-hive-panel ready'),
+    runtime_capability_worker_visible: detailText.includes('worker spawn ready'),
     runtime_capability_human_visible: detailText.includes('human human_confirmed'),
     worker_lifecycle_visible: Boolean(detailQuery('[data-testid^="worker-lifecycle-detail-"]')),
     worker_lifecycle_explorer_visible: Boolean(detailQuery('[data-testid^="worker-lifecycle-role-"][data-testid$="-explorer"]')),
@@ -508,7 +505,6 @@ async function main() {
     assertions,
     controls: {
       panel_run_fixture: byTestId('panel-run-fixture-demo'),
-      connector_run_fixture: byTestId('connector-fixture-demo-run'),
       issue_empty_run_fixture: byTestId('issue-empty-run-fixture-demo'),
     },
     excerpts: {
