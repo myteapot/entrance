@@ -39,7 +39,8 @@
       "stage_completeness",
       "runtime_readiness",
       "evidence_presence",
-      "admission_integrity"
+      "admission_integrity",
+      "target_alignment"
     ]
   },
   "operator_decision_surface": {

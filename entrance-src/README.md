@@ -109,7 +109,8 @@ invalid fallback budget, human decision boundary, and exact issue action
 options; `entrance_loop_review` prompts agents to judge only from that packet.
 The Reviewer score vector is an MVP ledger-derived assessment over current-round
 stage completeness, runtime readiness, prior evidence presence, and admission
-integrity; incomplete ledger gates force a `reject` instead of allowing a
+integrity, plus target alignment from the Developer `accepted_candidate`
+binding; incomplete ledger gates force a `reject` instead of allowing a
 misleading `keep`.
 The same packet is available locally through `hive loop control <id>`,
 daemon command `hive_loop_control`, and the Panel selected issue Reviewer
@@ -404,6 +405,10 @@ After 3 consecutive invalid Reviewer verdicts in the ledger, a reviewer
 operator instead of silently canceling an exhausted automatic attempt.
 Admission gates reject failed worker receipts, so a role worker with `ok=false`
 blocks at the compiler boundary instead of being treated as valid evidence.
+The Developer `EXECUTION_PACKET` must also carry `accepted_candidate`; the
+`accepted_candidate_bound` gate compares it with the same-round admitted
+Explorer candidate and rejects drifted Developer work even when runtime receipts
+are otherwise valid.
 `hive loop run` is idempotent for non-`todo` contracts; use
 `hive issue retry-run <id> --human-confirmed` to record a retry decision and
 immediately run the linked loop. `hive issue run <id>` runs a `Todo` issue

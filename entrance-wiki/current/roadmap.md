@@ -122,8 +122,13 @@ Entrance has reached a local MVP unit:
   completeness, runtime readiness, prior evidence presence, and admission
   integrity are computed from current-round stages, worker receipts, evidence,
   admissions, and missing receipts. A `keep` verdict is forced to `reject` when
-  those ledger gates are incomplete. Target drift and richer quality metrics are
-  still future Reviewer-hardening work.
+  those ledger gates are incomplete. Semantic target drift and richer quality
+  metrics are still future Reviewer-hardening work.
+- Developer admission now has a first target-drift guard: `EXECUTION_PACKET`
+  carries `accepted_candidate`, and the `accepted_candidate_bound` gate compares
+  it with the same-round admitted Explorer candidate before the packet can reach
+  Reviewer. Reviewer score/gate output exposes this as `target_alignment` /
+  `target_bound`; richer semantic drift checks remain future hardening work.
 - The same loop-level control packet is now available through local CLI
   `entrance hive loop control <loop_id>`, daemon command `hive_loop_control`,
   and the Panel selected issue Reviewer Control block, so local operators and

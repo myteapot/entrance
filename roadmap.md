@@ -34,6 +34,7 @@ Last updated: 2026-06-09
 - 本轮继续把 capability preview 纳入 runtime admission：`runtime_policy_ready` 现在要求 `worker_spawn_ready=true`，所以 runtime 可用但 Linear/GitHub review surface 未配置时，kernel 会直接产生 `Blocked` issue，不会启动 Explorer/Developer/Reviewer worker。
 - 本轮继续把 Reviewer fallback budget 从“轮号推断”改成 ledger-backed policy：verdict payload、Worker Lifecycle、Transition Policy 和 MCP issue control 现在按连续 invalid Reviewer verdict streak 计算预算，只有连续第 3 次 invalid review 才 fallback 到 `Blocked`，单纯跳到 round 3 不会耗尽预算。
 - 本轮继续把 Reviewer score/gate 从静态占位推进到 ledger-derived MVP：stage completeness、runtime readiness、prior evidence presence、admission integrity、missing receipts 和 failure reasons 现在从当前轮 stages/evidence/admissions 计算；ledger gates 不完整时，`keep` 会被 runtime 强制降级为 `reject`。
+- 本轮继续把目标漂移约束推进到 Developer admission：`EXECUTION_PACKET` 现在必须携带 `accepted_candidate`，`accepted_candidate_bound` 会将它与同轮已 admitted 的 Explorer candidate 比对，不一致时即使 runtime receipts 完整也会被 compiler gate 拒绝；Reviewer score/gate 会暴露 `target_alignment` / `target_bound`。
 
 ## 还没做完
 
@@ -44,7 +45,7 @@ Last updated: 2026-06-09
 - Productize issue timeline：筛选/折叠、远端 issue comment 映射、inline decision 的操作后刷新状态、receipt drilldown 和更强的 blocked action provenance。
 - Productize issue transition policy：当前已经有 kernel registry/report snapshot/audit 绑定、execution-time transition admission receipt、Panel 操作后 selected issue control surface 刷新、系统化状态机矩阵测试、provider status mapping policy 和 Linear configured stateId mapping；还缺版本迁移、状态映射 discovery/migration 和更完整的 policy lifecycle。
 - Hardening workers：sandbox、环境脱敏、heartbeat、resume/cancel/replacement、timeout recovery、跨进程 durable failure attribution。
-- Reviewer gates 继续加强：当前 `entrance.mcp.loop_control.v1` 已聚合 Reviewer gate surface、ledger-derived MVP score vector、证据资源和 ledger-backed fallback budget；还缺更强目标漂移检测、真实质量指标、keep/reject/block 的更强证据要求，以及需要人类偏好时的选项生成。
+- Reviewer gates 继续加强：当前 `entrance.mcp.loop_control.v1` 已聚合 Reviewer gate surface、ledger-derived MVP score vector、Developer accepted-candidate binding、证据资源和 ledger-backed fallback budget；还缺语义级目标漂移检测、真实质量指标、keep/reject/block 的更强证据要求，以及需要人类偏好时的选项生成。
 - 正式 compiler IR：从 archive 中提升为 current truth，并把 loop contract、packet、receipt、evidence、verdict、policy registry lifecycle 变成版本化 runtime 对象。
 
 ## 下一轮建议

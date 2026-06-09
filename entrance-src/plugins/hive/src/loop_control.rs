@@ -140,11 +140,28 @@ struct GateSpec {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct GateEvaluationContext<'a> {
+    packets: &'a [HiveLoopPacket],
+    admissions: &'a [HiveLoopAdmission],
+}
+
+#[derive(Debug, Clone)]
+struct CandidateBindingStatus {
+    passed: bool,
+    reason: String,
+    expected_candidate: Option<String>,
+    accepted_candidate: Option<String>,
+    explorer_packet_id: Option<i64>,
+    explorer_candidate_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum GateCheck {
     ReceiptRequirementsSatisfied,
     BodyFieldPresent(&'static str),
     DecisionPresent,
     RuntimePolicyReady,
+    AcceptedCandidateBound,
     ExternalReceiptCurrent,
 }
 
@@ -438,6 +455,8 @@ const ISSUE_STATUSES: &[&str] = &[
     "Canceled",
 ];
 const REVIEWER_INVALID_ROUND_BUDGET: i64 = 3;
+const ACCEPTED_CANDIDATE_BOUND_GATE: &str = "accepted_candidate_bound";
+const TARGET_BINDING_SCHEMA_VERSION: &str = "entrance.hive.target_binding.v1";
 
 const CURRENT_LOOP_POLICIES: &[LoopPolicySpec] = &[
     LoopPolicySpec {
@@ -452,7 +471,7 @@ const CURRENT_LOOP_POLICIES: &[LoopPolicySpec] = &[
         writer_role: "developer",
         route_from: "developer",
         route_to: "reviewer",
-        gate: "runtime_receipts_present",
+        gate: ACCEPTED_CANDIDATE_BOUND_GATE,
     },
     LoopPolicySpec {
         object_kind: "VERDICT_PACKET",
@@ -483,7 +502,7 @@ const DEFAULT_LOOP_POLICIES: &[LoopPolicySpec] = &[
         writer_role: "developer",
         route_from: "developer",
         route_to: "reviewer",
-        gate: "runtime_receipts_present",
+        gate: ACCEPTED_CANDIDATE_BOUND_GATE,
     },
     LoopPolicySpec {
         object_kind: "VERDICT_PACKET",
@@ -535,13 +554,18 @@ struct ReviewerGateAssessment {
     runtime_readiness: f64,
     evidence_presence: f64,
     admission_integrity: f64,
+    target_alignment: f64,
     three_stages_recorded: bool,
     evidence_recorded: bool,
     runtime_ready: bool,
     admissions_clean: bool,
+    target_bound: bool,
     review_gates_passed: bool,
     observed_stage_roles: Vec<String>,
     missing_stage_roles: Vec<String>,
+    expected_candidate: Option<String>,
+    accepted_candidate: Option<String>,
+    target_binding_reason: String,
     current_round_admission_count: usize,
     rejected_admission_count: usize,
     receipt_missing_count: usize,
@@ -1920,6 +1944,7 @@ pub fn run_with_config(
         "explorer",
         contract.current_round,
     )?;
+    let accepted_candidate = "Run a local MVP loop through Hive";
     let explorer_worker = run_role_worker(
         &runtime,
         "explorer",
@@ -1939,7 +1964,7 @@ pub fn run_with_config(
             "approach_space": contract.approach_space
         }),
         serde_json::json!({
-            "candidate": "Run a local MVP loop through Hive",
+            "candidate": accepted_candidate,
             "role_worker": explorer_worker,
             "constraints": [
                 "keep work in SQLite/Hive",
@@ -1956,7 +1981,7 @@ pub fn run_with_config(
         "explorer",
         "developer",
         serde_json::json!({
-            "candidate": "Run a local MVP loop through Hive",
+            "candidate": accepted_candidate,
             "role_worker": explorer_worker,
             "constraints": [
                 "keep work in SQLite/Hive",
@@ -1983,7 +2008,8 @@ pub fn run_with_config(
         summary: "Explorer produced a concrete local-loop candidate.".to_string(),
         path: None,
         payload: serde_json::json!({
-            "candidate": "local-loop-mvp",
+            "candidate": accepted_candidate,
+            "candidate_id": "local-loop-mvp",
             "approach_count": contract.approach_space.len(),
             "worker": explorer_worker,
             "admission": explorer_admission.result
@@ -2024,10 +2050,12 @@ pub fn run_with_config(
         "developer",
         "Developer executed the accepted MVP action and captured runtime evidence.",
         serde_json::json!({
-            "candidate": "local-loop-mvp",
+            "accepted_candidate": accepted_candidate,
+            "candidate_id": "local-loop-mvp",
             "runtime": runtime
         }),
         serde_json::json!({
+            "accepted_candidate": accepted_candidate,
             "runtime_probe": runtime_probe,
             "runtime_worker": runtime_worker,
             "role_worker": runtime_worker,
@@ -2042,6 +2070,7 @@ pub fn run_with_config(
         "developer",
         "reviewer",
         serde_json::json!({
+            "accepted_candidate": accepted_candidate,
             "runtime": runtime,
             "runtime_probe": runtime_probe,
             "runtime_worker": runtime_worker,
@@ -2067,6 +2096,8 @@ pub fn run_with_config(
         summary: format!("Developer ran `{runtime}` runtime worker."),
         path: None,
         payload: serde_json::json!({
+            "accepted_candidate": accepted_candidate,
+            "candidate_id": "local-loop-mvp",
             "runtime": runtime,
             "probe": runtime_probe,
             "worker": runtime_worker,
@@ -2159,6 +2190,7 @@ pub fn run_with_config(
                 "evidence_recorded": typed_verdict.assessment.evidence_recorded,
                 "runtime_ready": typed_verdict.runtime_ready,
                 "admissions_clean": typed_verdict.assessment.admissions_clean,
+                "target_bound": typed_verdict.assessment.target_bound,
                 "review_gates_passed": typed_verdict.assessment.review_gates_passed
             }
         }),
@@ -12193,12 +12225,35 @@ fn reviewer_gate_assessment(
         .filter(|admission| receipt_array_len(&admission.policy, "/receipt/missing") == 0)
         .count();
     let admission_integrity = bounded_ratio(clean_admission_count, current_round_admission_count);
+    let gate_context = GateEvaluationContext {
+        packets,
+        admissions,
+    };
+    let target_binding = packets
+        .iter()
+        .filter(|packet| packet.loop_id == contract.id)
+        .filter(|packet| packet.round == contract.current_round)
+        .filter(|packet| packet.object_kind == "EXECUTION_PACKET")
+        .filter(|packet| packet.writer_role == "developer")
+        .filter(|packet| packet.route_to == "reviewer")
+        .last()
+        .map(|packet| candidate_binding_status(&packet.payload, gate_context))
+        .unwrap_or_else(|| CandidateBindingStatus {
+            passed: false,
+            reason: "missing_developer_execution_packet".to_string(),
+            expected_candidate: None,
+            accepted_candidate: None,
+            explorer_packet_id: None,
+            explorer_candidate_count: 0,
+        });
+    let target_alignment = if target_binding.passed { 1.0 } else { 0.0 };
     let runtime_readiness = if runtime_ready { 1.0 } else { 0.0 };
     let three_stages_recorded = missing_stage_roles.is_empty();
     let evidence_recorded = prior_stage_evidence_count >= expected_prior_stage_evidence_count;
     let admissions_clean = current_round_admission_count > 0
         && rejected_admission_count == 0
         && receipt_missing_count == 0;
+    let target_bound = target_binding.passed;
     let mut failure_reasons = Vec::new();
     if !three_stages_recorded {
         failure_reasons.push(format!(
@@ -12220,21 +12275,32 @@ fn reviewer_gate_assessment(
             rejected_admission_count, receipt_missing_count, current_round_admission_count
         ));
     }
-    let review_gates_passed =
-        three_stages_recorded && evidence_recorded && runtime_ready && admissions_clean;
+    if !target_bound {
+        failure_reasons.push(format!("target_binding={}", target_binding.reason));
+    }
+    let review_gates_passed = three_stages_recorded
+        && evidence_recorded
+        && runtime_ready
+        && admissions_clean
+        && target_bound;
 
     ReviewerGateAssessment {
         stage_completeness,
         runtime_readiness,
         evidence_presence,
         admission_integrity,
+        target_alignment,
         three_stages_recorded,
         evidence_recorded,
         runtime_ready,
         admissions_clean,
+        target_bound,
         review_gates_passed,
         observed_stage_roles,
         missing_stage_roles,
+        expected_candidate: target_binding.expected_candidate,
+        accepted_candidate: target_binding.accepted_candidate,
+        target_binding_reason: target_binding.reason,
         current_round_admission_count,
         rejected_admission_count,
         receipt_missing_count,
@@ -12266,16 +12332,21 @@ impl TypedVerdict {
                 "stage_completeness": self.assessment.stage_completeness,
                 "runtime_readiness": self.assessment.runtime_readiness,
                 "evidence_presence": self.assessment.evidence_presence,
-                "admission_integrity": self.assessment.admission_integrity
+                "admission_integrity": self.assessment.admission_integrity,
+                "target_alignment": self.assessment.target_alignment
             },
             "gate_results": {
                 "three_stages_recorded": self.assessment.three_stages_recorded,
                 "evidence_recorded": self.assessment.evidence_recorded,
                 "runtime_ready": self.assessment.runtime_ready,
                 "admissions_clean": self.assessment.admissions_clean,
+                "target_bound": self.assessment.target_bound,
                 "review_gates_passed": self.assessment.review_gates_passed,
                 "observed_stage_roles": self.assessment.observed_stage_roles.clone(),
                 "missing_stage_roles": self.assessment.missing_stage_roles.clone(),
+                "expected_candidate": self.assessment.expected_candidate.clone(),
+                "accepted_candidate": self.assessment.accepted_candidate.clone(),
+                "target_binding_reason": self.assessment.target_binding_reason.clone(),
                 "current_round_admission_count": self.assessment.current_round_admission_count,
                 "rejected_admission_count": self.assessment.rejected_admission_count,
                 "receipt_missing_count": self.assessment.receipt_missing_count,
@@ -12311,6 +12382,8 @@ impl TypedVerdict {
             "runtime_ready": self.assessment.runtime_ready,
             "review_gates_passed": self.assessment.review_gates_passed,
             "review_gate_failures": self.assessment.failure_reasons.clone(),
+            "target_bound": self.assessment.target_bound,
+            "target_binding_reason": self.assessment.target_binding_reason.clone(),
             "reviewer_invalid_rounds_used": self.reviewer_invalid_rounds_used,
             "reviewer_invalid_round_budget": REVIEWER_INVALID_ROUND_BUDGET,
             "reviewer_invalid_budget_exhausted": self.reviewer_invalid_budget_exhausted,
@@ -12480,6 +12553,7 @@ impl GateCheck {
             Self::BodyFieldPresent(_) => "body_field_present",
             Self::DecisionPresent => "decision_present",
             Self::RuntimePolicyReady => "runtime_policy_ready",
+            Self::AcceptedCandidateBound => "accepted_candidate_bound",
             Self::ExternalReceiptCurrent => "external_receipt_current",
         }
     }
@@ -12638,6 +12712,12 @@ fn emit_and_admit(
     let packet = store
         .get_hive_loop_packet(packet_id)?
         .expect("newly created packet should exist");
+    let context_packets = store.list_hive_loop_packets(contract.id)?;
+    let context_admissions = store.list_hive_loop_admissions(contract.id)?;
+    let gate_context = GateEvaluationContext {
+        packets: &context_packets,
+        admissions: &context_admissions,
+    };
     let policies = store.list_hive_loop_policies(contract.id)?;
     let matching_policy = policies.iter().find(|policy| {
         policy.status == "active"
@@ -12649,12 +12729,12 @@ fn emit_and_admit(
 
     let (result, reason, gate_name, gate_passed) = match matching_policy {
         Some(policy) => {
-            let passed = gate_passes(&policy.gate, &packet_payload);
+            let passed = gate_passes_with_context(&policy.gate, &packet_payload, gate_context);
             let result = if passed { "admitted" } else { "rejected" };
             let reason = if passed {
                 format!("{} passed", policy.gate)
             } else {
-                gate_failure_reason(&policy.gate, &packet_payload)
+                gate_failure_reason_with_context(&policy.gate, &packet_payload, gate_context)
             };
             (
                 result.to_string(),
@@ -12678,6 +12758,7 @@ fn emit_and_admit(
         &reason,
         gate_name,
         gate_passed,
+        gate_context,
     );
 
     let admission_id = store.insert_hive_loop_admission(HiveLoopAdmissionCreate {
@@ -12731,7 +12812,13 @@ fn receipt_requirements_for_packet(object_kind: &str) -> Vec<&'static str> {
             "capability_preview",
         ],
         "EXPLORATION_PACKET" => vec!["candidate", "constraints", "role_worker"],
-        "EXECUTION_PACKET" => vec!["runtime_probe", "runtime_worker", "artifact", "role_worker"],
+        "EXECUTION_PACKET" => vec![
+            "accepted_candidate",
+            "runtime_probe",
+            "runtime_worker",
+            "artifact",
+            "role_worker",
+        ],
         "VERDICT_PACKET" => vec!["decision", "summary", "score", "role_worker"],
         _ => Vec::new(),
     }
@@ -12764,6 +12851,19 @@ fn gate_spec(gate: &str) -> Option<GateSpec> {
             expected_object_kind: Some("EXECUTION_PACKET"),
             required_receipts: &["runtime_probe", "runtime_worker", "artifact", "role_worker"],
             check: GateCheck::ReceiptRequirementsSatisfied,
+        }),
+        ACCEPTED_CANDIDATE_BOUND_GATE => Some(GateSpec {
+            name: ACCEPTED_CANDIDATE_BOUND_GATE,
+            description: "Developer packets must carry runtime receipts and bind their accepted_candidate to the admitted Explorer candidate for the same loop round.",
+            expected_object_kind: Some("EXECUTION_PACKET"),
+            required_receipts: &[
+                "accepted_candidate",
+                "runtime_probe",
+                "runtime_worker",
+                "artifact",
+                "role_worker",
+            ],
+            check: GateCheck::AcceptedCandidateBound,
         }),
         "verdict_receipts_present" => Some(GateSpec {
             name: "verdict_receipts_present",
@@ -12814,6 +12914,7 @@ fn all_gate_specs() -> Vec<GateSpec> {
         "runtime_policy_ready",
         "candidate_receipts_present",
         "runtime_receipts_present",
+        ACCEPTED_CANDIDATE_BOUND_GATE,
         "verdict_receipts_present",
         "candidate_present",
         "runtime_probe_present",
@@ -12848,10 +12949,12 @@ fn typed_admission_receipt(
     reason: &str,
     gate_name: Option<&str>,
     gate_passed: Option<bool>,
+    gate_context: GateEvaluationContext<'_>,
 ) -> serde_json::Value {
     let (required_receipts, missing_receipts) = receipt_requirement_status(packet_payload);
     let receipt_satisfied = missing_receipts.is_empty();
     let packet_envelope_errors = typed_packet_envelope_errors(packet_payload);
+    let target_binding = target_binding_receipt(packet, packet_payload, gate_context);
     serde_json::json!({
         "schema_version": ADMISSION_SCHEMA_VERSION,
         "result": result,
@@ -12894,11 +12997,28 @@ fn typed_admission_receipt(
             "required": required_receipts,
             "missing": missing_receipts,
             "satisfied": receipt_satisfied
-        }
+        },
+        "target_binding": target_binding
     })
 }
 
+#[cfg(test)]
 fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
+    gate_passes_with_context(
+        gate,
+        payload,
+        GateEvaluationContext {
+            packets: &[],
+            admissions: &[],
+        },
+    )
+}
+
+fn gate_passes_with_context(
+    gate: &str,
+    payload: &serde_json::Value,
+    context: GateEvaluationContext<'_>,
+) -> bool {
     if !typed_packet_envelope_valid(payload) {
         return false;
     }
@@ -12940,6 +13060,10 @@ fn gate_passes(gate: &str, payload: &serde_json::Value) -> bool {
                     .and_then(|value| value.as_bool())
                     == Some(true)
         }
+        GateCheck::AcceptedCandidateBound => {
+            receipt_requirements_satisfied(payload)
+                && candidate_binding_status(payload, context).passed
+        }
         GateCheck::ExternalReceiptCurrent => receipt_requirements_satisfied(payload),
     }
 }
@@ -12949,7 +13073,23 @@ fn receipt_requirements_satisfied(payload: &serde_json::Value) -> bool {
     missing.is_empty()
 }
 
+#[cfg(test)]
 fn gate_failure_reason(gate: &str, payload: &serde_json::Value) -> String {
+    gate_failure_reason_with_context(
+        gate,
+        payload,
+        GateEvaluationContext {
+            packets: &[],
+            admissions: &[],
+        },
+    )
+}
+
+fn gate_failure_reason_with_context(
+    gate: &str,
+    payload: &serde_json::Value,
+    context: GateEvaluationContext<'_>,
+) -> String {
     let envelope_errors = typed_packet_envelope_errors(payload);
     if !envelope_errors.is_empty() {
         return format!(
@@ -12983,6 +13123,14 @@ fn gate_failure_reason(gate: &str, payload: &serde_json::Value) -> String {
                 "{gate} failed: runtime={runtime} supported={supported} probe_ok={probe_ok} capability_ready={capability_ready} capability_blockers={}",
                 capability_blockers.join(",")
             )
+        } else if gate == ACCEPTED_CANDIDATE_BOUND_GATE {
+            let binding = candidate_binding_status(payload, context);
+            format!(
+                "{gate} failed: {} expected_candidate={} accepted_candidate={}",
+                binding.reason,
+                binding.expected_candidate.as_deref().unwrap_or("none"),
+                binding.accepted_candidate.as_deref().unwrap_or("none")
+            )
         } else {
             format!("{gate} failed")
         }
@@ -12992,6 +13140,111 @@ fn gate_failure_reason(gate: &str, payload: &serde_json::Value) -> String {
             missing.join(", ")
         )
     }
+}
+
+fn candidate_binding_status(
+    payload: &serde_json::Value,
+    context: GateEvaluationContext<'_>,
+) -> CandidateBindingStatus {
+    if packet_object_kind(payload) != Some("EXECUTION_PACKET") {
+        return CandidateBindingStatus {
+            passed: false,
+            reason: "not_execution_packet".to_string(),
+            expected_candidate: None,
+            accepted_candidate: None,
+            explorer_packet_id: None,
+            explorer_candidate_count: 0,
+        };
+    }
+    let loop_id = payload.get("loop_id").and_then(|value| value.as_i64());
+    let round = payload.get("round").and_then(|value| value.as_i64());
+    let admitted_packet_ids = context
+        .admissions
+        .iter()
+        .filter(|admission| admission.result == "admitted")
+        .map(|admission| admission.packet_id)
+        .collect::<BTreeSet<_>>();
+    let explorer_candidates = context
+        .packets
+        .iter()
+        .filter(|packet| Some(packet.loop_id) == loop_id)
+        .filter(|packet| Some(packet.round) == round)
+        .filter(|packet| packet.object_kind == "EXPLORATION_PACKET")
+        .filter(|packet| packet.writer_role == "explorer")
+        .filter(|packet| packet.route_to == "developer")
+        .filter(|packet| admitted_packet_ids.contains(&packet.id))
+        .filter_map(|packet| {
+            non_empty_body_string(&packet.payload, "candidate")
+                .map(|candidate| (packet.id, candidate))
+        })
+        .collect::<Vec<_>>();
+    let accepted_candidate = non_empty_body_string(payload, "accepted_candidate");
+    if explorer_candidates.len() != 1 {
+        return CandidateBindingStatus {
+            passed: false,
+            reason: if explorer_candidates.is_empty() {
+                "missing_admitted_explorer_candidate".to_string()
+            } else {
+                "ambiguous_admitted_explorer_candidates".to_string()
+            },
+            expected_candidate: explorer_candidates
+                .first()
+                .map(|(_id, candidate)| candidate.clone()),
+            accepted_candidate,
+            explorer_packet_id: explorer_candidates.first().map(|(id, _candidate)| *id),
+            explorer_candidate_count: explorer_candidates.len(),
+        };
+    }
+    let (explorer_packet_id, expected_candidate) = explorer_candidates
+        .into_iter()
+        .next()
+        .expect("one explorer candidate should exist");
+    let passed = accepted_candidate.as_deref() == Some(expected_candidate.as_str());
+    CandidateBindingStatus {
+        passed,
+        reason: if passed {
+            "accepted_candidate_matches_explorer_candidate".to_string()
+        } else if accepted_candidate.is_some() {
+            "accepted_candidate_mismatch".to_string()
+        } else {
+            "accepted_candidate_missing".to_string()
+        },
+        expected_candidate: Some(expected_candidate),
+        accepted_candidate,
+        explorer_packet_id: Some(explorer_packet_id),
+        explorer_candidate_count: 1,
+    }
+}
+
+fn non_empty_body_string(payload: &serde_json::Value, field: &str) -> Option<String> {
+    packet_body(payload)
+        .get(field)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn target_binding_receipt(
+    packet: &HiveLoopPacket,
+    packet_payload: &serde_json::Value,
+    context: GateEvaluationContext<'_>,
+) -> serde_json::Value {
+    if packet.object_kind != "EXECUTION_PACKET" {
+        return serde_json::Value::Null;
+    }
+    let binding = candidate_binding_status(packet_payload, context);
+    serde_json::json!({
+        "schema_version": TARGET_BINDING_SCHEMA_VERSION,
+        "name": "accepted_candidate_binding",
+        "passed": binding.passed,
+        "reason": binding.reason,
+        "developer_packet_id": packet.id,
+        "explorer_packet_id": binding.explorer_packet_id,
+        "explorer_candidate_count": binding.explorer_candidate_count,
+        "expected_candidate": binding.expected_candidate,
+        "accepted_candidate": binding.accepted_candidate
+    })
 }
 
 fn receipt_requirement_status(payload: &serde_json::Value) -> (Vec<String>, Vec<String>) {
@@ -13778,7 +14031,7 @@ mod tests {
     fn policy_registry_and_loop_policies_expose_typed_gate_specs() {
         let registry = policy_registry();
         assert_eq!(registry.schema_version, POLICY_SCHEMA_VERSION);
-        assert!(registry.gates.len() >= 8);
+        assert!(registry.gates.len() >= 9);
         assert_eq!(registry.runtime.schema_version, POLICY_SCHEMA_VERSION);
         let preflight_gate = registry
             .gates
@@ -14033,6 +14286,20 @@ mod tests {
             .required_receipts
             .iter()
             .any(|receipt| receipt == "score"));
+        let candidate_binding_gate = registry
+            .gates
+            .iter()
+            .find(|gate| gate.name == ACCEPTED_CANDIDATE_BOUND_GATE)
+            .expect("accepted candidate binding gate should be registered");
+        assert_eq!(
+            candidate_binding_gate.expected_object_kind.as_deref(),
+            Some("EXECUTION_PACKET")
+        );
+        assert_eq!(candidate_binding_gate.check, "accepted_candidate_bound");
+        assert!(candidate_binding_gate
+            .required_receipts
+            .iter()
+            .any(|receipt| receipt == "accepted_candidate"));
 
         let root = std::env::temp_dir().join(format!(
             "entrance-hive-policy-registry-test-{}",
@@ -14085,6 +14352,20 @@ mod tests {
                 .expect("candidate gate spec should exist")
                 .required_receipts,
             vec!["candidate", "constraints", "role_worker"]
+        );
+        assert_eq!(
+            report.policies[2]
+                .gate_spec
+                .as_ref()
+                .expect("developer binding gate spec should exist")
+                .required_receipts,
+            vec![
+                "accepted_candidate",
+                "runtime_probe",
+                "runtime_worker",
+                "artifact",
+                "role_worker"
+            ]
         );
         let audit_report =
             super::audit(&store, created.contract.id).expect("policy audit should resolve");
@@ -15059,7 +15340,7 @@ mod tests {
         assert_eq!(report.policies.len(), 4);
         assert_eq!(report.policies[0].gate, "runtime_policy_ready");
         assert_eq!(report.policies[1].gate, "candidate_receipts_present");
-        assert_eq!(report.policies[2].gate, "runtime_receipts_present");
+        assert_eq!(report.policies[2].gate, ACCEPTED_CANDIDATE_BOUND_GATE);
         assert_eq!(report.policies[3].gate, "verdict_receipts_present");
         assert_eq!(report.packets.len(), 4);
         assert!(report.packets.iter().all(|packet| packet
@@ -15116,6 +15397,13 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("Blocked")
         );
+        assert_eq!(
+            report.packets[2]
+                .payload
+                .pointer("/body/accepted_candidate")
+                .and_then(|value| value.as_str()),
+            Some("Run a local MVP loop through Hive")
+        );
         assert!(report.packets[0]
             .payload
             .get("receipt_requirements")
@@ -15140,7 +15428,7 @@ mod tests {
         assert_eq!(
             report.packets[2]
                 .payload
-                .pointer("/receipt_requirements/3")
+                .pointer("/receipt_requirements/4")
                 .and_then(|value| value.as_str()),
             Some("role_worker")
         );
@@ -15212,9 +15500,23 @@ mod tests {
         assert_eq!(
             report.admissions[2]
                 .policy
-                .pointer("/receipt/required/3")
+                .pointer("/receipt/required/4")
                 .and_then(|value| value.as_str()),
             Some("role_worker")
+        );
+        assert_eq!(
+            report.admissions[2]
+                .policy
+                .pointer("/target_binding/passed")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            report.admissions[2]
+                .policy
+                .pointer("/target_binding/reason")
+                .and_then(|value| value.as_str()),
+            Some("accepted_candidate_matches_explorer_candidate")
         );
         assert_eq!(
             report.admissions[2]
@@ -15266,9 +15568,9 @@ mod tests {
         assert_eq!(trace.round_admission_count, 4);
         assert_eq!(trace.round_evidence_count, 3);
         assert_eq!(trace.round_verdict_count, 1);
-        assert_eq!(trace.receipt_required_count, 15);
+        assert_eq!(trace.receipt_required_count, 16);
         assert_eq!(trace.receipt_missing_count, 0);
-        assert_eq!(trace.round_receipt_required_count, 15);
+        assert_eq!(trace.round_receipt_required_count, 16);
         assert_eq!(trace.round_receipt_missing_count, 0);
         assert_eq!(trace.role_worker_count, 3);
         assert_eq!(trace.role_worker_ok_count, 3);
@@ -15301,12 +15603,20 @@ mod tests {
             .is_some_and(|description| description.contains("Reviewer packets")));
         assert_eq!(trace.last_admission_passed, Some(true));
         assert_eq!(trace.last_decision.as_deref(), Some("keep"));
-        assert_eq!(trace.score_vector.len(), 4);
+        assert_eq!(trace.score_vector.len(), 5);
         assert_eq!(
             trace
                 .score_vector
                 .iter()
                 .find(|metric| metric.name == "runtime_readiness")
+                .and_then(|metric| metric.value),
+            Some(1.0)
+        );
+        assert_eq!(
+            trace
+                .score_vector
+                .iter()
+                .find(|metric| metric.name == "target_alignment")
                 .and_then(|metric| metric.value),
             Some(1.0)
         );
@@ -15426,6 +15736,27 @@ mod tests {
                 .pointer("/score_vector/admission_integrity")
                 .and_then(|value| value.as_f64()),
             Some(1.0)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/score_vector/target_alignment")
+                .and_then(|value| value.as_f64()),
+            Some(1.0)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/gate_results/target_bound")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            report.verdicts[0]
+                .score
+                .pointer("/gate_results/target_binding_reason")
+                .and_then(|value| value.as_str()),
+            Some("accepted_candidate_matches_explorer_candidate")
         );
         assert_eq!(
             report.verdicts[0]
@@ -15616,7 +15947,7 @@ mod tests {
         );
         assert_eq!(trace_report.trace.last_decision.as_deref(), Some("keep"));
         assert_eq!(trace_report.trace.round_receipt_missing_count, 0);
-        assert_eq!(trace_report.trace.score_vector.len(), 4);
+        assert_eq!(trace_report.trace.score_vector.len(), 5);
         assert_eq!(
             trace_report.trace.last_gate_expected_object_kind.as_deref(),
             Some("VERDICT_PACKET")
@@ -16165,13 +16496,18 @@ mod tests {
             runtime_readiness: 1.0,
             evidence_presence: 0.5,
             admission_integrity: 1.0,
+            target_alignment: 0.0,
             three_stages_recorded: false,
             evidence_recorded: false,
             runtime_ready: true,
             admissions_clean: true,
+            target_bound: false,
             review_gates_passed: false,
             observed_stage_roles: vec!["explorer".to_string(), "developer".to_string()],
             missing_stage_roles: vec!["reviewer".to_string()],
+            expected_candidate: Some("Candidate A".to_string()),
+            accepted_candidate: Some("Candidate B".to_string()),
+            target_binding_reason: "accepted_candidate_mismatch".to_string(),
             current_round_admission_count: 3,
             rejected_admission_count: 0,
             receipt_missing_count: 0,
@@ -16180,6 +16516,7 @@ mod tests {
             failure_reasons: vec![
                 "missing_stage_roles=reviewer".to_string(),
                 "prior_stage_evidence=1/2".to_string(),
+                "target_binding=accepted_candidate_mismatch".to_string(),
             ],
         };
 
@@ -16211,7 +16548,19 @@ mod tests {
         );
         assert_eq!(
             score
+                .pointer("/score_vector/target_alignment")
+                .and_then(|value| value.as_f64()),
+            Some(0.0)
+        );
+        assert_eq!(
+            score
                 .pointer("/gate_results/review_gates_passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            score
+                .pointer("/gate_results/target_bound")
                 .and_then(|value| value.as_bool()),
             Some(false)
         );
@@ -16447,7 +16796,7 @@ mod tests {
         assert_eq!(admission.result, "rejected");
         assert_eq!(
             admission.reason,
-            "runtime_receipts_present failed: missing or invalid receipts runtime_worker, role_worker"
+            "accepted_candidate_bound failed: missing or invalid receipts accepted_candidate, runtime_worker, role_worker"
         );
         assert_eq!(
             admission
@@ -16461,12 +16810,19 @@ mod tests {
                 .policy
                 .pointer("/receipt/missing/0")
                 .and_then(|value| value.as_str()),
-            Some("runtime_worker")
+            Some("accepted_candidate")
         );
         assert_eq!(
             admission
                 .policy
                 .pointer("/receipt/missing/1")
+                .and_then(|value| value.as_str()),
+            Some("runtime_worker")
+        );
+        assert_eq!(
+            admission
+                .policy
+                .pointer("/receipt/missing/2")
                 .and_then(|value| value.as_str()),
             Some("role_worker")
         );
@@ -16527,6 +16883,7 @@ mod tests {
             "developer",
             "reviewer",
             serde_json::json!({
+                "accepted_candidate": "Run a local MVP loop through Hive",
                 "runtime_probe": runtime_probe,
                 "runtime_worker": runtime_worker,
                 "role_worker": role_worker,
@@ -16538,11 +16895,135 @@ mod tests {
         assert_eq!(admission.result, "rejected");
         assert_eq!(
             admission.reason,
-            "runtime_receipts_present failed: missing or invalid receipts role_worker"
+            "accepted_candidate_bound failed: missing or invalid receipts role_worker"
         );
         assert_eq!(
             string_array_at(&admission.policy, "/receipt/missing"),
             vec!["role_worker"]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_rejects_developer_packet_with_drifted_candidate() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-loop-target-drift-gate-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Target drift gate loop".to_string(),
+                goal: "Reject Developer work that is not bound to the accepted candidate"
+                    .to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let runtime_probe = serde_json::json!({
+            "ok": true,
+            "kind": "local"
+        });
+        let explorer_worker = run_role_worker(
+            "local",
+            "explorer",
+            &created.contract,
+            &runtime_probe,
+            DEFAULT_WORKER_TIMEOUT_SECS,
+            DEFAULT_WORKER_ATTEMPTS,
+        );
+        let explorer_admission = emit_and_admit(
+            &store,
+            &created.contract,
+            "EXPLORATION_PACKET",
+            "explorer",
+            "explorer",
+            "developer",
+            serde_json::json!({
+                "candidate": "Accepted candidate A",
+                "constraints": ["stay inside the accepted candidate"],
+                "role_worker": explorer_worker
+            }),
+        )
+        .expect("explorer admission should be recorded");
+        assert_eq!(explorer_admission.result, "admitted");
+
+        let developer_worker = run_role_worker(
+            "local",
+            "developer",
+            &created.contract,
+            &runtime_probe,
+            DEFAULT_WORKER_TIMEOUT_SECS,
+            DEFAULT_WORKER_ATTEMPTS,
+        );
+        let developer_admission = emit_and_admit(
+            &store,
+            &created.contract,
+            "EXECUTION_PACKET",
+            "developer",
+            "developer",
+            "reviewer",
+            serde_json::json!({
+                "accepted_candidate": "Different candidate B",
+                "runtime_probe": runtime_probe,
+                "runtime_worker": developer_worker,
+                "role_worker": developer_worker,
+                "artifact": "hive-loop-ledger"
+            }),
+        )
+        .expect("developer admission should be recorded");
+
+        assert_eq!(developer_admission.result, "rejected");
+        assert_eq!(
+            developer_admission.reason,
+            "accepted_candidate_bound failed: accepted_candidate_mismatch expected_candidate=Accepted candidate A accepted_candidate=Different candidate B"
+        );
+        assert_eq!(
+            developer_admission
+                .policy
+                .pointer("/receipt/satisfied")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            developer_admission
+                .policy
+                .pointer("/target_binding/passed")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            developer_admission
+                .policy
+                .pointer("/target_binding/reason")
+                .and_then(|value| value.as_str()),
+            Some("accepted_candidate_mismatch")
+        );
+        assert_eq!(
+            developer_admission
+                .policy
+                .pointer("/target_binding/expected_candidate")
+                .and_then(|value| value.as_str()),
+            Some("Accepted candidate A")
+        );
+        assert_eq!(
+            developer_admission
+                .policy
+                .pointer("/target_binding/accepted_candidate")
+                .and_then(|value| value.as_str()),
+            Some("Different candidate B")
         );
 
         let _ = fs::remove_dir_all(root);
@@ -16674,6 +17155,10 @@ mod tests {
             "bad packet",
             None,
             None,
+            GateEvaluationContext {
+                packets: &[],
+                admissions: &[],
+            },
         );
         assert_eq!(
             receipt

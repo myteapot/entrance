@@ -435,9 +435,13 @@ used by the CLI and Panel, including Developer/Reviewer verdicts and the
 three consecutive invalid review rounds.
 Reviewer verdict score/gate payloads are computed from the same current-round
 ledger: stage completeness, runtime readiness, prior evidence presence,
-admission integrity, missing receipts, and failure reasons. If a Reviewer tries
-to keep a candidate while those ledger gates are incomplete, the runtime records
-a `reject` verdict instead of marking the issue `Done`.
+admission integrity, Developer accepted-candidate binding, missing receipts, and
+failure reasons. If a Reviewer tries to keep a candidate while those ledger
+gates are incomplete, the runtime records a `reject` verdict instead of marking
+the issue `Done`.
+Developer `EXECUTION_PACKET` admission uses `accepted_candidate_bound`: the
+packet must carry `accepted_candidate`, and that value must match the same-round
+admitted Explorer candidate before Reviewer can receive the packet.
 `entrance_review_queue` and `entrance://review-queue` expose only `Blocked` and
 `Needs Review` issues, with reviewer decision, reason code, human options,
 actions, blockers, latest comment, and recent evidence summaries.
