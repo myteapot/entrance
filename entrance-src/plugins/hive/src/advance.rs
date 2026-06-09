@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{HiveLoopReport, IssueCard, IssueRunRequest};
 
-const AUTO_ADVANCE_SCHEMA_VERSION: &str = "entrance.hive.auto_advance.v1";
+pub(crate) const AUTO_ADVANCE_SCHEMA_VERSION: &str = "entrance.hive.auto_advance.v1";
 const DEFAULT_ADVANCE_MAX_STEPS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,6 +365,20 @@ mod tests {
             .expect("evidence should load")
             .iter()
             .any(|evidence| evidence.kind == "auto_advance"));
+        let audit = crate::loop_control::audit(
+            &store,
+            issue.issue.loop_id.expect("issue should be loop-linked"),
+        )
+        .expect("audit should load");
+        let issue_surface = audit
+            .checks
+            .iter()
+            .find(|check| check.name == "issue_surface")
+            .expect("issue surface audit should exist");
+        assert!(
+            issue_surface.passed,
+            "auto advance comment should be accepted by issue surface audit"
+        );
 
         let _ = fs::remove_dir_all(root);
     }

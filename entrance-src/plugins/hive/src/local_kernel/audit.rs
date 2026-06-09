@@ -4535,6 +4535,9 @@ fn issue_comment_audit_error(
                 errors.push("comment.operator_evidence".to_string());
             }
         }
+        Some(crate::advance::AUTO_ADVANCE_SCHEMA_VERSION) => {
+            errors.extend(auto_advance_comment_audit_errors(comment, issue, evidence));
+        }
         _ => {}
     }
 
@@ -4633,6 +4636,52 @@ fn system_comment_audit_errors(
         if !has_evidence_binding {
             errors.push("comment.stage.evidence_binding".to_string());
         }
+    }
+
+    errors
+}
+
+fn auto_advance_comment_audit_errors(
+    comment: &HiveComment,
+    issue: &HiveIssue,
+    evidence: &[HiveLoopEvidence],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let payload = &comment.payload;
+
+    if payload.get("source").and_then(|value| value.as_str()) != Some("kernel") {
+        errors.push("comment.payload.source".to_string());
+    }
+
+    let Some(step) = payload.get("advance_step") else {
+        errors.push("comment.advance_step".to_string());
+        return errors;
+    };
+    if step.get("issue_id").and_then(|value| value.as_i64()) != Some(issue.id) {
+        errors.push("comment.advance_step.issue_id".to_string());
+    }
+    if let Some(loop_id) = issue.loop_id {
+        if step.get("loop_id").and_then(|value| value.as_i64()) != Some(loop_id) {
+            errors.push("comment.advance_step.loop_id".to_string());
+        }
+    }
+    if step
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        != Some(crate::advance::AUTO_ADVANCE_SCHEMA_VERSION)
+    {
+        errors.push("comment.advance_step.schema_version".to_string());
+    }
+    if !evidence.iter().any(|row| {
+        row.kind == "auto_advance"
+            && row
+                .payload
+                .pointer("/comment_id")
+                .and_then(|value| value.as_i64())
+                == Some(comment.id)
+            && row.payload.pointer("/advance_step") == Some(step)
+    }) {
+        errors.push("comment.auto_advance_evidence".to_string());
     }
 
     errors
@@ -5140,10 +5189,16 @@ fn expected_comment_schema(comment: &HiveComment) -> Option<&'static str> {
         .payload
         .get("action")
         .and_then(|value| value.as_str());
+    let schema = schema_version(&comment.payload);
     match source {
         Some("operator") if action.is_some() => Some(OPERATOR_DECISION_SCHEMA_VERSION),
         Some("operator") => Some(OPERATOR_COMMENT_SCHEMA_VERSION),
         Some("hive" | "compiler") => Some(SYSTEM_COMMENT_SCHEMA_VERSION),
+        Some("kernel")
+            if schema.as_deref() == Some(crate::advance::AUTO_ADVANCE_SCHEMA_VERSION) =>
+        {
+            Some(crate::advance::AUTO_ADVANCE_SCHEMA_VERSION)
+        }
         _ => None,
     }
 }
@@ -5154,6 +5209,7 @@ fn comment_schema_allowed(schema: Option<&str>) -> bool {
         Some(OPERATOR_COMMENT_SCHEMA_VERSION)
             | Some(OPERATOR_DECISION_SCHEMA_VERSION)
             | Some(SYSTEM_COMMENT_SCHEMA_VERSION)
+            | Some(crate::advance::AUTO_ADVANCE_SCHEMA_VERSION)
     )
 }
 
@@ -5167,4 +5223,3 @@ fn issue_status_allowed(value: &str) -> bool {
 fn decision_label_allowed(value: &str) -> bool {
     matches!(value, "keep" | "reject" | "needs-review" | "blocked")
 }
-
