@@ -82,7 +82,9 @@ Entrance has reached a local MVP unit:
 - Reviewer fallback has a first ledger-backed budget rule: if the verdict
   ledger proves 3 consecutive invalid Reviewer rounds, the issue moves to
   `Blocked` for human decision; jumping a loop to round 3 without earlier
-  invalid verdicts does not exhaust the budget.
+  invalid verdicts does not exhaust the budget. Loop audit recomputes this
+  budget from verdict history and rejects drifted score/gate/evidence
+  self-reports.
 - Worker lifecycle is now a first-class observable contract through
   `entrance hive loop worker-lifecycle <loop_id>` and
   `entrance://loops/{loop_id}/worker-lifecycle`, exposing expected
@@ -133,6 +135,9 @@ Entrance has reached a local MVP unit:
 - Admission audit now recomputes receipt missing lists, gate pass/fail, gate
   reason, and admitted/rejected result bindings from the current packet/policy
   ledger. Richer semantic drift checks remain future hardening work.
+- Verdict audit now recomputes Reviewer invalid-round budget use/exhaustion from
+  verdict history, so the 3-round `Blocked` fallback cannot be proven only by
+  self-reported score/evidence fields.
 - The same loop-level control packet is now available through local CLI
   `entrance hive loop control <loop_id>`, daemon command `hive_loop_control`,
   and the Panel selected issue Reviewer Control block, so local operators and

@@ -8047,7 +8047,7 @@ fn verdict_evidence_binding_audit_errors(
                 &evidence_by_id,
             )
         } else {
-            standard_verdict_binding_errors(verdict, packets, evidence)
+            standard_verdict_binding_errors(verdict, verdicts, packets, evidence)
         };
         if !verdict_errors.is_empty() {
             errors.push(serde_json::json!({
@@ -8078,6 +8078,7 @@ fn verdict_evidence_binding_audit_errors(
 
 fn standard_verdict_binding_errors(
     verdict: &HiveLoopVerdict,
+    verdicts: &[HiveLoopVerdict],
     packets: &[HiveLoopPacket],
     evidence: &[HiveLoopEvidence],
 ) -> Vec<String> {
@@ -8125,29 +8126,66 @@ fn standard_verdict_binding_errors(
         .score
         .get("reviewer_invalid_rounds_used")
         .and_then(|value| value.as_i64());
+    let score_gate_invalid_rounds_used = verdict
+        .score
+        .pointer("/gate_results/reviewer_invalid_rounds_used")
+        .and_then(|value| value.as_i64());
     let evidence_invalid_rounds_used = verdict
         .evidence
         .get("reviewer_invalid_rounds_used")
         .and_then(|value| value.as_i64());
-    if score_invalid_rounds_used.is_some() || evidence_invalid_rounds_used.is_some() {
-        match (score_invalid_rounds_used, evidence_invalid_rounds_used) {
-            (Some(score_value), Some(evidence_value)) if score_value == evidence_value => {}
-            _ => errors.push("evidence.reviewer_invalid_rounds_used".to_string()),
-        }
+    let (expected_invalid_rounds_used, expected_budget_exhausted) =
+        expected_reviewer_budget_for_verdict(verdicts, verdict);
+    match (score_invalid_rounds_used, evidence_invalid_rounds_used) {
+        (Some(score_value), Some(evidence_value)) if score_value == evidence_value => {}
+        _ => errors.push("evidence.reviewer_invalid_rounds_used".to_string()),
+    }
+    match (score_invalid_rounds_used, score_gate_invalid_rounds_used) {
+        (Some(score_value), Some(gate_value)) if score_value == gate_value => {}
+        _ => errors.push("score.gate_results.reviewer_invalid_rounds_used".to_string()),
+    }
+    if score_invalid_rounds_used != Some(expected_invalid_rounds_used)
+        || evidence_invalid_rounds_used != Some(expected_invalid_rounds_used)
+        || score_gate_invalid_rounds_used != Some(expected_invalid_rounds_used)
+    {
+        errors.push("reviewer_budget.rounds_used_binding".to_string());
     }
     let score_budget_exhausted = verdict
         .score
         .get("reviewer_invalid_budget_exhausted")
         .and_then(|value| value.as_bool());
+    let score_gate_budget_exhausted = verdict
+        .score
+        .pointer("/gate_results/reviewer_invalid_budget_exhausted")
+        .and_then(|value| value.as_bool());
     let evidence_budget_exhausted = verdict
         .evidence
         .get("reviewer_invalid_budget_exhausted")
         .and_then(|value| value.as_bool());
-    if score_budget_exhausted.is_some() || evidence_budget_exhausted.is_some() {
-        match (score_budget_exhausted, evidence_budget_exhausted) {
-            (Some(score_value), Some(evidence_value)) if score_value == evidence_value => {}
-            _ => errors.push("evidence.reviewer_invalid_budget_exhausted".to_string()),
+    match (score_budget_exhausted, evidence_budget_exhausted) {
+        (Some(score_value), Some(evidence_value)) if score_value == evidence_value => {}
+        _ => errors.push("evidence.reviewer_invalid_budget_exhausted".to_string()),
+    }
+    match (score_budget_exhausted, score_gate_budget_exhausted) {
+        (Some(score_value), Some(gate_value)) if score_value == gate_value => {}
+        _ => errors.push("score.gate_results.reviewer_invalid_budget_exhausted".to_string()),
+    }
+    if score_budget_exhausted != Some(expected_budget_exhausted)
+        || evidence_budget_exhausted != Some(expected_budget_exhausted)
+        || score_gate_budget_exhausted != Some(expected_budget_exhausted)
+    {
+        errors.push("reviewer_budget.exhausted_binding".to_string());
+    }
+    let reason_code = verdict_reason_code(verdict);
+    if expected_budget_exhausted {
+        if verdict.decision != "blocked" {
+            errors.push("reviewer_budget.decision_binding".to_string());
         }
+        if reason_code.as_deref() != Some("review_budget_exhausted") {
+            errors.push("reviewer_budget.reason_binding".to_string());
+        }
+    } else if reason_code.as_deref() == Some("review_budget_exhausted") {
+        errors.push("reviewer_budget.reason_binding".to_string());
     }
 
     let reviewer_packet = packets.iter().find(|packet| {
@@ -8175,6 +8213,25 @@ fn standard_verdict_binding_errors(
     }
 
     errors
+}
+
+fn expected_reviewer_budget_for_verdict(
+    verdicts: &[HiveLoopVerdict],
+    verdict: &HiveLoopVerdict,
+) -> (i64, bool) {
+    let prior_round = verdict.round.saturating_sub(1);
+    let prior_invalid_rounds = reviewer_invalid_streak_from_verdicts(verdicts, prior_round)
+        .min(REVIEWER_INVALID_ROUND_BUDGET);
+    let reason_code = verdict_reason_code(verdict);
+    let current_invalid =
+        verdict.decision == "reject" || reason_code.as_deref() == Some("review_budget_exhausted");
+    if !current_invalid {
+        return (0, false);
+    }
+
+    let current_invalid_rounds = (prior_invalid_rounds + 1).min(REVIEWER_INVALID_ROUND_BUDGET);
+    let budget_exhausted = prior_invalid_rounds + 1 >= REVIEWER_INVALID_ROUND_BUDGET;
+    (current_invalid_rounds, budget_exhausted)
 }
 
 fn admission_rejection_verdict_binding_errors(
@@ -16887,6 +16944,135 @@ mod tests {
             .audit_failure_details
             .iter()
             .any(|detail| detail == "verdict_packets:verdict_evidence:evidence.count"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verdict_audit_recomputes_reviewer_budget_from_ledger() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-verdict-budget-binding-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Verdict budget binding loop".to_string(),
+                goal: "Detect reviewer budget receipts that drift from verdict history".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let first_invalid = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: Some("reject".to_string()),
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("first invalid review should run");
+        decide_issue(
+            &store,
+            IssueDecisionRequest {
+                issue_id: first_invalid.issues[0].issue.id,
+                action: "retry".to_string(),
+                author: "human".to_string(),
+                body: Some("retry after first invalid review".to_string()),
+                confirmation_receipt: Some(test_confirmation_receipt("retry", "human")),
+            },
+        )
+        .expect("first retry should be admitted");
+        let second_invalid = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: Some("reject".to_string()),
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("second invalid review should run");
+        decide_issue(
+            &store,
+            IssueDecisionRequest {
+                issue_id: second_invalid.issues[0].issue.id,
+                action: "retry".to_string(),
+                author: "human".to_string(),
+                body: Some("retry after second invalid review".to_string()),
+                confirmation_receipt: Some(test_confirmation_receipt("retry", "human")),
+            },
+        )
+        .expect("second retry should be admitted");
+        let exhausted = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: Some("reject".to_string()),
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("third invalid review should exhaust budget");
+
+        let second_verdict = exhausted
+            .verdicts
+            .iter()
+            .find(|verdict| verdict.round == 2)
+            .expect("second invalid verdict should exist");
+        let mut drifted_second = second_verdict.clone();
+        drifted_second.score["reviewer_invalid_rounds_used"] = serde_json::json!(1);
+        drifted_second.score["gate_results"]["reviewer_invalid_rounds_used"] = serde_json::json!(1);
+        drifted_second.evidence["reviewer_invalid_rounds_used"] = serde_json::json!(1);
+        let second_errors = standard_verdict_binding_errors(
+            &drifted_second,
+            &exhausted.verdicts,
+            &exhausted.packets,
+            &exhausted.evidence,
+        );
+        assert!(second_errors.contains(&"reviewer_budget.rounds_used_binding".to_string()));
+        assert!(!second_errors.contains(&"evidence.reviewer_invalid_rounds_used".to_string()));
+
+        let exhausted_verdict = exhausted
+            .verdicts
+            .iter()
+            .find(|verdict| verdict.round == REVIEWER_INVALID_ROUND_BUDGET)
+            .expect("budget exhausted verdict should exist");
+        let mut drifted_exhausted = exhausted_verdict.clone();
+        drifted_exhausted.score["reviewer_invalid_rounds_used"] = serde_json::json!(2);
+        drifted_exhausted.score["gate_results"]["reviewer_invalid_rounds_used"] =
+            serde_json::json!(2);
+        drifted_exhausted.evidence["reviewer_invalid_rounds_used"] = serde_json::json!(2);
+        drifted_exhausted.score["reviewer_invalid_budget_exhausted"] = serde_json::json!(false);
+        drifted_exhausted.score["gate_results"]["reviewer_invalid_budget_exhausted"] =
+            serde_json::json!(false);
+        drifted_exhausted.evidence["reviewer_invalid_budget_exhausted"] = serde_json::json!(false);
+        let exhausted_errors = standard_verdict_binding_errors(
+            &drifted_exhausted,
+            &exhausted.verdicts,
+            &exhausted.packets,
+            &exhausted.evidence,
+        );
+        assert!(exhausted_errors.contains(&"reviewer_budget.rounds_used_binding".to_string()));
+        assert!(exhausted_errors.contains(&"reviewer_budget.exhausted_binding".to_string()));
+        assert!(
+            !exhausted_errors.contains(&"evidence.reviewer_invalid_budget_exhausted".to_string())
+        );
 
         let _ = fs::remove_dir_all(root);
     }

@@ -223,7 +223,8 @@ embeds the active issue transition registry snapshot so operators can compare a
 specific issue surface against the kernel policy that produced it.
 That budget is computed from the verdict ledger's consecutive invalid Reviewer
 rounds; moving a contract to round 3 without two prior invalid verdicts does not
-exhaust the fallback budget.
+exhaust the fallback budget. `hive loop audit` now recomputes the same budget
+from verdict history and rejects drifted score/gate/evidence self-reports.
 `hive issue timeline <id>` returns the issue activity feed for operators who
 need to read comments, evidence, verdicts, operator decisions, blockers, and
 linked loop resources in one chronological control-plane view, with round
@@ -252,8 +253,9 @@ packet, policy, gate spec, receipt requirements, missing receipts, gate result,
 and final admission result still bind to each other. The verdict check verifies
 one verdict per round for terminal loops plus decision bindings, score-vector
 metrics, gate booleans, human options, reason-code evidence bindings, reviewer
-worker bindings, evidence counts, runtime readiness, and admission-rejection
-evidence/admission/packet links. The
+worker bindings, evidence counts, runtime readiness, and Reviewer
+invalid-budget use/exhaustion recomputed from verdict history, plus
+admission-rejection evidence/admission/packet links. The
 issue surface check verifies issue status, typed comments, operator
 comment/decision evidence, and the author/action/body bindings between evidence
 and its linked comment, including transition admission receipt bindings. The
@@ -402,7 +404,9 @@ The reviewer decision can be overridden for local simulation with
 `--decision keep|reject|needs-review|blocked`.
 After 3 consecutive invalid Reviewer verdicts in the ledger, a reviewer
 `reject` falls back to `Blocked`, which keeps the issue actionable for a human
-operator instead of silently canceling an exhausted automatic attempt.
+operator instead of silently canceling an exhausted automatic attempt. Audit
+recomputes that budget from verdict history and rejects drifted score/gate/
+evidence self-reports.
 Admission gates reject failed worker receipts, so a role worker with `ok=false`
 blocks at the compiler boundary instead of being treated as valid evidence.
 The Developer `EXECUTION_PACKET` must also carry `accepted_candidate`; the

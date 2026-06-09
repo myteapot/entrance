@@ -168,7 +168,8 @@ result, and final admitted/rejected result. The `verdict_packets` check verifies
 terminal rounds have exactly one verdict, then checks decision bindings,
 required score-vector metrics, gate booleans, human options, and reason-code
 evidence bindings. It also binds standard verdict evidence back to round
-evidence counts, runtime readiness, and the reviewer worker receipt, while
+evidence counts, runtime readiness, Reviewer invalid-budget use/exhaustion
+recomputed from verdict history, and the reviewer worker receipt, while
 admission-rejection verdicts bind back to the rejected admission, packet, and
 admission-rejection evidence row. The `issue_surface` check verifies linked
 issue status, typed comments, operator comment/decision evidence, and
@@ -205,7 +206,9 @@ Explorer/Developer/Reviewer roles, observed workers by round, missing roles,
 timeouts, attempts, retry exhaustion, receipt errors, the 3-round Reviewer
 invalid budget, and the `Blocked` fallback status. The invalid budget is
 computed from consecutive invalid Reviewer verdicts in the ledger, so a round
-number alone cannot exhaust it. This is a lifecycle observability contract. The
+number alone cannot exhaust it. Loop audit recomputes the same budget from
+verdict history and rejects drifted score/gate/evidence self-reports. This is a
+lifecycle observability contract. The
 local Panel selected-issue detail calls the daemon
 `hive_loop_worker_lifecycle` command and renders the same report as Worker
 Lifecycle role lanes, round chips, fallback budget, timeout/failure summaries,
@@ -446,6 +449,9 @@ recomputes this target binding from the packet/admission ledger and rejects
 drifted `target_binding` admission receipts. The same admission audit recomputes
 missing receipts, gate pass/fail, gate reason, and admitted/rejected result
 bindings from the current packet/policy ledger.
+Verdict audit similarly recomputes Reviewer invalid-round budget use/exhaustion
+from verdict history, so the `Blocked` fallback must be backed by consecutive
+invalid Reviewer verdicts rather than only score/evidence receipt self-report.
 `entrance_review_queue` and `entrance://review-queue` expose only `Blocked` and
 `Needs Review` issues, with reviewer decision, reason code, human options,
 actions, blockers, latest comment, and recent evidence summaries.
