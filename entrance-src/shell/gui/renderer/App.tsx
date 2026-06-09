@@ -1,5 +1,6 @@
 import { Match, Switch, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 import Nav from "./components/Nav";
+import DiagnosticsView from "./components/DiagnosticsView";
 import HiveWorkbenchPanel from "./components/HiveWorkbenchPanel";
 import { bridge } from "./lib/bridge";
 
@@ -46,7 +47,17 @@ import type {
   WorkerLifecycleWorker,
 } from "./lib/hive";
 
-const VIEW_VALUES: View[] = ["status", "drawer", "hive", "panel", "reviews", "loops", "launcher"];
+const VIEW_VALUES: View[] = [
+  "panel",
+  "reviews",
+  "diagnostics",
+  "status",
+  "drawer",
+  "hive",
+  "loops",
+  "launcher",
+];
+const DIAGNOSTIC_VIEWS = new Set<View>(["diagnostics", "status", "drawer", "hive", "loops", "launcher"]);
 
 const locationToView = (): View => {
   const urlView = new URLSearchParams(window.location.search).get("view");
@@ -1670,15 +1681,28 @@ export default function App() {
     { label: "Loops", value: String(status()?.hive_loops ?? 0) },
     { label: "Launcher", value: String(status()?.launcher_entries ?? 0) },
   ]);
+  const diagnosticsTab = createMemo(() => {
+    const current = view();
+    if (current === "launcher") return "commands";
+    if (current === "drawer") return "notes";
+    if (current === "hive" || current === "loops") return "runtime";
+    return "status";
+  });
+  const selectDiagnosticsTab = (tab: "status" | "commands" | "notes" | "runtime") => {
+    const nextView: View =
+      tab === "commands" ? "launcher" : tab === "notes" ? "drawer" : tab === "runtime" ? "loops" : "status";
+    selectView(nextView);
+  };
   const viewMeta = createMemo(() => {
     const meta: Record<View, { title: string; detail: string }> = {
-      panel: { title: "Issues", detail: "Agent board, evidence, and review state" },
-      reviews: { title: "Reviews", detail: "Blocked and Needs Review decisions" },
-      loops: { title: "Loops", detail: "Runtime contracts and local execution" },
-      status: { title: "Status", detail: "Kernel and local store health" },
-      drawer: { title: "Drawer", detail: "Local file and note intake" },
-      hive: { title: "Loops", detail: "Runtime contracts and local execution" },
-      launcher: { title: "Launcher", detail: "Search and launch indexed commands" },
+      panel: { title: "Issues", detail: "Agent board" },
+      reviews: { title: "Reviews", detail: "Decision inbox" },
+      diagnostics: { title: "Diagnostics", detail: "Tools and runtime" },
+      loops: { title: "Diagnostics", detail: "Tools and runtime" },
+      status: { title: "Diagnostics", detail: "Tools and runtime" },
+      drawer: { title: "Diagnostics", detail: "Tools and runtime" },
+      hive: { title: "Diagnostics", detail: "Tools and runtime" },
+      launcher: { title: "Diagnostics", detail: "Tools and runtime" },
     };
     return meta[view()];
   });
@@ -1701,149 +1725,38 @@ export default function App() {
         {banner() ? <p class="banner">{banner()}</p> : null}
 
         <Switch>
-          <Match when={view() === "status"}>
-            <section class="diagnostics-view">
-              <div class="diagnostics-summary">
-                <div>
-                  <span>Schema</span>
-                  <strong
-                    class={status()?.schema?.healthy ? "diagnostic-health diagnostic-health--ok" : "diagnostic-health diagnostic-health--blocked"}
-                    title={storeSchemaTitle()}
-                  >
-                    {storeSchemaLabel()}
-                  </strong>
-                </div>
-                <div>
-                  <span>Generated</span>
-                  <strong>{status()?.generated_at ?? "pending"}</strong>
-                </div>
-              </div>
-
-              <dl class="diagnostics-table">
-                {diagnosticsRows().map((row) => (
-                  <div>
-                    <dt>{row.label}</dt>
-                    <dd title={row.title ?? row.value}>{row.value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          </Match>
-
-          <Match when={view() === "drawer"}>
-            <section class="panel-grid">
-              <article class="panel panel--form">
-                <p class="panel-kicker">Drawer</p>
-                <h3>Add note</h3>
-                <input
-                  value={drawerTitle()}
-                  onInput={(event) => setDrawerTitle(event.currentTarget.value)}
-                  placeholder="Title"
-                />
-                <textarea
-                  value={drawerBody()}
-                  onInput={(event) => setDrawerBody(event.currentTarget.value)}
-                  placeholder="Write a note for the drawer"
-                />
-                <button type="button" class="primary-button" onClick={() => void addDrawerNote()}>
-                  Create Note
-                </button>
-              </article>
-
-              <article class="panel panel--list">
-                <p class="panel-kicker">Items</p>
-                <h3>Stored entries</h3>
-                <ul class="record-list">
-                  {(drawerItems() ?? []).map((item) => (
-                    <li class="record-card">
-                      <strong>{item.title}</strong>
-                      <span>{item.kind}</span>
-                      <code>{item.storage_path ?? "db-only"}</code>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-
-              <article class="panel panel--list">
-                <p class="panel-kicker">Versioning</p>
-                <h3>Drawer history</h3>
-                <ul class="record-list">
-                  {(drawerHistory()?.commits ?? []).map((commit) => (
-                    <li class="record-card">
-                      <strong>{commit.summary}</strong>
-                      <code>{commit.id}</code>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            </section>
-          </Match>
-
-          <Match when={view() === "hive" || view() === "loops"}>
-            <section class="panel-grid">
-              <article class="panel panel--form">
-                <p class="panel-kicker">Hive</p>
-                <h3>Dispatch</h3>
-                <input
-                  value={hiveTitle()}
-                  onInput={(event) => setHiveTitle(event.currentTarget.value)}
-                  placeholder="Task title"
-                />
-                <input
-                  value={hiveProject()}
-                  onInput={(event) => setHiveProject(event.currentTarget.value)}
-                  placeholder="Project path (optional)"
-                />
-                <button type="button" class="primary-button" onClick={() => void dispatchHive()}>
-                  Persist Dispatch
-                </button>
-              </article>
-
-              <article class="panel panel--list">
-                <p class="panel-kicker">Runs</p>
-                <h3>Dispatch ledger</h3>
-                <p class="muted">
-                  Ready {hiveSummary()?.ready_runs ?? 0} / Total {hiveSummary()?.total_runs ?? 0}
-                </p>
-                <ul class="record-list">
-                  {(hiveRuns() ?? []).map((run) => (
-                    <li class="record-card">
-                      <strong>{run.title}</strong>
-                      <span>{run.status}</span>
-                      <code>{run.project_dir ?? "no project"}</code>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-
-              <article class="panel panel--list">
-                <p class="panel-kicker">Loops</p>
-                <h3>Contracts</h3>
-                <ul class="record-list">
-                  {(hiveLoops() ?? []).map((loop) => (
-                    <li class="record-card">
-                      <div class="record-head">
-                        <strong>{loop.title}</strong>
-                        <span>{loop.status}</span>
-                      </div>
-                      <span>{loop.active_phase} / round {loop.current_round}</span>
-                      <code>{loop.runtime}</code>
-                      {loop.status === "todo" ? (
-                        <div class="record-actions">
-                          <button
-                            type="button"
-                            disabled={Boolean(loopPendingLabel(loop.id))}
-                            onClick={() => void runHiveLoop(loop)}
-                          >
-                            {loopPendingLabel(loop.id) ?? "Run"}
-                          </button>
-                        </div>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            </section>
+          <Match when={DIAGNOSTIC_VIEWS.has(view())}>
+            <DiagnosticsView
+              activeTab={diagnosticsTab() as "status" | "commands" | "notes" | "runtime"}
+              addDrawerNote={addDrawerNote}
+              diagnosticsRows={diagnosticsRows}
+              dispatchHive={dispatchHive}
+              drawerBody={drawerBody}
+              drawerHistory={drawerHistory}
+              drawerItems={drawerItems}
+              drawerTitle={drawerTitle}
+              hiveLoops={hiveLoops}
+              hiveProject={hiveProject}
+              hiveRuns={hiveRuns}
+              hiveSummary={hiveSummary}
+              hiveTitle={hiveTitle}
+              launchItem={launchItem}
+              launcherItems={launcherItems}
+              launcherQuery={launcherQuery}
+              loopPendingLabel={loopPendingLabel}
+              onSelectTab={selectDiagnosticsTab}
+              pinItem={pinItem}
+              refreshLauncherIndex={refreshLauncherIndex}
+              runHiveLoop={runHiveLoop}
+              setDrawerBody={setDrawerBody}
+              setDrawerTitle={setDrawerTitle}
+              setHiveProject={setHiveProject}
+              setHiveTitle={setHiveTitle}
+              setLauncherQuery={setLauncherQuery}
+              status={status}
+              storeSchemaLabel={storeSchemaLabel}
+              storeSchemaTitle={storeSchemaTitle}
+            />
           </Match>
 
           <Match when={view() === "panel" || view() === "reviews"}>
@@ -2017,47 +1930,6 @@ export default function App() {
             />
           </Match>
 
-          <Match when={view() === "launcher"}>
-            <section class="panel-grid">
-              <article class="panel panel--form">
-                <p class="panel-kicker">Launcher</p>
-                <h3>Search index</h3>
-                <input
-                  value={launcherQuery()}
-                  onInput={(event) => setLauncherQuery(event.currentTarget.value)}
-                  placeholder="Search indexed apps"
-                />
-                <button type="button" class="primary-button" onClick={() => void refreshLauncherIndex()}>
-                  Refresh Index
-                </button>
-                <p class="muted">Launcher routes through the unified daemon contract.</p>
-              </article>
-
-              <article class="panel panel--list">
-                <p class="panel-kicker">Matches</p>
-                <h3>Launch surface</h3>
-                <ul class="record-list">
-                  {(launcherItems() ?? []).map((item) => (
-                    <li class="record-card">
-                      <div class="record-head">
-                        <strong>{item.name}</strong>
-                        <span>{item.score.toFixed(2)}</span>
-                      </div>
-                      <code>{item.command}</code>
-                      <div class="record-actions">
-                        <button type="button" onClick={() => void launchItem(item)}>
-                          Launch
-                        </button>
-                        <button type="button" onClick={() => void pinItem(item)}>
-                          {item.pinned ? "Unpin" : "Pin"}
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            </section>
-          </Match>
         </Switch>
       </main>
     </div>

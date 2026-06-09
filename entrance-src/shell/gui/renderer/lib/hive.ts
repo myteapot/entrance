@@ -1,4 +1,12 @@
-export type View = "status" | "drawer" | "hive" | "panel" | "reviews" | "loops" | "launcher";
+export type View =
+  | "panel"
+  | "reviews"
+  | "diagnostics"
+  | "status"
+  | "drawer"
+  | "hive"
+  | "loops"
+  | "launcher";
 export type CommentSurface = "detail" | "board";
 export type ActiveCommentComposer = {
   issueId: number;
