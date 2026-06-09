@@ -251,11 +251,12 @@ that the role still matches the packet writer. The admission check
 verifies that every packet has exactly one admission and that the recorded
 packet, policy, gate spec, receipt requirements, missing receipts, gate result,
 and final admission result still bind to each other. The verdict check verifies
-one verdict per round for terminal loops plus decision bindings, score-vector
-metrics, gate booleans, human options, reason-code evidence bindings, reviewer
-worker bindings, evidence counts, runtime readiness, and Reviewer
-invalid-budget use/exhaustion recomputed from verdict history, plus
-admission-rejection evidence/admission/packet links. The
+one verdict per round for terminal loops plus current-round verdict decision to
+terminal contract-status binding when no same-round operator decision has taken
+over, decision bindings, score-vector metrics, gate booleans, human options,
+reason-code evidence bindings, reviewer worker bindings, evidence counts,
+runtime readiness, and Reviewer invalid-budget use/exhaustion recomputed from
+verdict history, plus admission-rejection evidence/admission/packet links. The
 issue surface check verifies issue status, typed comments, operator
 comment/decision evidence, and the author/action/body bindings between evidence
 and its linked comment, including transition admission receipt bindings. The

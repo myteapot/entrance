@@ -4383,7 +4383,9 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .iter()
         .filter_map(verdict_audit_errors)
         .collect::<Vec<_>>();
-    verdict_errors.extend(verdict_sequence_audit_errors(&contract, &verdicts));
+    verdict_errors.extend(verdict_sequence_audit_errors(
+        &contract, &verdicts, &evidence,
+    ));
     verdict_errors.extend(verdict_evidence_binding_audit_errors(
         &contract,
         &verdicts,
@@ -7848,6 +7850,7 @@ fn policy_matches_expected_route(policy: &HiveLoopPolicy, expected: &LoopPolicyS
 fn verdict_sequence_audit_errors(
     contract: &HiveLoopContract,
     verdicts: &[HiveLoopVerdict],
+    evidence: &[HiveLoopEvidence],
 ) -> Vec<serde_json::Value> {
     let mut errors = Vec::new();
     let mut verdicts_by_round: HashMap<i64, Vec<&HiveLoopVerdict>> = HashMap::new();
@@ -7894,6 +7897,32 @@ fn verdict_sequence_audit_errors(
             "errors": ["verdict.current_round_missing"]
         }));
     }
+    let current_round_verdicts = verdicts
+        .iter()
+        .filter(|verdict| verdict.round == contract.current_round)
+        .collect::<Vec<_>>();
+    let operator_decision_controls_contract = evidence
+        .iter()
+        .any(|row| row.round == contract.current_round && row.kind == "operator_decision");
+    if terminal_contract_status(&contract.status)
+        && current_round_verdicts.len() == 1
+        && !operator_decision_controls_contract
+    {
+        let verdict = current_round_verdicts[0];
+        if let Some(expected_status) = contract_status_for_verdict_decision(&verdict.decision) {
+            if contract.status != expected_status {
+                errors.push(serde_json::json!({
+                    "scope": "verdict_contract",
+                    "round": contract.current_round,
+                    "verdict_id": verdict.id,
+                    "decision": verdict.decision,
+                    "expected_contract_status": expected_status,
+                    "actual_contract_status": contract.status,
+                    "errors": ["contract.status_binding"]
+                }));
+            }
+        }
+    }
 
     errors.sort_by_key(|error| {
         (
@@ -7913,6 +7942,16 @@ fn verdict_sequence_audit_errors(
 
 fn terminal_contract_status(status: &str) -> bool {
     matches!(status, "kept" | "rejected" | "needs-review" | "blocked")
+}
+
+fn contract_status_for_verdict_decision(decision: &str) -> Option<&'static str> {
+    match decision {
+        "keep" => Some("kept"),
+        "reject" => Some("rejected"),
+        "needs-review" => Some("needs-review"),
+        "blocked" => Some("blocked"),
+        _ => None,
+    }
 }
 
 fn verdict_audit_errors(verdict: &HiveLoopVerdict) -> Option<serde_json::Value> {
@@ -17073,6 +17112,94 @@ mod tests {
         assert!(
             !exhausted_errors.contains(&"evidence.reviewer_invalid_budget_exhausted".to_string())
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verdict_audit_rejects_contract_status_drift_from_current_verdict() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-verdict-contract-binding-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Verdict contract binding loop".to_string(),
+                goal: "Detect a terminal contract status that drifted from the verdict".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let issue_id = report.issues[0].issue.id;
+        let verdict = report
+            .verdicts
+            .first()
+            .expect("run should record a verdict");
+        assert_eq!(verdict.decision, "keep");
+        assert_eq!(report.contract.status, "kept");
+        store
+            .update_hive_loop_contract_state(
+                report.contract.id,
+                "blocked",
+                "complete",
+                report.contract.current_round,
+            )
+            .expect("contract status should drift for audit probe");
+        store
+            .update_hive_issue_status(
+                issue_id,
+                "Blocked",
+                Some("drifted issue status matching the contract"),
+            )
+            .expect("issue status should be mutated with contract status");
+
+        let audit_report = super::audit(&store, created.contract.id).expect("audit should resolve");
+        let verdict_check = audit_report
+            .checks
+            .iter()
+            .find(|check| check.name == "verdict_packets")
+            .expect("verdict audit should exist");
+        assert!(!verdict_check.passed);
+        assert!(verdict_check
+            .details
+            .pointer("/verdict_errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|errors| errors.iter().any(|error| error
+                .pointer("/errors")
+                .and_then(|value| value.as_array())
+                .is_some_and(|fields| fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("contract.status_binding"))))));
+        let trace_report =
+            super::trace(&store, created.contract.id).expect("trace should include audit details");
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| detail == "verdict_packets:verdict_contract:contract.status_binding"));
 
         let _ = fs::remove_dir_all(root);
     }

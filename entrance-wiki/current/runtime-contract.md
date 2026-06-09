@@ -165,11 +165,13 @@ receipts. The `admission_receipts` check verifies every packet has exactly one
 admission and that the stored admission receipt still binds to the packet row,
 policy route, gate spec, required receipt list, missing receipt list, gate
 result, and final admitted/rejected result. The `verdict_packets` check verifies
-terminal rounds have exactly one verdict, then checks decision bindings,
+terminal rounds have exactly one verdict, then binds the current-round verdict
+decision back to the terminal contract status unless a same-round
+`operator_decision` has taken over the status. It also checks decision bindings,
 required score-vector metrics, gate booleans, human options, and reason-code
-evidence bindings. It also binds standard verdict evidence back to round
-evidence counts, runtime readiness, Reviewer invalid-budget use/exhaustion
-recomputed from verdict history, and the reviewer worker receipt, while
+evidence bindings, and binds standard verdict evidence back to round evidence
+counts, runtime readiness, Reviewer invalid-budget use/exhaustion recomputed
+from verdict history, and the reviewer worker receipt, while
 admission-rejection verdicts bind back to the rejected admission, packet, and
 admission-rejection evidence row. The `issue_surface` check verifies linked
 issue status, typed comments, operator comment/decision evidence, and

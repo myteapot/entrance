@@ -138,6 +138,9 @@ Entrance has reached a local MVP unit:
 - Verdict audit now recomputes Reviewer invalid-round budget use/exhaustion from
   verdict history, so the 3-round `Blocked` fallback cannot be proven only by
   self-reported score/evidence fields.
+- Verdict audit now also binds terminal contract status back to the current
+  round verdict decision when no same-round operator decision has taken over,
+  separating automatic Reviewer outcomes from human-controlled transitions.
 - The same loop-level control packet is now available through local CLI
   `entrance hive loop control <loop_id>`, daemon command `hive_loop_control`,
   and the Panel selected issue Reviewer Control block, so local operators and
