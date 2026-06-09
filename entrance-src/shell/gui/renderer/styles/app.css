@@ -177,6 +177,77 @@
   word-break: break-word;
 }
 
+.diagnostics-view {
+  display: grid;
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+.diagnostics-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--line);
+}
+
+.diagnostics-summary > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--bg);
+}
+
+.diagnostics-summary span,
+.diagnostics-table dt {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.diagnostics-summary strong,
+.diagnostics-table dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostic-health {
+  width: fit-content;
+  max-width: 100%;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.diagnostic-health--ok {
+  color: #8ee5b2;
+}
+
+.diagnostic-health--blocked {
+  color: #ff9b92;
+}
+
+.diagnostics-table {
+  display: grid;
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+
+.diagnostics-table div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
 .record-list {
   display: grid;
   gap: 12px;
@@ -1711,6 +1782,19 @@
 
   .workbench-commandbar {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .diagnostics-view {
+    padding: 12px;
+  }
+
+  .diagnostics-summary,
+  .diagnostics-table div {
+    grid-template-columns: 1fr;
+  }
+
+  .diagnostics-table div {
+    gap: 3px;
   }
 
   .workbench-layout,

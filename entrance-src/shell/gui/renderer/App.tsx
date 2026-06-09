@@ -1655,6 +1655,21 @@ export default function App() {
     ];
     return missing.length ? missing.join(" | ") : schema.schema_version;
   };
+  const compactPath = (value: string | null | undefined) => {
+    if (!value) return "...";
+    const parts = value.split("/").filter(Boolean);
+    if (parts.length <= 4) return value;
+    return `.../${parts.slice(-4).join("/")}`;
+  };
+  const diagnosticsRows = createMemo(() => [
+    { label: "App root", value: compactPath(status()?.app_root), title: status()?.app_root ?? "" },
+    { label: "Database", value: compactPath(status()?.db_path), title: status()?.db_path ?? "" },
+    { label: "Storage", value: drawerSummary()?.mode ?? "...", title: drawerSummary()?.root ?? "" },
+    { label: "Drawer", value: String(status()?.drawer_entries ?? 0) },
+    { label: "Hive runs", value: String(status()?.hive_runs ?? 0) },
+    { label: "Loops", value: String(status()?.hive_loops ?? 0) },
+    { label: "Launcher", value: String(status()?.launcher_entries ?? 0) },
+  ]);
   const viewMeta = createMemo(() => {
     const meta: Record<View, { title: string; detail: string }> = {
       panel: { title: "Issues", detail: "Agent board, evidence, and review state" },
@@ -1687,35 +1702,31 @@ export default function App() {
 
         <Switch>
           <Match when={view() === "status"}>
-            <section class="panel-grid panel-grid--status">
-              <article class="panel">
-                <p class="panel-kicker">Kernel</p>
-                <h3>Runtime status</h3>
-                <dl class="metric-list">
-                  <div><dt>App root</dt><dd>{status()?.app_root ?? "..."}</dd></div>
-                  <div><dt>Database</dt><dd>{status()?.db_path ?? "..."}</dd></div>
-                  <div><dt>Schema</dt><dd title={storeSchemaTitle()}>{storeSchemaLabel()}</dd></div>
-                  <div><dt>Drawer</dt><dd>{status()?.drawer_entries ?? 0}</dd></div>
-                  <div><dt>Hive</dt><dd>{status()?.hive_runs ?? 0}</dd></div>
-                  <div><dt>Loops</dt><dd>{status()?.hive_loops ?? 0}</dd></div>
-                  <div><dt>Launcher</dt><dd>{status()?.launcher_entries ?? 0}</dd></div>
-                </dl>
-              </article>
+            <section class="diagnostics-view">
+              <div class="diagnostics-summary">
+                <div>
+                  <span>Schema</span>
+                  <strong
+                    class={status()?.schema?.healthy ? "diagnostic-health diagnostic-health--ok" : "diagnostic-health diagnostic-health--blocked"}
+                    title={storeSchemaTitle()}
+                  >
+                    {storeSchemaLabel()}
+                  </strong>
+                </div>
+                <div>
+                  <span>Generated</span>
+                  <strong>{status()?.generated_at ?? "pending"}</strong>
+                </div>
+              </div>
 
-              <article class="panel">
-                <p class="panel-kicker">Drawer</p>
-                <h3>Storage mode</h3>
-                <p class="big-copy">{drawerSummary()?.mode ?? "..."}</p>
-                <p class="muted">{drawerSummary()?.root ?? "..."}</p>
-              </article>
-
-              <article class="panel">
-                <p class="panel-kicker">Identity</p>
-                <h3>Microkernel cutover</h3>
-                <p class="muted">
-                  Runtime, daemon, and GUI now share the same single-binary command contract.
-                </p>
-              </article>
+              <dl class="diagnostics-table">
+                {diagnosticsRows().map((row) => (
+                  <div>
+                    <dt>{row.label}</dt>
+                    <dd title={row.title ?? row.value}>{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
             </section>
           </Match>
 
