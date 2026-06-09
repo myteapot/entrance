@@ -56,13 +56,11 @@ export function IssueWorkbench(props: IssueWorkbenchProps) {
 
   return (
     <section class="issue-workbench" data-testid="issue-workbench" data-mode={mode()}>
-      <header class="workbench-header">
-        <div>
-          <h2>{mode() === "reviews" ? "Reviews" : "Issues"}</h2>
-          <p>
-            {cards().length} issues / {reviewCards().length} need decision
-          </p>
-        </div>
+      <div class="workbench-toolbar">
+        <span>
+          {cards().length} issues
+          {reviewCards().length ? ` / ${reviewCards().length} need decision` : ""}
+        </span>
         <div class="workbench-actions">
           <button
             type="button"
@@ -76,7 +74,7 @@ export function IssueWorkbench(props: IssueWorkbenchProps) {
             Create Loop
           </button>
         </div>
-      </header>
+      </div>
 
       <div class="workbench-commandbar">
         <input
