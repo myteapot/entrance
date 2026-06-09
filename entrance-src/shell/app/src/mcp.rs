@@ -235,7 +235,7 @@ fn initialize_result(params: &serde_json::Value) -> serde_json::Value {
             "title": "Entrance",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Entrance exposes a Linear-like local issue/status/comment kernel. Start from prompts to preserve the loop contract, use tools to create/comment/run/retry/decide issues, and read resources for status, evidence, blockers, and verdicts."
+        "instructions": "Entrance exposes an issue-board-like local issue/status/comment kernel. Start from prompts to preserve the loop contract, use tools to create/comment/run/retry/decide issues, and read resources for status, evidence, blockers, and verdicts."
     })
 }
 
@@ -299,7 +299,7 @@ fn prompt_specs() -> Vec<serde_json::Value> {
             "Summarize connector queue state and digest-bound plans into human options before publish/roundtrip execution.",
             vec![prompt_arg(
                 "provider",
-                "Optional provider filter such as remote-fixture, github, linear, or file.",
+                "Optional provider filter such as local-hive-panel, file, or remote-fixture.",
                 false,
             )],
         ),
@@ -527,7 +527,7 @@ fn tool_specs() -> Vec<serde_json::Value> {
         tool_spec(
             "entrance_issue_control",
             "Read an Entrance issue control packet",
-            "Read one issue as a Linear-like control packet with status, actions, blockers, evidence, receipts, and human decision boundaries.",
+            "Read one issue as an issue-board-like control packet with status, actions, blockers, evidence, receipts, and human decision boundaries.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -557,7 +557,7 @@ fn tool_specs() -> Vec<serde_json::Value> {
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "description": "Optional provider filter such as local-hive-panel, file, remote-fixture, github, or linear."
+                        "description": "Optional provider filter such as local-hive-panel, file, or remote-fixture."
                     }
                 }
             }),
@@ -565,13 +565,13 @@ fn tool_specs() -> Vec<serde_json::Value> {
         tool_spec(
             "entrance_connector_control",
             "Read connector control packet",
-            "Read a Linear-like connector control packet with queue state, digest-bound plans, blockers, human options, resources, and confirmation boundaries.",
+            "Read an issue-board-like connector control packet with queue state, digest-bound plans, blockers, human options, resources, and confirmation boundaries.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "description": "Optional provider filter such as local-hive-panel, file, remote-fixture, github, or linear."
+                        "description": "Optional provider filter such as local-hive-panel, file, or remote-fixture."
                     }
                 }
             }),
@@ -585,7 +585,7 @@ fn tool_specs() -> Vec<serde_json::Value> {
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "description": "Optional provider filter such as local-hive-panel, file, remote-fixture, github, or linear."
+                        "description": "Optional provider filter such as local-hive-panel, file, or remote-fixture."
                     }
                 }
             }),
@@ -626,7 +626,7 @@ fn tool_specs() -> Vec<serde_json::Value> {
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "description": "Optional provider filter such as local-hive-panel, file, remote-fixture, github, or linear."
+                        "description": "Optional provider filter such as local-hive-panel, file, or remote-fixture."
                     }
                 }
             }),
@@ -2020,7 +2020,7 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
         resource_spec(
             "entrance://connectors/control",
             "Entrance connector control",
-            "Linear-like connector control packet with queue state, plans, blockers, human options, and confirmation boundaries.",
+            "Issue-board-like connector control packet with queue state, plans, blockers, human options, and confirmation boundaries.",
         ),
         resource_spec(
             "entrance://connectors/publish-plan",
@@ -3546,8 +3546,8 @@ mod tests {
         let connector = serde_json::json!({
             "schema_version": "entrance.hive.issue_connector_control.v1",
             "issue_id": 43,
-            "provider": "linear",
-            "review_surface": "linear:ENT-43",
+            "provider": "remote-fixture",
+            "review_surface": "remote-fixture:ENT-43",
             "status_mapping": {
                 "hive_status": "Blocked",
                 "remote_state": "Blocked",
@@ -3598,7 +3598,7 @@ mod tests {
             packet
                 .pointer("/resources/connector_provider_queue")
                 .and_then(|value| value.as_str()),
-            Some("entrance://connectors/queue/linear")
+            Some("entrance://connectors/queue/remote-fixture")
         );
         assert_eq!(
             packet
@@ -3610,7 +3610,7 @@ mod tests {
             packet
                 .pointer("/resources/connector_provider_publish_plan")
                 .and_then(|value| value.as_str()),
-            Some("entrance://connectors/publish-plan/linear")
+            Some("entrance://connectors/publish-plan/remote-fixture")
         );
         assert_eq!(
             packet
@@ -3622,7 +3622,7 @@ mod tests {
             packet
                 .pointer("/resources/connector_provider_roundtrip_plan")
                 .and_then(|value| value.as_str()),
-            Some("entrance://connectors/roundtrip-plan/linear")
+            Some("entrance://connectors/roundtrip-plan/remote-fixture")
         );
     }
 
@@ -3630,20 +3630,20 @@ mod tests {
     fn connector_control_packet_exposes_decision_surface() {
         let queue = serde_json::json!({
             "schema_version": "entrance.hive.connector_queue.v1",
-            "provider_filter": "linear",
+            "provider_filter": "remote-fixture",
             "provider_known": true,
             "total": 1,
             "current_count": 0,
             "publish_required_count": 1,
             "issues": [{
                 "id": 43,
-                "provider": "linear"
+                "provider": "remote-fixture"
             }]
         });
         let publish_plan = serde_json::json!({
             "schema_version": "entrance.hive.connector_publish_plan.v1",
             "plan_id": "publish-plan-1",
-            "provider_filter": "linear",
+            "provider_filter": "remote-fixture",
             "provider_known": true,
             "issue_count": 1,
             "can_execute": true,
@@ -3654,7 +3654,7 @@ mod tests {
         let roundtrip_plan = serde_json::json!({
             "schema_version": "entrance.hive.connector_roundtrip_plan.v1",
             "plan_id": "roundtrip-plan-1",
-            "provider_filter": "linear",
+            "provider_filter": "remote-fixture",
             "provider_known": true,
             "issue_count": 1,
             "can_execute": false,
@@ -3664,7 +3664,7 @@ mod tests {
         });
 
         let packet = connector_control_packet_from_reports(
-            Some("linear"),
+            Some("remote-fixture"),
             queue,
             publish_plan,
             roundtrip_plan,
@@ -3722,13 +3722,13 @@ mod tests {
             packet
                 .pointer("/resources/connector_control")
                 .and_then(|value| value.as_str()),
-            Some("entrance://connectors/control/linear")
+            Some("entrance://connectors/control/remote-fixture")
         );
         assert_eq!(
             packet
                 .pointer("/resources/connector_publish_plan")
                 .and_then(|value| value.as_str()),
-            Some("entrance://connectors/publish-plan/linear")
+            Some("entrance://connectors/publish-plan/remote-fixture")
         );
     }
 

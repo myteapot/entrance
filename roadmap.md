@@ -18,8 +18,8 @@ Last updated: 2026-06-09
 - 本轮继续把 issue/status/comment 执行路径绑定到 transition admission：`hive issue comment/decide/run/retry-run` 会先通过 kernel transition policy，operator comment/decision payload 写入 `entrance.hive.issue_transition_admission.v1` receipt，CLI retry/review/cancel 需要 `--human-confirmed`，issue surface audit 会校验 transition admission 与 evidence/comment 绑定。
 - 本轮继续补齐 Panel 操作后刷新：Panel 写 issue ledger 的操作，包括 create/run/retry/review/cancel/comment、issue mirror sync/publish/verify/readback/admit/roundtrip、connector publish/roundtrip execute 和 fixture demo，都会刷新 board 并强制重新读取 selected issue 的 Transition Policy、Reviewer Control、Loop Dashboard、Evidence Drilldown、Evidence Manifest、Activity Timeline、Runtime Preflight 和 Worker Lifecycle。
 - 本轮继续把 issue transition policy 推进成可验证状态机：`issue_transitions.state_machine` 现在随 `hive policy registry --compact` / MCP policy registry 暴露每个状态的 allowed/blocked action、gate、confirmation、terminal/human-decision class，并补了状态矩阵测试来校验真实 issue action surface 与 registry 不漂移，包括 loop-bound `run` 和 retryable runtime-rejected `Canceled` 条件。
-- 本轮继续把远端 issue 状态映射推进到 policy registry：`hive policy registry --compact` 现在暴露 remote-fixture/GitHub/Linear status mapping，GitHub write/readback 使用 issue state/state_reason，Linear write/readback 先用 state name 或 description status marker 做受限校验，remote write plan 和 readback detail 都会携带同一份 `status_mapping`。
-- 本轮继续把 Linear status mapping 推进到配置驱动写入：`entrance.toml` 支持 `connectors.linear.status_mappings.<HiveStatus>.remote_state_id`，provider registry/remote contract/connector queue 会暴露 configured mapping，Linear GraphQL update 会写入 configured `stateId`，readback 会优先校验 `state.id` 再 fallback 到 state name/status marker。
+- 本轮把 connector status mapping 收敛到本地目标：`hive policy registry --compact` 现在只暴露 `remote-fixture` status mapping，remote write plan 和 readback detail 继续携带同一份本地 fixture `status_mapping`。
+- 本轮移除了第三方 issue connector 目标：`entrance.toml` 不再声明第三方 provider，provider registry/remote contract/connector queue 只保留 `local-hive-panel`、`file` 和 `remote-fixture` 的本地可验证路径。
 - 本轮继续把 issue 级 connector control 暴露到 agent 和 Panel：新增 `entrance.hive.issue_connector_control.v1` 摘要，MCP `entrance_issue_control` / `entrance://issues/{issue_id}/control` 现在携带 provider、publish/admission gate、remote target、remote write plan、当前 `status_mapping` 和 configured mappings；Panel connector strip 也显示当前 issue 的 status mapping chip。
 - 本轮继续把 external connector blocker 变成 operator decision surface：provider/target/write-plan/admission 阻塞会生成 `entrance.hive.connector_decision_surface.v1`，MCP issue control 和 connector queue 会暴露 primary action、blockers、issue actions、policy/review resource；Panel connector strip 显示 decision chip，selected issue 详情显示 Connector Decision block 和可点击 issue action。
 - 本轮继续把 connector queue 直接暴露到 MCP：新增 `entrance_connector_queue` tool、`entrance://connectors/queue` resource、`entrance://connectors/queue/{provider}` resource template/provider resource，并把 single issue control packet 指回全局 queue 与当前 provider queue。
@@ -30,12 +30,13 @@ Last updated: 2026-06-09
 - 本轮继续把 Reviewer Control 纳入自动验收：`run-local-mvp-demo.sh --verify-golden` 现在生成并比对 `loop-control-summary.json`，`capture-panel-screenshot.mjs` 会断言 Panel Reviewer Control、`loop_control.v1`、score vector、fallback budget 和 A/B/C operator options 都可见。
 - 本轮继续把 MCP-native surface 纳入协议级 smoke：`run-mcp-stdio-smoke.mjs` 现在通过真实 newline-delimited JSON-RPC stdio 调 `initialize`、tools/prompts/resources、MCP create/run loop、`entrance_loop_control`、loop control resource、loop review prompt、connector queue/control/decision prompt、digest-bound roundtrip plan/execute，并验证未确认 retry 和 connector roundtrip 都会被拒绝。
 - 本轮把 `runtime_preflight.v1` 扩展为最小 capability preview：`PREFLIGHT_PACKET`、CLI/MCP/Panel 现在暴露 worker spawn readiness、sandbox scope、artifact capture mode、connector readiness、human confirmation boundary 和 worker context，并由 MCP smoke 与 Panel screenshot workflow 验证。
-- 本轮继续把 capability preview 接到真实 connector config：产品路径的 `loop_run`、`loop_runtime_preflight`、`loop_dashboard` 现在使用 `HivePlugin` 持有的 `entrance.toml` connector 配置，所以 Linear/GitHub/file 的 active/configured/readiness 会在 worker spawn 前进入 `PREFLIGHT_PACKET` 和 runtime preflight report。
-- 本轮继续把 capability preview 纳入 runtime admission：`runtime_policy_ready` 现在要求 `worker_spawn_ready=true`，所以 runtime 可用但 Linear/GitHub review surface 未配置时，kernel 会直接产生 `Blocked` issue，不会启动 Explorer/Developer/Reviewer worker。
+- 本轮继续把 capability preview 接到真实 connector config：产品路径的 `loop_run`、`loop_runtime_preflight`、`loop_dashboard` 现在使用 `HivePlugin` 持有的 `entrance.toml` connector 配置，所以本地 issue surfaces 的 active/configured/readiness 会在 worker spawn 前进入 `PREFLIGHT_PACKET` 和 runtime preflight report。
+- 本轮继续把 capability preview 纳入 runtime admission：`runtime_policy_ready` 现在要求 `worker_spawn_ready=true`，所以 runtime 可用但 review surface 未配置或未知时，kernel 会直接产生 `Blocked` issue，不会启动 Explorer/Developer/Reviewer worker。
 - 本轮继续把 Reviewer fallback budget 从“轮号推断”改成 ledger-backed policy：verdict payload、Worker Lifecycle、Transition Policy 和 MCP issue control 现在按连续 invalid Reviewer verdict streak 计算预算，只有连续第 3 次 invalid review 才 fallback 到 `Blocked`，单纯跳到 round 3 不会耗尽预算。
 - 本轮继续把 Reviewer fallback budget 纳入 ledger 重算审计：`hive loop audit` 会从 verdict history 重算 invalid-round budget use/exhaustion，并拒绝一起漂移的 score/gate/evidence 自述字段。
 - 本轮继续把终态 contract status 纳入 verdict 重算审计：没有同轮 operator decision 接管状态时，`hive loop audit` 会要求 terminal contract status 与 current-round verdict decision 一致。
 - 本轮继续把 human-controlled transition admission 纳入 issue surface 重算审计：operator comment/decision evidence 会校验 transition admission 的 from/to status、policy resource、transition-policy resource 和 admitted action coverage。
+- 本轮继续把 operator transition admission proof 暴露到 trace/control 面：issue trace 的 operator event 现在直接携带 admitted action、gate、from/to status、policy registry resource、transition-policy resource 和 confirmation requirement，Panel/MCP 不必打开 raw evidence JSON 才能判断一次 retry/review/cancel 是否由 kernel policy 放行。
 - 本轮继续把 Reviewer score/gate 从静态占位推进到 ledger-derived MVP：stage completeness、runtime readiness、prior evidence presence、admission integrity、missing receipts 和 failure reasons 现在从当前轮 stages/evidence/admissions 计算；ledger gates 不完整时，`keep` 会被 runtime 强制降级为 `reject`。
 - 本轮继续把目标漂移约束推进到 Developer admission：`EXECUTION_PACKET` 现在必须携带 `accepted_candidate`，`accepted_candidate_bound` 会将它与同轮已 admitted 的 Explorer candidate 比对，不一致时即使 runtime receipts 完整也会被 compiler gate 拒绝；Reviewer score/gate 会暴露 `target_alignment` / `target_bound`。
 - 本轮继续把 target binding 纳入 ledger audit：`hive loop audit` 现在会从 packets/admissions 重新计算 Developer target binding，并拒绝被篡改的 `target_binding` admission receipt。
@@ -43,16 +44,16 @@ Last updated: 2026-06-09
 
 ## 还没做完
 
-- Productize `runtime_capability_preview.v1`：当前已能阻止 unready connector worker spawn；还缺把 capability 变成可版本化、可迁移的完整 policy lifecycle，并补齐真实 sandbox、artifact capture/archive、live Linear/GitHub workflow discovery 和人类偏好策略。
+- Productize `runtime_capability_preview.v1`：当前已能阻止 unready connector worker spawn；还缺把 capability 变成可版本化、可迁移的完整 policy lifecycle，并补齐真实 sandbox、artifact capture/archive、外部工作流 discovery 和人类偏好策略。
 - 把 Evidence Drilldown/Manifest 产品化：完整 transcript 展开、真实远端 receipt 归档、真实 artifact manifest 生成/内容校验、payload schema diff、更完整的 blocker decision workflow。
-- Productize MCP：当前已有本地 stdio JSON-RPC smoke；还缺真实客户端配置、named MCP client 兼容测试、verified actor identity、权限边界、远程 connector 绑定，以及 loop control / reviewer prompt / connector control / queue / plan / execute 在真实 MCP 客户端里的兼容性/可读性验证。
-- Productize Linear/GitHub connector：真实 token 验证、Linear workflow discovery/migration、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
+- Productize MCP：当前已有本地 stdio JSON-RPC smoke；还缺真实客户端配置、named MCP client 兼容测试、verified actor identity、权限边界、远程 MCP server 形态，以及 loop control / reviewer prompt / connector control / queue / plan / execute 在真实 MCP 客户端里的兼容性/可读性验证。
+- Productize external issue-board workflow：先围绕本地 Panel、file mirror、`remote-fixture` 和 MCP control packet 收敛真实人类工作流；后续外部 connector 作为独立目标重新准入。
 - Productize issue timeline：筛选/折叠、远端 issue comment 映射、inline decision 的操作后刷新状态、receipt drilldown 和更强的 blocked action provenance。
-- Productize issue transition policy：当前已经有 kernel registry/report snapshot/audit 绑定、execution-time transition admission receipt、Panel 操作后 selected issue control surface 刷新、系统化状态机矩阵测试、provider status mapping policy 和 Linear configured stateId mapping；还缺版本迁移、状态映射 discovery/migration 和更完整的 policy lifecycle。
+- Productize issue transition policy：当前已经有 kernel registry/report snapshot/audit 绑定、execution-time transition admission receipt、Panel 操作后 selected issue control surface 刷新、系统化状态机矩阵测试和本地 fixture status mapping policy；还缺版本迁移、状态映射 discovery/migration 和更完整的 policy lifecycle。
 - Hardening workers：sandbox、环境脱敏、heartbeat、resume/cancel/replacement、timeout recovery、跨进程 durable failure attribution。
 - Reviewer gates 继续加强：当前 `entrance.mcp.loop_control.v1` 已聚合 Reviewer gate surface、ledger-derived MVP score vector、Developer accepted-candidate binding、证据资源和 ledger-backed fallback budget；还缺语义级目标漂移检测、真实质量指标、keep/reject/block 的更强证据要求，以及需要人类偏好时的选项生成。
 - 正式 compiler IR：从 archive 中提升为 current truth，并把 loop contract、packet、receipt、evidence、verdict、policy registry lifecycle 变成版本化 runtime 对象。
 
 ## 下一轮建议
 
-优先把 connector status mapping 补到 live token-backed validation 和 drift recovery，同时把 issue timeline inline decision、Evidence Drilldown/Manifest 接到真实 agent/connector 产物：receipt drilldown、真实 artifact manifest 生成与内容校验、完整 transcript 展开、blocker decision workflow。
+优先把本地 issue-board + MCP control packet + `remote-fixture` dry-run 收敛成可连续使用的透明自动推进系统，同时把 issue timeline inline decision、Evidence Drilldown/Manifest 接到真实 agent 产物：receipt drilldown、真实 artifact manifest 生成与内容校验、完整 transcript 展开、blocker decision workflow。

@@ -68,10 +68,6 @@ impl Default for HiveConfig {
 pub struct ConnectorsConfig {
     #[serde(default)]
     pub file: ConnectorProviderConfig,
-    #[serde(default)]
-    pub linear: ConnectorProviderConfig,
-    #[serde(default)]
-    pub github: ConnectorProviderConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -189,16 +185,6 @@ persona = "operator"
 
 [connectors.file]
 enabled = false
-
-[connectors.linear]
-enabled = true
-auth_env = ["ENTRANCE_TEST_LINEAR_TOKEN"]
-storage = "linear-dry-run"
-
-[connectors.linear.status_mappings.Done]
-remote_state = "Done"
-remote_state_id = "lin-state-done"
-remote_state_type = "completed"
 "#,
         )
         .unwrap();
@@ -206,26 +192,6 @@ remote_state_type = "completed"
         let config = AppConfig::load_or_create(&path).unwrap();
 
         assert_eq!(config.connectors.file.enabled, Some(false));
-        assert_eq!(config.connectors.linear.enabled, Some(true));
-        assert_eq!(
-            config.connectors.linear.auth_env,
-            vec!["ENTRANCE_TEST_LINEAR_TOKEN"]
-        );
-        assert_eq!(
-            config.connectors.linear.storage.as_deref(),
-            Some("linear-dry-run")
-        );
-        let done_mapping = config
-            .connectors
-            .linear
-            .status_mappings
-            .get("Done")
-            .expect("Done mapping should parse");
-        assert_eq!(
-            done_mapping.remote_state_id.as_deref(),
-            Some("lin-state-done")
-        );
-        assert_eq!(done_mapping.remote_state_type.as_deref(), Some("completed"));
         let _ = fs::remove_file(path);
     }
 }

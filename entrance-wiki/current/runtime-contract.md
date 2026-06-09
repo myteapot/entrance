@@ -19,7 +19,7 @@ cargo run -p entrance-app --bin entrance -- hive issue list
 cargo run -p entrance-app --bin entrance -- hive issue show 1
 cargo run -p entrance-app --bin entrance -- hive connector registry --compact
 cargo run -p entrance-app --bin entrance -- hive connector queue --compact
-cargo run -p entrance-app --bin entrance -- hive connector queue --provider linear --compact
+cargo run -p entrance-app --bin entrance -- hive connector queue --provider remote-fixture --compact
 cargo run -p entrance-app --bin entrance -- hive connector fixture-demo --compact
 cargo run -p entrance-app --bin entrance -- hive connector publish-plan --compact
 cargo run -p entrance-app --bin entrance -- hive connector publish-execute --plan-id <sha256> --compact
@@ -66,15 +66,15 @@ plain presence checks: `role_worker` and `runtime_worker` must have `ok=true`
 before the packet can pass admission, and loop audit verifies the worker `role`
 still matches the packet writer role.
 `hive policy registry` is the current source for typed admission gate specs,
-runtime worker policy, and connector retry policy: supported runtimes, sandbox
+runtime worker policy, issue transition policy, connector admission checks,
+and the `remote-fixture` status mapping policy: supported runtimes, sandbox
 mode, timeout and attempt bounds, env overrides, role binding, required worker
-receipt metadata, the connector admission required-check contract, and the
-GitHub/Linear remote connector retry budget. Connector admission keeps
-`required_checks` as the compatibility list and exposes a structured
-`check_registry` with each check's severity, owner, required evidence, and
-summary. Runtime admission check rows inherit that registry metadata so a failed
-check carries both observed details and the policy owner/evidence contract.
-Admission gate failures are recorded as rejected receipts and returned as
+receipt metadata, and the connector admission required-check contract.
+Connector admission keeps `required_checks` as the compatibility list and
+exposes a structured `check_registry` with each check's severity, owner,
+required evidence, and summary. Runtime and connector admission check rows
+inherit that registry metadata so a failed check carries both observed details
+and the policy owner/evidence contract.
 blocked verdicts/issues instead of escaping as raw CLI errors.
 Every new loop run starts with a kernel-owned `PREFLIGHT_PACKET` routed
 `kernel -> explorer` and admitted by the `runtime_policy_ready` gate. That
@@ -179,9 +179,12 @@ evidence-to-comment author/action/body bindings. Operator comment/decision
 evidence also binds its `issue_transition_admission.v1` receipt back to the
 observed from/to issue status, policy resource, transition-policy resource, and
 admitted action coverage, so human-controlled transitions are auditable instead
-of only visible. Trace, Doctor, and Panel summaries expose both failed audit
-check names and extracted audit failure detail codes, so an operator can see the
-exact binding that broke without opening raw JSON first.
+of only visible. Issue trace operator events also project the same transition
+admission proof: admitted action, gate, from/to issue status, policy registry
+resource, transition-policy resource, and confirmation requirement. Trace,
+Doctor, and Panel summaries expose both failed audit check names and extracted
+audit failure detail codes, so an operator can see the exact binding that broke
+without opening raw JSON first.
 For reviewer-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 At or after round 3, `--decision reject` falls back to a `blocked` verdict and
@@ -220,9 +223,12 @@ Lifecycle role lanes, round chips, fallback budget, timeout/failure summaries,
 and copyable next actions. Durable worker heartbeat, resume, cancel,
 replacement, and isolation are still future runtime-hardening work.
 
-Operator comments and decisions are summarized into a current-round operator trail plus
-total operator event counts, making human retry, review, cancel, and comment
-actions visible without opening the raw evidence stream.
+Operator comments and decisions are summarized into a current-round operator
+trail plus total operator event counts. Decision events include transition
+admission action, gate, from/to status, policy registry resource,
+transition-policy resource, and confirmation requirement, making human retry,
+review, cancel, and comment actions visible and policy-bound without opening the
+raw evidence stream.
 `entrance hive issue timeline <issue_id>` exposes the issue-first activity feed
 as `entrance.hive.issue_timeline.v1`. The report combines issue creation,
 typed comments, stage evidence, verdicts, operator decisions, blockers, linked
@@ -237,34 +243,33 @@ Compact issue surfaces also expose connector mirror drift: `hive issue show
 <id> --compact` includes a `connector` block, while `hive issue list --compact`
 adds a `connector_queue` with publish-required issue ids and commands.
 The connector registry is available through `hive connector registry --compact`;
-it distinguishes active local/file providers from configured remote GitHub/Linear
-issue providers, names the admission gate, and exposes provider-specific
-admission status/blockers. `hive connector queue --compact` returns a provider-scoped
-publish queue, and `--provider <name>` narrows the dry-run plan to one
-issue-surface provider. `hive connector publish-plan --compact` creates a
-digest-bound local mirror publish plan from the current queue and the provider
-writer adapter contract; `hive connector publish-execute --plan-id <sha256>
---compact` recomputes that plan and refuses to execute if the queue, issue
-mirror digest, or provider writer capability changed. Successful execution
-records a typed connector publish comment/evidence on each issue before writing
-the mirror, and each publish returns a typed connector write receipt with
-adapter, status, comment surface, digest, and readback command. The built-in
-`local-hive-panel` surface is an in-process issue/status/comment board; its
-publish/readback checks are satisfied from SQLite and do not create an external
-publish queue item. `file:`, `remote-fixture:`, `linear:`, and `github:` are the
-surfaces that represent external mirror or remote issue sync. `hive issue
-mirror-roundtrip <id> --compact` wraps the issue-scoped publish -> readback ->
-admission workflow into one typed report; recorded readback/admission
+it distinguishes the active `local-hive-panel`, `file`, and `remote-fixture`
+issue-surface providers, names the admission gate, and exposes provider-specific
+admission status/blockers. `hive connector queue --compact` returns a
+provider-scoped publish queue, and `--provider <name>` narrows the dry-run plan
+to one issue-surface provider. `hive connector publish-plan --compact` creates
+a digest-bound local mirror publish plan from the current queue and the provider
+writer adapter contract; `hive connector publish-execute --plan-id <sha256>`
+recomputes that plan and refuses to execute if the queue, issue mirror digest,
+or provider writer capability changed. Successful execution records a typed
+connector publish comment/evidence on each issue before writing the mirror, and
+each publish returns a typed connector write receipt with adapter, status,
+comment surface, digest, and readback command. The built-in `local-hive-panel`
+surface is an in-process issue/status/comment board; its publish/readback checks
+are satisfied from SQLite and do not create an external publish queue item.
+`file:` represents a local JSON mirror, while `remote-fixture:` / `fixture:`
+represent the local file-backed external issue/status/comment dry-run surface.
+`hive issue mirror-roundtrip <id> --compact` wraps the issue-scoped publish ->
+readback -> admission workflow into one typed report; recorded readback/admission
 observations are republished before the final readback check. `hive connector
 roundtrip-plan --compact` creates a digest-bound queue plan for that same
 roundtrip operation, including provider writer/readback/admission blockers, and
 `hive connector roundtrip-execute --plan-id <sha256> --compact` recomputes the
 plan before executing it. Successful queue execution records a typed
 `connector_roundtrip_execute` comment/evidence on every issue, then runs the
-issue-scoped roundtrip and returns a compact per-issue completion summary. The
-active
-`remote-fixture:` provider is a file-backed remote issue API fixture that writes
-`entrance.hive.connector_remote_write_receipt.v1` and verifies
+issue-scoped roundtrip and returns a compact per-issue completion summary.
+The active `remote-fixture:` provider is a file-backed remote issue API fixture
+that writes `entrance.hive.connector_remote_write_receipt.v1` and verifies
 `entrance.hive.connector_remote_readback.v1` without contacting a third-party
 service. `hive connector fixture-demo --compact` is the default non-local
 external-surface dry-run: it creates a `remote-fixture:ENTRANCE-DEMO` loop issue,
@@ -273,70 +278,22 @@ runs publish -> readback -> admission -> final readback, records
 `entrance.hive.connector_fixture_demo.v1` report with issue, connector, queue,
 and roundtrip summaries. The Panel `Run Fixture` button calls the same daemon
 path, selects the created issue, and refreshes the connector queue/detail view.
-Remote GitHub/Linear providers remain visible with adapter blockers
-until configured, and active providers expose an
-`entrance.hive.connector_remote_contract.v1` that specifies remote object kind,
-write receipt schema, readback schema, idempotency key parts, auth env, and
-required pre/post-write checks. Their admission previews also include
-`entrance.hive.connector_remote_target.v1`, parsed from provider-specific review
-surfaces such as `github:owner/repo#123`,
-`github:https://github.com/owner/repo/issues/123`, `linear:TEAM-123`, or a
-Linear issue URL. Invalid targets surface typed blockers such as
-`remote_target_invalid`, `github_owner_missing`, or `github_repo_missing` before
-any remote writer can be admitted. The Panel displays those parsed targets as
-connector target chips in the issue detail, board card, and connector queue
-surfaces, using warning styling for invalid targets. Queue and publish-plan
-issues also expose `entrance.hive.connector_remote_write_plan.v1`, a typed
-provider request envelope with auth expectations, source issue fields,
-HTTP/GraphQL/file operations, receipt/readback schemas, and blockers. GitHub
-plans enumerate REST issue/comment operations, Linear plans enumerate GraphQL
-issue/comment operations, and inactive or unsupported providers remain blocked
-at the plan boundary. The Panel renders those envelopes as remote write-plan
-chips in the issue detail, board card, and connector queue without implying that
-the third-party write has executed. `hive issue
-connector-admission <id>
---compact` is the issue-scoped dry-run for routing a current mirror to
-`external_issue_surface`; it now emits a typed provider check vector, writer
-adapter blockers, and any remote contract so rejected admissions can be traced
-to provider readiness, mirror readback, remote-write requirements, or retry
-policy budget drift.
-Provider overrides are read from `entrance.toml` under `[connectors.<provider>]`.
-GitHub and Linear both have guarded remote publish/readback slices when enabled
-with a configured token env. `[connectors.github] enabled = true` with
-`GITHUB_TOKEN` or `GH_TOKEN` activates REST issue/comment publish operations;
-`[connectors.linear] enabled = true` with an env such as `LINEAR_API_KEY`
-activates GraphQL issue/comment publish operations. Both record
-`entrance.hive.connector_remote_write_execute.v1` plus redacted
-`entrance.hive.connector_remote_write_receipt.v1` evidence. GitHub comment
-publish uses an issue-stable Entrance idempotency marker: it lists issue
-comments, patches the matching comment when present, and creates one only when
-the marker is absent. GitHub readback uses REST `GET` issue plus `GET` issue
-comments, follows `Link` pagination for the comment list, emits
-`entrance.hive.connector_remote_readback.v1`, and connector admission is ready
-only when the typed target, auth, issue state/body, latest comment, and
-write-receipt binding checks pass. Linear publish reads the issue UUID by
-identifier, updates title/description through GraphQL, updates the matching
-issue-stable comment marker when present, creates one only when absent, emits the
-same remote write/readback schemas, and gates admission on typed target, auth,
-issue body, comment surface, and write-receipt checks. GitHub REST and Linear
-GraphQL operations expose attempt metadata, retry transient HTTP `5xx` responses
-with bounded backoff, and classify `403/429` rate limits as typed
-`remote_rate_limited` blockers without immediate retry; Linear also classifies
-GraphQL rate-limit errors as the same typed blocker. Connector status and queue
-reports include compact remote diagnostics, letting the Panel surface write or
-readback retry/rate-limit signals as first-class chips and expand selected issue
-diagnostics into per-attempt HTTP status, failed-check, retry reason, and backoff
-rows. The same GitHub/Linear retry budget is exposed through
-`hive policy registry --compact` and embedded in active remote contracts.
-Connector admission previews include a `retry_policy_bound` check that compares
-observed write/readback attempt counts with that active budget before a remote
-issue surface can be admitted. `hive policy registry --compact` and
-`hive connector registry --compact` expose the same connector admission
-`required_checks` list and structured `check_registry` so Panel chips and CLI
+`remote-fixture:` exposes `entrance.hive.connector_remote_contract.v1`,
+`entrance.hive.connector_remote_target.v1`, and
+`entrance.hive.connector_remote_write_plan.v1` so operators can inspect target,
+status mapping, fixture write/readback schema, idempotency key parts, blockers,
+and planned local fixture operations before admission. Fixture targets accept
+`remote-fixture:<key>` or `fixture:<key>`; missing targets surface typed blockers
+such as `remote_target_invalid` or `fixture_target_missing`. Provider overrides
+are read from `entrance.toml` under `[connectors.<provider>]`; the current local
+target uses `[connectors.file]` for local JSON mirror configuration and keeps
+remote fixture execution credential-free. Connector admission previews include a
+`retry_policy_bound` compatibility check and expose the connector admission
+`required_checks` list plus structured `check_registry` so Panel chips and CLI
 previews can be checked against the policy surface. Actual admission check rows
 include the matched owner, severity, required evidence, and policy summary.
-Production drift handling, richer Linear state mapping, real-token coverage, and
-configurable/adaptive retry policy are still pending.
+Production drift handling, remote MCP server shape, richer external workflow
+discovery, and configurable/adaptive retry policy are still pending.
 `hive issue mirror-admit <id> --compact` uses the same provider admission
 status as `hive issue connector-admission <id> --compact`.
 

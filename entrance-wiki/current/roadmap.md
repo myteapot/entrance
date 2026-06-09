@@ -144,6 +144,10 @@ Entrance has reached a local MVP unit:
 - Issue-surface audit now binds operator transition admission receipts back to
   from/to status, policy resources, and admitted action coverage, so
   human-controlled transitions cannot drift from their kernel admission receipt.
+- Issue trace/operator events now project transition admission proof directly to
+  control surfaces: admitted action, gate, from/to status, policy registry
+  resource, transition-policy resource, and confirmation requirement are visible
+  without opening raw evidence JSON.
 - The same loop-level control packet is now available through local CLI
   `entrance hive loop control <loop_id>`, daemon command `hive_loop_control`,
   and the Panel selected issue Reviewer Control block, so local operators and
@@ -231,18 +235,14 @@ Entrance has reached a local MVP unit:
   selected issue Transition Policy, Reviewer Control, Loop Dashboard, Evidence
   Drilldown, Evidence Manifest, Activity Timeline, Runtime Preflight, and Worker
   Lifecycle.
-- Connector status mapping is now policy-backed. `entrance hive policy registry
-  --compact` exposes remote-fixture/GitHub/Linear status mappings; GitHub
-  write/readback uses issue state/state_reason, Linear write/readback currently
-  uses configured workflow `stateId` when present, then falls back to state name
-  or a description status marker, and remote write/readback reports carry the
-  selected `status_mapping` contract.
-- Linear status mapping now has a config-driven write/readback path.
-  `entrance.toml` can define
-  `connectors.linear.status_mappings.<HiveStatus>.remote_state_id`; the provider
-  registry, remote contract, and connector queue expose that configured mapping,
-  Linear GraphQL update writes the configured `stateId`, and readback validates
-  `state.id` before fallback checks.
+- Connector status mapping is now policy-backed for the local target.
+  `entrance hive policy registry --compact` exposes the `remote-fixture`
+  status mapping; remote write/readback reports carry the selected local
+  fixture `status_mapping` contract.
+- Third-party issue connectors have been removed from the active target and
+  local registry for this convergence pass. `entrance.toml`, provider registry,
+  remote contracts, and connector queue now focus on `local-hive-panel`, `file`,
+  and `remote-fixture`.
 - Issue-level connector control now exposes the selected remote status mapping
   to both agents and operators. `entrance.hive.issue_connector_control.v1`
   summarizes provider state, publish/admission gates, remote target, remote
@@ -292,10 +292,9 @@ multi-agent runtime/compiler product.
   clients, and compatibility checks against named MCP clients.
 - Add verified operator identity for local Panel/daemon decisions beyond the
   current `local-hive-panel` audit context.
-- Add live token-backed GitHub and Linear validation runs, including safe
-  credential checks, idempotent comment updates, readback verification, error
-  handling, rate-limit behavior, configured provider status mapping behavior,
-  and redacted receipts.
+- Productize external issue-board workflow around the local Panel, file mirror,
+  `remote-fixture`, and MCP control packets before admitting any new third-party
+  provider target.
 - Productize external connector blocker decisions with richer remediation
   guidance, live provider discovery, and drift-repair flows.
 
@@ -327,7 +326,7 @@ multi-agent runtime/compiler product.
   context before any agent worker is spawned, and `runtime_policy_ready` now
   blocks worker spawn when that preview is not ready. It is still not a complete
   capability system with durable sandbox/artifact execution semantics or live
-  Linear workflow discovery.
+  external workflow discovery.
 
 ### P1: Loop dashboard
 
@@ -357,12 +356,12 @@ multi-agent runtime/compiler product.
 - Keep the local MVP golden fixtures current as the intended issue/status/comment
   contracts evolve.
 - Add release notes and operator docs that clearly separate local MVP, external
-  fixture demo, and real GitHub/Linear integrations.
+  fixture demo, and future external issue-board integrations.
 
 ## Next Recommended Loop
 
-Run one larger convergence loop on productionizing external issue surfaces:
+Run one larger convergence loop on productionizing the local transparent issue-board workflow:
 
-1. Start with live token-backed GitHub/Linear validation for configured status
-   mappings, then choose whether the next slice should harden worker lifecycle
+1. Start with local Panel + MCP control packet + `remote-fixture` roundtrip
+   usability, then choose whether the next slice should harden worker lifecycle
    or deepen connector drift recovery.

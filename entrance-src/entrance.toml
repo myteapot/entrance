@@ -10,20 +10,6 @@ http_port = 9720
 [connectors.file]
 enabled = true
 
-[connectors.linear]
-enabled = false
-auth_env = ["LINEAR_API_KEY"]
-
-# Optional: map Hive issue statuses to Linear workflow state ids.
-# [connectors.linear.status_mappings.Done]
-# remote_state = "Done"
-# remote_state_id = "linear-workflow-state-uuid"
-# remote_state_type = "completed"
-
-[connectors.github]
-enabled = false
-auth_env = ["GITHUB_TOKEN", "GH_TOKEN"]
-
 [launcher]
 hotkey = "Ctrl+Space"
 scan_paths = []

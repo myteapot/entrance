@@ -58,8 +58,6 @@ const DEFAULT_WORKER_TIMEOUT_SECS: u64 = 60;
 const MAX_WORKER_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_WORKER_ATTEMPTS: u64 = 1;
 const MAX_WORKER_ATTEMPTS: u64 = 3;
-const CONNECTOR_RETRY_MAX_ATTEMPTS: u64 = 2;
-const CONNECTOR_RETRY_BASE_BACKOFF_MS: u64 = 100;
 const CONNECTOR_ADMISSION_REQUIRED_CHECKS: &[&str] = &[
     "provider_supported",
     "provider_admission_ready",
@@ -1681,6 +1679,20 @@ pub struct IssueOperatorSummary {
     pub action: Option<String>,
     pub issue_status: Option<String>,
     pub loop_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission_gate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission_from_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission_to_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission_policy_resource: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission_transition_policy_resource: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission_requires_confirmation: Option<bool>,
     pub note: Option<String>,
     pub summary: String,
 }
@@ -2384,44 +2396,6 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
         status_mappings: Vec::new(),
         notes: "File-backed remote issue API fixture for validating remote write/readback contracts; not a third-party connector.".to_string(),
     };
-    let mut linear = ConnectorProviderSpec {
-        name: "linear".to_string(),
-        display_name: "Linear".to_string(),
-        status: "planned".to_string(),
-        mode: "remote-issue-api".to_string(),
-        review_surface_prefixes: vec!["linear:".to_string()],
-        auth_required: true,
-        auth_env: vec!["LINEAR_API_KEY".to_string()],
-        configured: false,
-        supports_status: false,
-        supports_publish: false,
-        supports_readback: false,
-        supports_admission: false,
-        storage: "not-configured".to_string(),
-        status_mappings: Vec::new(),
-        notes: "Target provider for real issue/status/comment sync; connector is not active yet."
-            .to_string(),
-    };
-    apply_connector_provider_config(&mut linear, &config.linear);
-    let mut github = ConnectorProviderSpec {
-        name: "github".to_string(),
-        display_name: "GitHub Issues".to_string(),
-        status: "planned".to_string(),
-        mode: "remote-issue-api".to_string(),
-        review_surface_prefixes: vec!["github:".to_string(), "gh:".to_string()],
-        auth_required: true,
-        auth_env: vec!["GITHUB_TOKEN".to_string(), "GH_TOKEN".to_string()],
-        configured: false,
-        supports_status: false,
-        supports_publish: false,
-        supports_readback: false,
-        supports_admission: false,
-        storage: "not-configured".to_string(),
-        status_mappings: Vec::new(),
-        notes: "Target provider for GitHub issue mirrors; connector is not active yet.".to_string(),
-    };
-    apply_connector_provider_config(&mut github, &config.github);
-
     let providers = vec![
         ConnectorProviderSpec {
             name: "local-hive-panel".to_string(),
@@ -2443,8 +2417,6 @@ pub fn connector_registry_with_config(config: &ConnectorsConfig) -> ConnectorReg
         },
         file,
         remote_fixture,
-        linear,
-        github,
     ];
     let admission = connector_admission_policy_spec();
     let provider_admissions = providers
@@ -2798,72 +2770,17 @@ pub fn connector_status_mapping_for_provider(
     })
 }
 
-pub fn connector_github_issue_state(status: &str) -> &'static str {
-    match status {
-        "Done" | "Canceled" => "closed",
-        _ => "open",
-    }
-}
-
-pub fn connector_github_issue_state_reason(status: &str) -> Option<&'static str> {
-    match status {
-        "Done" => Some("completed"),
-        "Canceled" => Some("not_planned"),
-        _ => None,
-    }
-}
-
 fn connector_retry_policies() -> Vec<ConnectorRetryPolicySpec> {
-    vec![
-        connector_retry_policy_spec(
-            "github",
-            "rest",
-            &[
-                "remote_issue_read",
-                "remote_issue_write",
-                "remote_comment_read",
-                "remote_comment_write",
-            ],
-            &[
-                "retry-after",
-                "x-ratelimit-remaining",
-                "x-ratelimit-reset",
-                "x-ratelimit-resource",
-            ],
-        ),
-        connector_retry_policy_spec(
-            "linear",
-            "graphql",
-            &[
-                "remote_issue_read",
-                "remote_issue_write",
-                "remote_comment_read",
-                "remote_comment_write",
-            ],
-            &[
-                "retry-after",
-                "x-ratelimit-remaining",
-                "x-ratelimit-reset",
-                "x-ratelimit-limit",
-                "x-rate-limit-remaining",
-                "x-rate-limit-reset",
-                "x-rate-limit-limit",
-            ],
-        ),
-    ]
+    Vec::new()
 }
 
 fn connector_status_mapping_policies() -> Vec<ConnectorStatusMappingPolicySpec> {
-    vec![
-        connector_status_mapping_policy_spec(
-            "remote-fixture",
-            "file",
-            "exact_status_field",
-            "status_field_equals_hive_status",
-        ),
-        connector_github_status_mapping_policy(),
-        connector_linear_status_mapping_policy(),
-    ]
+    vec![connector_status_mapping_policy_spec(
+        "remote-fixture",
+        "file",
+        "exact_status_field",
+        "status_field_equals_hive_status",
+    )]
 }
 
 fn connector_status_mapping_policy_spec(
@@ -2892,100 +2809,6 @@ fn connector_status_mapping_policy_spec(
                 notes: "Remote status field must equal the Hive issue status.".to_string(),
             })
             .collect(),
-    }
-}
-
-fn connector_github_status_mapping_policy() -> ConnectorStatusMappingPolicySpec {
-    ConnectorStatusMappingPolicySpec {
-        schema_version: POLICY_SCHEMA_VERSION.to_string(),
-        provider: "github".to_string(),
-        transport: "rest".to_string(),
-        status_source: "hive_issue.status".to_string(),
-        write_strategy: "issue_state_and_state_reason".to_string(),
-        readback_strategy: "state_and_state_reason_match".to_string(),
-        mappings: ISSUE_STATUSES
-            .iter()
-            .map(|status| ConnectorStatusMappingSpec {
-                hive_status: (*status).to_string(),
-                remote_state: Some(connector_github_issue_state(status).to_string()),
-                remote_state_id: None,
-                remote_state_reason: connector_github_issue_state_reason(status)
-                    .map(str::to_string),
-                remote_state_type: None,
-                remote_status_marker: None,
-                readback_check: "remote_status".to_string(),
-                notes: match *status {
-                    "Done" => {
-                        "Done closes the GitHub issue with state_reason=completed.".to_string()
-                    }
-                    "Canceled" => "Canceled closes the GitHub issue with state_reason=not_planned."
-                        .to_string(),
-                    _ => "Non-terminal Hive statuses keep the GitHub issue open.".to_string(),
-                },
-            })
-            .collect(),
-    }
-}
-
-fn connector_linear_status_mapping_policy() -> ConnectorStatusMappingPolicySpec {
-    ConnectorStatusMappingPolicySpec {
-        schema_version: POLICY_SCHEMA_VERSION.to_string(),
-        provider: "linear".to_string(),
-        transport: "graphql".to_string(),
-        status_source: "hive_issue.status".to_string(),
-        write_strategy: "description_status_marker_until_state_id_mapping".to_string(),
-        readback_strategy: "state_name_or_description_status_marker".to_string(),
-        mappings: ISSUE_STATUSES
-            .iter()
-            .map(|status| ConnectorStatusMappingSpec {
-                hive_status: (*status).to_string(),
-                remote_state: Some((*status).to_string()),
-                remote_state_id: None,
-                remote_state_reason: None,
-                remote_state_type: connector_linear_state_type(status).map(str::to_string),
-                remote_status_marker: Some(format!("Status: {status}")),
-                readback_check: "remote_status".to_string(),
-                notes: "Linear state id mapping is not configured yet, so write/readback use the mirrored description status marker and accept matching state names when present.".to_string(),
-            })
-            .collect(),
-    }
-}
-
-fn connector_linear_state_type(status: &str) -> Option<&'static str> {
-    match status {
-        "Todo" => Some("unstarted"),
-        "Doing" => Some("started"),
-        "Blocked" | "Needs Review" => Some("backlog"),
-        "Done" => Some("completed"),
-        "Canceled" => Some("canceled"),
-        _ => None,
-    }
-}
-
-fn connector_retry_policy_spec(
-    provider: &str,
-    transport: &str,
-    applies_to: &[&str],
-    rate_limit_headers: &[&str],
-) -> ConnectorRetryPolicySpec {
-    ConnectorRetryPolicySpec {
-        schema_version: POLICY_SCHEMA_VERSION.to_string(),
-        provider: provider.to_string(),
-        transport: transport.to_string(),
-        applies_to: applies_to
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
-        max_attempts: CONNECTOR_RETRY_MAX_ATTEMPTS,
-        base_backoff_ms: CONNECTOR_RETRY_BASE_BACKOFF_MS,
-        backoff_strategy: "linear".to_string(),
-        retryable_http_statuses: vec![500, 502, 503, 504],
-        rate_limit_http_statuses: vec![403, 429],
-        rate_limit_headers: rate_limit_headers
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
-        no_immediate_retry_checks: vec!["remote_rate_limited".to_string()],
     }
 }
 
@@ -3028,30 +2851,6 @@ fn apply_connector_provider_config(
         }
 
         provider.configured = connector_provider_auth_configured(provider);
-        if provider.configured
-            && matches!(provider.name.as_str(), "github" | "linear")
-            && provider.mode == "remote-issue-api"
-        {
-            provider.status = "active".to_string();
-            provider.supports_status = true;
-            provider.supports_publish = true;
-            provider.supports_readback = true;
-            provider.supports_admission = true;
-            if provider.storage == "not-configured" {
-                provider.storage = if provider.name == "github" {
-                    "github-rest-api".to_string()
-                } else {
-                    "linear-graphql-api".to_string()
-                };
-            }
-            provider.notes = if provider.name == "github" {
-                "GitHub REST publish/readback connector is active for configured issue targets."
-                    .to_string()
-            } else {
-                "Linear GraphQL publish/readback connector is active for configured issue targets."
-                    .to_string()
-            };
-        }
         provider.notes = format!("{} Configured from entrance.toml.", provider.notes);
     }
 }
@@ -5706,8 +5505,8 @@ fn runtime_connector_readiness_preview(
     connectors: &ConnectorsConfig,
 ) -> HiveLoopRuntimeConnectorReadinessPreview {
     let review_surface = default_text(review_surface.to_string(), "local-hive-panel");
-    let provider_name = issue_mirror_provider(&review_surface);
     let registry = connector_registry_with_config(connectors);
+    let provider_name = connector_provider_name_for_review_surface(&registry, &review_surface);
     let provider = registry
         .providers
         .iter()
@@ -5752,6 +5551,39 @@ fn runtime_connector_readiness_preview(
             .unwrap_or_default(),
         control_resource: format!("entrance://connectors/control/{provider_name}"),
     }
+}
+
+fn connector_provider_name_for_review_surface(
+    registry: &ConnectorRegistryReport,
+    review_surface: &str,
+) -> String {
+    let provider_name = issue_mirror_provider(review_surface);
+    if registry
+        .providers
+        .iter()
+        .any(|provider| provider.name == provider_name)
+    {
+        return provider_name;
+    }
+    registry
+        .providers
+        .iter()
+        .find(|provider| connector_provider_matches_review_surface(provider, review_surface))
+        .map(|provider| provider.name.clone())
+        .unwrap_or(provider_name)
+}
+
+fn connector_provider_matches_review_surface(
+    provider: &ConnectorProviderSpec,
+    review_surface: &str,
+) -> bool {
+    provider.review_surface_prefixes.iter().any(|prefix| {
+        if prefix.ends_with(':') {
+            review_surface.starts_with(prefix)
+        } else {
+            review_surface == prefix
+        }
+    })
 }
 
 fn runtime_human_boundary_preview(
@@ -12048,6 +11880,7 @@ fn worker_receipt_errors_for_summary(
 }
 
 fn issue_operator_summary(row: &HiveLoopEvidence) -> IssueOperatorSummary {
+    let transition_admission = row.payload.get("transition_admission");
     IssueOperatorSummary {
         id: row.id,
         round: row.round,
@@ -12058,6 +11891,33 @@ fn issue_operator_summary(row: &HiveLoopEvidence) -> IssueOperatorSummary {
             .or_else(|| string_at(&row.payload, "/issue/status")),
         loop_status: string_at(&row.payload, "/loop/next_status")
             .or_else(|| string_at(&row.payload, "/loop/status")),
+        admission_action: transition_admission
+            .and_then(|value| value.get("action"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        admission_gate: transition_admission
+            .and_then(|value| value.get("gate"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        admission_from_status: transition_admission
+            .and_then(|value| value.get("from_status"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        admission_to_status: transition_admission
+            .and_then(|value| value.get("to_status"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        admission_policy_resource: transition_admission
+            .and_then(|value| value.get("policy_resource"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        admission_transition_policy_resource: transition_admission
+            .and_then(|value| value.get("transition_policy_resource"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        admission_requires_confirmation: transition_admission
+            .and_then(|value| value.get("requires_confirmation"))
+            .and_then(|value| value.as_bool()),
         note: string_at(&row.payload, "/operator/note")
             .or_else(|| string_at(&row.payload, "/operator/comment_body"))
             .map(|value| truncate_text(&value, 180)),
@@ -14521,27 +14381,7 @@ mod tests {
             .required_evidence
             .iter()
             .any(|evidence| evidence == "connector_remote_contract.retry"));
-        let github_retry = registry
-            .connector
-            .retry
-            .iter()
-            .find(|policy| policy.provider == "github")
-            .expect("GitHub retry policy should be registered");
-        assert_eq!(github_retry.transport, "rest");
-        assert_eq!(github_retry.max_attempts, CONNECTOR_RETRY_MAX_ATTEMPTS);
-        assert_eq!(
-            github_retry.base_backoff_ms,
-            CONNECTOR_RETRY_BASE_BACKOFF_MS
-        );
-        assert!(github_retry.retryable_http_statuses.contains(&503));
-        let linear_retry = registry
-            .connector
-            .retry
-            .iter()
-            .find(|policy| policy.provider == "linear")
-            .expect("Linear retry policy should be registered");
-        assert_eq!(linear_retry.transport, "graphql");
-        assert!(linear_retry.rate_limit_http_statuses.contains(&429));
+        assert!(registry.connector.retry.is_empty());
         assert_eq!(
             registry
                 .connector
@@ -14549,31 +14389,11 @@ mod tests {
                 .iter()
                 .map(|policy| policy.provider.as_str())
                 .collect::<Vec<_>>(),
-            vec!["remote-fixture", "github", "linear"]
+            vec!["remote-fixture"]
         );
-        let github_mapping = connector_status_mapping_for_provider("github", "Canceled")
-            .expect("GitHub canceled mapping should exist");
-        assert_eq!(github_mapping.remote_state.as_deref(), Some("closed"));
-        assert_eq!(
-            github_mapping.remote_state_reason.as_deref(),
-            Some("not_planned")
-        );
-        let linear_mapping = connector_status_mapping_for_provider("linear", "Blocked")
-            .expect("Linear blocked mapping should exist");
-        assert_eq!(linear_mapping.remote_state.as_deref(), Some("Blocked"));
-        assert_eq!(
-            linear_mapping.remote_status_marker.as_deref(),
-            Some("Status: Blocked")
-        );
-        assert_eq!(linear_mapping.remote_state_type.as_deref(), Some("backlog"));
         let fixture_mapping = connector_status_mapping_for_provider("remote-fixture", "Done")
             .expect("fixture mapping should exist");
         assert_eq!(fixture_mapping.remote_state.as_deref(), Some("Done"));
-        assert_eq!(connector_github_issue_state("Done"), "closed");
-        assert_eq!(
-            connector_github_issue_state_reason("Done"),
-            Some("completed")
-        );
         let connector_registry = connector_registry();
         assert!(connector_registry
             .provider_admissions
@@ -15240,59 +15060,31 @@ mod tests {
             remote_fixture_admission.route_to.as_deref(),
             Some("external_issue_surface")
         );
-        let linear = registry
-            .providers
-            .iter()
-            .find(|provider| provider.name == "linear")
-            .expect("linear connector should be registered");
-        assert_eq!(linear.status, "planned");
-        assert!(linear.auth_required);
-        assert!(!linear.configured);
-        let linear_admission = registry
-            .provider_admissions
-            .iter()
-            .find(|admission| admission.provider == "linear")
-            .expect("linear admission should be registered");
-        assert_eq!(linear_admission.status, "blocked");
-        assert!(linear_admission
-            .blockers
-            .iter()
-            .any(|blocker| blocker == "provider_not_active"));
-        assert!(linear_admission
-            .blockers
-            .iter()
-            .any(|blocker| blocker == "connector_not_configured"));
-        assert!(linear_admission
-            .blockers
-            .iter()
-            .any(|blocker| blocker == "admission_not_supported"));
+        assert_eq!(
+            registry
+                .providers
+                .iter()
+                .map(|provider| provider.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["local-hive-panel", "file", "remote-fixture"]
+        );
+        assert_eq!(
+            registry
+                .provider_admissions
+                .iter()
+                .map(|admission| admission.provider.as_str())
+                .collect::<Vec<_>>(),
+            vec!["local-hive-panel", "file", "remote-fixture"]
+        );
     }
 
     #[test]
     fn connector_registry_applies_runtime_config_overrides() {
-        let mut linear_status_mappings = BTreeMap::new();
-        linear_status_mappings.insert(
-            "Done".to_string(),
-            ConnectorProviderStatusMappingConfig {
-                remote_state: Some("Done".to_string()),
-                remote_state_id: Some("lin-state-done".to_string()),
-                remote_state_type: Some("completed".to_string()),
-                ..ConnectorProviderStatusMappingConfig::default()
-            },
-        );
         let config = ConnectorsConfig {
             file: ConnectorProviderConfig {
                 enabled: Some(false),
                 ..ConnectorProviderConfig::default()
             },
-            linear: ConnectorProviderConfig {
-                enabled: Some(true),
-                auth_env: vec!["ENTRANCE_TEST_LINEAR_TOKEN".to_string()],
-                storage: Some("linear-dry-run".to_string()),
-                status_mappings: linear_status_mappings,
-                ..ConnectorProviderConfig::default()
-            },
-            github: ConnectorProviderConfig::default(),
         };
 
         let registry = connector_registry_with_config(&config);
@@ -15305,120 +15097,14 @@ mod tests {
         assert_eq!(file.status, "disabled");
         assert!(!file.configured);
         assert!(!file.supports_publish);
-
-        let linear = registry
-            .providers
-            .iter()
-            .find(|provider| provider.name == "linear")
-            .expect("linear connector should be registered");
-        assert_eq!(linear.status, "planned");
-        assert_eq!(linear.storage, "linear-dry-run");
-        assert_eq!(linear.auth_env, vec!["ENTRANCE_TEST_LINEAR_TOKEN"]);
-        let done_mapping = linear
-            .status_mappings
-            .iter()
-            .find(|mapping| mapping.hive_status == "Done")
-            .expect("configured Linear Done mapping should be exposed");
-        assert_eq!(done_mapping.remote_state.as_deref(), Some("Done"));
         assert_eq!(
-            done_mapping.remote_state_id.as_deref(),
-            Some("lin-state-done")
+            registry
+                .providers
+                .iter()
+                .map(|provider| provider.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["local-hive-panel", "file", "remote-fixture"]
         );
-        assert_eq!(done_mapping.remote_state_type.as_deref(), Some("completed"));
-        assert!(!linear.configured);
-        assert!(linear.notes.contains("Configured from entrance.toml."));
-        let linear_admission = registry
-            .provider_admissions
-            .iter()
-            .find(|admission| admission.provider == "linear")
-            .expect("linear admission should be registered");
-        assert_eq!(linear_admission.status, "blocked");
-        assert!(linear_admission
-            .blockers
-            .iter()
-            .any(|blocker| blocker == "provider_not_active"));
-        assert!(linear_admission
-            .blockers
-            .iter()
-            .any(|blocker| blocker == "connector_not_configured"));
-    }
-
-    #[test]
-    fn linear_connector_can_activate_from_config_and_token_env() {
-        let token_env = "ENTRANCE_TEST_LINEAR_TOKEN_ACTIVATE";
-        std::env::set_var(token_env, "test-token");
-        let config = ConnectorsConfig {
-            linear: ConnectorProviderConfig {
-                enabled: Some(true),
-                auth_env: vec![token_env.to_string()],
-                ..ConnectorProviderConfig::default()
-            },
-            ..ConnectorsConfig::default()
-        };
-
-        let registry = connector_registry_with_config(&config);
-        std::env::remove_var(token_env);
-
-        let linear = registry
-            .providers
-            .iter()
-            .find(|provider| provider.name == "linear")
-            .expect("linear connector should be registered");
-        assert_eq!(linear.status, "active");
-        assert!(linear.configured);
-        assert!(linear.supports_publish);
-        assert!(linear.supports_readback);
-        assert!(linear.supports_admission);
-        assert_eq!(linear.storage, "linear-graphql-api");
-        assert!(linear
-            .notes
-            .contains("GraphQL publish/readback connector is active"));
-        let linear_admission = registry
-            .provider_admissions
-            .iter()
-            .find(|admission| admission.provider == "linear")
-            .expect("linear admission should be registered");
-        assert_eq!(linear_admission.status, "ready");
-        assert!(linear_admission.blockers.is_empty());
-    }
-
-    #[test]
-    fn github_connector_can_activate_from_config_and_token_env() {
-        let token_env = "ENTRANCE_TEST_GITHUB_TOKEN_ACTIVATE";
-        std::env::set_var(token_env, "test-token");
-        let config = ConnectorsConfig {
-            github: ConnectorProviderConfig {
-                enabled: Some(true),
-                auth_env: vec![token_env.to_string()],
-                ..ConnectorProviderConfig::default()
-            },
-            ..ConnectorsConfig::default()
-        };
-
-        let registry = connector_registry_with_config(&config);
-        std::env::remove_var(token_env);
-
-        let github = registry
-            .providers
-            .iter()
-            .find(|provider| provider.name == "github")
-            .expect("github connector should be registered");
-        assert_eq!(github.status, "active");
-        assert!(github.configured);
-        assert!(github.supports_publish);
-        assert!(github.supports_readback);
-        assert!(github.supports_admission);
-        assert_eq!(github.storage, "github-rest-api");
-        assert!(github
-            .notes
-            .contains("REST publish/readback connector is active"));
-        let github_admission = registry
-            .provider_admissions
-            .iter()
-            .find(|admission| admission.provider == "github")
-            .expect("github admission should be registered");
-        assert_eq!(github_admission.status, "ready");
-        assert!(github_admission.blockers.is_empty());
     }
 
     #[test]
@@ -15519,15 +15205,13 @@ mod tests {
 
     #[test]
     fn runtime_preflight_capability_preview_uses_connector_config() {
-        let token_env = "ENTRANCE_TEST_PREFLIGHT_LINEAR_TOKEN";
-        std::env::set_var(token_env, "test-token");
         let config = ConnectorsConfig {
-            linear: ConnectorProviderConfig {
+            file: ConnectorProviderConfig {
                 enabled: Some(true),
-                auth_env: vec![token_env.to_string()],
+                review_surface_prefixes: vec!["board:".to_string()],
+                storage: Some("custom-board-mirrors/*.json".to_string()),
                 ..ConnectorProviderConfig::default()
             },
-            ..ConnectorsConfig::default()
         };
         let root = std::env::temp_dir().join(format!(
             "entrance-hive-runtime-capability-config-test-{}",
@@ -15547,7 +15231,7 @@ mod tests {
                 boundary: String::new(),
                 approach_space: Vec::new(),
                 eval_space: Vec::new(),
-                review_surface: "linear:ENT-9".to_string(),
+                review_surface: "board:ENT-9".to_string(),
                 autonomy_level: "run-approved-candidates".to_string(),
                 runtime: "local".to_string(),
             },
@@ -15557,7 +15241,7 @@ mod tests {
         let preflight = runtime_preflight_with_config(&store, created.contract.id, &config)
             .expect("runtime preflight should resolve with connector config");
         let connector = preflight.preview.capability_preview.connector_readiness;
-        assert_eq!(connector.provider, "linear");
+        assert_eq!(connector.provider, "file");
         assert!(connector.known);
         assert_eq!(connector.status.as_deref(), Some("active"));
         assert_eq!(connector.configured, Some(true));
@@ -15566,7 +15250,7 @@ mod tests {
         assert_eq!(connector.supports_admission, Some(true));
         assert!(connector.external_surface_ready);
         assert!(connector.blockers.is_empty());
-        assert_eq!(connector.auth_env, vec![token_env.to_string()]);
+        assert!(connector.auth_env.is_empty());
 
         let report = run_with_config(
             &store,
@@ -15580,7 +15264,6 @@ mod tests {
             &config,
         )
         .expect("configured loop should run");
-        std::env::remove_var(token_env);
 
         let preflight_packet = report
             .packets
@@ -15592,7 +15275,7 @@ mod tests {
                 .payload
                 .pointer("/body/capability_preview/connector_readiness/provider")
                 .and_then(|value| value.as_str()),
-            Some("linear")
+            Some("file")
         );
         assert_eq!(
             preflight_packet
@@ -15627,11 +15310,11 @@ mod tests {
             &store,
             HiveLoopCreateRequest {
                 title: "Blocked capability preview".to_string(),
-                goal: "Block until Linear connector is configured".to_string(),
+                goal: "Block unknown external connector surfaces".to_string(),
                 boundary: String::new(),
                 approach_space: Vec::new(),
                 eval_space: Vec::new(),
-                review_surface: "linear:ENT-404".to_string(),
+                review_surface: "external:ENT-404".to_string(),
                 autonomy_level: "run-approved-candidates".to_string(),
                 runtime: "local".to_string(),
             },
@@ -15650,20 +15333,14 @@ mod tests {
                 .capability_preview
                 .connector_readiness
                 .provider,
-            "linear"
+            "external"
         );
         assert!(preflight
             .preview
             .capability_preview
             .worker_spawn_blockers
             .iter()
-            .any(|blocker| blocker == "connector.provider_not_active"));
-        assert!(preflight
-            .preview
-            .capability_preview
-            .worker_spawn_blockers
-            .iter()
-            .any(|blocker| blocker == "connector.connector_not_configured"));
+            .any(|blocker| blocker == "connector.provider_unknown"));
 
         let report = run(
             &store,
@@ -15687,7 +15364,7 @@ mod tests {
             .contains("capability_ready=false"));
         assert!(report.admissions[0]
             .reason
-            .contains("connector.provider_not_active"));
+            .contains("connector.provider_unknown"));
         assert_eq!(report.issues[0].issue.status, "Blocked");
         assert!(report.stages.iter().all(|stage| stage.role == "kernel"));
         assert_eq!(
@@ -15702,7 +15379,7 @@ mod tests {
                 .payload
                 .pointer("/body/capability_preview/connector_readiness/provider")
                 .and_then(|value| value.as_str()),
-            Some("linear")
+            Some("external")
         );
     }
 
@@ -19792,6 +19469,35 @@ mod tests {
                 .and_then(|event| event.action.as_deref()),
             Some("request-review")
         );
+        let review_event = review_trace
+            .last_operator_event
+            .as_ref()
+            .expect("review trace should expose last operator event");
+        assert_eq!(
+            review_event.admission_action.as_deref(),
+            Some("request-review")
+        );
+        assert_eq!(
+            review_event.admission_gate.as_deref(),
+            Some("human_confirmed_review_boundary")
+        );
+        assert_eq!(
+            review_event.admission_from_status.as_deref(),
+            Some("Blocked")
+        );
+        assert_eq!(
+            review_event.admission_to_status.as_deref(),
+            Some("Needs Review")
+        );
+        assert_eq!(review_event.admission_requires_confirmation, Some(true));
+        assert_eq!(
+            review_event.admission_policy_resource.as_deref(),
+            Some("entrance://policy/registry")
+        );
+        assert_eq!(
+            review_event.admission_transition_policy_resource.as_deref(),
+            Some(format!("entrance://issues/{issue_id}/transition-policy").as_str())
+        );
         assert_eq!(
             review_trace
                 .operator_events
@@ -19885,6 +19591,32 @@ mod tests {
                 .and_then(|event| event.action.as_deref()),
             Some("retry")
         );
+        let retry_event = retry_trace
+            .last_operator_event
+            .as_ref()
+            .expect("retry trace should expose last operator event");
+        assert_eq!(retry_event.admission_action.as_deref(), Some("retry"));
+        assert_eq!(
+            retry_event.admission_gate.as_deref(),
+            Some("human_confirmed_retry_boundary")
+        );
+        assert_eq!(
+            retry_event.admission_from_status.as_deref(),
+            Some("Needs Review")
+        );
+        assert_eq!(
+            retry_event.admission_to_status.as_deref(),
+            Some("Todo, then runtime_verdict")
+        );
+        assert_eq!(retry_event.admission_requires_confirmation, Some(true));
+        assert_eq!(
+            retry_event.admission_policy_resource.as_deref(),
+            Some("entrance://policy/registry")
+        );
+        assert_eq!(
+            retry_event.admission_transition_policy_resource.as_deref(),
+            Some(format!("entrance://issues/{issue_id}/transition-policy").as_str())
+        );
 
         let cancel_card = decide_issue(
             &store,
@@ -19936,6 +19668,29 @@ mod tests {
                 .as_ref()
                 .and_then(|event| event.action.as_deref()),
             Some("cancel")
+        );
+        let cancel_event = cancel_trace
+            .last_operator_event
+            .as_ref()
+            .expect("cancel trace should expose last operator event");
+        assert_eq!(cancel_event.admission_action.as_deref(), Some("cancel"));
+        assert_eq!(
+            cancel_event.admission_gate.as_deref(),
+            Some("human_confirmed_cancel_boundary")
+        );
+        assert_eq!(cancel_event.admission_from_status.as_deref(), Some("Todo"));
+        assert_eq!(
+            cancel_event.admission_to_status.as_deref(),
+            Some("Canceled")
+        );
+        assert_eq!(cancel_event.admission_requires_confirmation, Some(true));
+        assert_eq!(
+            cancel_event.admission_policy_resource.as_deref(),
+            Some("entrance://policy/registry")
+        );
+        assert_eq!(
+            cancel_event.admission_transition_policy_resource.as_deref(),
+            Some(format!("entrance://issues/{issue_id}/transition-policy").as_str())
         );
         assert_eq!(
             cancel_trace
@@ -20336,7 +20091,7 @@ mod tests {
                 boundary: String::new(),
                 approach_space: Vec::new(),
                 eval_space: Vec::new(),
-                review_surface: "linear:ENT-13".to_string(),
+                review_surface: "remote-fixture:ENT-13".to_string(),
                 autonomy_level: String::new(),
                 runtime: "local".to_string(),
             },
@@ -20356,8 +20111,8 @@ mod tests {
         let mirror = issue_mirror(&store, issue_id).expect("mirror should export");
 
         assert_eq!(mirror.schema_version, ISSUE_MIRROR_SCHEMA_VERSION);
-        assert_eq!(mirror.provider, "linear");
-        assert_eq!(mirror.review_surface, "linear:ENT-13");
+        assert_eq!(mirror.provider, "remote-fixture");
+        assert_eq!(mirror.review_surface, "remote-fixture:ENT-13");
         assert_eq!(
             mirror.external_key,
             format!("hive-loop-{}-issue-{issue_id}", created.contract.id)
@@ -20367,7 +20122,7 @@ mod tests {
                 .loop_contract
                 .as_ref()
                 .map(|contract| contract.review_surface.as_str()),
-            Some("linear:ENT-13")
+            Some("remote-fixture:ENT-13")
         );
         assert!(mirror.comments.iter().any(|comment| {
             comment.author == "human"
