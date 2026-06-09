@@ -175,10 +175,13 @@ from verdict history, and the reviewer worker receipt, while
 admission-rejection verdicts bind back to the rejected admission, packet, and
 admission-rejection evidence row. The `issue_surface` check verifies linked
 issue status, typed comments, operator comment/decision evidence, and
-evidence-to-comment author/action/body bindings so the control plane is
-auditable instead of only visible. Trace, Doctor, and Panel summaries expose
-both failed audit check names and extracted audit failure detail codes, so an
-operator can see the exact binding that broke without opening raw JSON first.
+evidence-to-comment author/action/body bindings. Operator comment/decision
+evidence also binds its `issue_transition_admission.v1` receipt back to the
+observed from/to issue status, policy resource, transition-policy resource, and
+admitted action coverage, so human-controlled transitions are auditable instead
+of only visible. Trace, Doctor, and Panel summaries expose both failed audit
+check names and extracted audit failure detail codes, so an operator can see the
+exact binding that broke without opening raw JSON first.
 For reviewer-path testing, `hive loop run` accepts
 `--decision keep|reject|needs-review|blocked`.
 At or after round 3, `--decision reject` falls back to a `blocked` verdict and

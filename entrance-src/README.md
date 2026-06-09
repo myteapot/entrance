@@ -259,7 +259,9 @@ runtime readiness, and Reviewer invalid-budget use/exhaustion recomputed from
 verdict history, plus admission-rejection evidence/admission/packet links. The
 issue surface check verifies issue status, typed comments, operator
 comment/decision evidence, and the author/action/body bindings between evidence
-and its linked comment, including transition admission receipt bindings. The
+and its linked comment, including transition admission receipt bindings for
+from/to status, policy resource, transition-policy resource, and admitted
+action coverage. The
 issue transition policy check verifies the issue action surface against the
 kernel transition registry, including allowed/blocked action coverage,
 confirmation contract fields, and the Reviewer fallback budget.

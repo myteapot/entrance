@@ -141,6 +141,9 @@ Entrance has reached a local MVP unit:
 - Verdict audit now also binds terminal contract status back to the current
   round verdict decision when no same-round operator decision has taken over,
   separating automatic Reviewer outcomes from human-controlled transitions.
+- Issue-surface audit now binds operator transition admission receipts back to
+  from/to status, policy resources, and admitted action coverage, so
+  human-controlled transitions cannot drift from their kernel admission receipt.
 - The same loop-level control packet is now available through local CLI
   `entrance hive loop control <loop_id>`, daemon command `hive_loop_control`,
   and the Panel selected issue Reviewer Control block, so local operators and

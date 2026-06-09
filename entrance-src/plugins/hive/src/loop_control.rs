@@ -9324,6 +9324,11 @@ fn operator_evidence_audit_error(
                     Some("comment"),
                     Some(false),
                 ));
+                errors.extend(operator_transition_admission_binding_errors(
+                    row,
+                    admission,
+                    Some("comment"),
+                ));
             } else {
                 errors.push("evidence.transition_admission".to_string());
             }
@@ -9396,6 +9401,11 @@ fn operator_evidence_audit_error(
                             Some(action.as_str()),
                             Some(true),
                         ));
+                        errors.extend(operator_transition_admission_binding_errors(
+                            row,
+                            admission,
+                            Some(action.as_str()),
+                        ));
                     } else {
                         errors.push("evidence.transition_admission".to_string());
                     }
@@ -9444,6 +9454,88 @@ fn operator_evidence_audit_error(
             "issue_id": issue_id,
             "errors": errors
         }))
+    }
+}
+
+fn operator_transition_admission_binding_errors(
+    row: &HiveLoopEvidence,
+    admission: &serde_json::Value,
+    action: Option<&str>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let issue_id = row
+        .payload
+        .pointer("/issue/id")
+        .and_then(|value| value.as_i64());
+    let expected_from_status = if row.kind == "operator_comment" {
+        row.payload
+            .pointer("/issue/status")
+            .and_then(|value| value.as_str())
+    } else {
+        row.payload
+            .pointer("/issue/from_status")
+            .and_then(|value| value.as_str())
+    };
+    let expected_to_status = if row.kind == "operator_comment" {
+        row.payload
+            .pointer("/issue/status")
+            .and_then(|value| value.as_str())
+    } else {
+        row.payload
+            .pointer("/issue/to_status")
+            .and_then(|value| value.as_str())
+    };
+
+    if admission
+        .get("from_status")
+        .and_then(|value| value.as_str())
+        != expected_from_status
+    {
+        errors.push("transition_admission.from_status_binding".to_string());
+    }
+    if !admission_to_status_matches(
+        admission.get("to_status").and_then(|value| value.as_str()),
+        expected_to_status,
+    ) {
+        errors.push("transition_admission.to_status_binding".to_string());
+    }
+    if admission
+        .get("policy_resource")
+        .and_then(|value| value.as_str())
+        != Some("entrance://policy/registry")
+    {
+        errors.push("transition_admission.policy_resource".to_string());
+    }
+    if let Some(issue_id) = issue_id {
+        let expected_resource = format!("entrance://issues/{issue_id}/transition-policy");
+        if admission
+            .get("transition_policy_resource")
+            .and_then(|value| value.as_str())
+            != Some(expected_resource.as_str())
+        {
+            errors.push("transition_admission.transition_policy_resource".to_string());
+        }
+    }
+    if let Some(action) = action {
+        if !admission
+            .get("allowed_actions")
+            .and_then(|value| value.as_array())
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(action)))
+        {
+            errors.push("transition_admission.allowed_action_binding".to_string());
+        }
+    }
+
+    errors
+}
+
+fn admission_to_status_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
+    match (actual, expected) {
+        (Some(actual), Some(expected)) => {
+            actual == expected || actual.split([',', '\n']).next().map(str::trim) == Some(expected)
+        }
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -20674,6 +20766,55 @@ mod tests {
                     == Some("cancel")
             })
             .expect("cancel decision comment should be visible");
+        let mut drifted_transition_admission = cancel_comment
+            .payload
+            .get("transition_admission")
+            .cloned()
+            .expect("cancel decision should carry transition admission");
+        drifted_transition_admission["from_status"] = serde_json::json!("Blocked");
+        drifted_transition_admission["to_status"] = serde_json::json!("Todo");
+        drifted_transition_admission["policy_resource"] =
+            serde_json::json!("entrance://policy/drifted");
+        drifted_transition_admission["transition_policy_resource"] =
+            serde_json::json!("entrance://issues/999/transition-policy");
+        drifted_transition_admission["allowed_actions"] = serde_json::json!(["comment"]);
+        let mut drifted_transition_payload = serde_json::json!({
+            "schema_version": OPERATOR_DECISION_SCHEMA_VERSION,
+            "source": "issue/status/comment",
+            "issue": {
+                "id": issue_id,
+                "comment_id": cancel_comment.id,
+                "from_status": "Todo",
+                "to_status": "Canceled"
+            },
+            "loop": {
+                "id": created.contract.id,
+                "next_status": "rejected",
+                "next_phase": "complete",
+                "round": created.contract.current_round
+            },
+            "operator": {
+                "author": "human",
+                "action": "cancel",
+                "note": "drifted transition admission",
+                "comment_body": cancel_comment.body
+            },
+            "transition_admission": drifted_transition_admission
+        });
+        if let Some(receipt) = cancel_comment.payload.get("confirmation_receipt") {
+            drifted_transition_payload["operator"]["confirmation_receipt"] = receipt.clone();
+        }
+        store
+            .insert_hive_loop_evidence(HiveLoopEvidenceCreate {
+                loop_id: created.contract.id,
+                stage_id: None,
+                round: created.contract.current_round,
+                kind: "operator_decision".to_string(),
+                summary: "drifted transition admission evidence".to_string(),
+                path: None,
+                payload: drifted_transition_payload,
+            })
+            .expect("drifted transition admission evidence should insert");
         store
             .insert_hive_loop_evidence(HiveLoopEvidenceCreate {
                 loop_id: created.contract.id,
@@ -20798,6 +20939,22 @@ mod tests {
         assert!(errors.iter().any(|error| error
             .pointer("/errors")
             .and_then(|value| value.as_array())
+            .is_some_and(|fields| fields.iter().any(|field| {
+                field.as_str() == Some("transition_admission.from_status_binding")
+            }) && fields.iter().any(|field| {
+                field.as_str() == Some("transition_admission.to_status_binding")
+            }) && fields
+                .iter()
+                .any(|field| field.as_str() == Some("transition_admission.policy_resource"))
+                && fields.iter().any(|field| {
+                    field.as_str() == Some("transition_admission.transition_policy_resource")
+                })
+                && fields.iter().any(|field| {
+                    field.as_str() == Some("transition_admission.allowed_action_binding")
+                }))));
+        assert!(errors.iter().any(|error| error
+            .pointer("/errors")
+            .and_then(|value| value.as_array())
             .is_some_and(|fields| fields
                 .iter()
                 .any(|field| field.as_str() == Some("evidence.loop_id_binding"))
@@ -20831,6 +20988,20 @@ mod tests {
             .iter()
             .any(|detail| {
                 detail == "issue_surface:operator_evidence:evidence.confirmation_receipt_binding"
+            }));
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| {
+                detail == "issue_surface:operator_evidence:transition_admission.from_status_binding"
+            }));
+        assert!(trace_report
+            .trace
+            .audit_failure_details
+            .iter()
+            .any(|detail| {
+                detail == "issue_surface:operator_evidence:transition_admission.to_status_binding"
             }));
         assert!(trace_report
             .trace
