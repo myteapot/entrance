@@ -77,11 +77,13 @@ For current product usage, commands, and architecture, start with [`entrance-src
 
 当前验证也把 loop control 纳入稳定合同：`run-local-mvp-demo.sh --verify-golden` 会比对 `loop-control-summary.json`，`capture-panel-screenshot.mjs --full-gates` 会断言 Panel Reviewer Control、`loop_control.v1`、score vector、fallback budget 和 A/B/C operator options 可见。
 
+MCP stdio 也有协议级 smoke：`entrance-auto/workflows/validation/run-mcp-stdio-smoke.mjs` 会启动真实 `entrance mcp stdio`，通过 newline-delimited JSON-RPC 调 `initialize`、tools/prompts/resource templates、MCP loop create/run、loop control tool/resource、loop review prompt，并验证未设置 `human_confirmed=true` 的 retry 会被拒绝。
+
 但如果把“最小可用单元”定义为 Entrance 这个项目真正想交付的东西，也就是一个通过外部 `issue(status) + comment` 面板约束 multi-agent loop 的 compiler/runtime 控制平面，那么当前还没有完成。还差这些最小闭环能力：
 
 - 正式的 compiler IR 和更稳定的 policy registry 生命周期，而不是主要散落在 Hive 命令路径里的 MVP 数据结构；当前已有 runtime preflight gate、issue transition policy registry 和 evidence manifest report，但还缺面向 sandbox、connector、artifact capture 和人类偏好的完整 capability preview。
 - 完整的 GitHub/Linear issue connector，包括幂等 receipt、失败重试和本地/远端漂移校验；GitHub 目前已有受配置和 token gate 保护的 publish/readback/admission gate 切片，并能用 issue-stable idempotency marker upsert 最新 comment、按 GitHub `Link` header 读取分页 comments、对瞬时 `5xx` 做 typed retry/backoff、对 `403/429` rate limit 给出 typed blocker；Linear 目前已有受配置和 token gate 保护的 GraphQL publish/readback/admission gate 切片，可用 issue identifier 读取 UUID、更新标题/描述和已配置的 workflow `stateId`，并用同一 issue-stable marker 更新最新 comment，也能对 GraphQL HTTP `5xx` 做 typed retry/backoff、对 `403/429` 和 GraphQL rate limit 给出 typed blocker；GitHub/Linear retry budget 和 provider status mapping policy 已进入 policy registry，admission preview 也会用 `retry_policy_bound` 校验观测到的远端 attempt budget，但还缺生产级漂移处理、可配置/自适应重试策略、真实 token 覆盖和 Linear workflow discovery/migration。
-- MCP-native 产品化：当前只有本地 stdio tools/resources/prompts、本地 per-tool permission registry、本地 actor identity audit policy 和本地 typed confirmation receipt，还缺真实 MCP 客户端配置、verified 身份/权限边界、协议兼容测试、远程连接器绑定和面向 human review 的交互设计。
+- MCP-native 产品化：当前已有本地 stdio tools/resources/prompts、本地 per-tool permission registry、本地 actor identity audit policy、本地 typed confirmation receipt 和协议级 stdio smoke，还缺真实 MCP 客户端配置、verified 身份/权限边界、named MCP client 兼容测试、远程连接器绑定和面向 human review 的交互设计。
 - 更严格的 worker 生命周期管理：当前已有可观察的 `worker_lifecycle.v1` 报告和派生 `evidence_manifest.v1` 报告，但还缺隔离、替换、超时后恢复、真实 artifact 捕获/归档，以及跨进程/跨轮次的 durable 失败归因。
 - 更完整的 Reviewer gates：目标漂移检测、score vector 计算、keep/reject/block 的证据要求，以及需要人类偏好时的选项生成。
 - 更完整的 evidence 产品化：当前已有 `evidence_drilldown.v1`、`evidence_manifest.v1` 和 Panel 聚焦视图，能展示 worker receipt、transcript/payload excerpt、remote receipt 摘要、artifact/path hint、payload key diff、digest coverage、path verification state、evidence/loop-level blocker 和绑定到 blocker 的 retry/review/cancel/comment 决策面；还缺可展开的完整 transcript、真实远端 receipt 归档、真实 artifact manifest 生成/内容校验、payload schema diff 和更完整的 blocker decision workflow。

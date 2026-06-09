@@ -344,6 +344,19 @@ The MCP stdio surface accepts newline-delimited JSON-RPC 2.0 messages and
 returns one JSON-RPC response per line. It is the first local MCP-native control
 surface for the Hive kernel, not a separate remote MCP service.
 
+The protocol surface has a reusable smoke workflow:
+
+```bash
+entrance-auto/workflows/validation/run-mcp-stdio-smoke.mjs
+```
+
+The smoke starts `entrance mcp stdio` from a clean app root, negotiates
+`initialize` with `clientInfo`, lists tools/prompts/resource templates, creates
+and runs a local issue-bound loop through MCP tools, reads the same loop control
+packet through both `tools/call` and `resources/read`, fetches the loop review
+prompt with the embedded resource, and verifies that a retry without
+`human_confirmed=true` is refused.
+
 Supported methods:
 
 - `initialize`, `notifications/initialized`, and `ping`

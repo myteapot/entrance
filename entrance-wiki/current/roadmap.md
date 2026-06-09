@@ -125,6 +125,14 @@ Entrance has reached a local MVP unit:
   and compares `loop-control-summary.json`, covering Reviewer gate state, score
   names, fallback budget, human decision boundary, linked resources, and A/B/C
   operator options.
+- MCP stdio now has a reusable protocol-level smoke workflow at
+  `entrance-auto/workflows/validation/run-mcp-stdio-smoke.mjs`. It starts
+  `entrance mcp stdio` from a clean app root, negotiates `initialize` with
+  `clientInfo`, lists tools/prompts/resource templates, creates and runs a local
+  issue-bound loop through MCP tools, reads `entrance.mcp.loop_control.v1`
+  through both `tools/call` and `resources/read`, fetches the loop review prompt
+  with the embedded loop control resource, and verifies retry refusal without
+  `human_confirmed=true`.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -246,11 +254,11 @@ multi-agent runtime/compiler product.
 ### P0: External issue surfaces
 
 - Productize the MCP stdio surface: client config docs, stronger protocol
-  tests, real auth/identity policy on top of the local tool-permission
-  registry, verified actor identity mapping beyond self-reported author and
-  `initialize.clientInfo`, loop control / reviewer prompt / connector
-  control/queue/plan/execute readability in real clients, and compatibility
-  checks against real MCP clients.
+  coverage beyond the local stdio smoke, real auth/identity policy on top of
+  the local tool-permission registry, verified actor identity mapping beyond
+  self-reported author and `initialize.clientInfo`, loop control / reviewer
+  prompt / connector control/queue/plan/execute readability in real clients,
+  and compatibility checks against named MCP clients.
 - Add verified operator identity for local Panel/daemon decisions beyond the
   current `local-hive-panel` audit context.
 - Add live token-backed GitHub and Linear validation runs, including safe

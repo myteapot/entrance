@@ -28,12 +28,13 @@ Last updated: 2026-06-09
 - 本轮继续把 loop 观察面合成 MCP Reviewer 控制包：新增 `entrance_loop_control` tool、`entrance://loops/{loop_id}/control` resource/template 和 `entrance_loop_review` prompt，把 loop dashboard、evidence drilldown、evidence manifest、runtime preflight、worker lifecycle、Reviewer gate surface、score vector、3 轮 invalid fallback budget、human decision boundary 和 exact issue action options 聚合成一份 `entrance.mcp.loop_control.v1` control packet。
 - 本轮继续把 loop control packet 接入本地控制面：新增 CLI `hive loop control <id>`、daemon `hive_loop_control` 和 Panel selected issue 的 Reviewer Control block，让本地 Panel 与 MCP 客户端看到同一份 Reviewer gate/budget/evidence/options contract。
 - 本轮继续把 Reviewer Control 纳入自动验收：`run-local-mvp-demo.sh --verify-golden` 现在生成并比对 `loop-control-summary.json`，`capture-panel-screenshot.mjs` 会断言 Panel Reviewer Control、`loop_control.v1`、score vector、fallback budget 和 A/B/C operator options 都可见。
+- 本轮继续把 MCP-native surface 纳入协议级 smoke：新增 `run-mcp-stdio-smoke.mjs`，通过真实 newline-delimited JSON-RPC stdio 调 `initialize`、tools/prompts/resources、MCP create/run loop、`entrance_loop_control`、loop control resource、loop review prompt 和未确认 retry 拒绝路径。
 
 ## 还没做完
 
 - 把 `runtime_preflight.v1` 扩展成完整 capability preview：sandbox scope、connector readiness、artifact capture、人类偏好边界，而不仅是 runtime support/probe。
 - 把 Evidence Drilldown/Manifest 产品化：完整 transcript 展开、真实远端 receipt 归档、真实 artifact manifest 生成/内容校验、payload schema diff、更完整的 blocker decision workflow。
-- Productize MCP：真实客户端配置、协议兼容测试、verified actor identity、权限边界、远程 connector 绑定，以及 loop control / reviewer prompt / connector control / queue / plan / execute 在真实 MCP 客户端里的兼容性/可读性验证。
+- Productize MCP：当前已有本地 stdio JSON-RPC smoke；还缺真实客户端配置、named MCP client 兼容测试、verified actor identity、权限边界、远程 connector 绑定，以及 loop control / reviewer prompt / connector control / queue / plan / execute 在真实 MCP 客户端里的兼容性/可读性验证。
 - Productize Linear/GitHub connector：真实 token 验证、Linear workflow discovery/migration、幂等 comment/readback、漂移恢复、rate-limit/retry 策略。
 - Productize issue timeline：筛选/折叠、远端 issue comment 映射、inline decision 的操作后刷新状态、receipt drilldown 和更强的 blocked action provenance。
 - Productize issue transition policy：当前已经有 kernel registry/report snapshot/audit 绑定、execution-time transition admission receipt、Panel 操作后 selected issue control surface 刷新、系统化状态机矩阵测试、provider status mapping policy 和 Linear configured stateId mapping；还缺版本迁移、状态映射 discovery/migration 和更完整的 policy lifecycle。
