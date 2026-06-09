@@ -149,8 +149,9 @@ optional decision receipt.
 `hive loop preflight <id>` exposes the same boundary as
 `entrance.hive.runtime_preflight.v1`, including policy, probe,
 `runtime_capability_preview.v1` for worker spawn readiness, sandbox scope,
-artifact capture mode, connector readiness, human confirmation boundaries,
-worker context, current admission, blocker, failures, and next actions; MCP exposes it as
+artifact capture mode, connector readiness from the current connector config,
+human confirmation boundaries, worker context, current admission, blocker,
+failures, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/runtime-preflight`, and the Panel selected issue
 renders the same capability preview before Worker Lifecycle.
 Add `--compact` to `hive loop create` to print the linked issue card and next

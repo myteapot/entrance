@@ -294,10 +294,11 @@ multi-agent runtime/compiler product.
   stronger policy lifecycle semantics, and remote status mapping
   discovery/migration.
 - Productize the new `runtime_capability_preview.v1`: it now exposes worker
-  spawn readiness, sandbox scope, connector readiness, artifact capture mode,
-  human confirmation boundaries, and worker context before any agent worker is
-  spawned, but it is still an observable preview rather than an enforced
-  capability gate with durable sandbox/artifact execution semantics.
+  spawn readiness, sandbox scope, connector readiness from the current connector
+  config, artifact capture mode, human confirmation boundaries, and worker
+  context before any agent worker is spawned, but it is still an observable
+  preview rather than an enforced capability gate with durable sandbox/artifact
+  execution semantics or live Linear workflow discovery.
 
 ### P1: Loop dashboard
 

@@ -92,10 +92,11 @@ registry, route `kernel -> explorer`, expected `PREFLIGHT_PACKET`, runtime
 probe, `runtime_capability_preview.v1`, current-round admission result, blocker,
 failure list, and copyable next actions. The capability preview records worker
 spawn readiness, runtime sandbox scope, artifact capture mode, connector
-readiness for the loop review surface, human confirmation boundaries, and worker
-context requirements before any agent worker is spawned. The report only treats
-a preflight packet from the current round as the current observation, so a retry
-into a new round is not polluted by an older blocked preflight.
+readiness for the loop review surface using the current `entrance.toml`
+connector config, human confirmation boundaries, and worker context requirements
+before any agent worker is spawned. The report only treats a preflight packet
+from the current round as the current observation, so a retry into a new round
+is not polluted by an older blocked preflight.
 The same report is available to MCP clients as
 `entrance://loops/{loop_id}/runtime-preflight`; MCP issue control packets also
 include a compact runtime preflight summary with gate, route, state, blocker,

@@ -1814,6 +1814,14 @@ pub fn create(store: &Store, request: HiveLoopCreateRequest) -> Result<HiveLoopR
 }
 
 pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport> {
+    run_with_config(store, request, &ConnectorsConfig::default())
+}
+
+pub fn run_with_config(
+    store: &Store,
+    request: HiveLoopRunRequest,
+    connectors: &ConnectorsConfig,
+) -> Result<HiveLoopReport> {
     let mut contract = store
         .get_hive_loop_contract(request.loop_id)?
         .with_context(|| format!("unknown hive loop `{}`", request.loop_id))?;
@@ -1840,7 +1848,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "kernel",
         "kernel",
         "explorer",
-        runtime_preflight_payload(&contract, &runtime, &runtime_probe),
+        runtime_preflight_payload(&contract, &runtime, &runtime_probe, connectors),
     )?;
     if preflight_admission.result != "admitted" {
         let kernel_stage = insert_stage(
@@ -4601,7 +4609,16 @@ pub fn worker_lifecycle(store: &Store, loop_id: i64) -> Result<HiveLoopWorkerLif
     })
 }
 
+#[allow(dead_code)]
 pub fn runtime_preflight(store: &Store, loop_id: i64) -> Result<HiveLoopRuntimePreflightReport> {
+    runtime_preflight_with_config(store, loop_id, &ConnectorsConfig::default())
+}
+
+pub fn runtime_preflight_with_config(
+    store: &Store,
+    loop_id: i64,
+    connectors: &ConnectorsConfig,
+) -> Result<HiveLoopRuntimePreflightReport> {
     let contract = store
         .get_hive_loop_contract(loop_id)?
         .with_context(|| format!("unknown hive loop `{loop_id}`"))?;
@@ -4611,7 +4628,7 @@ pub fn runtime_preflight(store: &Store, loop_id: i64) -> Result<HiveLoopRuntimeP
     let packets = store.list_hive_loop_packets(loop_id)?;
     let admissions = store.list_hive_loop_admissions(loop_id)?;
     let current = runtime_preflight_observation(&contract, &packets, &admissions);
-    let preview = runtime_preflight_preview(&contract);
+    let preview = runtime_preflight_preview(&contract, connectors);
     let preflight_state = runtime_preflight_state(&contract, &preview, current.as_ref());
     let failures = runtime_preflight_failures(&preview, current.as_ref());
     let next_actions =
@@ -4637,8 +4654,17 @@ pub fn runtime_preflight(store: &Store, loop_id: i64) -> Result<HiveLoopRuntimeP
     })
 }
 
+#[allow(dead_code)]
 pub fn dashboard(store: &Store, loop_id: i64) -> Result<HiveLoopDashboardReport> {
-    let preflight = runtime_preflight(store, loop_id)?;
+    dashboard_with_config(store, loop_id, &ConnectorsConfig::default())
+}
+
+pub fn dashboard_with_config(
+    store: &Store,
+    loop_id: i64,
+    connectors: &ConnectorsConfig,
+) -> Result<HiveLoopDashboardReport> {
+    let preflight = runtime_preflight_with_config(store, loop_id, connectors)?;
     let lifecycle = worker_lifecycle(store, loop_id)?;
     let doctor = doctor(store, loop_id)?;
     let issue_card = store
@@ -5433,7 +5459,10 @@ fn runtime_preflight_policy() -> HiveLoopRuntimePreflightPolicy {
     }
 }
 
-fn runtime_preflight_preview(contract: &HiveLoopContract) -> HiveLoopRuntimePreflightPreview {
+fn runtime_preflight_preview(
+    contract: &HiveLoopContract,
+    connectors: &ConnectorsConfig,
+) -> HiveLoopRuntimePreflightPreview {
     let registry = runtime_policy_registry();
     let runtime = contract.runtime.as_str();
     let selected_policy = runtime_policy_spec(&registry, runtime).cloned();
@@ -5449,6 +5478,7 @@ fn runtime_preflight_preview(contract: &HiveLoopContract) -> HiveLoopRuntimePref
         selected_policy.as_ref(),
         &runtime_probe,
         blocker.as_deref(),
+        connectors,
     );
     HiveLoopRuntimePreflightPreview {
         runtime: runtime.to_string(),
@@ -5480,6 +5510,7 @@ fn runtime_capability_preview(
     selected_policy: Option<&RuntimePolicySpec>,
     runtime_probe: &serde_json::Value,
     runtime_blocker: Option<&str>,
+    connectors: &ConnectorsConfig,
 ) -> HiveLoopRuntimeCapabilityPreview {
     let worker_spawn_ready = selected_policy.is_some()
         && runtime_probe
@@ -5504,7 +5535,10 @@ fn runtime_capability_preview(
         worker_mode,
         sandbox: runtime_sandbox_preview(selected_policy),
         artifact_capture: runtime_artifact_capture_preview(contract.id, selected_policy),
-        connector_readiness: runtime_connector_readiness_preview(&contract.review_surface),
+        connector_readiness: runtime_connector_readiness_preview(
+            &contract.review_surface,
+            connectors,
+        ),
         human_boundary: runtime_human_boundary_preview(
             &contract.review_surface,
             &contract.autonomy_level,
@@ -5568,10 +5602,11 @@ fn runtime_artifact_capture_preview(
 
 fn runtime_connector_readiness_preview(
     review_surface: &str,
+    connectors: &ConnectorsConfig,
 ) -> HiveLoopRuntimeConnectorReadinessPreview {
     let review_surface = default_text(review_surface.to_string(), "local-hive-panel");
     let provider_name = issue_mirror_provider(&review_surface);
-    let registry = connector_registry_with_config(&ConnectorsConfig::default());
+    let registry = connector_registry_with_config(connectors);
     let provider = registry
         .providers
         .iter()
@@ -12757,6 +12792,7 @@ fn runtime_preflight_payload(
     contract: &HiveLoopContract,
     runtime: &str,
     runtime_probe: &serde_json::Value,
+    connectors: &ConnectorsConfig,
 ) -> serde_json::Value {
     let registry = runtime_policy_registry();
     let supported_runtime = runtime_policy_spec(&registry, runtime);
@@ -12771,6 +12807,7 @@ fn runtime_preflight_payload(
         supported_runtime,
         runtime_probe,
         blocker,
+        connectors,
     );
 
     serde_json::json!({
@@ -14433,6 +14470,100 @@ mod tests {
             .required_receipt_fields
             .iter()
             .any(|field| field == "role"));
+    }
+
+    #[test]
+    fn runtime_preflight_capability_preview_uses_connector_config() {
+        let token_env = "ENTRANCE_TEST_PREFLIGHT_LINEAR_TOKEN";
+        std::env::set_var(token_env, "test-token");
+        let config = ConnectorsConfig {
+            linear: ConnectorProviderConfig {
+                enabled: Some(true),
+                auth_env: vec![token_env.to_string()],
+                ..ConnectorProviderConfig::default()
+            },
+            ..ConnectorsConfig::default()
+        };
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-runtime-capability-config-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Configured capability preview".to_string(),
+                goal: "Expose configured connector readiness".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: "linear:ENT-9".to_string(),
+                autonomy_level: "run-approved-candidates".to_string(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+
+        let preflight = runtime_preflight_with_config(&store, created.contract.id, &config)
+            .expect("runtime preflight should resolve with connector config");
+        let connector = preflight.preview.capability_preview.connector_readiness;
+        assert_eq!(connector.provider, "linear");
+        assert!(connector.known);
+        assert_eq!(connector.status.as_deref(), Some("active"));
+        assert_eq!(connector.configured, Some(true));
+        assert_eq!(connector.supports_publish, Some(true));
+        assert_eq!(connector.supports_readback, Some(true));
+        assert_eq!(connector.supports_admission, Some(true));
+        assert!(connector.external_surface_ready);
+        assert!(connector.blockers.is_empty());
+        assert_eq!(connector.auth_env, vec![token_env.to_string()]);
+
+        let report = run_with_config(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: Some(5),
+                worker_attempts: Some(1),
+            },
+            &config,
+        )
+        .expect("configured loop should run");
+        std::env::remove_var(token_env);
+
+        let preflight_packet = report
+            .packets
+            .iter()
+            .find(|packet| packet.object_kind == "PREFLIGHT_PACKET")
+            .expect("preflight packet should exist");
+        assert_eq!(
+            preflight_packet
+                .payload
+                .pointer("/body/capability_preview/connector_readiness/provider")
+                .and_then(|value| value.as_str()),
+            Some("linear")
+        );
+        assert_eq!(
+            preflight_packet
+                .payload
+                .pointer("/body/capability_preview/connector_readiness/external_surface_ready")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            preflight_packet
+                .payload
+                .pointer("/body/capability_preview/connector_readiness/status")
+                .and_then(|value| value.as_str()),
+            Some("active")
+        );
+        assert_eq!(report.issues[0].issue.status, "Done");
     }
 
     #[test]

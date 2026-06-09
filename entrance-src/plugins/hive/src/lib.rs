@@ -134,7 +134,7 @@ impl HivePlugin {
     }
 
     pub fn loop_run(&self, request: HiveLoopRunRequest) -> Result<HiveLoopReport> {
-        loop_control::run(&self.store, request)
+        loop_control::run_with_config(&self.store, request, &self.connectors)
     }
 
     pub fn loop_report(&self, id: i64) -> Result<HiveLoopReport> {
@@ -186,11 +186,11 @@ impl HivePlugin {
     }
 
     pub fn loop_runtime_preflight(&self, id: i64) -> Result<HiveLoopRuntimePreflightReport> {
-        loop_control::runtime_preflight(&self.store, id)
+        loop_control::runtime_preflight_with_config(&self.store, id, &self.connectors)
     }
 
     pub fn loop_dashboard(&self, id: i64) -> Result<HiveLoopDashboardReport> {
-        loop_control::dashboard(&self.store, id)
+        loop_control::dashboard_with_config(&self.store, id, &self.connectors)
     }
 
     pub fn panel(&self) -> Result<Vec<IssueCard>> {
