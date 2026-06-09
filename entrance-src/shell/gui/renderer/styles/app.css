@@ -61,6 +61,7 @@
 
 .main-shell {
   padding: 28px;
+  min-width: 0;
 }
 
 .hero-panel,
@@ -193,6 +194,8 @@
 .big-copy {
   margin: 8px 0 0;
   font-size: 1.28rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .record-list {
@@ -221,8 +224,18 @@
 
 .record-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
+}
+
+.record-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.record-head span {
+  flex: 0 0 auto;
 }
 
 .record-actions {
@@ -232,8 +245,15 @@
   margin-top: 12px;
 }
 
+.record-actions button {
+  max-width: 100%;
+  min-height: 36px;
+  white-space: normal;
+}
+
 .panel-grid--board {
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  align-items: start;
 }
 
 .panel-grid--board > * {
@@ -249,21 +269,21 @@
 .panel--board {
   min-height: 620px;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .board-columns {
   display: grid;
-  grid-template-columns: repeat(6, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   align-items: start;
-  overflow-x: auto;
+  overflow-x: visible;
   padding-bottom: 6px;
   scrollbar-width: thin;
 }
 
 .board-column {
-  min-width: 220px;
+  min-width: 0;
 }
 
 .board-column-list {
@@ -573,6 +593,11 @@
   color: var(--text);
 }
 
+.doctor-strip span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .doctor-strip--ok {
   border-color: rgba(121, 215, 167, 0.28);
 }
@@ -831,9 +856,12 @@
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 10px;
+  min-width: 0;
 }
 
 .trace-pill {
+  display: inline-flex;
+  max-width: 100%;
   padding: 4px 8px;
   border: 1px solid rgba(121, 215, 167, 0.2);
   border-radius: 999px;
@@ -841,6 +869,8 @@
   background: rgba(121, 215, 167, 0.08);
   font-size: 0.78rem;
   line-height: 1.15;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .trace-pill--warn {
