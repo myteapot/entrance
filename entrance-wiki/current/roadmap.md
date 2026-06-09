@@ -129,8 +129,10 @@ Entrance has reached a local MVP unit:
   it with the same-round admitted Explorer candidate before the packet can reach
   Reviewer. Reviewer score/gate output exposes this as `target_alignment` /
   `target_bound`, and loop audit recomputes the same binding so drifted
-  `target_binding` admission receipts are rejected. Richer semantic drift checks
-  remain future hardening work.
+  `target_binding` admission receipts are rejected.
+- Admission audit now recomputes receipt missing lists, gate pass/fail, gate
+  reason, and admitted/rejected result bindings from the current packet/policy
+  ledger. Richer semantic drift checks remain future hardening work.
 - The same loop-level control packet is now available through local CLI
   `entrance hive loop control <loop_id>`, daemon command `hive_loop_control`,
   and the Panel selected issue Reviewer Control block, so local operators and

@@ -36,6 +36,7 @@ Last updated: 2026-06-09
 - 本轮继续把 Reviewer score/gate 从静态占位推进到 ledger-derived MVP：stage completeness、runtime readiness、prior evidence presence、admission integrity、missing receipts 和 failure reasons 现在从当前轮 stages/evidence/admissions 计算；ledger gates 不完整时，`keep` 会被 runtime 强制降级为 `reject`。
 - 本轮继续把目标漂移约束推进到 Developer admission：`EXECUTION_PACKET` 现在必须携带 `accepted_candidate`，`accepted_candidate_bound` 会将它与同轮已 admitted 的 Explorer candidate 比对，不一致时即使 runtime receipts 完整也会被 compiler gate 拒绝；Reviewer score/gate 会暴露 `target_alignment` / `target_bound`。
 - 本轮继续把 target binding 纳入 ledger audit：`hive loop audit` 现在会从 packets/admissions 重新计算 Developer target binding，并拒绝被篡改的 `target_binding` admission receipt。
+- 本轮继续把 admission receipt 纳入重算审计：`hive loop audit` 会从当前 packet/policy ledger 重算 missing receipts、gate pass/fail、gate reason 和 admitted/rejected result，不再只信任 receipt 自述。
 
 ## 还没做完
 

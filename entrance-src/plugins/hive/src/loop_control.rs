@@ -7132,6 +7132,8 @@ fn admission_audit_errors(
             .into_iter()
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
+        let (_packet_required, packet_missing_receipts) =
+            receipt_requirement_status(&packet.payload);
         let declared_required = packet_receipt_requirements(&packet.payload);
         let receipt_required = string_array_at(&admission.policy, "/receipt/required");
         if declared_required != expected_required {
@@ -7139,6 +7141,10 @@ fn admission_audit_errors(
         }
         if receipt_required != expected_required {
             errors.push("receipt.required_binding".to_string());
+        }
+        let receipt_missing = string_array_at(&admission.policy, "/receipt/missing");
+        if receipt_missing != packet_missing_receipts {
+            errors.push("receipt.missing_binding".to_string());
         }
     }
 
@@ -7167,6 +7173,13 @@ fn admission_audit_errors(
     }
     if receipt_satisfied != Some(receipt_missing.is_empty()) {
         errors.push("receipt.satisfied_binding".to_string());
+    }
+    if let Some(packet) = packet {
+        let (_packet_required, packet_missing_receipts) =
+            receipt_requirement_status(&packet.payload);
+        if receipt_satisfied != Some(packet_missing_receipts.is_empty()) {
+            errors.push("receipt.satisfied_packet_binding".to_string());
+        }
     }
 
     if let Some(policy) = admission
@@ -7242,6 +7255,15 @@ fn admission_audit_errors(
             gate_context,
             &mut errors,
         );
+        admission_gate_result_binding_errors(
+            admission,
+            packet,
+            gate_name,
+            gate_passed,
+            policy_missing,
+            gate_context,
+            &mut errors,
+        );
     }
     match (
         admission.result.as_str(),
@@ -7272,6 +7294,54 @@ fn admission_audit_errors(
 
 fn admission_field<'a>(value: &'a serde_json::Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(|value| value.as_str())
+}
+
+fn admission_gate_result_binding_errors(
+    admission: &HiveLoopAdmission,
+    packet: &HiveLoopPacket,
+    gate_name: Option<&str>,
+    gate_passed: Option<bool>,
+    policy_missing: bool,
+    gate_context: GateEvaluationContext<'_>,
+    errors: &mut Vec<String>,
+) {
+    let Some(gate_name) = gate_name else {
+        return;
+    };
+    if gate_spec(gate_name).is_none() {
+        return;
+    }
+
+    let expected_gate_passed = gate_passes_with_context(gate_name, &packet.payload, gate_context);
+    if gate_passed != Some(expected_gate_passed) {
+        errors.push("gate.passed_binding".to_string());
+    }
+
+    let expected_reason = if expected_gate_passed {
+        format!("{gate_name} passed")
+    } else {
+        gate_failure_reason_with_context(gate_name, &packet.payload, gate_context)
+    };
+    if admission.reason != expected_reason {
+        errors.push("reason.gate_binding".to_string());
+    }
+    if admission
+        .policy
+        .get("reason")
+        .and_then(|value| value.as_str())
+        != Some(admission.reason.as_str())
+    {
+        errors.push("reason.binding".to_string());
+    }
+
+    let expected_result = if expected_gate_passed {
+        "admitted"
+    } else {
+        "rejected"
+    };
+    if !policy_missing && admission.result != expected_result {
+        errors.push("result.gate_binding".to_string());
+    }
 }
 
 fn admission_target_binding_errors(
@@ -17324,6 +17394,84 @@ mod tests {
         assert!(fields.contains(&"target_binding.passed"));
         assert!(fields.contains(&"target_binding.reason"));
         assert!(fields.contains(&"target_binding.expected_candidate"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_audit_recomputes_gate_result_and_missing_receipts() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-admission-gate-recompute-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Admission gate recompute loop".to_string(),
+                goal: "Detect admission receipts that lie about the packet gate".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let mut packets = report.packets.clone();
+        let execution_packet = packets
+            .iter_mut()
+            .find(|packet| packet.object_kind == "EXECUTION_PACKET")
+            .expect("execution packet should exist");
+        execution_packet
+            .payload
+            .pointer_mut("/body")
+            .and_then(|value| value.as_object_mut())
+            .expect("execution packet body should be an object")
+            .remove("accepted_candidate");
+        let execution_packet_id = execution_packet.id;
+        let packet_by_id = packet_by_id(&packets);
+        let admission = report
+            .admissions
+            .iter()
+            .find(|admission| admission.packet_id == execution_packet_id)
+            .expect("execution admission should exist");
+
+        let errors = admission_audit_errors(
+            admission,
+            &packet_by_id,
+            test_gate_context(&packets, &report.admissions),
+        )
+        .expect("drifted packet should fail admission audit");
+        let fields = errors
+            .get("errors")
+            .and_then(|value| value.as_array())
+            .expect("admission audit should return error fields")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(fields.contains(&"receipt.missing_binding"));
+        assert!(fields.contains(&"receipt.satisfied_packet_binding"));
+        assert!(fields.contains(&"gate.passed_binding"));
+        assert!(fields.contains(&"reason.gate_binding"));
+        assert!(fields.contains(&"result.gate_binding"));
 
         let _ = fs::remove_dir_all(root);
     }

@@ -409,7 +409,9 @@ The Developer `EXECUTION_PACKET` must also carry `accepted_candidate`; the
 `accepted_candidate_bound` gate compares it with the same-round admitted
 Explorer candidate and rejects drifted Developer work even when runtime receipts
 are otherwise valid. `hive loop audit` recomputes the same target binding and
-rejects drifted `target_binding` admission receipts.
+rejects drifted `target_binding` admission receipts; it also recomputes missing
+receipts, gate pass/fail, gate reason, and admitted/rejected result bindings
+from the current packet/policy ledger.
 `hive loop run` is idempotent for non-`todo` contracts; use
 `hive issue retry-run <id> --human-confirmed` to record a retry decision and
 immediately run the linked loop. `hive issue run <id>` runs a `Todo` issue
