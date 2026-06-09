@@ -46,13 +46,13 @@ import type {
   WorkerLifecycleWorker,
 } from "./lib/hive";
 
-const VIEW_VALUES: View[] = ["status", "drawer", "hive", "panel", "launcher"];
+const VIEW_VALUES: View[] = ["status", "drawer", "hive", "panel", "reviews", "loops", "launcher"];
 
 const locationToView = (): View => {
   const urlView = new URLSearchParams(window.location.search).get("view");
   const rawHash = window.location.hash.replace(/^#\/?/, "");
   const rawView = rawHash || urlView || "";
-  return VIEW_VALUES.includes(rawView as View) ? (rawView as View) : "status";
+  return VIEW_VALUES.includes(rawView as View) ? (rawView as View) : "panel";
 };
 
 export default function App() {
@@ -1655,21 +1655,30 @@ export default function App() {
     ];
     return missing.length ? missing.join(" | ") : schema.schema_version;
   };
+  const viewMeta = createMemo(() => {
+    const meta: Record<View, { title: string; detail: string }> = {
+      panel: { title: "Issues", detail: "Agent board, evidence, and review state" },
+      reviews: { title: "Reviews", detail: "Blocked and Needs Review decisions" },
+      loops: { title: "Loops", detail: "Runtime contracts and local execution" },
+      status: { title: "Status", detail: "Kernel and local store health" },
+      drawer: { title: "Drawer", detail: "Local file and note intake" },
+      hive: { title: "Loops", detail: "Runtime contracts and local execution" },
+      launcher: { title: "Launcher", detail: "Search and launch indexed commands" },
+    };
+    return meta[view()];
+  });
 
   return (
     <div class="app-shell">
       <Nav current={view()} onSelect={selectView} />
 
       <main class="main-shell">
-        <header class="hero-panel">
+        <header class="app-topbar">
           <div>
-            <p class="hero-kicker">Refactor target</p>
-            <h2>Core / Plugins / Shell</h2>
-            <p class="hero-copy">
-              This GUI talks only to the unified `entrance daemon` protocol.
-            </p>
+            <h2>{viewMeta().title}</h2>
+            <p>{viewMeta().detail}</p>
           </div>
-          <button type="button" class="hero-action" onClick={() => void refreshAll()}>
+          <button type="button" class="topbar-button" onClick={() => void refreshAll()}>
             Refresh
           </button>
         </header>
@@ -1759,7 +1768,7 @@ export default function App() {
             </section>
           </Match>
 
-          <Match when={view() === "hive"}>
+          <Match when={view() === "hive" || view() === "loops"}>
             <section class="panel-grid">
               <article class="panel panel--form">
                 <p class="panel-kicker">Hive</p>
@@ -1826,8 +1835,9 @@ export default function App() {
             </section>
           </Match>
 
-          <Match when={view() === "panel"}>
+          <Match when={view() === "panel" || view() === "reviews"}>
             <HiveWorkbenchPanel
+              workbenchMode={view() === "reviews" ? "reviews" : "issues"}
               addIssueComment={addIssueComment}
               advanceIssue={advanceIssue}
               auditLabel={auditLabel}

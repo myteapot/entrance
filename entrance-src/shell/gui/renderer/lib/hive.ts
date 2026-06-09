@@ -1,4 +1,4 @@
-export type View = "status" | "drawer" | "hive" | "panel" | "launcher";
+export type View = "status" | "drawer" | "hive" | "panel" | "reviews" | "loops" | "launcher";
 export type CommentSurface = "detail" | "board";
 export type ActiveCommentComposer = {
   issueId: number;
@@ -1079,7 +1079,7 @@ export type CommentPill = {
   evidenceId?: number;
 };
 
-export const ISSUE_STATUSES = ["Todo", "Doing", "Blocked", "Needs Review", "Done", "Canceled"] as const;
+export const ISSUE_STATUSES = ["Todo", "Doing", "Needs Review", "Blocked", "Done", "Canceled"] as const;
 export const COMMENT_CARD_PREVIEW_LIMIT = 132;
 export const COMMENT_DETAIL_PREVIEW_LIMIT = 360;
 

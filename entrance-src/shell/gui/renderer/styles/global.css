@@ -16,10 +16,7 @@ body {
   margin: 0;
   font-family: var(--font-sans);
   color: var(--text);
-  background:
-    radial-gradient(circle at top left, rgba(230, 184, 79, 0.12), transparent 32%),
-    radial-gradient(circle at bottom right, rgba(56, 166, 120, 0.14), transparent 30%),
-    var(--bg);
+  background: var(--bg);
 }
 
 button,
