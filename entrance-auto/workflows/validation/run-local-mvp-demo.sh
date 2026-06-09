@@ -79,6 +79,7 @@ APP_ROOT="${APP_ROOT:-$ROOT_DIR/entrance-auto/tmp/local-mvp-demo-$RUN_ID}"
 REPORT_JSON="$REPORT_DIR/local-mvp-demo-$RUN_ID.json"
 REPORT_MD="$REPORT_DIR/local-mvp-demo-$RUN_ID.md"
 LOCAL_DEMO_JSON="$APP_ROOT/local-mvp-demo.json"
+LOOP_CONTROL_JSON="$APP_ROOT/loop-control.json"
 FIXTURE_DEMO_JSON="$APP_ROOT/remote-fixture-demo.json"
 ISSUE_BOARD_JSON="$APP_ROOT/issue-board.json"
 CONNECTOR_QUEUE_JSON="$APP_ROOT/connector-queue.json"
@@ -118,6 +119,11 @@ run_in_src "build entrance debug binary" cargo build -q -p entrance-app --bin en
 run_step "local MVP loop demo" env ENTRANCE_APP_ROOT="$APP_ROOT" \
   "$ENTRANCE_BIN" hive loop demo --runtime local --compact > "$LOCAL_DEMO_JSON"
 
+LOCAL_LOOP_ID="$(node -e "const data = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')); const id = data.loop && data.loop.loop_id; if (!id) process.exit(1); console.log(id);" "$LOCAL_DEMO_JSON")"
+
+run_step "local MVP loop control packet" env ENTRANCE_APP_ROOT="$APP_ROOT" \
+  "$ENTRANCE_BIN" hive loop control "$LOCAL_LOOP_ID" > "$LOOP_CONTROL_JSON"
+
 run_step "remote fixture connector demo" env ENTRANCE_APP_ROOT="$APP_ROOT" \
   "$ENTRANCE_BIN" hive connector fixture-demo --compact > "$FIXTURE_DEMO_JSON"
 
@@ -133,12 +139,13 @@ if command -v sqlite3 >/dev/null 2>&1; then
     > "$EVIDENCE_TSV"
 fi
 
-node - "$LOCAL_DEMO_JSON" "$FIXTURE_DEMO_JSON" "$ISSUE_BOARD_JSON" "$CONNECTOR_QUEUE_JSON" "$REPORT_JSON" "$REPORT_MD" "$APP_ROOT" "$RUN_ID" "$SOURCE_COMMIT" "$FULL_GATES" "$NORMALIZED_DIR" "$GOLDEN_DIR" "$GOLDEN_MODE" <<'NODE'
+node - "$LOCAL_DEMO_JSON" "$LOOP_CONTROL_JSON" "$FIXTURE_DEMO_JSON" "$ISSUE_BOARD_JSON" "$CONNECTOR_QUEUE_JSON" "$REPORT_JSON" "$REPORT_MD" "$APP_ROOT" "$RUN_ID" "$SOURCE_COMMIT" "$FULL_GATES" "$NORMALIZED_DIR" "$GOLDEN_DIR" "$GOLDEN_MODE" <<'NODE'
 const fs = require("fs");
 const path = require("path");
 
 const [
   localPath,
+  loopControlPath,
   fixturePath,
   boardPath,
   queuePath,
@@ -164,6 +171,7 @@ function assert(condition, message) {
 }
 
 const local = readJson(localPath);
+const loopControl = readJson(loopControlPath);
 const fixture = readJson(fixturePath);
 const board = readJson(boardPath);
 const queue = readJson(queuePath);
@@ -178,6 +186,36 @@ assert(local.loop?.status === "Done", "local loop did not end Done");
 assert(local.loop?.decision === "keep", "local loop reviewer did not keep candidate");
 assert(local.loop?.counts?.worker_ok === 3, "local loop did not record 3 ok workers");
 assert(local.loop?.counts?.receipt_missing === 0, "local loop has missing receipts");
+
+assert(loopControl.schema_version === "entrance.mcp.loop_control.v1", "unexpected loop control schema");
+assert(loopControl.loop_id === local.loop?.loop_id, "loop control does not match local loop id");
+assert(loopControl.state?.issue_id === local.loop?.issue_id, "loop control does not match local issue id");
+assert(loopControl.state?.issue_status === "Done", "loop control issue status changed");
+assert(loopControl.state?.loop_status === "kept", "loop control loop status changed");
+assert(loopControl.state?.reviewer_decision === "keep", "loop control reviewer decision changed");
+assert(loopControl.state?.reviewer_invalid_rounds_used === 0, "loop control reviewer invalid rounds changed");
+assert(loopControl.state?.reviewer_invalid_round_budget === 3, "loop control reviewer budget changed");
+assert(loopControl.state?.needs_human_decision === false, "loop control unexpectedly needs human decision");
+assert(loopControl.reviewer_gate_surface?.role === "Reviewer", "loop control missing Reviewer gate surface");
+assert(loopControl.reviewer_gate_surface?.gates?.runtime_preflight?.state === "admitted", "loop control runtime gate changed");
+assert(loopControl.reviewer_gate_surface?.gates?.worker_lifecycle?.state === "succeeded", "loop control worker lifecycle gate changed");
+assert(loopControl.reviewer_gate_surface?.gates?.evidence_manifest?.state === "ok", "loop control evidence gate changed");
+assert(loopControl.reviewer_gate_surface?.target_drift_check?.state === "shallow", "loop control drift check state changed");
+
+const scoreNames = new Set((loopControl.reviewer_gate_surface?.score_vector ?? []).map((item) => item.name));
+for (const name of ["stage_completeness", "runtime_readiness", "evidence_presence", "admission_integrity"]) {
+  assert(scoreNames.has(name), `loop control missing score ${name}`);
+}
+const optionKeys = new Set((loopControl.operator_decision_surface?.options ?? []).map((option) => option.key));
+for (const key of ["A", "B", "C"]) {
+  assert(optionKeys.has(key), `loop control missing operator option ${key}`);
+}
+assert(loopControl.operator_decision_surface?.primary_action === "inspect", "loop control primary action changed");
+assert(loopControl.human_decision_boundary?.required === false, "loop control human decision boundary changed");
+assert((loopControl.human_decision_boundary?.options ?? []).includes("comment"), "loop control missing comment option");
+assert(Boolean(loopControl.resources?.loop_control), "loop control missing loop_control resource");
+assert(Boolean(loopControl.resources?.issue_control), "loop control missing issue_control resource");
+assert(Boolean(loopControl.resources?.transition_policy), "loop control missing transition_policy resource");
 
 const stages = local.loop?.stages ?? [];
 const expectedRoles = ["explorer", "developer", "reviewer"];
@@ -269,6 +307,59 @@ const normalized = {
       publish_required_count: fixture.queue?.publish_required_count,
     },
   },
+  "loop-control-summary.json": {
+    schema_version: "entrance.auto.golden.loop_control_summary.v1",
+    control_schema: loopControl.schema_version,
+    state: {
+      issue_status: loopControl.state?.issue_status,
+      loop_status: loopControl.state?.loop_status,
+      active_phase: loopControl.state?.active_phase,
+      current_round: loopControl.state?.current_round,
+      reviewer_decision: loopControl.state?.reviewer_decision,
+      reviewer_reason_code: loopControl.state?.reviewer_reason_code,
+      reviewer_invalid_rounds_used: loopControl.state?.reviewer_invalid_rounds_used,
+      reviewer_invalid_round_budget: loopControl.state?.reviewer_invalid_round_budget,
+      reviewer_invalid_budget_exhausted: loopControl.state?.reviewer_invalid_budget_exhausted,
+      needs_human_decision: loopControl.state?.needs_human_decision,
+      primary_action: loopControl.state?.primary_action,
+    },
+    reviewer_gate_surface: {
+      role: loopControl.reviewer_gate_surface?.role,
+      runtime_preflight_state: loopControl.reviewer_gate_surface?.gates?.runtime_preflight?.state,
+      runtime_gate: loopControl.reviewer_gate_surface?.gates?.runtime_preflight?.gate,
+      runtime_passed: loopControl.reviewer_gate_surface?.gates?.runtime_preflight?.passed,
+      worker_lifecycle_state: loopControl.reviewer_gate_surface?.gates?.worker_lifecycle?.state,
+      observed_roles: loopControl.reviewer_gate_surface?.gates?.worker_lifecycle?.observed_roles ?? [],
+      evidence_manifest_state: loopControl.reviewer_gate_surface?.gates?.evidence_manifest?.state,
+      evidence_count: loopControl.reviewer_gate_surface?.gates?.evidence_manifest?.coverage?.evidence_count,
+      digest_count: loopControl.reviewer_gate_surface?.gates?.evidence_manifest?.coverage?.digest_count,
+      drift_state: loopControl.reviewer_gate_surface?.target_drift_check?.state,
+      score_names: (loopControl.reviewer_gate_surface?.score_vector ?? []).map((item) => item.name),
+    },
+    operator_decision_surface: {
+      primary_action: loopControl.operator_decision_surface?.primary_action,
+      blocked_fallback_active: loopControl.operator_decision_surface?.blocked_fallback?.active,
+      blocked_fallback_status: loopControl.operator_decision_surface?.blocked_fallback?.status,
+      options: (loopControl.operator_decision_surface?.options ?? []).map((option) => ({
+        key: option.key,
+        label: option.label,
+        enabled: option.enabled,
+        tool: option.tool ?? null,
+      })),
+    },
+    human_decision_boundary: {
+      required: loopControl.human_decision_boundary?.required,
+      issue_status: loopControl.human_decision_boundary?.issue_status,
+      options: loopControl.human_decision_boundary?.options ?? [],
+      confirmation_arg: loopControl.human_decision_boundary?.confirmation_arg,
+    },
+    resources: {
+      loop_control: Boolean(loopControl.resources?.loop_control),
+      issue_control: Boolean(loopControl.resources?.issue_control),
+      transition_policy: Boolean(loopControl.resources?.transition_policy),
+      review_queue: Boolean(loopControl.resources?.review_queue),
+    },
+  },
   "issue-board-summary.json": {
     schema_version: "entrance.auto.golden.issue_board_summary.v1",
     board_schema: board.schema_version,
@@ -342,6 +433,7 @@ const summary = {
   app_root: appRoot,
   artifacts: {
     local_demo: localPath,
+    loop_control: loopControlPath,
     remote_fixture_demo: fixturePath,
     issue_board: boardPath,
     connector_queue: queuePath,
@@ -371,6 +463,19 @@ const summary = {
         worker_ok: stage?.worker?.ok,
       };
     }),
+  },
+  loop_control: {
+    schema_version: loopControl.schema_version,
+    issue_status: loopControl.state?.issue_status,
+    loop_status: loopControl.state?.loop_status,
+    reviewer_decision: loopControl.state?.reviewer_decision,
+    reviewer_reason_code: loopControl.state?.reviewer_reason_code,
+    reviewer_invalid_rounds_used: loopControl.state?.reviewer_invalid_rounds_used,
+    reviewer_invalid_round_budget: loopControl.state?.reviewer_invalid_round_budget,
+    needs_human_decision: loopControl.state?.needs_human_decision,
+    primary_action: loopControl.operator_decision_surface?.primary_action,
+    operator_options: (loopControl.operator_decision_surface?.options ?? []).map((option) => option.key),
+    score_names: (loopControl.reviewer_gate_surface?.score_vector ?? []).map((item) => item.name),
   },
   remote_fixture: {
     schema_version: fixture.schema_version,
@@ -420,6 +525,16 @@ const md = [
   `- Workers ok: ${summary.local_mvp.worker_ok}`,
   `- Missing receipts: ${summary.local_mvp.receipt_missing}`,
   "",
+  "## Loop Control",
+  "",
+  `- Schema: ${summary.loop_control.schema_version}`,
+  `- Issue status: ${summary.loop_control.issue_status}`,
+  `- Loop status: ${summary.loop_control.loop_status}`,
+  `- Reviewer decision: ${summary.loop_control.reviewer_decision}`,
+  `- Reviewer budget: ${summary.loop_control.reviewer_invalid_rounds_used}/${summary.loop_control.reviewer_invalid_round_budget}`,
+  `- Human decision required: ${summary.loop_control.needs_human_decision}`,
+  `- Operator options: ${summary.loop_control.operator_options.join(", ")}`,
+  "",
   "## Remote Fixture",
   "",
   `- Issue: #${summary.remote_fixture.issue_id}`,
@@ -444,6 +559,7 @@ const md = [
   "## Artifacts",
   "",
   `- Local demo JSON: \`${summary.artifacts.local_demo}\``,
+  `- Loop control JSON: \`${summary.artifacts.loop_control}\``,
   `- Remote fixture JSON: \`${summary.artifacts.remote_fixture_demo}\``,
   `- Issue board JSON: \`${summary.artifacts.issue_board}\``,
   `- Connector queue JSON: \`${summary.artifacts.connector_queue}\``,

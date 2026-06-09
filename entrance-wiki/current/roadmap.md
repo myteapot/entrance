@@ -120,6 +120,11 @@ Entrance has reached a local MVP unit:
   `entrance hive loop control <loop_id>`, daemon command `hive_loop_control`,
   and the Panel selected issue Reviewer Control block, so local operators and
   MCP clients inspect the same Reviewer gate/budget/evidence/options contract.
+- The local MVP validation workflow now captures that loop-level control packet
+  as a stable golden contract. `run-local-mvp-demo.sh --verify-golden` writes
+  and compares `loop-control-summary.json`, covering Reviewer gate state, score
+  names, fallback budget, human decision boundary, linked resources, and A/B/C
+  operator options.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -147,7 +152,8 @@ Entrance has reached a local MVP unit:
   screenshot metadata proving that the local MVP issue, `remote-fixture:` issue,
   connector queue, `Run Fixture` actions, `Todo`/`Done` columns, and reviewer
   keep evidence are visible. The screenshot workflow also asserts that the
-  selected issue Loop Dashboard, round grouping, Evidence Drilldown, Runtime
+  selected issue Reviewer Control, loop control schema, score vector, A/B/C
+  operator options, Loop Dashboard, round grouping, Evidence Drilldown, Runtime
   Preflight, Worker Lifecycle, Developer/Reviewer lanes, fallback budget,
   receipt detail, payload diff, and lifecycle state are visible.
 - The Panel selected-issue detail now consumes the daemon `hive_loop_dashboard`

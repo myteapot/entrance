@@ -388,7 +388,7 @@ async function main() {
 
   await waitForCondition(
     win,
-    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(document.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(document.querySelector('[data-testid^=evidence-manifest-detail-]')) && Boolean(document.querySelector('[data-testid^=issue-timeline-detail-]')) && Boolean(document.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
+    "Boolean(document.querySelector('[data-testid=panel-run-fixture-demo]')) && Boolean(document.querySelector('[data-testid^=loop-control-detail-]')) && Boolean(document.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(document.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(document.querySelector('[data-testid^=evidence-manifest-detail-]')) && Boolean(document.querySelector('[data-testid^=issue-timeline-detail-]')) && Boolean(document.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(document.querySelector('[data-testid^=worker-lifecycle-detail-]')) && document.body.textContent.includes('Entrance remote fixture demo')",
     "Panel issue board",
   );
   await win.webContents.executeJavaScript(\`
@@ -403,7 +403,7 @@ async function main() {
   \`);
   await waitForCondition(
     win,
-    "(() => { const detail = document.querySelector('.panel--detail'); const text = detail ? (detail.textContent || '') : ''; return Boolean(detail) && text.includes('Entrance MVP demo') && text.includes('Reviewer kept the candidate') && text.includes('packets 4 / admissions 4 / evidence 3 / verdicts 1') && text.includes('evidence_drilldown.v1') && text.includes('evidence_manifest.v1') && text.includes('issue_timeline.v1') && Boolean(detail.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(detail.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(detail.querySelector('[data-testid^=evidence-manifest-detail-]')) && Boolean(detail.querySelector('[data-testid^=issue-timeline-detail-]')) && Boolean(detail.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(detail.querySelector('[data-testid^=worker-lifecycle-detail-]')); })()",
+    "(() => { const detail = document.querySelector('.panel--detail'); const text = detail ? (detail.textContent || '') : ''; return Boolean(detail) && text.includes('Entrance MVP demo') && text.includes('Reviewer kept the candidate') && text.includes('loop_control.v1') && text.includes('packets 4 / admissions 4 / evidence 3 / verdicts 1') && text.includes('evidence_drilldown.v1') && text.includes('evidence_manifest.v1') && text.includes('issue_timeline.v1') && Boolean(detail.querySelector('[data-testid^=loop-control-detail-]')) && Boolean(detail.querySelector('[data-testid^=loop-dashboard-detail-]')) && Boolean(detail.querySelector('[data-testid^=evidence-drilldown-detail-]')) && Boolean(detail.querySelector('[data-testid^=evidence-manifest-detail-]')) && Boolean(detail.querySelector('[data-testid^=issue-timeline-detail-]')) && Boolean(detail.querySelector('[data-testid^=runtime-preflight-detail-]')) && Boolean(detail.querySelector('[data-testid^=worker-lifecycle-detail-]')); })()",
     "local MVP issue detail",
   );
   await win.webContents.executeJavaScript(\`
@@ -443,6 +443,17 @@ async function main() {
     issue_transition_policy_actions_visible: Boolean(detailQuery('[data-testid^="issue-transition-policy-action-"]')),
     issue_transition_policy_allowed_visible: detailText.includes('allowed'),
     issue_transition_policy_budget_visible: detailText.includes('reviewer 0/3'),
+    reviewer_control_visible: Boolean(detailQuery('[data-testid^="loop-control-detail-"]')),
+    reviewer_control_schema_visible: detailText.includes('loop_control.v1'),
+    reviewer_control_budget_visible: detailText.includes('reviewer 0/3'),
+    reviewer_control_runtime_gate_visible: detailText.includes('runtime_policy_ready ok'),
+    reviewer_control_lifecycle_gate_visible: detailText.includes('lifecycle succeeded'),
+    reviewer_control_evidence_gate_visible: detailText.includes('evidence ok'),
+    reviewer_control_score_visible: detailText.includes('stage 1.00') && detailText.includes('runtime 1.00') && detailText.includes('evidence 1.00') && detailText.includes('admission 1.00'),
+    reviewer_control_options_visible: Boolean(detailQuery('[data-testid^="loop-control-option-"][data-testid$="-A"]')) && Boolean(detailQuery('[data-testid^="loop-control-option-"][data-testid$="-B"]')) && Boolean(detailQuery('[data-testid^="loop-control-option-"][data-testid$="-C"]')),
+    reviewer_control_option_a_visible: detailText.includes('A. retry with changed boundary'),
+    reviewer_control_option_b_visible: detailText.includes('B. request human review'),
+    reviewer_control_option_c_visible: detailText.includes('C. keep blocked'),
     loop_dashboard_visible: Boolean(detailQuery('[data-testid^="loop-dashboard-detail-"]')),
     loop_dashboard_developer_visible: Boolean(detailQuery('[data-testid^="loop-dashboard-agent-"][data-testid$="-developer"]')),
     loop_dashboard_reviewer_visible: Boolean(detailQuery('[data-testid^="loop-dashboard-agent-"][data-testid$="-reviewer"]')),
