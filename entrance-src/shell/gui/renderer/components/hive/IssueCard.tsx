@@ -1,5 +1,3 @@
-import { commentPreview, compactText } from "../../lib/hive";
-
 type IssueCardProps = Record<string, any> & {
   card: any;
   selected: boolean;
@@ -8,15 +6,45 @@ type IssueCardProps = Record<string, any> & {
 
 const stop = (event: Event) => event.stopPropagation();
 
-const latestComment = (card: any) =>
-  card.comments.length ? card.comments[card.comments.length - 1] : null;
-
 export function IssueCard(props: IssueCardProps) {
   const card = () => props.card;
   const trace = () => card().trace;
   const doctor = () => props.cardDoctor?.(card()) ?? card().doctor;
-  const latest = () => latestComment(card());
   const pending = () => props.issuePendingLabel?.(card().issue.id);
+  const decisionActions = () => props.issueDecisionActions?.(card()) ?? [];
+  const primaryDecision = () => decisionActions()[0] ?? null;
+  const canAdvance = () =>
+    card().issue.loop_id && (card().issue.status === "Todo" || card().issue.status === "Doing");
+  const runtimeLabel = () => {
+    const mode = trace()?.worker_mode;
+    const kind = trace()?.worker_kind;
+    const runtime = mode ?? kind;
+    if (runtime === "deterministic-worker") return "local";
+    return runtime ?? "runtime pending";
+  };
+  const metaLine = () =>
+    [card().issue.assignee ?? "Unassigned", runtimeLabel()].filter(Boolean).join(" / ");
+  const primaryActionLabel = () => {
+    if (pending()) return pending();
+    if (canAdvance()) return "Advance";
+    return primaryDecision()
+      ? props.issueDecisionButtonLabel?.(card(), primaryDecision()) ?? primaryDecision().label
+      : "Details";
+  };
+  const primaryActionDisabled = () =>
+    Boolean(pending()) ||
+    (primaryDecision() ? Boolean(props.issueOptionDisabled?.(card(), primaryDecision())) : false);
+  const runPrimaryAction = () => {
+    if (canAdvance()) {
+      void props.advanceIssue?.(card());
+      return;
+    }
+    if (primaryDecision()) {
+      props.runIssueAction?.(card(), primaryDecision());
+      return;
+    }
+    props.onOpen();
+  };
 
   return (
     <article
@@ -29,39 +57,22 @@ export function IssueCard(props: IssueCardProps) {
         <span>#{card().issue.id}</span>
       </header>
 
-      <p>{compactText(card().issue.summary ?? "No summary", 120)}</p>
-
-      <div class="issue-card-meta">
-        <span>{card().issue.assignee ?? "No assignee"}</span>
-        <span>{card().issue.claim_role ?? "No role"}</span>
-        <span>{trace()?.worker_mode ?? trace()?.worker_kind ?? "runtime pending"}</span>
-      </div>
+      <div class="issue-card-meta-line">{metaLine()}</div>
 
       <div class="issue-card-signals">
-        {doctor() ? (
-          <span class={`signal signal--${props.doctorHealthTone?.(doctor().health) ?? "pending"}`}>
-            {props.doctorHealthLabel?.(doctor().health) ?? doctor().health}
-          </span>
-        ) : null}
         {trace() ? (
           <>
             <span class={trace().audit_passed === false ? "signal signal--warn" : "signal"}>
               {props.auditLabel?.(trace()) ?? "audit pending"}
             </span>
             {trace().last_decision ? <span class="signal">{trace().last_decision}</span> : null}
-            {props.scoreSummaryLabel?.(trace()) ? (
-              <span class="signal">{props.scoreSummaryLabel(trace())}</span>
-            ) : null}
           </>
+        ) : doctor() ? (
+          <span class={`signal signal--${props.doctorHealthTone?.(doctor().health) ?? "pending"}`}>
+            {props.doctorHealthLabel?.(doctor().health) ?? doctor().health}
+          </span>
         ) : null}
       </div>
-
-      {latest() ? (
-        <div class="issue-card-latest">
-          <strong>{latest().author}</strong>
-          <span>{commentPreview(latest(), 72)}</span>
-        </div>
-      ) : null}
 
       {props.commentComposerActive?.(card().issue.id, "board") ? (
         <div class="comment-box" onClick={stop}>
@@ -94,46 +105,14 @@ export function IssueCard(props: IssueCardProps) {
         </div>
       ) : (
         <div class="issue-card-actions" onClick={stop}>
-          {card().issue.loop_id && (card().issue.status === "Todo" || card().issue.status === "Doing") ? (
-            <button
-              type="button"
-              aria-label={`Advance issue #${card().issue.id} from board`}
-              data-testid={`issue-action-board-advance-${card().issue.id}`}
-              disabled={Boolean(pending())}
-              onClick={() => void props.advanceIssue?.(card())}
-            >
-              {pending() ?? "Advance"}
-            </button>
-          ) : null}
-          {props.issueDecisionActions?.(card()).map((action: any) => (
-            <button
-              type="button"
-              aria-label={`${action.label} issue #${card().issue.id} from board`}
-              data-testid={`issue-action-board-${action.action}-${card().issue.id}`}
-              disabled={props.issueOptionDisabled?.(card(), action)}
-              {...props.issueActionButtonAttrs?.(action)}
-              onClick={() => props.runIssueAction?.(card(), action)}
-            >
-              {props.issueDecisionButtonLabel?.(card(), action)}
-            </button>
-          ))}
           <button
             type="button"
-            aria-label={`Show issue #${card().issue.id} details`}
-            data-testid={`issue-action-board-details-${card().issue.id}`}
-            onClick={props.onOpen}
+            aria-label={`${primaryActionLabel()} issue #${card().issue.id} from board`}
+            data-testid={`issue-action-board-primary-${card().issue.id}`}
+            disabled={primaryActionDisabled()}
+            onClick={runPrimaryAction}
           >
-            Details
-          </button>
-          <button
-            type="button"
-            aria-label={`Comment on issue #${card().issue.id} from board`}
-            data-testid={`issue-action-board-comment-${card().issue.id}`}
-            disabled={Boolean(pending())}
-            {...props.issueActionButtonAttrs?.(props.issueActionByName?.(card(), "comment"))}
-            onClick={() => props.openIssueComment?.(card().issue.id, "board")}
-          >
-            Comment
+            {primaryActionLabel()}
           </button>
         </div>
       )}
