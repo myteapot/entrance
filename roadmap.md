@@ -35,6 +35,7 @@ Last updated: 2026-06-09
 - 本轮继续把 Reviewer fallback budget 从“轮号推断”改成 ledger-backed policy：verdict payload、Worker Lifecycle、Transition Policy 和 MCP issue control 现在按连续 invalid Reviewer verdict streak 计算预算，只有连续第 3 次 invalid review 才 fallback 到 `Blocked`，单纯跳到 round 3 不会耗尽预算。
 - 本轮继续把 Reviewer score/gate 从静态占位推进到 ledger-derived MVP：stage completeness、runtime readiness、prior evidence presence、admission integrity、missing receipts 和 failure reasons 现在从当前轮 stages/evidence/admissions 计算；ledger gates 不完整时，`keep` 会被 runtime 强制降级为 `reject`。
 - 本轮继续把目标漂移约束推进到 Developer admission：`EXECUTION_PACKET` 现在必须携带 `accepted_candidate`，`accepted_candidate_bound` 会将它与同轮已 admitted 的 Explorer candidate 比对，不一致时即使 runtime receipts 完整也会被 compiler gate 拒绝；Reviewer score/gate 会暴露 `target_alignment` / `target_bound`。
+- 本轮继续把 target binding 纳入 ledger audit：`hive loop audit` 现在会从 packets/admissions 重新计算 Developer target binding，并拒绝被篡改的 `target_binding` admission receipt。
 
 ## 还没做完
 

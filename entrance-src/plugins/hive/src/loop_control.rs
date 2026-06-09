@@ -4362,7 +4362,16 @@ pub fn audit(store: &Store, loop_id: i64) -> Result<HiveLoopAuditReport> {
         .collect::<Vec<_>>();
     let mut admission_errors = admissions
         .iter()
-        .filter_map(|admission| admission_audit_errors(admission, &packet_by_id))
+        .filter_map(|admission| {
+            admission_audit_errors(
+                admission,
+                &packet_by_id,
+                GateEvaluationContext {
+                    packets: &packets,
+                    admissions: &admissions,
+                },
+            )
+        })
         .collect::<Vec<_>>();
     admission_errors.extend(packet_admission_audit_errors(&packets, &admissions));
     let worker_errors = packets
@@ -7025,6 +7034,7 @@ fn packet_admission_audit_errors(
 fn admission_audit_errors(
     admission: &HiveLoopAdmission,
     packet_by_id: &HashMap<i64, &HiveLoopPacket>,
+    gate_context: GateEvaluationContext<'_>,
 ) -> Option<serde_json::Value> {
     let mut errors = Vec::new();
     let packet = packet_by_id.get(&admission.packet_id).copied();
@@ -7222,6 +7232,17 @@ fn admission_audit_errors(
             &mut errors,
         );
     }
+    if let Some(packet) = packet {
+        admission_target_binding_errors(
+            admission,
+            packet,
+            gate_name,
+            gate_passed,
+            receipt_satisfied,
+            gate_context,
+            &mut errors,
+        );
+    }
     match (
         admission.result.as_str(),
         gate_passed,
@@ -7251,6 +7272,120 @@ fn admission_audit_errors(
 
 fn admission_field<'a>(value: &'a serde_json::Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(|value| value.as_str())
+}
+
+fn admission_target_binding_errors(
+    admission: &HiveLoopAdmission,
+    packet: &HiveLoopPacket,
+    gate_name: Option<&str>,
+    gate_passed: Option<bool>,
+    receipt_satisfied: Option<bool>,
+    gate_context: GateEvaluationContext<'_>,
+    errors: &mut Vec<String>,
+) {
+    let actual = admission.policy.get("target_binding");
+    if packet.object_kind != "EXECUTION_PACKET" {
+        if actual.is_some_and(|value| !value.is_null()) {
+            errors.push("target_binding.unexpected".to_string());
+        }
+        return;
+    }
+
+    let Some(actual) = actual else {
+        errors.push("target_binding.missing".to_string());
+        return;
+    };
+    if actual.is_null() {
+        errors.push("target_binding.missing".to_string());
+        return;
+    }
+
+    let expected = target_binding_receipt(packet, &packet.payload, gate_context);
+    compare_admission_target_binding_field(
+        actual,
+        &expected,
+        "/schema_version",
+        "target_binding.schema_version",
+        errors,
+    );
+    compare_admission_target_binding_field(
+        actual,
+        &expected,
+        "/name",
+        "target_binding.name",
+        errors,
+    );
+    compare_admission_target_binding_field(
+        actual,
+        &expected,
+        "/passed",
+        "target_binding.passed",
+        errors,
+    );
+    compare_admission_target_binding_field(
+        actual,
+        &expected,
+        "/reason",
+        "target_binding.reason",
+        errors,
+    );
+    compare_admission_target_binding_field(
+        actual,
+        &expected,
+        "/developer_packet_id",
+        "target_binding.developer_packet_id",
+        errors,
+    );
+    compare_admission_target_binding_field(
+        actual,
+        &expected,
+        "/explorer_packet_id",
+        "target_binding.explorer_packet_id",
+        errors,
+    );
+    compare_admission_target_binding_field(
+        actual,
+        &expected,
+        "/explorer_candidate_count",
+        "target_binding.explorer_candidate_count",
+        errors,
+    );
+    compare_admission_target_binding_field(
+        actual,
+        &expected,
+        "/expected_candidate",
+        "target_binding.expected_candidate",
+        errors,
+    );
+    compare_admission_target_binding_field(
+        actual,
+        &expected,
+        "/accepted_candidate",
+        "target_binding.accepted_candidate",
+        errors,
+    );
+
+    if gate_name == Some(ACCEPTED_CANDIDATE_BOUND_GATE)
+        && receipt_satisfied == Some(true)
+        && gate_passed
+            != expected
+                .pointer("/passed")
+                .and_then(|value| value.as_bool())
+    {
+        errors.push("target_binding.gate_binding".to_string());
+    }
+}
+
+fn compare_admission_target_binding_field(
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+    pointer: &str,
+    field: &str,
+    errors: &mut Vec<String>,
+) {
+    if actual.pointer(pointer) != expected.pointer(pointer) {
+        errors.push(field.to_string());
+    }
 }
 
 fn admission_gate_spec_errors(
@@ -14027,6 +14162,23 @@ mod tests {
         actions.iter().map(|action| action.action.clone()).collect()
     }
 
+    fn packet_by_id<'a>(packets: &'a [HiveLoopPacket]) -> HashMap<i64, &'a HiveLoopPacket> {
+        packets
+            .iter()
+            .map(|packet| (packet.id, packet))
+            .collect::<HashMap<_, _>>()
+    }
+
+    fn test_gate_context<'a>(
+        packets: &'a [HiveLoopPacket],
+        admissions: &'a [HiveLoopAdmission],
+    ) -> GateEvaluationContext<'a> {
+        GateEvaluationContext {
+            packets,
+            admissions,
+        }
+    }
+
     #[test]
     fn policy_registry_and_loop_policies_expose_typed_gate_specs() {
         let registry = policy_registry();
@@ -17067,11 +17219,7 @@ mod tests {
             },
         )
         .expect("loop should run");
-        let packet_by_id = report
-            .packets
-            .iter()
-            .map(|packet| (packet.id, packet))
-            .collect::<HashMap<_, _>>();
+        let packet_by_id = packet_by_id(&report.packets);
         let mut bad_admission = report.admissions[0].clone();
         bad_admission.policy["packet"]["object_kind"] = serde_json::json!("EXECUTION_PACKET");
         bad_admission.policy["policy"]["route_to"] = serde_json::json!("complete");
@@ -17081,8 +17229,12 @@ mod tests {
         bad_admission.policy["receipt"]["missing"] = serde_json::json!(["constraints"]);
         bad_admission.policy["receipt"]["satisfied"] = serde_json::json!(true);
 
-        let errors = admission_audit_errors(&bad_admission, &packet_by_id)
-            .expect("corrupt admission should fail audit");
+        let errors = admission_audit_errors(
+            &bad_admission,
+            &packet_by_id,
+            test_gate_context(&report.packets, &report.admissions),
+        )
+        .expect("corrupt admission should fail audit");
         let fields = errors
             .get("errors")
             .and_then(|value| value.as_array())
@@ -17096,6 +17248,82 @@ mod tests {
         assert!(fields.contains(&"receipt.required_binding"));
         assert!(fields.contains(&"receipt.satisfied_binding"));
         assert!(fields.contains(&"result.admission_conditions"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_audit_rejects_drifted_target_binding_receipt() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-target-binding-audit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Target binding audit loop".to_string(),
+                goal: "Detect drifted target binding admission receipts".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+        let report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: created.contract.id,
+                runtime: Some("local".to_string()),
+                decision: None,
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("loop should run");
+        let execution_packet_id = report
+            .packets
+            .iter()
+            .find(|packet| packet.object_kind == "EXECUTION_PACKET")
+            .expect("execution packet should exist")
+            .id;
+        let packet_by_id = packet_by_id(&report.packets);
+        let mut bad_admission = report
+            .admissions
+            .iter()
+            .find(|admission| admission.packet_id == execution_packet_id)
+            .expect("execution admission should exist")
+            .clone();
+        bad_admission.policy["target_binding"]["passed"] = serde_json::json!(false);
+        bad_admission.policy["target_binding"]["reason"] =
+            serde_json::json!("accepted_candidate_mismatch");
+        bad_admission.policy["target_binding"]["expected_candidate"] =
+            serde_json::json!("Another candidate");
+
+        let errors = admission_audit_errors(
+            &bad_admission,
+            &packet_by_id,
+            test_gate_context(&report.packets, &report.admissions),
+        )
+        .expect("drifted target binding should fail admission audit");
+        let fields = errors
+            .get("errors")
+            .and_then(|value| value.as_array())
+            .expect("admission audit should return error fields")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(fields.contains(&"target_binding.passed"));
+        assert!(fields.contains(&"target_binding.reason"));
+        assert!(fields.contains(&"target_binding.expected_candidate"));
 
         let _ = fs::remove_dir_all(root);
     }

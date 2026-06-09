@@ -441,7 +441,9 @@ gates are incomplete, the runtime records a `reject` verdict instead of marking
 the issue `Done`.
 Developer `EXECUTION_PACKET` admission uses `accepted_candidate_bound`: the
 packet must carry `accepted_candidate`, and that value must match the same-round
-admitted Explorer candidate before Reviewer can receive the packet.
+admitted Explorer candidate before Reviewer can receive the packet. Loop audit
+recomputes this target binding from the packet/admission ledger and rejects
+drifted `target_binding` admission receipts.
 `entrance_review_queue` and `entrance://review-queue` expose only `Blocked` and
 `Needs Review` issues, with reviewer decision, reason code, human options,
 actions, blockers, latest comment, and recent evidence summaries.
