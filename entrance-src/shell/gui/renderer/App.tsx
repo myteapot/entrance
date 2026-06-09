@@ -1307,6 +1307,7 @@ type RuntimePreflightReport = {
     blocker: string | null;
     runtime_probe: Record<string, unknown>;
     selected_policy: Record<string, unknown> | null;
+    capability_preview: RuntimeCapabilityPreview;
   };
   current: RuntimePreflightObservation | null;
   failures: string[];
@@ -1328,6 +1329,60 @@ type RuntimePreflightObservation = {
   probe_ok: boolean | null;
   blocker: string | null;
   runtime_probe: Record<string, unknown> | null;
+  capability_preview: Record<string, unknown> | null;
+};
+
+type RuntimeCapabilityPreview = {
+  schema_version: string;
+  runtime: string;
+  worker_spawn_ready: boolean;
+  worker_spawn_blockers: string[];
+  admission_scope: string[];
+  worker_mode: string | null;
+  sandbox: {
+    filesystem: string;
+    network: string;
+    writes_artifacts: boolean;
+    process_isolation: string;
+    write_scope: string;
+  };
+  artifact_capture: {
+    expected: boolean;
+    mode: string;
+    archive_ready: boolean;
+    resource: string;
+    next_action: string;
+  };
+  connector_readiness: {
+    review_surface: string;
+    provider: string;
+    known: boolean;
+    status: string | null;
+    configured: boolean | null;
+    supports_publish: boolean | null;
+    supports_readback: boolean | null;
+    supports_admission: boolean | null;
+    external_surface_ready: boolean;
+    blockers: string[];
+    auth_required: boolean | null;
+    auth_env: string[];
+    control_resource: string;
+  };
+  human_boundary: {
+    review_surface: string;
+    autonomy_level: string;
+    confirmation_arg: string;
+    human_decision_statuses: string[];
+    protected_actions: string[];
+    reviewer_invalid_round_budget: number;
+    fallback_status: string;
+  };
+  worker_context: {
+    required: string[];
+    supplied_by_driver: string[];
+    missing_before_spawn: string[];
+    required_receipt_fields: string[];
+  };
 };
 
 type WorkerLifecycleReport = {
@@ -5685,6 +5740,82 @@ export default function App() {
                                     </span>
                                   ))}
                                 </div>
+                                {(() => {
+                                  const capability = preflight.preview.capability_preview;
+                                  return (
+                                    <div
+                                      class="worker-lifecycle-role worker-lifecycle-role--pending"
+                                      data-testid={`runtime-capability-preview-${card.issue.id}`}
+                                    >
+                                      <div class="stage-row-head">
+                                        <strong>Capability Preview</strong>
+                                        <span>
+                                          {capability.worker_spawn_ready ? "spawn ready" : "spawn blocked"}
+                                        </span>
+                                      </div>
+                                      <div class="trace-strip">
+                                        <span class="trace-pill">
+                                          {schemaLabel(capability.schema_version)}
+                                        </span>
+                                        <span
+                                          class={
+                                            capability.worker_spawn_ready
+                                              ? "trace-pill trace-pill--ok"
+                                              : "trace-pill trace-pill--warn"
+                                          }
+                                        >
+                                          worker spawn{" "}
+                                          {capability.worker_spawn_ready ? "ready" : "blocked"}
+                                        </span>
+                                        <span class="trace-pill">
+                                          sandbox {capability.sandbox.filesystem}
+                                        </span>
+                                        <span class="trace-pill">
+                                          network {capability.sandbox.network}
+                                        </span>
+                                        <span class="trace-pill">
+                                          artifacts {capability.artifact_capture.mode}
+                                        </span>
+                                        <span
+                                          class={
+                                            capability.connector_readiness.external_surface_ready
+                                              ? "trace-pill trace-pill--ok"
+                                              : "trace-pill trace-pill--warn"
+                                          }
+                                        >
+                                          connector {capability.connector_readiness.provider}{" "}
+                                          {capability.connector_readiness.external_surface_ready
+                                            ? "ready"
+                                            : "blocked"}
+                                        </span>
+                                        <span class="trace-pill">
+                                          human {capability.human_boundary.confirmation_arg}
+                                        </span>
+                                        <span class="trace-pill">
+                                          review budget{" "}
+                                          {capability.human_boundary.reviewer_invalid_round_budget}
+                                        </span>
+                                        <span class="trace-pill">
+                                          worker ctx{" "}
+                                          {capability.worker_context.required.length
+                                            ? capability.worker_context.required.join(", ")
+                                            : "none"}
+                                        </span>
+                                      </div>
+                                      {capability.worker_spawn_blockers.length ||
+                                      capability.connector_readiness.blockers.length ? (
+                                        <div class="doctor-lines">
+                                          {capability.worker_spawn_blockers.map((blocker) => (
+                                            <span>{blocker}</span>
+                                          ))}
+                                          {capability.connector_readiness.blockers.map((blocker) => (
+                                            <span>{blocker}</span>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })()}
                                 {preflight.failures.length ? (
                                   <div class="doctor-lines">
                                     {preflight.failures.map((failure) => (

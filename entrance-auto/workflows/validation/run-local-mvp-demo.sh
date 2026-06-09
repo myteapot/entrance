@@ -198,6 +198,14 @@ assert(loopControl.state?.reviewer_invalid_round_budget === 3, "loop control rev
 assert(loopControl.state?.needs_human_decision === false, "loop control unexpectedly needs human decision");
 assert(loopControl.reviewer_gate_surface?.role === "Reviewer", "loop control missing Reviewer gate surface");
 assert(loopControl.reviewer_gate_surface?.gates?.runtime_preflight?.state === "admitted", "loop control runtime gate changed");
+const runtimeCapability = loopControl.reviewer_gate_surface?.gates?.runtime_preflight?.capability_preview
+  ?? loopControl.reports?.runtime_preflight?.preview?.capability_preview;
+assert(runtimeCapability?.schema_version === "entrance.hive.runtime_capability_preview.v1", "loop control missing runtime capability preview");
+assert(runtimeCapability?.worker_spawn_ready === true, "loop control capability spawn readiness changed");
+assert(runtimeCapability?.sandbox?.filesystem === "in-process", "loop control capability sandbox changed");
+assert(runtimeCapability?.connector_readiness?.provider === "local-hive-panel", "loop control capability connector provider changed");
+assert(runtimeCapability?.connector_readiness?.external_surface_ready === true, "loop control capability connector readiness changed");
+assert(runtimeCapability?.human_boundary?.confirmation_arg === "human_confirmed", "loop control capability human boundary changed");
 assert(loopControl.reviewer_gate_surface?.gates?.worker_lifecycle?.state === "succeeded", "loop control worker lifecycle gate changed");
 assert(loopControl.reviewer_gate_surface?.gates?.evidence_manifest?.state === "ok", "loop control evidence gate changed");
 assert(loopControl.reviewer_gate_surface?.target_drift_check?.state === "shallow", "loop control drift check state changed");
@@ -328,6 +336,12 @@ const normalized = {
       runtime_preflight_state: loopControl.reviewer_gate_surface?.gates?.runtime_preflight?.state,
       runtime_gate: loopControl.reviewer_gate_surface?.gates?.runtime_preflight?.gate,
       runtime_passed: loopControl.reviewer_gate_surface?.gates?.runtime_preflight?.passed,
+      runtime_capability_schema: runtimeCapability?.schema_version,
+      runtime_worker_spawn_ready: runtimeCapability?.worker_spawn_ready,
+      runtime_sandbox_filesystem: runtimeCapability?.sandbox?.filesystem,
+      runtime_connector_provider: runtimeCapability?.connector_readiness?.provider,
+      runtime_connector_ready: runtimeCapability?.connector_readiness?.external_surface_ready,
+      runtime_human_confirmation_arg: runtimeCapability?.human_boundary?.confirmation_arg,
       worker_lifecycle_state: loopControl.reviewer_gate_surface?.gates?.worker_lifecycle?.state,
       observed_roles: loopControl.reviewer_gate_surface?.gates?.worker_lifecycle?.observed_roles ?? [],
       evidence_manifest_state: loopControl.reviewer_gate_surface?.gates?.evidence_manifest?.state,

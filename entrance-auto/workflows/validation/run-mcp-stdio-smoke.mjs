@@ -628,6 +628,13 @@ function assertLoopControl(value, loopId, issueId) {
   assert(value.state?.reviewer_invalid_rounds_used === 0, "loop control reviewer invalid rounds changed");
   assert(value.state?.reviewer_invalid_round_budget === 3, "loop control reviewer budget changed");
   assert(value.reviewer_gate_surface?.gates?.runtime_preflight?.state === "admitted", "loop control runtime gate changed");
+  const capability = value.reviewer_gate_surface?.gates?.runtime_preflight?.capability_preview
+    ?? value.reports?.runtime_preflight?.preview?.capability_preview;
+  assert(capability?.schema_version === "entrance.hive.runtime_capability_preview.v1", "loop control missing runtime capability preview");
+  assert(capability?.worker_spawn_ready === true, "loop control runtime capability spawn readiness changed");
+  assert(capability?.connector_readiness?.provider === "local-hive-panel", "loop control runtime capability connector provider changed");
+  assert(capability?.connector_readiness?.external_surface_ready === true, "loop control runtime capability connector readiness changed");
+  assert(capability?.human_boundary?.confirmation_arg === "human_confirmed", "loop control runtime capability human boundary changed");
   assert(value.reviewer_gate_surface?.gates?.worker_lifecycle?.state === "succeeded", "loop control lifecycle gate changed");
   assert(value.reviewer_gate_surface?.gates?.evidence_manifest?.state === "ok", "loop control evidence gate changed");
   const scoreNames = new Set((value.reviewer_gate_surface?.score_vector ?? []).map((item) => item.name));

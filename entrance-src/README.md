@@ -147,10 +147,12 @@ below Evidence Manifest. `hive issue timeline-item <id> <item-id>` and
 timeline item with neighboring item ids, round context, linked evidence, and an
 optional decision receipt.
 `hive loop preflight <id>` exposes the same boundary as
-`entrance.hive.runtime_preflight.v1`, including policy, probe, current
-admission, blocker, failures, and next actions; MCP exposes it as
+`entrance.hive.runtime_preflight.v1`, including policy, probe,
+`runtime_capability_preview.v1` for worker spawn readiness, sandbox scope,
+artifact capture mode, connector readiness, human confirmation boundaries,
+worker context, current admission, blocker, failures, and next actions; MCP exposes it as
 `entrance://loops/{loop_id}/runtime-preflight`, and the Panel selected issue
-renders it before Worker Lifecycle.
+renders the same capability preview before Worker Lifecycle.
 Add `--compact` to `hive loop create` to print the linked issue card and next
 actions instead of the full empty loop report. Add `--compact` to `hive loop run`
 to print the Doctor summary after execution instead of the full packet/evidence

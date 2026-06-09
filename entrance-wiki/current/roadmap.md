@@ -293,11 +293,11 @@ multi-agent runtime/compiler product.
   registry/report/audit/admission/state-machine binding with version migration,
   stronger policy lifecycle semantics, and remote status mapping
   discovery/migration.
-- Extend the new runtime preflight admission into a fuller capability preview:
-  sandbox scope, connector readiness, artifact capture expectations, and human
-  preference boundaries before any agent worker is spawned. Current
-  `runtime_preflight.v1` is observable, but it still mostly previews runtime
-  support/probe rather than full execution capability.
+- Productize the new `runtime_capability_preview.v1`: it now exposes worker
+  spawn readiness, sandbox scope, connector readiness, artifact capture mode,
+  human confirmation boundaries, and worker context before any agent worker is
+  spawned, but it is still an observable preview rather than an enforced
+  capability gate with durable sandbox/artifact execution semantics.
 
 ### P1: Loop dashboard
 

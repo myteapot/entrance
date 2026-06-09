@@ -36,6 +36,8 @@ const AUDIT_SCHEMA_VERSION: &str = "entrance.hive.audit.v1";
 const DOCTOR_SCHEMA_VERSION: &str = "entrance.hive.doctor.v1";
 const WORKER_LIFECYCLE_SCHEMA_VERSION: &str = "entrance.hive.worker_lifecycle.v1";
 const RUNTIME_PREFLIGHT_SCHEMA_VERSION: &str = "entrance.hive.runtime_preflight.v1";
+const RUNTIME_CAPABILITY_PREVIEW_SCHEMA_VERSION: &str =
+    "entrance.hive.runtime_capability_preview.v1";
 const LOOP_DASHBOARD_SCHEMA_VERSION: &str = "entrance.hive.loop_dashboard.v1";
 const EVIDENCE_DRILLDOWN_SCHEMA_VERSION: &str = "entrance.hive.evidence_drilldown.v1";
 const EVIDENCE_MANIFEST_SCHEMA_VERSION: &str = "entrance.hive.evidence_manifest.v1";
@@ -998,6 +1000,76 @@ pub struct HiveLoopRuntimePreflightPreview {
     pub blocker: Option<String>,
     pub runtime_probe: serde_json::Value,
     pub selected_policy: Option<RuntimePolicySpec>,
+    pub capability_preview: HiveLoopRuntimeCapabilityPreview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimeCapabilityPreview {
+    pub schema_version: String,
+    pub runtime: String,
+    pub worker_spawn_ready: bool,
+    pub worker_spawn_blockers: Vec<String>,
+    pub admission_scope: Vec<String>,
+    pub worker_mode: Option<String>,
+    pub sandbox: HiveLoopRuntimeSandboxPreview,
+    pub artifact_capture: HiveLoopRuntimeArtifactCapturePreview,
+    pub connector_readiness: HiveLoopRuntimeConnectorReadinessPreview,
+    pub human_boundary: HiveLoopRuntimeHumanBoundaryPreview,
+    pub worker_context: HiveLoopRuntimeWorkerContextPreview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimeSandboxPreview {
+    pub filesystem: String,
+    pub network: String,
+    pub writes_artifacts: bool,
+    pub process_isolation: String,
+    pub write_scope: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimeArtifactCapturePreview {
+    pub expected: bool,
+    pub mode: String,
+    pub archive_ready: bool,
+    pub resource: String,
+    pub next_action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimeConnectorReadinessPreview {
+    pub review_surface: String,
+    pub provider: String,
+    pub known: bool,
+    pub status: Option<String>,
+    pub configured: Option<bool>,
+    pub supports_publish: Option<bool>,
+    pub supports_readback: Option<bool>,
+    pub supports_admission: Option<bool>,
+    pub external_surface_ready: bool,
+    pub blockers: Vec<String>,
+    pub auth_required: Option<bool>,
+    pub auth_env: Vec<String>,
+    pub control_resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimeHumanBoundaryPreview {
+    pub review_surface: String,
+    pub autonomy_level: String,
+    pub confirmation_arg: String,
+    pub human_decision_statuses: Vec<String>,
+    pub protected_actions: Vec<String>,
+    pub reviewer_invalid_round_budget: i64,
+    pub fallback_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveLoopRuntimeWorkerContextPreview {
+    pub required: Vec<String>,
+    pub supplied_by_driver: Vec<String>,
+    pub missing_before_spawn: Vec<String>,
+    pub required_receipt_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1016,6 +1088,7 @@ pub struct HiveLoopRuntimePreflightObservation {
     pub probe_ok: Option<bool>,
     pub blocker: Option<String>,
     pub runtime_probe: Option<serde_json::Value>,
+    pub capability_preview: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1767,7 +1840,7 @@ pub fn run(store: &Store, request: HiveLoopRunRequest) -> Result<HiveLoopReport>
         "kernel",
         "kernel",
         "explorer",
-        runtime_preflight_payload(&runtime, &runtime_probe),
+        runtime_preflight_payload(&contract, &runtime, &runtime_probe),
     )?;
     if preflight_admission.result != "admitted" {
         let kernel_stage = insert_stage(
@@ -4538,7 +4611,7 @@ pub fn runtime_preflight(store: &Store, loop_id: i64) -> Result<HiveLoopRuntimeP
     let packets = store.list_hive_loop_packets(loop_id)?;
     let admissions = store.list_hive_loop_admissions(loop_id)?;
     let current = runtime_preflight_observation(&contract, &packets, &admissions);
-    let preview = runtime_preflight_preview(&contract.runtime);
+    let preview = runtime_preflight_preview(&contract);
     let preflight_state = runtime_preflight_state(&contract, &preview, current.as_ref());
     let failures = runtime_preflight_failures(&preview, current.as_ref());
     let next_actions =
@@ -5360,21 +5433,23 @@ fn runtime_preflight_policy() -> HiveLoopRuntimePreflightPolicy {
     }
 }
 
-fn runtime_preflight_preview(runtime: &str) -> HiveLoopRuntimePreflightPreview {
+fn runtime_preflight_preview(contract: &HiveLoopContract) -> HiveLoopRuntimePreflightPreview {
     let registry = runtime_policy_registry();
+    let runtime = contract.runtime.as_str();
     let selected_policy = runtime_policy_spec(&registry, runtime).cloned();
     let runtime_probe = probe_runtime(runtime);
     let probe_ok = runtime_probe
         .get("ok")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let blocker = if selected_policy.is_none() {
-        Some("runtime.unsupported".to_string())
-    } else if !probe_ok {
-        Some("runtime.probe_failed".to_string())
-    } else {
-        None
-    };
+    let blocker = runtime_policy_blocker(selected_policy.as_ref(), probe_ok).map(ToOwned::to_owned);
+    let capability_preview = runtime_capability_preview(
+        contract,
+        &registry,
+        selected_policy.as_ref(),
+        &runtime_probe,
+        blocker.as_deref(),
+    );
     HiveLoopRuntimePreflightPreview {
         runtime: runtime.to_string(),
         supported: selected_policy.is_some(),
@@ -5382,6 +5457,200 @@ fn runtime_preflight_preview(runtime: &str) -> HiveLoopRuntimePreflightPreview {
         blocker,
         runtime_probe,
         selected_policy,
+        capability_preview,
+    }
+}
+
+fn runtime_policy_blocker(
+    supported_runtime: Option<&RuntimePolicySpec>,
+    probe_ok: bool,
+) -> Option<&'static str> {
+    if supported_runtime.is_none() {
+        Some("runtime.unsupported")
+    } else if !probe_ok {
+        Some("runtime.probe_failed")
+    } else {
+        None
+    }
+}
+
+fn runtime_capability_preview(
+    contract: &HiveLoopContract,
+    registry: &RuntimePolicyRegistry,
+    selected_policy: Option<&RuntimePolicySpec>,
+    runtime_probe: &serde_json::Value,
+    runtime_blocker: Option<&str>,
+) -> HiveLoopRuntimeCapabilityPreview {
+    let worker_spawn_ready = selected_policy.is_some()
+        && runtime_probe
+            .get("ok")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+    let worker_spawn_blockers = runtime_blocker
+        .map(|blocker| vec![blocker.to_string()])
+        .unwrap_or_default();
+    let worker_mode = selected_policy.map(|policy| policy.mode.clone());
+
+    HiveLoopRuntimeCapabilityPreview {
+        schema_version: RUNTIME_CAPABILITY_PREVIEW_SCHEMA_VERSION.to_string(),
+        runtime: contract.runtime.clone(),
+        worker_spawn_ready,
+        worker_spawn_blockers,
+        admission_scope: vec![
+            "packet.receipt_requirements".to_string(),
+            "runtime_policy.supported".to_string(),
+            "runtime_probe.ok".to_string(),
+        ],
+        worker_mode,
+        sandbox: runtime_sandbox_preview(selected_policy),
+        artifact_capture: runtime_artifact_capture_preview(contract.id, selected_policy),
+        connector_readiness: runtime_connector_readiness_preview(&contract.review_surface),
+        human_boundary: runtime_human_boundary_preview(
+            &contract.review_surface,
+            &contract.autonomy_level,
+        ),
+        worker_context: runtime_worker_context_preview(registry, selected_policy),
+    }
+}
+
+fn runtime_sandbox_preview(
+    selected_policy: Option<&RuntimePolicySpec>,
+) -> HiveLoopRuntimeSandboxPreview {
+    match selected_policy {
+        Some(policy) => HiveLoopRuntimeSandboxPreview {
+            filesystem: policy.sandbox.filesystem.clone(),
+            network: policy.sandbox.network.clone(),
+            writes_artifacts: policy.sandbox.writes_artifacts,
+            process_isolation: if policy.command.is_some() {
+                "external-process".to_string()
+            } else {
+                "in-process".to_string()
+            },
+            write_scope: if policy.sandbox.writes_artifacts {
+                "worker transcript/output evidence only".to_string()
+            } else {
+                "none".to_string()
+            },
+        },
+        None => HiveLoopRuntimeSandboxPreview {
+            filesystem: "unknown".to_string(),
+            network: "unknown".to_string(),
+            writes_artifacts: false,
+            process_isolation: "unknown".to_string(),
+            write_scope: "unknown".to_string(),
+        },
+    }
+}
+
+fn runtime_artifact_capture_preview(
+    loop_id: i64,
+    selected_policy: Option<&RuntimePolicySpec>,
+) -> HiveLoopRuntimeArtifactCapturePreview {
+    let expected = selected_policy
+        .map(|policy| policy.sandbox.writes_artifacts)
+        .unwrap_or(false);
+    HiveLoopRuntimeArtifactCapturePreview {
+        expected,
+        mode: if expected {
+            "worker-transcript-evidence".to_string()
+        } else {
+            "ledger-only".to_string()
+        },
+        archive_ready: false,
+        resource: format!("entrance://loops/{loop_id}/evidence-manifest"),
+        next_action: if expected {
+            format!("entrance hive loop evidence-manifest {loop_id}")
+        } else {
+            "no artifact capture required before worker spawn".to_string()
+        },
+    }
+}
+
+fn runtime_connector_readiness_preview(
+    review_surface: &str,
+) -> HiveLoopRuntimeConnectorReadinessPreview {
+    let review_surface = default_text(review_surface.to_string(), "local-hive-panel");
+    let provider_name = issue_mirror_provider(&review_surface);
+    let registry = connector_registry_with_config(&ConnectorsConfig::default());
+    let provider = registry
+        .providers
+        .iter()
+        .find(|provider| provider.name == provider_name);
+    let mut blockers = Vec::new();
+    match provider {
+        Some(provider) => {
+            if provider.status != "active" {
+                blockers.push("provider_not_active".to_string());
+            }
+            if !provider.configured {
+                blockers.push("connector_not_configured".to_string());
+            }
+            if !provider.supports_publish {
+                blockers.push("publish_not_supported".to_string());
+            }
+            if !provider.supports_readback {
+                blockers.push("readback_not_supported".to_string());
+            }
+            if !provider.supports_admission {
+                blockers.push("admission_not_supported".to_string());
+            }
+        }
+        None => blockers.push("provider_unknown".to_string()),
+    }
+    let external_surface_ready = provider.is_some() && blockers.is_empty();
+
+    HiveLoopRuntimeConnectorReadinessPreview {
+        review_surface,
+        provider: provider_name.clone(),
+        known: provider.is_some(),
+        status: provider.map(|provider| provider.status.clone()),
+        configured: provider.map(|provider| provider.configured),
+        supports_publish: provider.map(|provider| provider.supports_publish),
+        supports_readback: provider.map(|provider| provider.supports_readback),
+        supports_admission: provider.map(|provider| provider.supports_admission),
+        external_surface_ready,
+        blockers,
+        auth_required: provider.map(|provider| provider.auth_required),
+        auth_env: provider
+            .map(|provider| provider.auth_env.clone())
+            .unwrap_or_default(),
+        control_resource: format!("entrance://connectors/control/{provider_name}"),
+    }
+}
+
+fn runtime_human_boundary_preview(
+    review_surface: &str,
+    autonomy_level: &str,
+) -> HiveLoopRuntimeHumanBoundaryPreview {
+    HiveLoopRuntimeHumanBoundaryPreview {
+        review_surface: default_text(review_surface.to_string(), "local-hive-panel"),
+        autonomy_level: default_text(autonomy_level.to_string(), "run-approved-candidates"),
+        confirmation_arg: "human_confirmed".to_string(),
+        human_decision_statuses: vec!["Blocked".to_string(), "Needs Review".to_string()],
+        protected_actions: vec![
+            "issue.retry".to_string(),
+            "issue.request-review".to_string(),
+            "issue.cancel".to_string(),
+            "connector.publish-execute".to_string(),
+            "connector.roundtrip-execute".to_string(),
+        ],
+        reviewer_invalid_round_budget: REVIEWER_INVALID_ROUND_BUDGET,
+        fallback_status: "Blocked".to_string(),
+    }
+}
+
+fn runtime_worker_context_preview(
+    registry: &RuntimePolicyRegistry,
+    selected_policy: Option<&RuntimePolicySpec>,
+) -> HiveLoopRuntimeWorkerContextPreview {
+    let required = selected_policy
+        .map(|policy| policy.required_worker_context.clone())
+        .unwrap_or_default();
+    HiveLoopRuntimeWorkerContextPreview {
+        supplied_by_driver: required.clone(),
+        required,
+        missing_before_spawn: Vec::new(),
+        required_receipt_fields: registry.worker.required_receipt_fields.clone(),
     }
 }
 
@@ -5443,6 +5712,7 @@ fn runtime_preflight_observation(
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned),
         runtime_probe: body.get("runtime_probe").cloned(),
+        capability_preview: body.get("capability_preview").cloned(),
     })
 }
 
@@ -12484,6 +12754,7 @@ fn packet_role_worker(payload: &serde_json::Value) -> Option<&serde_json::Value>
 }
 
 fn runtime_preflight_payload(
+    contract: &HiveLoopContract,
     runtime: &str,
     runtime_probe: &serde_json::Value,
 ) -> serde_json::Value {
@@ -12493,17 +12764,19 @@ fn runtime_preflight_payload(
         .get("ok")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let blocker = if supported_runtime.is_none() {
-        Some("runtime.unsupported")
-    } else if !probe_ok {
-        Some("runtime.probe_failed")
-    } else {
-        None
-    };
+    let blocker = runtime_policy_blocker(supported_runtime, probe_ok);
+    let capability_preview = runtime_capability_preview(
+        contract,
+        &registry,
+        supported_runtime,
+        runtime_probe,
+        blocker,
+    );
 
     serde_json::json!({
         "runtime": runtime,
         "runtime_probe": runtime_probe,
+        "capability_preview": capability_preview,
         "runtime_policy": {
             "schema_version": POLICY_SCHEMA_VERSION,
             "gate": "runtime_policy_ready",
@@ -14098,6 +14371,71 @@ mod tests {
     }
 
     #[test]
+    fn runtime_preflight_preview_exposes_capability_boundaries_before_spawn() {
+        let root = std::env::temp_dir().join(format!(
+            "entrance-hive-runtime-capability-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be valid")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let store = Store::open(root.join("entrance.db")).expect("store should open");
+
+        let created = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Capability preview".to_string(),
+                goal: "Expose pre-worker constraints".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: "remote-fixture:local".to_string(),
+                autonomy_level: "run-approved-candidates".to_string(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
+
+        let preflight = runtime_preflight(&store, created.contract.id)
+            .expect("runtime preflight should resolve before run");
+        let capability = preflight.preview.capability_preview;
+
+        assert_eq!(
+            capability.schema_version,
+            RUNTIME_CAPABILITY_PREVIEW_SCHEMA_VERSION
+        );
+        assert!(capability.worker_spawn_ready);
+        assert!(capability.worker_spawn_blockers.is_empty());
+        assert_eq!(capability.sandbox.filesystem, "in-process");
+        assert_eq!(capability.artifact_capture.mode, "ledger-only");
+        assert!(!capability.artifact_capture.archive_ready);
+        assert_eq!(capability.connector_readiness.provider, "remote-fixture");
+        assert!(capability.connector_readiness.known);
+        assert_eq!(
+            capability.connector_readiness.status.as_deref(),
+            Some("active")
+        );
+        assert!(capability.connector_readiness.external_surface_ready);
+        assert!(capability.connector_readiness.blockers.is_empty());
+        assert_eq!(
+            capability.human_boundary.confirmation_arg,
+            "human_confirmed"
+        );
+        assert_eq!(
+            capability.human_boundary.reviewer_invalid_round_budget,
+            REVIEWER_INVALID_ROUND_BUDGET
+        );
+        assert_eq!(capability.human_boundary.fallback_status, "Blocked");
+        assert!(capability.worker_context.required.is_empty());
+        assert!(capability
+            .worker_context
+            .required_receipt_fields
+            .iter()
+            .any(|field| field == "role"));
+    }
+
+    #[test]
     fn local_loop_records_stages_evidence_verdict_and_issue() {
         let root = std::env::temp_dir().join(format!(
             "entrance-hive-loop-test-{}",
@@ -14162,6 +14500,41 @@ mod tests {
                 .pointer("/body/runtime_policy/supported")
                 .and_then(|value| value.as_bool()),
             Some(true)
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/capability_preview/schema_version")
+                .and_then(|value| value.as_str()),
+            Some(RUNTIME_CAPABILITY_PREVIEW_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/capability_preview/worker_spawn_ready")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/capability_preview/sandbox/filesystem")
+                .and_then(|value| value.as_str()),
+            Some("in-process")
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/capability_preview/connector_readiness/provider")
+                .and_then(|value| value.as_str()),
+            Some("local-hive-panel")
+        );
+        assert_eq!(
+            report.packets[0]
+                .payload
+                .pointer("/body/capability_preview/human_boundary/fallback_status")
+                .and_then(|value| value.as_str()),
+            Some("Blocked")
         );
         assert_eq!(
             report.packets[1]

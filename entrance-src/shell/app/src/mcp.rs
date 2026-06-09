@@ -1074,7 +1074,8 @@ fn loop_control_packet_from_reports(
                     "resource": runtime_preflight_resource,
                     "state": json_string(&runtime_preflight, &["/preflight_state"]),
                     "gate": json_string(&runtime_preflight, &["/policy/gate", "/current/gate"]),
-                    "passed": json_bool(&runtime_preflight, &["/current/gate_passed"])
+                    "passed": json_bool(&runtime_preflight, &["/current/gate_passed"]),
+                    "capability_preview": json_clone(&runtime_preflight, &["/preview/capability_preview"])
                 },
                 "worker_lifecycle": {
                     "resource": worker_lifecycle_resource,
@@ -2102,7 +2103,7 @@ fn list_resources(services: &AppServices) -> Result<serde_json::Value> {
         resources.push(resource_spec(
             &format!("entrance://loops/{}/runtime-preflight", contract.id),
             &format!("Loop #{} runtime preflight", contract.id),
-            "One loop runtime preflight report with runtime policy, probe, admission gate, blocker, and next actions.",
+            "One loop runtime preflight report with runtime policy, probe, capability preview, admission gate, blocker, and next actions.",
         ));
         resources.push(resource_spec(
             &format!("entrance://loops/{}/worker-lifecycle", contract.id),
@@ -2197,7 +2198,7 @@ fn resource_templates() -> serde_json::Value {
             {
                 "uriTemplate": "entrance://loops/{loop_id}/runtime-preflight",
                 "name": "Entrance loop runtime preflight by id",
-                "description": "Read runtime preflight with runtime policy, probe, admission gate, blocker, and next actions.",
+                "description": "Read runtime preflight with runtime policy, probe, capability preview, admission gate, blocker, and next actions.",
                 "mimeType": "application/json"
             },
             {

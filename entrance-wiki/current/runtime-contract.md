@@ -89,16 +89,21 @@ ledger remains the three role stages.
 `entrance hive loop preflight <loop_id>` exposes this boundary as
 `entrance.hive.runtime_preflight.v1`: the runtime policy, supported runtime
 registry, route `kernel -> explorer`, expected `PREFLIGHT_PACKET`, runtime
-probe, current-round admission result, blocker, failure list, and copyable next
-actions. The report only treats a preflight packet from the current round as the
-current observation, so a retry into a new round is not polluted by an older
-blocked preflight.
+probe, `runtime_capability_preview.v1`, current-round admission result, blocker,
+failure list, and copyable next actions. The capability preview records worker
+spawn readiness, runtime sandbox scope, artifact capture mode, connector
+readiness for the loop review surface, human confirmation boundaries, and worker
+context requirements before any agent worker is spawned. The report only treats
+a preflight packet from the current round as the current observation, so a retry
+into a new round is not polluted by an older blocked preflight.
 The same report is available to MCP clients as
 `entrance://loops/{loop_id}/runtime-preflight`; MCP issue control packets also
 include a compact runtime preflight summary with gate, route, state, blocker,
-and failure details. The local Panel selected-issue detail renders this report
-as a Runtime Preflight block before Worker Lifecycle, making the kernel gate
-visible before operator attention moves to workers.
+and failure details, while MCP loop control embeds the full capability preview in
+the runtime gate surface. The local Panel selected-issue detail renders this
+report as a Runtime Preflight block before Worker Lifecycle, making the kernel
+gate and pre-worker capability boundaries visible before operator attention
+moves to workers.
 `entrance hive loop dashboard <loop_id>` exposes the loop-level control surface
 as `entrance.hive.loop_dashboard.v1`. It combines issue state, kernel preflight,
 Explorer/Developer/Reviewer lane state, Reviewer score/budget, human decision

@@ -19,6 +19,12 @@
     "runtime_preflight_state": "admitted",
     "runtime_gate": "runtime_policy_ready",
     "runtime_passed": true,
+    "runtime_capability_schema": "entrance.hive.runtime_capability_preview.v1",
+    "runtime_worker_spawn_ready": true,
+    "runtime_sandbox_filesystem": "in-process",
+    "runtime_connector_provider": "local-hive-panel",
+    "runtime_connector_ready": true,
+    "runtime_human_confirmation_arg": "human_confirmed",
     "worker_lifecycle_state": "succeeded",
     "observed_roles": [
       "developer",
