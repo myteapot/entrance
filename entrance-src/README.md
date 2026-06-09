@@ -107,6 +107,9 @@ aggregates Loop Dashboard, Evidence Drilldown, Evidence Manifest, Runtime
 Preflight, Worker Lifecycle, Reviewer gate surface, score vector, 3-round
 invalid fallback budget, human decision boundary, and exact issue action
 options; `entrance_loop_review` prompts agents to judge only from that packet.
+The same packet is available locally through `hive loop control <id>`,
+daemon command `hive_loop_control`, and the Panel selected issue Reviewer
+Control block.
 `hive loop evidence-drilldown <id>` exposes
 `entrance.hive.evidence_drilldown.v1`, a focused evidence control-plane view
 with worker receipts, transcript/payload excerpts, remote connector receipt
@@ -457,7 +460,7 @@ Rust · Electron · SolidJS · SQLite · TOML
 
 ## 当前阶段 / Status
 
-**V2 Microkernel Preview** — CLI、daemon bridge、MCP stdio surface 和 Electron GUI 共用同一套 Rust runtime。`entrance mcp stdio` 已经暴露最小 issue/status/comment tool/resource/prompt 面，并包含 `Blocked` / `Needs Review` review queue、单 issue control packet、loop control packet、loop review prompt、connector control packet、connector decision prompt、connector queue、connector publish/roundtrip plan resources、digest-bound connector publish/roundtrip execute tools、per-tool MCP permission registry、actor identity audit policy、MCP human-confirmation policy，以及写入 operator decision 或 connector execution comment/evidence payload 的 typed confirmation receipt；connector execute 需要 `human_confirmed=true` 和当前 `plan_id`，receipt 会记录 `initialize.clientInfo` 作为自报 client identity，并记录 non-verified actor context。Electron Panel 也有同名 Review Queue band，Panel retry/review/cancel 决策会写入 `source=panel` 的 typed confirmation receipt，并在状态变更后重新拉取 selected issue 的 Transition Policy、Loop Dashboard、Evidence Drilldown、Evidence Manifest、Activity Timeline、Runtime Preflight 和 Worker Lifecycle；Panel `Run Fixture` 和 CLI `hive connector fixture-demo --compact` 现在提供默认 `remote-fixture:` 外部 issue surface dry-run。daemon stdio/http 仍是 GUI 和自动化调用的主桥接协议。
+**V2 Microkernel Preview** — CLI、daemon bridge、MCP stdio surface 和 Electron GUI 共用同一套 Rust runtime。`entrance mcp stdio` 已经暴露最小 issue/status/comment tool/resource/prompt 面，并包含 `Blocked` / `Needs Review` review queue、单 issue control packet、loop control packet、loop review prompt、connector control packet、connector decision prompt、connector queue、connector publish/roundtrip plan resources、digest-bound connector publish/roundtrip execute tools、per-tool MCP permission registry、actor identity audit policy、MCP human-confirmation policy，以及写入 operator decision 或 connector execution comment/evidence payload 的 typed confirmation receipt；connector execute 需要 `human_confirmed=true` 和当前 `plan_id`，receipt 会记录 `initialize.clientInfo` 作为自报 client identity，并记录 non-verified actor context。Electron Panel 也有同名 Review Queue band 和 Reviewer Control block，Panel retry/review/cancel 决策会写入 `source=panel` 的 typed confirmation receipt，并在状态变更后重新拉取 selected issue 的 Transition Policy、Reviewer Control、Loop Dashboard、Evidence Drilldown、Evidence Manifest、Activity Timeline、Runtime Preflight 和 Worker Lifecycle；Panel `Run Fixture` 和 CLI `hive connector fixture-demo --compact` 现在提供默认 `remote-fixture:` 外部 issue surface dry-run。daemon stdio/http 仍是 GUI 和自动化调用的主桥接协议。
 
 ---
 

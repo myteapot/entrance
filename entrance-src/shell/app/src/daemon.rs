@@ -29,6 +29,7 @@ use crate::{
         readback_issue_mirror_file, roundtrip_issue_mirror_file, sync_issue_mirror_to_file,
         verify_issue_mirror_file,
     },
+    mcp::loop_control_packet,
 };
 
 const PANEL_CONFIRMATION_CLIENT_NAME: &str = "local-hive-panel";
@@ -468,6 +469,13 @@ async fn handle_invoke(
             Ok(serde_json::to_value(
                 state.services.hive.loop_dashboard(id)?,
             )?)
+        }
+        "hive_loop_control" => {
+            let id = args
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .context("hive_loop_control requires `id`")?;
+            Ok(loop_control_packet(&state.services, id)?)
         }
         "hive_loop_worker_lifecycle" => {
             let id = args

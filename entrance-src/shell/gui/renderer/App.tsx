@@ -876,6 +876,104 @@ type LoopDashboardAgent = {
   summary: string | null;
 };
 
+type LoopControlPacket = {
+  schema_version: string;
+  loop_id: number;
+  state: {
+    issue_id: number | null;
+    issue_status: string | null;
+    loop_status: string | null;
+    active_phase: string | null;
+    current_round: number | null;
+    dashboard_state: string | null;
+    lifecycle_state: string | null;
+    runtime_preflight_state: string | null;
+    evidence_manifest_state: string | null;
+    reviewer_decision: string | null;
+    reviewer_reason_code: string | null;
+    reviewer_invalid_rounds_used: number | null;
+    reviewer_invalid_round_budget: number | null;
+    reviewer_invalid_budget_exhausted: boolean;
+    fallback_status: string | null;
+    needs_human_decision: boolean;
+    primary_action: string;
+  };
+  reviewer_gate_surface: {
+    role: string;
+    allowed_decisions: string[];
+    gates: {
+      runtime_preflight?: {
+        resource: string;
+        state: string | null;
+        gate: string | null;
+        passed: boolean | null;
+      };
+      worker_lifecycle?: {
+        resource: string;
+        state: string | null;
+        expected_roles?: string[] | null;
+        observed_roles?: string[] | null;
+        missing_roles?: string[] | null;
+        failures?: string[] | null;
+      };
+      evidence_manifest?: {
+        resource: string;
+        state: string | null;
+        coverage?: Record<string, number> | null;
+      };
+    };
+    score_vector: Array<{
+      name: string;
+      value?: number | null;
+      score?: number | null;
+      summary?: string | null;
+    }>;
+    evidence_links: Record<string, string>;
+    target_drift_check: {
+      state: string;
+      source: string;
+      note: string;
+    };
+    budget_policy: {
+      invalid_round_budget: number | null;
+      invalid_rounds_used: number | null;
+      exhausted: boolean;
+      fallback_status: string;
+    };
+  };
+  human_decision_boundary: {
+    required: boolean;
+    issue_status: string | null;
+    actions: unknown[];
+    options: string[];
+    confirmation_arg: string;
+    policy_resource: string;
+    review_queue_resource: string;
+    instruction: string;
+  };
+  operator_decision_surface: {
+    primary_action: string;
+    options: Array<{
+      key: string;
+      label: string;
+      enabled: boolean;
+      summary: string;
+      tool?: string | null;
+      call?: {
+        name?: string;
+        arguments?: Record<string, unknown>;
+      } | null;
+      resources?: Record<string, string>;
+    }>;
+    blocked_fallback: {
+      condition: string;
+      status: string;
+      active: boolean;
+    };
+  };
+  resources: Record<string, string | null>;
+};
+
 type EvidenceDrilldownReport = {
   schema_version: string;
   loop_id: number;
@@ -1682,6 +1780,17 @@ export default function App() {
     const dashboard = selectedLoopDashboard();
     const loopId = selectedIssueCard()?.issue.loop_id;
     return dashboard && dashboard.loop_id === loopId ? dashboard : null;
+  });
+  const [selectedLoopControl] = createResource(selectedIssueDashboardKey, async (key) => {
+    if (!key) return null;
+    const loopId = Number.parseInt(key.split(":")[0], 10);
+    if (!Number.isFinite(loopId)) return null;
+    return bridge.invoke<LoopControlPacket>("hive_loop_control", { id: loopId });
+  });
+  const selectedIssueLoopControl = createMemo(() => {
+    const control = selectedLoopControl();
+    const loopId = selectedIssueCard()?.issue.loop_id;
+    return control && control.loop_id === loopId ? control : null;
   });
   const selectedIssueEvidenceKey = createMemo(() => {
     const card = selectedIssueCard();
@@ -3267,6 +3376,47 @@ export default function App() {
       ? `human decision ${dashboard.human_decision.actions.length}`
       : "human clear";
 
+  const loopControlTone = (control: LoopControlPacket) =>
+    control.state.reviewer_invalid_budget_exhausted || control.state.needs_human_decision
+      ? "warn"
+      : control.state.primary_action === "issue_run"
+        ? "pending"
+        : "ok";
+
+  const loopControlStateLabel = (control: LoopControlPacket) =>
+    control.state.primary_action === "human_decision"
+      ? "human decision"
+      : control.state.primary_action.replace(/_/g, " ");
+
+  const loopControlBudgetLabel = (control: LoopControlPacket) => {
+    const used = control.state.reviewer_invalid_rounds_used;
+    const budget = control.state.reviewer_invalid_round_budget;
+    if (used === null || budget === null) return "budget pending";
+    const exhausted = control.state.reviewer_invalid_budget_exhausted ? " exhausted" : "";
+    return `reviewer ${used}/${budget}${exhausted}`;
+  };
+
+  const loopControlGateLabel = (
+    gate: LoopControlPacket["reviewer_gate_surface"]["gates"]["runtime_preflight"],
+  ) => {
+    if (!gate) return "runtime pending";
+    if (gate.passed === true) return `${gate.gate ?? "runtime"} ok`;
+    if (gate.passed === false) return `${gate.gate ?? "runtime"} blocked`;
+    return `${gate.gate ?? "runtime"} pending`;
+  };
+
+  const loopControlScoreLabel = (metric: LoopControlPacket["reviewer_gate_surface"]["score_vector"][number]) =>
+    `${scoreMetricLabel(metric.name)} ${scoreValueLabel(metric.value ?? metric.score ?? null)}`;
+
+  const loopControlOptionTone = (option: LoopControlPacket["operator_decision_surface"]["options"][number]) =>
+    option.enabled ? "pending" : "warn";
+
+  const loopControlCallLabel = (option: LoopControlPacket["operator_decision_surface"]["options"][number]) => {
+    const call = option.call;
+    if (!call?.name) return option.tool ?? "inspect";
+    return call.name;
+  };
+
   const loopDashboardRoundTone = (round: LoopDashboardRound) =>
     round.blocker || round.rejected_count || round.receipt_missing_count ? "warn" : "ok";
 
@@ -4337,6 +4487,217 @@ export default function App() {
                             </div>
                           )}
                         </Show>
+                        {card.issue.loop_id ? (
+                          <Show
+                            when={selectedIssueLoopControl()}
+                            keyed
+                            fallback={
+                              <div
+                                class="worker-lifecycle reviewer-control worker-lifecycle--pending"
+                                data-testid={`loop-control-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Reviewer Control</strong>
+                                  <span>{selectedLoopControl.loading ? "loading" : "pending"}</span>
+                                </div>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">loop #{card.issue.loop_id}</span>
+                                  <span class="trace-pill">loop_control.v1</span>
+                                </div>
+                              </div>
+                            }
+                          >
+                            {(control) => (
+                              <div
+                                class={`worker-lifecycle reviewer-control worker-lifecycle--${loopControlTone(
+                                  control,
+                                )}`}
+                                data-testid={`loop-control-detail-${card.issue.id}`}
+                              >
+                                <div class="stage-row-head">
+                                  <strong>Reviewer Control</strong>
+                                  <span>{loopControlStateLabel(control)}</span>
+                                </div>
+                                <p>
+                                  loop #{control.loop_id} round{" "}
+                                  {control.state.current_round ?? "pending"} / reviewer{" "}
+                                  {control.state.reviewer_decision ?? "pending"}
+                                  {control.state.reviewer_reason_code
+                                    ? ` / ${control.state.reviewer_reason_code}`
+                                    : ""}
+                                </p>
+                                <div class="trace-strip">
+                                  <span class="trace-pill">{schemaLabel(control.schema_version)}</span>
+                                  <span class="trace-pill">
+                                    issue {control.state.issue_status ?? "none"}
+                                  </span>
+                                  <span class="trace-pill">
+                                    loop {control.state.loop_status ?? "pending"}
+                                  </span>
+                                  <span
+                                    class={
+                                      control.state.reviewer_invalid_budget_exhausted
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {loopControlBudgetLabel(control)}
+                                  </span>
+                                  <span
+                                    class={
+                                      control.reviewer_gate_surface.gates.runtime_preflight?.passed ===
+                                      false
+                                        ? "trace-pill trace-pill--warn"
+                                        : "trace-pill"
+                                    }
+                                  >
+                                    {loopControlGateLabel(
+                                      control.reviewer_gate_surface.gates.runtime_preflight,
+                                    )}
+                                  </span>
+                                  <span class="trace-pill">
+                                    lifecycle {control.state.lifecycle_state ?? "pending"}
+                                  </span>
+                                  <span class="trace-pill">
+                                    evidence {control.state.evidence_manifest_state ?? "pending"}
+                                  </span>
+                                  <span class="trace-pill">
+                                    drift {control.reviewer_gate_surface.target_drift_check.state}
+                                  </span>
+                                </div>
+                                <div class="worker-lifecycle-roles reviewer-control-gates">
+                                  <div class="worker-lifecycle-role worker-lifecycle-role--pending">
+                                    <div class="stage-row-head">
+                                      <strong>Runtime Gate</strong>
+                                      <span>
+                                        {control.reviewer_gate_surface.gates.runtime_preflight?.state ??
+                                          "pending"}
+                                      </span>
+                                    </div>
+                                    <p>
+                                      {control.reviewer_gate_surface.gates.runtime_preflight?.gate ??
+                                        "runtime_policy_ready"}
+                                    </p>
+                                    <div class="trace-strip">
+                                      <span class="trace-pill">
+                                        {control.state.runtime_preflight_state ?? "pending"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div
+                                    class={`worker-lifecycle-role worker-lifecycle-role--${
+                                      control.reviewer_gate_surface.gates.worker_lifecycle
+                                        ?.missing_roles?.length
+                                        ? "warn"
+                                        : "pending"
+                                    }`}
+                                  >
+                                    <div class="stage-row-head">
+                                      <strong>Role Coverage</strong>
+                                      <span>
+                                        {control.reviewer_gate_surface.gates.worker_lifecycle
+                                          ?.observed_roles?.length ?? 0}
+                                        /
+                                        {control.reviewer_gate_surface.gates.worker_lifecycle
+                                          ?.expected_roles?.length ?? 0}
+                                      </span>
+                                    </div>
+                                    <p>
+                                      {(control.reviewer_gate_surface.gates.worker_lifecycle
+                                        ?.observed_roles ?? ["pending"]
+                                      ).join(", ")}
+                                    </p>
+                                    <div class="trace-strip">
+                                      {(control.reviewer_gate_surface.gates.worker_lifecycle
+                                        ?.missing_roles ?? []
+                                      ).map((role) => (
+                                        <span class="trace-pill trace-pill--warn">missing {role}</span>
+                                      ))}
+                                      {(control.reviewer_gate_surface.gates.worker_lifecycle
+                                        ?.failures ?? []
+                                      )
+                                        .slice(0, 2)
+                                        .map((failure) => (
+                                          <span class="trace-pill trace-pill--warn">{failure}</span>
+                                        ))}
+                                    </div>
+                                  </div>
+                                  <div class="worker-lifecycle-role worker-lifecycle-role--pending">
+                                    <div class="stage-row-head">
+                                      <strong>Evidence</strong>
+                                      <span>
+                                        {control.reviewer_gate_surface.gates.evidence_manifest?.state ??
+                                          "pending"}
+                                      </span>
+                                    </div>
+                                    <p>
+                                      receipts{" "}
+                                      {control.reviewer_gate_surface.gates.evidence_manifest?.coverage
+                                        ?.receipt_count ?? 0}
+                                      {" / "}digests{" "}
+                                      {control.reviewer_gate_surface.gates.evidence_manifest?.coverage
+                                        ?.digest_count ?? 0}
+                                    </p>
+                                    <div class="trace-strip">
+                                      <span class="trace-pill">
+                                        evidence{" "}
+                                        {control.reviewer_gate_surface.gates.evidence_manifest
+                                          ?.coverage?.evidence_count ?? 0}
+                                      </span>
+                                      <span class="trace-pill">
+                                        entries{" "}
+                                        {control.reviewer_gate_surface.gates.evidence_manifest
+                                          ?.coverage?.entry_count ?? 0}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                {control.reviewer_gate_surface.score_vector.length ? (
+                                  <div class="trace-strip">
+                                    {control.reviewer_gate_surface.score_vector.map((metric) => (
+                                      <span class="trace-pill">{loopControlScoreLabel(metric)}</span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                <div class="worker-lifecycle-roles reviewer-control-options">
+                                  {control.operator_decision_surface.options.slice(0, 3).map((option) => (
+                                    <div
+                                      class={`worker-lifecycle-role worker-lifecycle-role--${loopControlOptionTone(
+                                        option,
+                                      )}`}
+                                      data-testid={`loop-control-option-${card.issue.id}-${option.key}`}
+                                    >
+                                      <div class="stage-row-head">
+                                        <strong>
+                                          {option.key}. {option.label}
+                                        </strong>
+                                        <span>{option.enabled ? "available" : "blocked"}</span>
+                                      </div>
+                                      <p>{option.summary}</p>
+                                      <div class="trace-strip">
+                                        <span class="trace-pill">{loopControlCallLabel(option)}</span>
+                                        {option.call?.arguments?.human_confirmed === true ? (
+                                          <span class="trace-pill trace-pill--warn">
+                                            human_confirmed
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                                {control.human_decision_boundary.options.length ? (
+                                  <div class="doctor-lines">
+                                    {control.human_decision_boundary.options
+                                      .slice(0, 3)
+                                      .map((option) => (
+                                        <span>{option}</span>
+                                      ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )}
+                          </Show>
+                        ) : null}
                         {card.issue.loop_id ? (
                           <Show
                             when={selectedIssueLoopDashboard()}

@@ -944,7 +944,10 @@ fn tool_connector_roundtrip_execute(
     )
 }
 
-fn loop_control_packet(services: &AppServices, loop_id: i64) -> Result<serde_json::Value> {
+pub(crate) fn loop_control_packet(
+    services: &AppServices,
+    loop_id: i64,
+) -> Result<serde_json::Value> {
     let dashboard = serde_json::to_value(services.hive.loop_dashboard(loop_id)?)?;
     let evidence_drilldown = serde_json::to_value(services.hive.loop_evidence_drilldown(loop_id)?)?;
     let evidence_manifest = serde_json::to_value(services.hive.loop_evidence_manifest(loop_id)?)?;

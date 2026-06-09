@@ -116,6 +116,10 @@ Entrance has reached a local MVP unit:
   and links back to issue control, transition policy, and timeline resources.
   `entrance_loop_review` prompts agents to judge keep/reject/needs-review/block
   only from the recorded packet, not by implementing in the Reviewer lane.
+- The same loop-level control packet is now available through local CLI
+  `entrance hive loop control <loop_id>`, daemon command `hive_loop_control`,
+  and the Panel selected issue Reviewer Control block, so local operators and
+  MCP clients inspect the same Reviewer gate/budget/evidence/options contract.
 - CLI and Panel can show issue status, comments, connector state, Doctor/audit
   summaries, and human retry/review/cancel options. The Panel also has a
   Review Queue band that lifts `Blocked` and `Needs Review` issues above the
@@ -179,8 +183,9 @@ Entrance has reached a local MVP unit:
   after the board refresh. Create, run, retry, review, cancel, comment, issue
   mirror sync/publish/verify/readback/admit/roundtrip, connector
   publish/roundtrip execute, and fixture demo paths force a fresh read of the
-  selected issue Transition Policy, Loop Dashboard, Evidence Drilldown, Evidence
-  Manifest, Activity Timeline, Runtime Preflight, and Worker Lifecycle.
+  selected issue Transition Policy, Reviewer Control, Loop Dashboard, Evidence
+  Drilldown, Evidence Manifest, Activity Timeline, Runtime Preflight, and Worker
+  Lifecycle.
 - Connector status mapping is now policy-backed. `entrance hive policy registry
   --compact` exposes remote-fixture/GitHub/Linear status mappings; GitHub
   write/readback uses issue state/state_reason, Linear write/readback currently
