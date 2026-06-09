@@ -524,6 +524,8 @@ struct TypedVerdict {
     summary: String,
     runtime_ready: bool,
     evidence_count: usize,
+    reviewer_invalid_rounds_used: i64,
+    reviewer_invalid_budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1592,6 +1594,7 @@ pub struct IssueRoundSummary {
     pub round: i64,
     pub status: String,
     pub decision: Option<String>,
+    pub reason_code: Option<String>,
     pub evidence_count: usize,
     pub rejected_count: usize,
     pub receipt_required_count: usize,
@@ -2087,6 +2090,11 @@ pub fn run_with_config(
         && worker_ok(&reviewer_worker);
     let runtime_failure = runtime_failure(&runtime_probe, &runtime_worker);
     let decision_override = parse_decision_override(request.decision.as_deref())?;
+    let prior_verdicts = store.list_hive_loop_verdicts(contract.id)?;
+    let prior_reviewer_invalid_rounds = reviewer_invalid_streak_from_verdicts(
+        &prior_verdicts,
+        contract.current_round.saturating_sub(1),
+    );
     let round_stage_evidence_count = evidence
         .iter()
         .filter(|row| row.round == contract.current_round && stage_bound_evidence_kind(&row.kind))
@@ -2097,7 +2105,7 @@ pub fn run_with_config(
         runtime_failure,
         &runtime,
         round_stage_evidence_count,
-        contract.current_round,
+        prior_reviewer_invalid_rounds,
     );
     let reviewer_stage = insert_stage(
         store,
@@ -4565,7 +4573,8 @@ pub fn worker_lifecycle(store: &Store, loop_id: i64) -> Result<HiveLoopWorkerLif
         .iter()
         .filter_map(worker_lifecycle_worker)
         .collect::<Vec<_>>();
-    let rounds = worker_lifecycle_rounds(&trace_summary, &workers);
+    let verdicts = store.list_hive_loop_verdicts(loop_id)?;
+    let rounds = worker_lifecycle_rounds(&trace_summary, &workers, &verdicts);
     let current = rounds
         .iter()
         .find(|round| round.round == contract.current_round)
@@ -5208,6 +5217,7 @@ fn worker_lifecycle_role(evidence: &IssueEvidenceSummary) -> String {
 fn worker_lifecycle_rounds(
     trace: &IssueTraceSummary,
     workers: &[HiveLoopWorkerLifecycleWorker],
+    verdicts: &[HiveLoopVerdict],
 ) -> Vec<HiveLoopWorkerLifecycleRound> {
     let mut rounds = trace
         .rounds
@@ -5227,7 +5237,15 @@ fn worker_lifecycle_rounds(
                 .filter(|worker| worker.round == round)
                 .cloned()
                 .collect::<Vec<_>>();
-            worker_lifecycle_round(round, trace_round, round_workers)
+            let reviewer_invalid_rounds_used =
+                reviewer_invalid_streak_from_verdicts(verdicts, round)
+                    .min(REVIEWER_INVALID_ROUND_BUDGET);
+            worker_lifecycle_round(
+                round,
+                trace_round,
+                round_workers,
+                reviewer_invalid_rounds_used,
+            )
         })
         .collect()
 }
@@ -5236,6 +5254,7 @@ fn worker_lifecycle_round(
     round: i64,
     trace_round: Option<&IssueRoundSummary>,
     workers: Vec<HiveLoopWorkerLifecycleWorker>,
+    reviewer_invalid_rounds_used: i64,
 ) -> HiveLoopWorkerLifecycleRound {
     let expected_roles = CURRENT_LOOP_ROLES
         .iter()
@@ -5271,14 +5290,10 @@ fn worker_lifecycle_round(
         .filter_map(worker_lifecycle_worker_failure)
         .collect::<Vec<_>>();
     let decision = trace_round.and_then(|round| round.decision.clone());
-    let reviewer_invalid_rounds_used = match decision.as_deref() {
-        Some("reject") => round.min(REVIEWER_INVALID_ROUND_BUDGET),
-        Some("blocked") if round >= REVIEWER_INVALID_ROUND_BUDGET => REVIEWER_INVALID_ROUND_BUDGET,
-        _ => 0,
-    };
+    let reason_code = trace_round.and_then(|round| round.reason_code.clone());
     let reviewer_invalid_budget_exhausted = reviewer_invalid_rounds_used
         >= REVIEWER_INVALID_ROUND_BUDGET
-        && decision.as_deref() == Some("blocked");
+        && reason_code.as_deref() == Some("review_budget_exhausted");
 
     HiveLoopWorkerLifecycleRound {
         round,
@@ -5304,7 +5319,7 @@ fn worker_lifecycle_round(
 }
 
 fn empty_worker_lifecycle_round(round: i64) -> HiveLoopWorkerLifecycleRound {
-    worker_lifecycle_round(round, None, Vec::new())
+    worker_lifecycle_round(round, None, Vec::new(), 0)
 }
 
 fn worker_lifecycle_failures(workers: &[HiveLoopWorkerLifecycleWorker]) -> Vec<String> {
@@ -6127,6 +6142,63 @@ fn verdict_reason_code(verdict: &HiveLoopVerdict) -> Option<String> {
                 .and_then(|value| value.as_str())
         })
         .map(ToOwned::to_owned)
+}
+
+fn verdict_reviewer_invalid_round(verdict: &HiveLoopVerdict) -> bool {
+    verdict.decision == "reject"
+        || verdict_reason_code(verdict).as_deref() == Some("review_budget_exhausted")
+}
+
+fn round_reviewer_invalid_round(round: &IssueRoundSummary) -> bool {
+    round.decision.as_deref() == Some("reject")
+        || round.reason_code.as_deref() == Some("review_budget_exhausted")
+}
+
+fn reviewer_invalid_streak_from_verdicts(verdicts: &[HiveLoopVerdict], through_round: i64) -> i64 {
+    if through_round < 1 {
+        return 0;
+    }
+    let mut by_round = BTreeMap::new();
+    for verdict in verdicts {
+        if verdict.round <= through_round {
+            by_round.insert(verdict.round, verdict);
+        }
+    }
+    let mut expected_round = through_round;
+    let mut streak = 0;
+    while expected_round >= 1 {
+        match by_round.get(&expected_round) {
+            Some(verdict) if verdict_reviewer_invalid_round(verdict) => {
+                streak += 1;
+                expected_round -= 1;
+            }
+            _ => break,
+        }
+    }
+    streak
+}
+
+fn reviewer_invalid_streak_from_rounds(rounds: &[IssueRoundSummary], through_round: i64) -> i64 {
+    if through_round < 1 {
+        return 0;
+    }
+    let by_round = rounds
+        .iter()
+        .filter(|round| round.round <= through_round)
+        .map(|round| (round.round, round))
+        .collect::<BTreeMap<_, _>>();
+    let mut expected_round = through_round;
+    let mut streak = 0;
+    while expected_round >= 1 {
+        match by_round.get(&expected_round) {
+            Some(round) if round_reviewer_invalid_round(round) => {
+                streak += 1;
+                expected_round -= 1;
+            }
+            _ => break,
+        }
+    }
+    streak
 }
 
 fn dashboard_round_blocker(
@@ -7774,6 +7846,34 @@ fn standard_verdict_binding_errors(
     match (evidence_runtime_ready, score_runtime_ready) {
         (Some(evidence_value), Some(score_value)) if evidence_value == score_value => {}
         _ => errors.push("evidence.runtime_ready".to_string()),
+    }
+    let score_invalid_rounds_used = verdict
+        .score
+        .get("reviewer_invalid_rounds_used")
+        .and_then(|value| value.as_i64());
+    let evidence_invalid_rounds_used = verdict
+        .evidence
+        .get("reviewer_invalid_rounds_used")
+        .and_then(|value| value.as_i64());
+    if score_invalid_rounds_used.is_some() || evidence_invalid_rounds_used.is_some() {
+        match (score_invalid_rounds_used, evidence_invalid_rounds_used) {
+            (Some(score_value), Some(evidence_value)) if score_value == evidence_value => {}
+            _ => errors.push("evidence.reviewer_invalid_rounds_used".to_string()),
+        }
+    }
+    let score_budget_exhausted = verdict
+        .score
+        .get("reviewer_invalid_budget_exhausted")
+        .and_then(|value| value.as_bool());
+    let evidence_budget_exhausted = verdict
+        .evidence
+        .get("reviewer_invalid_budget_exhausted")
+        .and_then(|value| value.as_bool());
+    if score_budget_exhausted.is_some() || evidence_budget_exhausted.is_some() {
+        match (score_budget_exhausted, evidence_budget_exhausted) {
+            (Some(score_value), Some(evidence_value)) if score_value == evidence_value => {}
+            _ => errors.push("evidence.reviewer_invalid_budget_exhausted".to_string()),
+        }
     }
 
     let reviewer_packet = packets.iter().find(|packet| {
@@ -10126,20 +10226,12 @@ fn issue_transition_reviewer_budget_from_trace(
         .find(|round| round.round == trace.current_round)
         .and_then(|round| round.decision.clone())
         .or_else(|| trace.last_decision.clone());
-    let reviewer_invalid_rounds_used = match current_decision.as_deref() {
-        Some("reject") => trace
-            .current_round
-            .min(registry.reviewer_fallback.invalid_round_budget),
-        Some("blocked")
-            if trace.current_round >= registry.reviewer_fallback.invalid_round_budget =>
-        {
-            registry.reviewer_fallback.invalid_round_budget
-        }
-        _ => 0,
-    };
+    let reviewer_invalid_rounds_used =
+        reviewer_invalid_streak_from_rounds(&trace.rounds, trace.current_round)
+            .min(registry.reviewer_fallback.invalid_round_budget);
     let reviewer_invalid_budget_exhausted = reviewer_invalid_rounds_used
         >= registry.reviewer_fallback.invalid_round_budget
-        && current_decision.as_deref() == Some("blocked");
+        && trace.reason_code.as_deref() == Some("review_budget_exhausted");
     IssueTransitionReviewerBudget {
         current_round: trace.current_round,
         reviewer_invalid_rounds_used,
@@ -11309,11 +11401,9 @@ fn issue_round_summaries(
                 })
                 .map(|admission| receipt_array_len(&admission.policy, "/receipt/missing"))
                 .sum();
-            let decision = verdicts
-                .iter()
-                .rev()
-                .find(|verdict| verdict.round == round)
-                .map(|verdict| verdict.decision.clone());
+            let round_verdict = verdicts.iter().rev().find(|verdict| verdict.round == round);
+            let decision = round_verdict.map(|verdict| verdict.decision.clone());
+            let reason_code = round_verdict.and_then(verdict_reason_code);
             let status = issue_round_status(
                 decision.as_deref(),
                 rejected_count,
@@ -11326,6 +11416,7 @@ fn issue_round_summaries(
                 round,
                 status,
                 decision,
+                reason_code,
                 evidence_count,
                 rejected_count,
                 receipt_required_count,
@@ -12008,6 +12099,9 @@ impl TypedVerdict {
             "reason_code": self.reason_code,
             "gates_passed": self.decision.gates_passed(),
             "operator_review_needed": self.decision.operator_review_required(),
+            "reviewer_invalid_rounds_used": self.reviewer_invalid_rounds_used,
+            "reviewer_invalid_round_budget": REVIEWER_INVALID_ROUND_BUDGET,
+            "reviewer_invalid_budget_exhausted": self.reviewer_invalid_budget_exhausted,
             "score_vector": {
                 "stage_completeness": 1.0,
                 "runtime_readiness": runtime_readiness,
@@ -12018,6 +12112,9 @@ impl TypedVerdict {
                 "three_stages_recorded": true,
                 "evidence_recorded": self.evidence_count > 0,
                 "runtime_ready": self.runtime_ready,
+                "reviewer_invalid_rounds_used": self.reviewer_invalid_rounds_used,
+                "reviewer_invalid_round_budget": REVIEWER_INVALID_ROUND_BUDGET,
+                "reviewer_invalid_budget_exhausted": self.reviewer_invalid_budget_exhausted,
                 "decision_allowed": matches!(
                     self.decision,
                     VerdictDecision::Keep
@@ -12042,6 +12139,9 @@ impl TypedVerdict {
             "evidence_count": self.evidence_count + 1,
             "runtime": runtime,
             "runtime_ready": self.runtime_ready,
+            "reviewer_invalid_rounds_used": self.reviewer_invalid_rounds_used,
+            "reviewer_invalid_round_budget": REVIEWER_INVALID_ROUND_BUDGET,
+            "reviewer_invalid_budget_exhausted": self.reviewer_invalid_budget_exhausted,
             "role_worker": reviewer_worker,
             "source": {
                 "reviewer": "hive-loop-control",
@@ -12081,7 +12181,7 @@ fn build_verdict(
     runtime_failure: Option<RuntimeFailure>,
     runtime: &str,
     evidence_count: usize,
-    round: i64,
+    prior_reviewer_invalid_rounds: i64,
 ) -> TypedVerdict {
     if !runtime_ready {
         let reason_code = runtime_failure
@@ -12098,10 +12198,15 @@ fn build_verdict(
             ),
             runtime_ready,
             evidence_count,
+            reviewer_invalid_rounds_used: 0,
+            reviewer_invalid_budget_exhausted: false,
         };
     }
 
-    if decision_override == Some(VerdictDecision::Reject) && round >= REVIEWER_INVALID_ROUND_BUDGET
+    let current_invalid_rounds =
+        (prior_reviewer_invalid_rounds + 1).min(REVIEWER_INVALID_ROUND_BUDGET);
+    if decision_override == Some(VerdictDecision::Reject)
+        && current_invalid_rounds >= REVIEWER_INVALID_ROUND_BUDGET
     {
         return TypedVerdict {
             decision: VerdictDecision::Blocked,
@@ -12111,6 +12216,8 @@ fn build_verdict(
             ),
             runtime_ready,
             evidence_count,
+            reviewer_invalid_rounds_used: current_invalid_rounds,
+            reviewer_invalid_budget_exhausted: true,
         };
     }
 
@@ -12121,13 +12228,19 @@ fn build_verdict(
             summary: "Reviewer kept the candidate: all MVP gates passed.".to_string(),
             runtime_ready,
             evidence_count,
+            reviewer_invalid_rounds_used: 0,
+            reviewer_invalid_budget_exhausted: false,
         },
         VerdictDecision::Reject => TypedVerdict {
             decision: VerdictDecision::Reject,
             reason_code: "quality_gate_failed",
-            summary: "Reviewer rejected the candidate: quality gate failed.".to_string(),
+            summary: format!(
+                "Reviewer rejected the candidate: quality gate failed; invalid review round {current_invalid_rounds}/{REVIEWER_INVALID_ROUND_BUDGET}."
+            ),
             runtime_ready,
             evidence_count,
+            reviewer_invalid_rounds_used: current_invalid_rounds,
+            reviewer_invalid_budget_exhausted: false,
         },
         VerdictDecision::NeedsReview => TypedVerdict {
             decision: VerdictDecision::NeedsReview,
@@ -12135,6 +12248,8 @@ fn build_verdict(
             summary: "Reviewer requested human review for this candidate.".to_string(),
             runtime_ready,
             evidence_count,
+            reviewer_invalid_rounds_used: 0,
+            reviewer_invalid_budget_exhausted: false,
         },
         VerdictDecision::Blocked => TypedVerdict {
             decision: VerdictDecision::Blocked,
@@ -12142,6 +12257,8 @@ fn build_verdict(
             summary: "Reviewer blocked the candidate by operator decision.".to_string(),
             runtime_ready,
             evidence_count,
+            reviewer_invalid_rounds_used: 0,
+            reviewer_invalid_budget_exhausted: false,
         },
     }
 }
@@ -15849,6 +15966,8 @@ mod tests {
         let mut evidence = verdict.evidence.clone();
         evidence["evidence_count"] = serde_json::json!(999);
         evidence["runtime_ready"] = serde_json::json!(false);
+        evidence["reviewer_invalid_rounds_used"] = serde_json::json!(99);
+        evidence["reviewer_invalid_budget_exhausted"] = serde_json::json!(true);
         evidence["role_worker"]["ok"] = serde_json::json!(false);
         store
             .insert_hive_loop_verdict(HiveLoopVerdictCreate {
@@ -15871,6 +15990,8 @@ mod tests {
         for expected in [
             "evidence.count",
             "evidence.runtime_ready",
+            "evidence.reviewer_invalid_rounds_used",
+            "evidence.reviewer_invalid_budget_exhausted",
             "evidence.role_worker_binding",
         ] {
             assert!(
@@ -16649,14 +16770,130 @@ mod tests {
             },
         )
         .expect("loop should be created");
+        let jumped = create(
+            &store,
+            HiveLoopCreateRequest {
+                title: "Jumped review loop".to_string(),
+                goal: "Do not block from round number alone".to_string(),
+                boundary: String::new(),
+                approach_space: Vec::new(),
+                eval_space: Vec::new(),
+                review_surface: String::new(),
+                autonomy_level: String::new(),
+                runtime: "local".to_string(),
+            },
+        )
+        .expect("loop should be created");
         store
             .update_hive_loop_contract_state(
-                exhausted.contract.id,
+                jumped.contract.id,
                 "todo",
                 "explorer",
                 REVIEWER_INVALID_ROUND_BUDGET,
             )
-            .expect("test should move loop to budget round");
+            .expect("test should move loop to budget-numbered round");
+        let jumped_report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: jumped.contract.id,
+                runtime: Some("local".to_string()),
+                decision: Some("reject".to_string()),
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("jumped reject loop should run");
+        assert_eq!(jumped_report.contract.status, "rejected");
+        assert_eq!(jumped_report.contract.current_round, 3);
+        assert_eq!(
+            jumped_report
+                .verdicts
+                .last()
+                .expect("jumped verdict should exist")
+                .score
+                .get("reviewer_invalid_rounds_used")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            jumped_report
+                .verdicts
+                .last()
+                .expect("jumped verdict should exist")
+                .score
+                .get("reviewer_invalid_budget_exhausted")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+
+        let first_invalid_report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: exhausted.contract.id,
+                runtime: Some("local".to_string()),
+                decision: Some("reject".to_string()),
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("first invalid review should run");
+        assert_eq!(first_invalid_report.contract.status, "rejected");
+        assert_eq!(first_invalid_report.contract.current_round, 1);
+        assert_eq!(
+            first_invalid_report
+                .verdicts
+                .last()
+                .expect("first invalid verdict should exist")
+                .score
+                .get("reviewer_invalid_rounds_used")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        decide_issue(
+            &store,
+            IssueDecisionRequest {
+                issue_id: first_invalid_report.issues[0].issue.id,
+                action: "retry".to_string(),
+                author: "human".to_string(),
+                body: Some("retry after first invalid review".to_string()),
+                confirmation_receipt: Some(test_confirmation_receipt("retry", "human")),
+            },
+        )
+        .expect("first retry should be admitted");
+        let second_invalid_report = run(
+            &store,
+            HiveLoopRunRequest {
+                loop_id: exhausted.contract.id,
+                runtime: Some("local".to_string()),
+                decision: Some("reject".to_string()),
+                worker_timeout_secs: None,
+                worker_attempts: None,
+            },
+        )
+        .expect("second invalid review should run");
+        assert_eq!(second_invalid_report.contract.status, "rejected");
+        assert_eq!(second_invalid_report.contract.current_round, 2);
+        assert_eq!(
+            second_invalid_report
+                .verdicts
+                .last()
+                .expect("second invalid verdict should exist")
+                .score
+                .get("reviewer_invalid_rounds_used")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        decide_issue(
+            &store,
+            IssueDecisionRequest {
+                issue_id: second_invalid_report.issues[0].issue.id,
+                action: "retry".to_string(),
+                author: "human".to_string(),
+                body: Some("retry after second invalid review".to_string()),
+                confirmation_receipt: Some(test_confirmation_receipt("retry", "human")),
+            },
+        )
+        .expect("second retry should be admitted");
         let exhausted_report = run(
             &store,
             HiveLoopRunRequest {
@@ -16671,16 +16908,34 @@ mod tests {
 
         assert_eq!(exhausted_report.contract.status, "blocked");
         assert_eq!(exhausted_report.contract.current_round, 3);
-        assert_eq!(exhausted_report.verdicts[0].decision, "blocked");
+        let exhausted_verdict = exhausted_report
+            .verdicts
+            .last()
+            .expect("exhausted verdict should exist");
+        assert_eq!(exhausted_verdict.decision, "blocked");
         assert_eq!(exhausted_report.issues[0].issue.status, "Blocked");
         assert_eq!(
-            exhausted_report.verdicts[0]
+            exhausted_verdict
                 .score
                 .get("reason_code")
                 .and_then(|value| value.as_str()),
             Some("review_budget_exhausted")
         );
-        assert!(exhausted_report.verdicts[0]
+        assert_eq!(
+            exhausted_verdict
+                .score
+                .get("reviewer_invalid_rounds_used")
+                .and_then(|value| value.as_i64()),
+            Some(REVIEWER_INVALID_ROUND_BUDGET)
+        );
+        assert_eq!(
+            exhausted_verdict
+                .score
+                .get("reviewer_invalid_budget_exhausted")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert!(exhausted_verdict
             .summary
             .contains("still invalid after 3 review rounds"));
         let exhausted_lifecycle = super::worker_lifecycle(&store, exhausted.contract.id)

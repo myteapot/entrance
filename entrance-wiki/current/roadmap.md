@@ -79,8 +79,10 @@ Entrance has reached a local MVP unit:
   operator comment/decision payloads, and require explicit CLI
   `--human-confirmed` for retry/review/cancel transitions. Issue surface audit
   verifies transition admission receipt shape and comment/evidence binding.
-- Reviewer fallback has a first budget rule: if a candidate is still rejected at
-  or after 3 rounds, the issue moves to `Blocked` for human decision.
+- Reviewer fallback has a first ledger-backed budget rule: if the verdict
+  ledger proves 3 consecutive invalid Reviewer rounds, the issue moves to
+  `Blocked` for human decision; jumping a loop to round 3 without earlier
+  invalid verdicts does not exhaust the budget.
 - Worker lifecycle is now a first-class observable contract through
   `entrance hive loop worker-lifecycle <loop_id>` and
   `entrance://loops/{loop_id}/worker-lifecycle`, exposing expected

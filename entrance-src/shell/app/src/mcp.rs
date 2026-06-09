@@ -1706,10 +1706,11 @@ fn issue_worker_lifecycle_summary(card: &IssueCard) -> Option<serde_json::Value>
         .map(|role| (*role).to_string())
         .collect::<Vec<_>>();
     let reviewer_invalid_round_budget = 3_i64;
-    let reviewer_invalid_budget_exhausted = trace.reason_code.as_deref()
-        == Some("review_budget_exhausted")
-        || (trace.last_decision.as_deref() == Some("blocked")
-            && trace.current_round >= reviewer_invalid_round_budget);
+    let reviewer_invalid_rounds_used =
+        issue_trace_reviewer_invalid_streak(trace, reviewer_invalid_round_budget);
+    let reviewer_invalid_budget_exhausted = reviewer_invalid_rounds_used
+        >= reviewer_invalid_round_budget
+        && trace.reason_code.as_deref() == Some("review_budget_exhausted");
 
     Some(serde_json::json!({
         "schema_version": MCP_WORKER_LIFECYCLE_SUMMARY_SCHEMA_VERSION,
@@ -1724,10 +1725,39 @@ fn issue_worker_lifecycle_summary(card: &IssueCard) -> Option<serde_json::Value>
         "round_worker_timeout_count": trace.round_worker_timeout_count,
         "round_worker_retry_exhausted_count": trace.round_worker_retry_exhausted_count,
         "round_worker_duration_ms": trace.round_worker_duration_ms,
+        "reviewer_invalid_rounds_used": reviewer_invalid_rounds_used,
         "reviewer_invalid_round_budget": reviewer_invalid_round_budget,
         "reviewer_invalid_budget_exhausted": reviewer_invalid_budget_exhausted,
         "fallback_status": "Blocked"
     }))
+}
+
+fn issue_trace_reviewer_invalid_streak(
+    trace: &entrance_hive::IssueTraceSummary,
+    budget: i64,
+) -> i64 {
+    let mut expected_round = trace.current_round;
+    let mut streak = 0;
+    while expected_round >= 1 {
+        let Some(round) = trace
+            .rounds
+            .iter()
+            .find(|round| round.round == expected_round)
+        else {
+            break;
+        };
+        let invalid = round.decision.as_deref() == Some("reject")
+            || round.reason_code.as_deref() == Some("review_budget_exhausted");
+        if !invalid {
+            break;
+        }
+        streak += 1;
+        if streak >= budget {
+            return budget;
+        }
+        expected_round -= 1;
+    }
+    streak
 }
 
 fn issue_runtime_preflight_summary(card: &IssueCard) -> Option<serde_json::Value> {

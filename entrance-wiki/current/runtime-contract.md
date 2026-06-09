@@ -203,8 +203,10 @@ round were produced successfully and how long the runtime spent.
 as a first-class `entrance.hive.worker_lifecycle.v1` report: expected
 Explorer/Developer/Reviewer roles, observed workers by round, missing roles,
 timeouts, attempts, retry exhaustion, receipt errors, the 3-round Reviewer
-invalid budget, and the `Blocked` fallback status. This is a lifecycle
-observability contract. The local Panel selected-issue detail calls the daemon
+invalid budget, and the `Blocked` fallback status. The invalid budget is
+computed from consecutive invalid Reviewer verdicts in the ledger, so a round
+number alone cannot exhaust it. This is a lifecycle observability contract. The
+local Panel selected-issue detail calls the daemon
 `hive_loop_worker_lifecycle` command and renders the same report as Worker
 Lifecycle role lanes, round chips, fallback budget, timeout/failure summaries,
 and copyable next actions. Durable worker heartbeat, resume, cancel,
@@ -429,7 +431,8 @@ Prompts:
 `Explorer -> Developer -> Reviewer` contract. `entrance_issue_run` and
 `entrance_issue_retry` advance the linked loop through the same Hive runtime
 used by the CLI and Panel, including Developer/Reviewer verdicts and the
-3-round reviewer-invalid fallback to `Blocked`.
+3-round reviewer-invalid fallback to `Blocked` when the verdict ledger proves
+three consecutive invalid review rounds.
 `entrance_review_queue` and `entrance://review-queue` expose only `Blocked` and
 `Needs Review` issues, with reviewer decision, reason code, human options,
 actions, blockers, latest comment, and recent evidence summaries.

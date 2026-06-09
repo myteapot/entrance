@@ -216,6 +216,9 @@ which actions are blocked, which actions require confirmation receipts, and
 whether the Reviewer invalid-round fallback budget is exhausted. The full report
 embeds the active issue transition registry snapshot so operators can compare a
 specific issue surface against the kernel policy that produced it.
+That budget is computed from the verdict ledger's consecutive invalid Reviewer
+rounds; moving a contract to round 3 without two prior invalid verdicts does not
+exhaust the fallback budget.
 `hive issue timeline <id>` returns the issue activity feed for operators who
 need to read comments, evidence, verdicts, operator decisions, blockers, and
 linked loop resources in one chronological control-plane view, with round
