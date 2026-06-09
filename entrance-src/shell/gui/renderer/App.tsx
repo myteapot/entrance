@@ -1,4 +1,4 @@
-import { Match, Switch, createMemo, createResource, createSignal } from "solid-js";
+import { Match, Switch, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 import Nav from "./components/Nav";
 import HiveWorkbenchPanel from "./components/HiveWorkbenchPanel";
 import { bridge } from "./lib/bridge";
@@ -46,6 +46,15 @@ import type {
   WorkerLifecycleWorker,
 } from "./lib/hive";
 
+const VIEW_VALUES: View[] = ["status", "drawer", "hive", "panel", "launcher"];
+
+const locationToView = (): View => {
+  const urlView = new URLSearchParams(window.location.search).get("view");
+  const rawHash = window.location.hash.replace(/^#\/?/, "");
+  const rawView = rawHash || urlView || "";
+  return VIEW_VALUES.includes(rawView as View) ? (rawView as View) : "status";
+};
+
 export default function App() {
   let issueDetailPanel: HTMLElement | undefined;
   const setIssueDetailPanel = (element: HTMLElement) => {
@@ -53,7 +62,7 @@ export default function App() {
   };
   const evidenceRows = new Map<number, HTMLElement>();
 
-  const [view, setView] = createSignal<View>("status");
+  const [view, setView] = createSignal<View>(locationToView());
   const [launcherQuery, setLauncherQuery] = createSignal("");
   const [hiveTitle, setHiveTitle] = createSignal("");
   const [hiveProject, setHiveProject] = createSignal("");
@@ -74,6 +83,21 @@ export default function App() {
   const [drawerTitle, setDrawerTitle] = createSignal("");
   const [drawerBody, setDrawerBody] = createSignal("");
   const [banner, setBanner] = createSignal<string>("");
+
+  const selectView = (nextView: View) => {
+    setView(nextView);
+    const nextHash = `#${nextView}`;
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, "", nextHash);
+    }
+  };
+
+  const syncViewFromHash = () => {
+    setView(locationToView());
+  };
+
+  window.addEventListener("hashchange", syncViewFromHash);
+  onCleanup(() => window.removeEventListener("hashchange", syncViewFromHash));
 
   const [status, { refetch: refetchStatus }] = createResource(async () =>
     bridge.invoke<AppStatus>("status"),
@@ -573,7 +597,7 @@ export default function App() {
 
   const startDemoLoop = async () => {
     if (pendingDemoAction()) return;
-    setView("panel");
+    selectView("panel");
     setPendingDemoAction("Running Demo");
     setBanner("Running Entrance MVP demo.");
     try {
@@ -1634,7 +1658,7 @@ export default function App() {
 
   return (
     <div class="app-shell">
-      <Nav current={view()} onSelect={setView} />
+      <Nav current={view()} onSelect={selectView} />
 
       <main class="main-shell">
         <header class="hero-panel">

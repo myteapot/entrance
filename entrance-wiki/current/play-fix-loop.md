@@ -69,3 +69,31 @@ Residual risk:
 - Need one more UI round with a working click/DOM driver to screenshot the Panel board itself after navigation.
 
 Commit: this round commit, `Improve panel board responsive layout`
+
+## Round 3: Panel Deep-Link For Agent Testing
+
+Play root: `/Users/mac/Documents/GitHub/entrance/entrance-auto/tmp/playfix-r2-train-ticket`
+
+Observed:
+- Computer Use could read the Electron accessibility tree, but its click action repeatedly rejected the active session.
+- Without a route or deep-link, an agent could not reliably open the Panel view when click automation failed.
+- Loading `/#panel` did not survive the Electron/Vite launch path in this environment; the window still opened on Status.
+
+Fix:
+- Added location-based initial view selection in the renderer.
+- Supported both `?view=panel` and `#panel`.
+- Navigation now writes the selected view into the hash.
+- Demo startup now uses the same hash-aware view selector instead of setting local view state directly.
+
+Validation:
+- `pnpm check`
+- `pnpm build`
+- Electron launched with `ENTRANCE_RENDERER_URL=http://127.0.0.1:1420/?view=panel`.
+- Computer Use read the real Electron window at `127.0.0.1:1420/?view=panel`.
+- Result: Panel was the active view, Status board rendered, six status columns were present, the Done "火车票购票系统" card was readable, and Details/Comment actions were present in the accessibility tree.
+- `git diff --check`
+
+Residual risk:
+- Hash-only deep-link is supported by the renderer, but this Electron launch path dropped the hash during testing; `?view=panel` is the reliable agent-testing entrypoint for now.
+
+Commit: this round commit, `Add panel view deep link`
